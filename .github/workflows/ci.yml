@@ -35,6 +35,33 @@ jobs:
       - name: Test
         run: dotnet test --no-build -c Release --verbosity normal
 
+  design-tokens:
+    name: Design tokens
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Önceki üründe durum renkleri açık temada 2.06:1'e kadar düşüyordu ve
+      # kimse fark etmedi, çünkü kontrol eden bir mekanizma yoktu. Bkz. ADR-0008.
+      - name: Validate contrast and sRGB gamut
+        run: node web/design/validate-contrast.mjs
+
+      # Üretilmiş CSS'in kaynakla uyumlu kaldığını doğrular. Biri tokens.mjs'i
+      # değiştirip CSS'i yeniden üretmeyi unutursa build kırılır.
+      - name: Check generated CSS is up to date
+        run: |
+          node web/design/generate-css.mjs > /tmp/tokens.css
+          if ! diff -q /tmp/tokens.css web/src/styles/tokens.css > /dev/null; then
+            echo "::error::web/src/styles/tokens.css guncel degil."
+            echo "Calistir: node web/design/generate-css.mjs > web/src/styles/tokens.css"
+            diff /tmp/tokens.css web/src/styles/tokens.css || true
+            exit 1
+          fi
+
   commit-lint:
     name: Commit message format
     runs-on: ubuntu-latest

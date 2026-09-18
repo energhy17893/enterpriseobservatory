@@ -47,6 +47,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0005](0005-collector-contract-and-collection-discipline.md) | Collector sözleşmesi ve toplama disiplini | Kabul edildi |
 | [0006](0006-web-stack-react-spa.md) | Web arayüzü React + TypeScript SPA | Kabul edildi |
 | [0007](0007-information-architecture-and-alert-centralization.md) | Bilgi mimarisi ve alarm merkezileştirme | Kabul edildi |
+| [0008](0008-design-token-architecture.md) | Tasarım token mimarisi ve kontrast kapısı | Kabul edildi |
 
 ## Şablon
 
