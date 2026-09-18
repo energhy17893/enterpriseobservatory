@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-and-test:
+    name: Build & test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer sürüm türetmesi için tüm geçmiş gerekir
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      # TreatWarningsAsErrors Directory.Build.props içinde açık:
+      # uyarı biriktirmeye izin vermiyoruz. Bkz. ADR-0001.
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        run: dotnet test --no-build -c Release --verbosity normal
+
+  commit-lint:
+    name: Commit message format
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Yerel hook atlanmış olabilir; CI son savunma hattıdır.
+      # Bkz. ADR-0002.
+      - name: Validate commits in PR
+        run: |
+          chmod +x .githooks/commit-msg
+          fail=0
+          for sha in $(git rev-list origin/${{ github.base_ref }}..HEAD); do
+            git log -1 --format=%B "$sha" > /tmp/msg
+            if ! .githooks/commit-msg /tmp/msg; then
+              echo "::error::Invalid commit message in $sha"
+              fail=1
+            fi
+          done
+          exit $fail

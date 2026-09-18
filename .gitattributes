@@ -1,0 +1,28 @@
+# Varsayılan: metin dosyalarını normalize et, checkout'ta platform yerelini kullan
+* text=auto
+
+# Windows'a özgü, her zaman CRLF kalmalı
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.wxs   text eol=crlf
+
+# Kaynak kod
+*.cs      text diff=csharp
+*.cshtml  text
+*.csproj  text
+*.slnx    text
+*.json    text
+*.css     text
+*.js      text
+*.md      text
+
+# İkili dosyalar — diff/merge denenmesin
+*.png     binary
+*.jpg     binary
+*.pdf     binary
+*.ttf     binary
+*.msi     binary
+*.cab     binary
+*.dll     binary
+*.exe     binary

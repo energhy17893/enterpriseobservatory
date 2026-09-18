@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# Conventional Commits doğrulaması.
+# Etkinleştirmek için:  git config core.hooksPath .githooks
+# Gerekçe: docs/adr/0002-adr-and-commit-discipline.md
+
+msg_file="$1"
+# Yorum satırlarını ve boş satırları at, ilk anlamlı satırı al
+subject=$(grep -v '^#' "$msg_file" | sed '/^[[:space:]]*$/d' | head -n 1)
+
+# merge / revert commit'lerini serbest bırak
+case "$subject" in
+  "Merge "*|"Revert "*) exit 0 ;;
+esac
+
+pattern='^(feat|fix|refactor|perf|test|docs|build|ci|chore|revert)(\([a-z0-9._-]+\))?!?: [a-z].{0,70}$'
+
+if ! printf '%s' "$subject" | grep -Eq "$pattern"; then
+  cat >&2 <<'EOF'
+
+  COMMIT REDDEDILDI: ozet satiri Conventional Commits formatina uymuyor.
+
+  Beklenen:
+      <tip>(<kapsam>): <ozet>
+
+  Tipler:
+      feat fix refactor perf test docs build ci chore revert
+
+  Kurallar:
+      - ozet kucuk harfle baslar
+      - sonunda nokta yok
+      - en fazla 72 karakter
+      - emir kipi: "add", "added" degil
+
+  Ornek:
+      feat(domain): add sticky clear to alert lifecycle
+
+  Detay: CONTRIBUTING.md
+
+EOF
+  printf '  Gonderilen: %s\n\n' "$subject" >&2
+  exit 1
+fi
+
+# Yapisal degisiklik yapan tipler icin govde zorunlu
+case "$subject" in
+  feat*|fix*|refactor*|perf*)
+    body=$(grep -v '^#' "$msg_file" | sed '1d' | sed '/^[[:space:]]*$/d')
+    if [ -z "$body" ]; then
+      cat >&2 <<'EOF'
+
+  COMMIT REDDEDILDI: bu commit tipi icin govde zorunlu.
+
+  Govde NE yapildigini degil, NEDEN yapildigini anlatir.
+  Diff zaten ne degistigini soyluyor.
+
+  Detay: CONTRIBUTING.md -> "Govde - en onemli kisim"
+
+EOF
+      exit 1
+    fi
+    ;;
+esac
+
+exit 0

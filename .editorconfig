@@ -1,0 +1,65 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{json,yml,yaml,md}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{cs}]
+# --- using düzeni ---
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+csharp_using_directive_placement = outside_namespace:warning
+
+# --- modern C# ---
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_prefer_braces = true:warning
+csharp_style_prefer_primary_constructors = true:suggestion
+
+# --- null güvenliği ---
+dotnet_style_null_propagation = true:warning
+dotnet_style_coalesce_expression = true:warning
+
+# --- değişmezlik: Domain'de record ve readonly tercih edilir ---
+dotnet_style_readonly_field = true:warning
+dotnet_style_prefer_auto_properties = true:warning
+
+# --- isimlendirme ---
+dotnet_naming_rule.interfaces_start_with_i.severity = warning
+dotnet_naming_rule.interfaces_start_with_i.symbols = interface_symbol
+dotnet_naming_rule.interfaces_start_with_i.style = prefix_i_style
+dotnet_naming_symbols.interface_symbol.applicable_kinds = interface
+dotnet_naming_style.prefix_i_style.required_prefix = I
+dotnet_naming_style.prefix_i_style.capitalization = pascal_case
+
+dotnet_naming_rule.private_fields_underscore.severity = warning
+dotnet_naming_rule.private_fields_underscore.symbols = private_field_symbol
+dotnet_naming_rule.private_fields_underscore.style = underscore_camel_style
+dotnet_naming_symbols.private_field_symbol.applicable_kinds = field
+dotnet_naming_symbols.private_field_symbol.applicable_accessibilities = private
+dotnet_naming_style.underscore_camel_style.required_prefix = _
+dotnet_naming_style.underscore_camel_style.capitalization = camel_case
+
+# --- analiz sertliği ---
+# CA1031: genel Exception yakalama. Collector'larda BİLİNÇLİ olarak yapılır
+# (bir satıcı düşerse döngü durmamalı) ama yalnızca izin verilen yerlerde.
+# Bu yüzden uyarı olarak açık bırakılıyor, gerektiğinde gerekçeyle bastırılıyor.
+dotnet_diagnostic.CA1031.severity = warning
+
+# CA2007: ConfigureAwait — kütüphane katmanlarında zorunlu
+dotnet_diagnostic.CA2007.severity = none
+
+[tests/**/*.cs]
+# Testlerde public API dokümantasyonu ve bazı analiz kuralları gereksiz
+dotnet_diagnostic.CA1707.severity = none
