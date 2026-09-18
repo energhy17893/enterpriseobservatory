@@ -1,0 +1,53 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/*
+  Everything visual comes from the generated tokens. A component never names a
+  raw palette colour: `bg-status-critical-surface`, never `bg-red-950`. The
+  previous product's status colours drifted to a 2.06:1 contrast ratio in light
+  theme and nobody noticed, because there was nothing to notice it. See
+  ADR-0008, and the contrast gate in CI.
+*/
+
+@layer base {
+  :root {
+    /* Fira Sans for text, Fira Code for identifiers. A WWN, a UUID and an IP
+       are read character by character and compared against something else on
+       screen; a proportional font makes that work harder than it needs to be.
+       See ADR-0006. */
+    --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "Fira Code", ui-monospace, "Cascadia Code", monospace;
+
+    color-scheme: dark;
+  }
+
+  :root:has(> body) .light,
+  .light {
+    color-scheme: light;
+  }
+
+  html {
+    font-family: var(--font-sans);
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--page);
+    color: var(--foreground);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Numeric columns must line up. Tabular figures are not decoration in a
+     table of latencies. */
+  table,
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+}

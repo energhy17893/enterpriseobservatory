@@ -1,0 +1,103 @@
+import { clsx, type ClassValue } from 'clsx'
+import { twMerge } from 'tailwind-merge'
+import type { AlertSeverity, HealthState } from '@/api/types'
+
+/** The shadcn/ui class helper, kept so generated components drop in unchanged. */
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
+/**
+ * The one place a status becomes a colour.
+ *
+ * Components never name a palette colour directly (`bg-red-500` is forbidden by
+ * ADR-0006); they name a status and get the token ramp for it. That is what
+ * makes the contrast gate in CI meaningful — if colours were chosen at call
+ * sites, validating the tokens would prove nothing about the screens.
+ */
+const RAMPS = {
+  Healthy: {
+    surface: 'bg-status-healthy-surface',
+    border: 'border-status-healthy-border',
+    text: 'text-status-healthy-text',
+    solid: 'bg-status-healthy-solid text-status-healthy-solid-on',
+  },
+  Warning: {
+    surface: 'bg-status-warning-surface',
+    border: 'border-status-warning-border',
+    text: 'text-status-warning-text',
+    solid: 'bg-status-warning-solid text-status-warning-solid-on',
+  },
+  Critical: {
+    surface: 'bg-status-critical-surface',
+    border: 'border-status-critical-border',
+    text: 'text-status-critical-text',
+    solid: 'bg-status-critical-solid text-status-critical-solid-on',
+  },
+  Info: {
+    surface: 'bg-status-info-surface',
+    border: 'border-status-info-border',
+    text: 'text-status-info-text',
+    solid: 'bg-status-info-solid text-status-info-solid-on',
+  },
+  Unknown: {
+    surface: 'bg-status-unknown-surface',
+    border: 'border-status-unknown-border',
+    text: 'text-status-unknown-text',
+    solid: 'bg-status-unknown-solid text-status-unknown-solid-on',
+  },
+} as const
+
+export type StatusName = keyof typeof RAMPS
+
+export function ramp(status: StatusName) {
+  return RAMPS[status]
+}
+
+/**
+ * Health as a status name.
+ *
+ * Unknown is a status of its own, never folded into healthy. "We cannot see it"
+ * and "it is fine" are the two claims product principle 1 refuses to confuse.
+ */
+export function healthStatus(health: HealthState): StatusName {
+  return health
+}
+
+export function severityStatus(severity: AlertSeverity): StatusName {
+  return severity
+}
+
+/**
+ * How long ago something happened, in words.
+ *
+ * Deliberately blunt at the coarse end: past a day, the exact figure stops
+ * being the point and "3d ago" is what an operator needs to see.
+ */
+export function ago(iso: string | null, now: number = Date.now()): string {
+  if (iso === null) {
+    return 'never'
+  }
+
+  const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000))
+
+  if (seconds < 60) return `${seconds}s ago`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`
+
+  return `${Math.floor(seconds / 86_400)}d ago`
+}
+
+/**
+ * Whether an answer is old enough that presenting it as current would be a lie.
+ *
+ * ADR-0007 §6 forbids showing stale data as fresh. This is the threshold the
+ * interface uses to start saying so — generous enough that a slow cycle does
+ * not cry wolf, short enough that a disconnected wallboard admits it long
+ * before anyone makes a decision on it.
+ */
+export const STALE_AFTER_MS = 120_000
+
+export function isStale(iso: string | null, now: number = Date.now()): boolean {
+  return iso === null || now - Date.parse(iso) > STALE_AFTER_MS
+}

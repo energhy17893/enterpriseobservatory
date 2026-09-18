@@ -35,6 +35,30 @@ jobs:
       - name: Test
         run: dotnet test --no-build -c Release --verbosity normal
 
+  web:
+    name: Web interface
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # Tip kontrolü burada yapılmazsa hiç yapılmaz: dotnet build SPA'i
+      # derlemez, yani bir TypeScript hatası ancak birinin yerelde build
+      # almasıyla fark edilir. Bkz. ADR-0006.
+      - name: Build
+        run: npm run build
+
   design-tokens:
     name: Design tokens
     runs-on: ubuntu-latest

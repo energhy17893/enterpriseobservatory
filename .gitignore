@@ -16,6 +16,12 @@ artifacts/
 *.user
 *.suo
 
+# SPA build çıktısı: web/ kaynaktır, wwwroot türetilmiştir.
+# Türetilmiş dosyayı commit'lemek, kaynağı değiştirip yeniden üretmeyi unutan
+# birinin bunu asla fark etmemesi demektir.
+src/EnterpriseObservatory.Host.AllInOne/wwwroot/
+node_modules/
+
 # Installer
 *.msi
 *.cab

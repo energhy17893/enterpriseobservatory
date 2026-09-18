@@ -76,6 +76,13 @@ if (Directory.Exists(host.Environment.WebRootPath))
 {
     host.UseDefaultFiles();
     host.UseStaticFiles();
+
+    // The SPA owns its own routes, so any path the API did not claim is handed
+    // to it. Without this, a deep link — the URL an operator pastes into an
+    // incident ticket — returns 404 while the same page reached by clicking
+    // works, which is the kind of defect that is reported as "sometimes it
+    // breaks".
+    host.MapFallbackToFile("index.html");
 }
 
 // Logged after building, so what the service is actually about to do is on the

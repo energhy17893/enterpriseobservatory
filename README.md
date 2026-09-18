@@ -67,31 +67,43 @@ Deployment-agnostik çekirdeğe sahip **modüler monolit**. Aynı kod tek proses
 (Windows MSI) veya ayrı proseslerde (konteyner, çok düğüm) çalışır; topoloji bir
 yapılandırma seçeneğidir, mimari değişikliği değil.
 
+Bugün var olan:
+
 ```
 src/
   EnterpriseObservatory.Domain/               saf model + kurallar, sıfır I/O
   EnterpriseObservatory.Application/          use-case'ler, port arayüzleri
   EnterpriseObservatory.Collectors.Vsphere/   satıcı adaptörü
-  EnterpriseObservatory.Persistence/          depolama adaptörleri
-  EnterpriseObservatory.Hosting/              topoloji soyutlaması
-  EnterpriseObservatory.Host.AllInOne/        tek proses (MSI hedefi)
-  EnterpriseObservatory.Web/                  API host + SPA sunumu
-web/                                          React + TypeScript SPA (shadcn/ui, Tailwind v4)
+  EnterpriseObservatory.Api/                  BFF okuma yüzeyi (kütüphane)
+  EnterpriseObservatory.Host.AllInOne/        tek proses: toplama + web (MSI hedefi)
+web/                                          React + TypeScript SPA (Tailwind v4)
+tools/
+  EnterpriseObservatory.VsphereProbe/         canlı vCenter'a karşı salt-okunur sonda
 tests/
   EnterpriseObservatory.Domain.Tests/         hızlı, I/O yok
   EnterpriseObservatory.Application.Tests/    use-case testleri
+  EnterpriseObservatory.Api.Tests/            projeksiyon testleri
+  EnterpriseObservatory.Host.AllInOne.Tests/  bileşim testleri
+  EnterpriseObservatory.Collectors.Vsphere.Tests/
   EnterpriseObservatory.Architecture.Tests/   katman sınırlarını CI'da zorlar
 ```
+
+Henüz yazılmamış: kalıcılık adaptörleri (`Persistence`) ve çok-proses topoloji
+soyutlaması (`Hosting`). İkisi de mimaride yeri olan ama bugün gerekmeyen
+parçalar; durumu bellekte tutan basit depolar `Host.AllInOne` içinde yaşıyor ve
+port arkasında oldukları için değiştirilmeleri bir dağıtım kararı.
 
 Bağımlılık yönü tek yönlüdür ve `Architecture.Tests` tarafından zorlanır:
 
 ```
-Web ─┐
+Api ─┐
      ├─→ Application ─→ Domain
 Host─┘        ↑
 Collectors ───┘
-Persistence ──┘
 ```
+
+`Api` hiçbir collector'ı göremez: görebilseydi önce bir vSphere ucu, sonra bir
+iLO ucu büyür ve arayüz yeniden satıcı şeklinde parçalanırdı. Bu da bir test.
 
 `Domain` hiçbir projeye referans veremez. Bu kural bir konvansiyon değil, kırmızıya
 düşen bir testtir.
@@ -109,6 +121,29 @@ Başlangıç noktası: [docs/adr/README.md](docs/adr/README.md)
 ```bash
 dotnet build
 dotnet test
+```
+
+Arayüz ayrı bir SPA; `web/` kaynak, `wwwroot/` türetilmiş çıktıdır (commit
+edilmez).
+
+```bash
+cd web && npm install && npm run build
+```
+
+Geliştirirken iki proses: host API'yi 5219'da sunar, Vite SPA'i kendi portunda
+sunup `/api`'yi host'a proxy'ler. Tarayıcı yine tek köken görür, böylece çerez
+davranışı üretimle aynı olur.
+
+```bash
+dotnet run --project src/EnterpriseObservatory.Host.AllInOne
+cd web && npm run dev
+```
+
+vCenter parolası **hiçbir zaman** ayar dosyasına yazılmaz; host dosyadan gelen
+bir parola görürse başlamayı reddeder (ADR-0010).
+
+```bash
+dotnet user-secrets --project src/EnterpriseObservatory.Host.AllInOne set "VCenters:0:Password" "..."
 ```
 
 Katkı kuralları, commit formatı ve dal stratejisi için

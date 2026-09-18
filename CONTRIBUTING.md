@@ -46,8 +46,8 @@ hook'u tarafından doğrulanır.
 
 ### Kapsamlar
 
-`domain`, `application`, `collectors`, `persistence`, `hosting`, `web`,
-`adr`, `deps`, veya belirli bir modül adı.
+`domain`, `application`, `collectors`, `api`, `host`, `persistence`, `hosting`,
+`web`, `adr`, `deps`, veya belirli bir modül adı.
 
 ### Özet satırı
 
