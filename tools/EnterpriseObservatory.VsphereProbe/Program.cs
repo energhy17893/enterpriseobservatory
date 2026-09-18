@@ -20,6 +20,17 @@ using EnterpriseObservatory.Collectors.Vsphere;
 
 var mask = args.Contains("--mask", StringComparer.OrdinalIgnoreCase);
 
+// Deliberately shrinkable so the continuation path can be exercised against an
+// environment that would otherwise fit in a single page.
+var pageSize = 250;
+var pageSizeIndex = Array.FindIndex(args, a =>
+    string.Equals(a, "--page-size", StringComparison.OrdinalIgnoreCase));
+if (pageSizeIndex >= 0 && pageSizeIndex + 1 < args.Length &&
+    int.TryParse(args[pageSizeIndex + 1], out var requested) && requested > 0)
+{
+    pageSize = requested;
+}
+
 var url = Environment.GetEnvironmentVariable("EO_VCENTER_URL");
 var user = Environment.GetEnvironmentVariable("EO_VCENTER_USER");
 var password = Environment.GetEnvironmentVariable("EO_VCENTER_PASSWORD");
@@ -45,6 +56,7 @@ var options = new VsphereConnectionOptions
     Password = password,
     InstanceId = "probe",
     AcceptUntrustedCertificate = insecure,
+    InventoryPageSize = pageSize,
 };
 
 using var handler = VsphereClient.CreateHandler(options);
@@ -96,9 +108,24 @@ try
 
     var total = payload.Hosts.Count + payload.VirtualMachines.Count +
                 payload.Clusters.Count + payload.Datastores.Count;
-    Console.WriteLine(total > 250
-        ? $"  paging                   exercised ({total} objects, more than one page)"
-        : $"  paging                   not exercised ({total} objects fit one page)");
+
+    Console.WriteLine($"  page size                {pageSize}");
+    Console.WriteLine($"  pages retrieved          {payload.PagesRetrieved}");
+
+    var expectedPages = (int)Math.Ceiling(total / (double)pageSize);
+    if (payload.PagesRetrieved > 1)
+    {
+        var consistent = payload.PagesRetrieved == expectedPages;
+        Console.WriteLine(consistent
+            ? $"  paging                   VERIFIED — {total} objects over {payload.PagesRetrieved} pages"
+            : $"  paging                   SUSPECT — {total} objects over {payload.PagesRetrieved} pages, " +
+              $"expected {expectedPages}");
+    }
+    else
+    {
+        Console.WriteLine($"  paging                   not exercised ({total} objects fit one page)");
+        Console.WriteLine("                           re-run with --page-size 50 to prove the continuation path");
+    }
 
     if (payload.Failures.Count > 0)
     {

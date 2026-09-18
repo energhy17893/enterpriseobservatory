@@ -45,4 +45,16 @@ public sealed record VsphereConnectionOptions
     public bool AcceptUntrustedCertificate { get; init; }
 
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Objects per inventory page.
+    /// </summary>
+    /// <remarks>
+    /// Bounded because an unbounded retrieval can be refused outright on a
+    /// large inventory. Configurable mainly so the paging path can be exercised
+    /// deliberately: an environment that fits in one page never proves the
+    /// continuation logic works, and silently stopping at the first page is the
+    /// easiest way to report an estate as smaller and healthier than it is.
+    /// </remarks>
+    public int InventoryPageSize { get; init; } = 250;
 }

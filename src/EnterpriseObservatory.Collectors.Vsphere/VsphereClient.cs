@@ -47,9 +47,6 @@ public sealed class VsphereApiException : Exception
 /// </remarks>
 public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposable
 {
-    /// <summary>Objects per page. Bounded because an unbounded retrieval can be refused outright.</summary>
-    private const int PageSize = 250;
-
     /// <summary>Samples per series; see <see cref="VsphereSoapRequests.QueryPerf"/>.</summary>
     private const int MaxSample = 3;
 
@@ -269,7 +266,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
 
         try
         {
-            var objects = await RetrieveAllPagesAsync(content, viewMoRef, cancellationToken)
+            var (objects, pages) = await RetrieveAllPagesAsync(content, viewMoRef, cancellationToken)
                 .ConfigureAwait(false);
 
             foreach (var missing in objects.SelectMany(o => o.Missing.Select(m => (o, m))))
@@ -290,6 +287,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
                 Clusters = [.. objects.Where(o => o.Type == "ClusterComputeResource").Select(ToCluster)],
                 Datastores = [.. objects.Where(o => o.Type == "Datastore").Select(ToDatastore)],
                 Failures = failures,
+                PagesRetrieved = pages,
             };
         }
         finally
@@ -342,16 +340,18 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
     /// rather than a bug. This is the single easiest way to under-report an
     /// environment.
     /// </remarks>
-    private async Task<List<PropertyObject>> RetrieveAllPagesAsync(
+    private async Task<(List<PropertyObject> Objects, int Pages)> RetrieveAllPagesAsync(
         VsphereServiceContent content,
         string viewMoRef,
         CancellationToken cancellationToken)
     {
         var all = new List<PropertyObject>();
+        var pages = 1;
 
         var response = await SendAsync(
             VsphereSoapRequests.RetrievePropertiesEx(
-                content.PropertyCollector, content.RootFolder, viewMoRef, InventoryProperties, PageSize),
+                content.PropertyCollector, content.RootFolder, viewMoRef,
+                InventoryProperties, _options.InventoryPageSize),
             cancellationToken).ConfigureAwait(false);
 
         var page = PropertyCollectorParser.ParsePage(response);
@@ -368,9 +368,10 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
 
             page = PropertyCollectorParser.ParsePage(response);
             all.AddRange(page.Objects);
+            pages++;
         }
 
-        return all;
+        return (all, pages);
     }
 
     private static VsphereHost ToHost(PropertyObject o) => new()

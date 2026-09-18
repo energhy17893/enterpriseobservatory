@@ -36,6 +36,17 @@ public sealed record VsphereInventoryPayload
 
     /// <summary>Parts of the inventory that could not be read.</summary>
     public IReadOnlyList<VsphereReadFailure> Failures { get; init; } = [];
+
+    /// <summary>
+    /// How many pages were fetched to build this.
+    /// </summary>
+    /// <remarks>
+    /// Reported so that following the continuation token is observable rather
+    /// than assumed. An environment that fits in one page never proves the
+    /// paging logic works, and stopping early looks like a small healthy estate
+    /// rather than a bug.
+    /// </remarks>
+    public int PagesRetrieved { get; init; } = 1;
 }
 
 /// <summary>Something the client could not read, in its own terms.</summary>
