@@ -127,6 +127,17 @@ public sealed record Entity
     /// <summary>Evidence about which real-world thing this is.</summary>
     public IReadOnlyList<IdentityMark> Marks { get; init; } = [];
 
+    /// <summary>
+    /// Which collector instance reported this.
+    /// </summary>
+    /// <remarks>
+    /// Provenance, and load-bearing: an entity may only be treated as vanished
+    /// by the source responsible for it. When a collector cannot be reached at
+    /// all, everything it reports on is unknown, not gone — see
+    /// <see cref="EntityGraph"/>.
+    /// </remarks>
+    public string SourceInstanceId { get; init; } = string.Empty;
+
     public HealthState Health { get; init; } = HealthState.Unknown;
 
     public ObservationState ObservationState { get; init; } = ObservationState.Active;
