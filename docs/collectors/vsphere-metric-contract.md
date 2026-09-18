@@ -250,11 +250,33 @@ bu gecikmeyi hata olarak raporlamaz.
 - **`WaitForUpdatesEx` ne zaman?** İlk dilimden sonra mı, envanter modeliyle
   birlikte mi? Model şimdiden buna uygun tasarlanıyor (envanter yenileme ve
   metrik toplama ayrı ritimler) ama devreye alma zamanı açık.
-- **Çoklu vCenter otoritesi:** bağlantılı modda (linked mode) aynı host iki
-  vCenter'da görünürse kimlik çözümleme hangi kaynağı otoriter sayacak?
-  Önceki üründe `VCenterEndpoints` içinde `IsPrimary` bayrağı vardı — aynı
-  kural mı işletilecek, yoksa `SameAs` bileşeni içinde kaynak önceliği ayrı mı
-  tanımlanacak? (ADR-0004 §3 ile ilgili.)
+## Çoklu vCenter: otorite seçmiyoruz, çakışmayı bildiriyoruz
+
+Önceki üründe `VCenterEndpoints` içindeki `IsPrimary` bayrağı bir otorite
+kuralı değildi — birden fazla vCenter eklendiğinde otomatik atanıyordu. Yani
+bu problem için bilinçli bir kural hiç olmadı.
+
+Yeni üründe de bir otorite kuralı **tanımlamıyoruz**, çünkü problemin kendisi
+normal bir durum değil. Bir ESXi host tam olarak bir vCenter'a kayıtlıdır;
+Enhanced Linked Mode'da bile her vCenter kendi host'larına sahiptir. Aynı host
+iki vCenter'da görünüyorsa üç olasılık var:
+
+| Olasılık | Anlamı |
+|---|---|
+| Host gerçekten iki vCenter'a kayıtlı | Yanlış yapılandırma. Tehlikeli: iki vCenter aynı host'a komut verebilir. |
+| Host taşınmış, eski vCenter'da bayat kayıt kalmış | Temizlik gerektiren durum. |
+| Kimlik çözümleme yanlış eşleştirdi | Bizim hatamız; `SameAs` kenarının kanıtı incelenmeli. |
+
+Üçünde de doğru davranış aynı: **bir kaynağı otoriter seçip diğerini sessizce
+yok saymak değil, çakışmayı bildirmek.** Keyfi bir "primary" seçmek, ürünün
+reddettiği şeyi yapmak olurdu — bilmediğini bilirmiş gibi davranmak
+(README ilke 1).
+
+**Uygulama:** Bir `SameAs` denklik bileşeni içinde birden fazla vCenter
+kaynaklı host kaydı varsa, `Configuration` kategorisinde bir bulgu üretilir ve
+her iki kaynak da kanıtıyla birlikte gösterilir. Sunumda kayıt seçimi
+deterministiktir (en son görülen) ama bu bir otorite iddiası değil, yalnızca
+kararlı bir görüntüleme tercihidir ve çakışma rozeti ile işaretlenir.
 
 ## Kararlaştırılanlar
 
