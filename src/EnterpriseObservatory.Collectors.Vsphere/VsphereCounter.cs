@@ -32,7 +32,8 @@ public sealed record VsphereCounter
     /// <summary>The portable identifier, e.g. <c>cpu.usage.average</c>.</summary>
     public string Key => $"{Group}.{Name}.{RollupKey(Rollup)}";
 
-    internal static string RollupKey(RollupType rollup) => rollup switch
+    /// <summary>The token vSphere uses for a rollup type.</summary>
+    public static string RollupKey(RollupType rollup) => rollup switch
     {
         RollupType.Average => "average",
         RollupType.Latest => "latest",
@@ -43,7 +44,12 @@ public sealed record VsphereCounter
         _ => "unknown",
     };
 
-    internal static RollupType ParseRollup(string? value) => value?.Trim().ToLowerInvariant() switch
+    /// <summary>
+    /// Reads vSphere's rollup token. An unrecognised one becomes
+    /// <see cref="RollupType.Unknown"/> rather than a guess, because guessing
+    /// the wrong rollup silently changes what the number means.
+    /// </summary>
+    public static RollupType ParseRollup(string? value) => value?.Trim().ToLowerInvariant() switch
     {
         "average" => RollupType.Average,
         "latest" => RollupType.Latest,
