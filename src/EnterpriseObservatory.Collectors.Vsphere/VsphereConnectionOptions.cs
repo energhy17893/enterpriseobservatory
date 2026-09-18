@@ -1,0 +1,48 @@
+namespace EnterpriseObservatory.Collectors.Vsphere;
+
+/// <summary>How to reach one vCenter.</summary>
+public sealed record VsphereConnectionOptions
+{
+    /// <summary>Base address, e.g. <c>https://vc01.corp.local</c>.</summary>
+    public required Uri BaseAddress { get; init; }
+
+    /// <summary>
+    /// The account to read as.
+    /// </summary>
+    /// <remarks>
+    /// This should be a dedicated read-only service account, not an
+    /// administrator. All vSphere collection is read-only, so no write
+    /// privilege is ever exercised — and product principle 5 says the
+    /// monitoring tool must not be able to break production, which is a
+    /// guarantee worth having technically rather than by good intentions.
+    /// </remarks>
+    public required string Username { get; init; }
+
+    public required string Password { get; init; }
+
+    /// <summary>
+    /// A stable name for this vCenter, used in entity ids and health tracking.
+    /// </summary>
+    /// <remarks>
+    /// Explicit rather than derived from the address, because an address can
+    /// change — and if it did, every entity id derived from it would change
+    /// too, orphaning history and alerts.
+    /// </remarks>
+    public required string InstanceId { get; init; }
+
+    /// <summary>
+    /// Whether to accept a certificate that does not chain to a trusted root.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Off by default and never implicit. vCenter ships with a self-signed
+    /// certificate and many installations never replace it, so this has to be
+    /// expressible — but as a decision someone made, recorded in
+    /// configuration, not as something the collector does quietly on their
+    /// behalf.
+    /// </para>
+    /// </remarks>
+    public bool AcceptUntrustedCertificate { get; init; }
+
+    public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
+}
