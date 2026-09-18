@@ -13,12 +13,12 @@ import type { RelationshipKind, RelationshipView } from '@/api/types'
  * arrow makes the operator do the translation.
  */
 const PHRASING: Record<RelationshipKind, { outgoing: string; incoming: string }> = {
-  Contains: { outgoing: 'contains', incoming: 'is contained by' },
+  PartOf: { outgoing: 'is part of', incoming: 'contains' },
   RunsOn: { outgoing: 'runs on', incoming: 'runs' },
-  ConnectedTo: { outgoing: 'is connected to', incoming: 'is connected to' },
-  DependsOn: { outgoing: 'depends on', incoming: 'is depended on by' },
   SameAs: { outgoing: 'is the same machine as', incoming: 'is the same machine as' },
-  PartOf: { outgoing: 'is part of', incoming: 'has part' },
+  ConnectedTo: { outgoing: 'is connected to', incoming: 'is connected to' },
+  BackedBy: { outgoing: 'is backed by', incoming: 'backs' },
+  ManagedBy: { outgoing: 'is managed by', incoming: 'manages' },
 }
 
 /**
@@ -162,9 +162,18 @@ export function EntityDetail() {
 }
 
 function Connection({ relationship }: { relationship: RelationshipView }) {
-  const phrase = relationship.isOutgoing
-    ? PHRASING[relationship.kind].outgoing
-    : PHRASING[relationship.kind].incoming
+  // Falls back to the raw kind rather than crashing. The vocabulary is closed
+  // and typed, so a missing entry means the server sent a kind this build does
+  // not know — a version skew, during which the page must still render.
+  const phrasing = PHRASING[relationship.kind] as
+    | { outgoing: string; incoming: string }
+    | undefined
+
+  const phrase = phrasing
+    ? relationship.isOutgoing
+      ? phrasing.outgoing
+      : phrasing.incoming
+    : relationship.kind
 
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-2">

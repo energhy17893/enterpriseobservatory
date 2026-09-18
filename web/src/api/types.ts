@@ -36,13 +36,17 @@ export type EntityKind =
   | 'ManagementAppliance'
   | 'CollectorInstance'
 
+/**
+ * The closed vocabulary from ADR-0004. Adding a kind requires an ADR, which is
+ * also what makes exhaustively handling them here safe.
+ */
 export type RelationshipKind =
-  | 'Contains'
-  | 'RunsOn'
-  | 'ConnectedTo'
-  | 'DependsOn'
-  | 'SameAs'
   | 'PartOf'
+  | 'RunsOn'
+  | 'SameAs'
+  | 'ConnectedTo'
+  | 'BackedBy'
+  | 'ManagedBy'
 
 export interface Page<T> {
   items: T[]
