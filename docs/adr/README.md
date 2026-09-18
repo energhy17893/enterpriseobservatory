@@ -44,6 +44,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0002](0002-adr-and-commit-discipline.md) | ADR ve commit disiplini, dil seçimi | Kabul edildi |
 | [0003](0003-topology-first-entity-model.md) | Topoloji-önce varlık modeli | Kabul edildi |
 | [0004](0004-relationship-taxonomy-and-entity-lifecycle.md) | İlişki taksonomisi ve varlık yaşam döngüsü | Kabul edildi |
+| [0005](0005-collector-contract-and-collection-discipline.md) | Collector sözleşmesi ve toplama disiplini | Kabul edildi |
 
 ## Şablon
 

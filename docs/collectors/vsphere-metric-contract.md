@@ -244,12 +244,7 @@ bu gecikmeyi hata olarak raporlamaz.
 
 ## Açık sorular
 
-- **`maxQueryMetrics` batch boyutu:** önceki üründeki `Chunk(32)` sabitinin
-  nereden geldiği bilinmiyor — sahada yaşanmış bir olaydan mı, temkinli bir
-  tahminden mi? Gerçek bir olaydan geliyorsa bu bilgi §3'e eklenmeli.
-- **`WaitForUpdatesEx` ne zaman?** İlk dilimden sonra mı, envanter modeliyle
-  birlikte mi? Model şimdiden buna uygun tasarlanıyor (envanter yenileme ve
-  metrik toplama ayrı ritimler) ama devreye alma zamanı açık.
+Bu belgede açık soru kalmadı. Kararlar aşağıdaki tabloda.
 ## Çoklu vCenter: otorite seçmiyoruz, çakışmayı bildiriyoruz
 
 Önceki üründe `VCenterEndpoints` içindeki `IsPrimary` bayrağı bir otorite
@@ -284,3 +279,12 @@ kararlı bir görüntüleme tercihidir ve çakışma rozeti ile işaretlenir.
 |---|---|---|
 | İstatistik seviyesi yetersizse ne olacak? | Seviye 2 kurulum ön koşulu; eksikse görünür uyarı + kalıcı Configuration alarmı + metrikler `Unknown` | §6.1 |
 | Disk gecikmesi hangi sayaçlardan? | Üçlü: `deviceLatency` / `kernelLatency` / `queueLatency`. `maxTotalLatency` yalnızca özet. | §6 ESXi Host |
+| Batch boyutu ne olacak? | Sabit yok. `config.vpxd.stats.maxQueryMetrics` çalışma zamanında okunur, sayaç sayısına bölünür, limit hatasında yarılanarak uyarlanır. | ADR-0005 §2 |
+| `WaitForUpdatesEx` ne zaman? | İlk dilimde değil. Envanter akışı ilk dilimde `PollingInventorySource`, ikinci dilimde `ChangeFeedInventorySource` — adaptör değişimi, `Application` katmanı değişmez. | ADR-0005 §1 |
+| Çoklu vCenter otoritesi? | Otorite seçilmiyor; çakışma `Configuration` bulgusu olarak raporlanıyor. | §Çoklu vCenter |
+
+> **`Chunk(32)` hakkında not:** sabitin kaynağı kayıtlı değil ve artık önemi
+> yok — yerine gelen algoritma sunucu limitini kendi öğreniyor. Ancak bir
+> gözlem kayda değer: 32 entity × 10 sayaç = 320 metrik, varsayılan 256
+> limitinin **üzerinde**. Sınırın metrik sayısına uygulandığı yorum doğruysa,
+> o sorgular sahada sessizce başarısız oluyordu.
