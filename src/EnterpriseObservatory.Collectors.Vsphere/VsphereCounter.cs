@@ -29,7 +29,23 @@ public sealed record VsphereCounter
     /// <summary>The statistics level at which this counter becomes available.</summary>
     public int Level { get; init; }
 
-    /// <summary>The portable identifier, e.g. <c>cpu.usage.average</c>.</summary>
+    /// <summary>
+    /// How the value relates to time: <c>absolute</c>, <c>delta</c> or <c>rate</c>.
+    /// </summary>
+    /// <remarks>
+    /// Captured because it is what distinguishes two counters that otherwise
+    /// share a <see cref="Key"/> — a live vCenter defines
+    /// <c>disk.scsiReservationCnflctsPct.average</c> more than once.
+    /// </remarks>
+    public string StatsType { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The portable identifier, e.g. <c>cpu.usage.average</c>.
+    /// </summary>
+    /// <remarks>
+    /// How humans and the metric contract name a counter — but <em>not</em>
+    /// unique: see <see cref="VsphereCounterIndex"/>.
+    /// </remarks>
     public string Key => $"{Group}.{Name}.{RollupKey(Rollup)}";
 
     /// <summary>The token vSphere uses for a rollup type.</summary>

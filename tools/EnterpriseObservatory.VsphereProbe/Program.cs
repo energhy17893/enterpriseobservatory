@@ -62,6 +62,20 @@ try
     Console.WriteLine("  login                    ok");
     Console.WriteLine($"  counters defined         {catalog.Count}");
 
+    // A counter key is not unique. Where it repeats the product picks one, and
+    // picking on someone's behalf is worth showing them.
+    var duplicates = VsphereCounterIndex.FindDuplicates(catalog);
+    if (duplicates.Count > 0)
+    {
+        Console.WriteLine($"  duplicate counter keys   {duplicates.Count} (lowest level wins)");
+        foreach (var duplicate in duplicates.Take(5))
+        {
+            var variants = string.Join(", ", duplicate.Definitions.Select(d =>
+                $"id={d.Id} level={d.Level} statsType={(d.StatsType.Length == 0 ? "?" : d.StatsType)}"));
+            Console.WriteLine($"    - {duplicate.Key}: {variants}");
+        }
+    }
+
     Section("Query sizing");
     var maxQueryMetrics = await client.GetMaxQueryMetricsAsync(cancellation.Token);
     Console.WriteLine(maxQueryMetrics is null
@@ -122,7 +136,7 @@ try
         probeHost.MoRef, VsphereEntityType.HostSystem, cancellation.Token);
 
     var availableSet = new HashSet<string>(available, StringComparer.OrdinalIgnoreCase);
-    var byKey = catalog.ToDictionary(c => c.Key, StringComparer.OrdinalIgnoreCase);
+    var byKey = VsphereCounterIndex.ByKey(catalog);
     var missing = 0;
 
     foreach (var key in VsphereCounters.Host)

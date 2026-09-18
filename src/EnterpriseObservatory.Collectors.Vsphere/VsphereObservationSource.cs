@@ -50,7 +50,10 @@ public sealed class VsphereObservationSource(
         var failures = new List<CollectionFailure>();
 
         var catalog = await _api.GetCounterCatalogAsync(cancellationToken).ConfigureAwait(false);
-        var byKey = catalog.ToDictionary(c => c.Key, StringComparer.OrdinalIgnoreCase);
+
+        // Not ToDictionary: a counter key is not unique, and building one
+        // directly throws on a real catalogue. See VsphereCounterIndex.
+        var byKey = VsphereCounterIndex.ByKey(catalog);
 
         var maxQueryMetrics = await _api.GetMaxQueryMetricsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -73,7 +76,7 @@ public sealed class VsphereObservationSource(
     private async Task ReadTypeAsync(
         VsphereEntityType entityType,
         IReadOnlyList<string> moRefs,
-        Dictionary<string, VsphereCounter> catalog,
+        IReadOnlyDictionary<string, VsphereCounter> catalog,
         int? maxQueryMetrics,
         DateTimeOffset now,
         List<Observation> observations,

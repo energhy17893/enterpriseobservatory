@@ -70,6 +70,7 @@ public static class PerfResponseParser
                 Unit = unit ?? string.Empty,
                 Level = int.TryParse(Child(returnVal, "level"), NumberStyles.Integer,
                     CultureInfo.InvariantCulture, out var level) ? level : 0,
+                StatsType = Child(returnVal, "statsType") ?? string.Empty,
             });
         }
 
