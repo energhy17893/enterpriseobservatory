@@ -75,7 +75,8 @@ src/
   EnterpriseObservatory.Persistence/          depolama adaptörleri
   EnterpriseObservatory.Hosting/              topoloji soyutlaması
   EnterpriseObservatory.Host.AllInOne/        tek proses (MSI hedefi)
-  EnterpriseObservatory.Web/                  UI + API
+  EnterpriseObservatory.Web/                  API host + SPA sunumu
+web/                                          React + TypeScript SPA (shadcn/ui, Tailwind v4)
 tests/
   EnterpriseObservatory.Domain.Tests/         hızlı, I/O yok
   EnterpriseObservatory.Application.Tests/    use-case testleri

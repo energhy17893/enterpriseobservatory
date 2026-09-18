@@ -45,6 +45,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0003](0003-topology-first-entity-model.md) | Topoloji-önce varlık modeli | Kabul edildi |
 | [0004](0004-relationship-taxonomy-and-entity-lifecycle.md) | İlişki taksonomisi ve varlık yaşam döngüsü | Kabul edildi |
 | [0005](0005-collector-contract-and-collection-discipline.md) | Collector sözleşmesi ve toplama disiplini | Kabul edildi |
+| [0006](0006-web-stack-react-spa.md) | Web arayüzü React + TypeScript SPA | Kabul edildi |
 
 ## Şablon
 
