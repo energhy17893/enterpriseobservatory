@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using EnterpriseObservatory.Api;
+using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Collectors.Vsphere;
@@ -12,7 +15,7 @@ using EnterpriseObservatory.Host.AllInOne.State;
 // is what lets this same code run as one process today and as a collector
 // service plus a web host tomorrow without the application layer changing.
 // See ADR-0001.
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 var endpoints = builder.Configuration.GetSection("VCenters").Get<List<VsphereEndpointOptions>>() ?? [];
 
@@ -42,6 +45,13 @@ builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();
 builder.Services.AddSingleton<MonitoringCycle>();
+builder.Services.AddSingleton<ReadModel>();
+
+// Enums travel as their names, not their numbers. A client reading
+// "severity": 2 has to keep a copy of our enum ordering, and the day someone
+// inserts a value into the middle, every client silently means something else.
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 foreach (var endpoint in endpoints)
 {
@@ -51,6 +61,22 @@ foreach (var endpoint in endpoints)
 builder.Services.AddHostedService<MonitoringWorker>();
 
 var host = builder.Build();
+
+host.MapObservatoryApi();
+
+// The SPA's build output, when it has been built. Serving the interface from
+// the same origin as the API is what lets authentication stay a cookie rather
+// than a token in browser storage. See ADR-0006.
+//
+// Conditional because a backend-only checkout has no wwwroot, and the static
+// file middleware's warning about it would be printed on every start until
+// everyone learned to ignore it. A warning nobody reads is worse than none: it
+// teaches people that warnings here do not matter.
+if (Directory.Exists(host.Environment.WebRootPath))
+{
+    host.UseDefaultFiles();
+    host.UseStaticFiles();
+}
 
 // Logged after building, so what the service is actually about to do is on the
 // record. The untrusted-certificate case gets its own warning rather than a
@@ -70,7 +96,7 @@ foreach (var endpoint in endpoints)
     }
 }
 
-host.Run();
+await host.RunAsync();
 
 static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration)
 {

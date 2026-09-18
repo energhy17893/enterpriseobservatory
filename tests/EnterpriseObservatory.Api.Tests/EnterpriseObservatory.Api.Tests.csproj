@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -19,11 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Domain\EnterpriseObservatory.Domain.csproj" />
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Application\EnterpriseObservatory.Application.csproj" />
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Api\EnterpriseObservatory.Api.csproj" />
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Host.AllInOne\EnterpriseObservatory.Host.AllInOne.csproj" />
   </ItemGroup>
 
 </Project>

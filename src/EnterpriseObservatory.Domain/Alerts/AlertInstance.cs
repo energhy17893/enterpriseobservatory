@@ -107,6 +107,20 @@ public sealed record AlertInstance
     /// </summary>
     public string Scope { get; init; } = string.Empty;
 
+    /// <summary>
+    /// What kind of problem this is, e.g. Hardware or Configuration.
+    /// </summary>
+    /// <remarks>
+    /// Carried on the instance rather than looked up from the definition,
+    /// because the definition is a per-cycle observation and is gone by the
+    /// time anyone reads the inbox. The fingerprint encodes it but is opaque on
+    /// purpose, so it cannot be taken back out.
+    /// </remarks>
+    public string Category { get; init; } = string.Empty;
+
+    /// <summary>Which collector or subsystem reported this.</summary>
+    public string Source { get; init; } = string.Empty;
+
     /// <summary>Consecutive observations so far, used for hysteresis.</summary>
     public required int ConsecutiveHits { get; init; }
 

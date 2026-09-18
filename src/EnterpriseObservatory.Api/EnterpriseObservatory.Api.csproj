@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    A library rather than a web project. The endpoints are mapped by whichever
+    host runs them: today the all-in-one host, tomorrow a separate web process
+    reading from shared storage. Keeping the API out of the host is what makes
+    that split a deployment decision rather than a rewrite. See ADR-0001.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EnterpriseObservatory.Application\EnterpriseObservatory.Application.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -63,6 +63,24 @@ public class LayerBoundaryTests
         }
     }
 
+    [Fact]
+    public void The_api_cannot_see_any_collector()
+    {
+        // The interface reads one model. An API that could reach a vendor's
+        // types would grow a vSphere endpoint, then an iLO endpoint, and the
+        // product would be back to the previous one's sixty vendor-shaped
+        // pages — which is the arrangement ADR-0007 exists to replace.
+        var vendors = SolutionAssemblies.Layer("Api")
+            .GetReferencedAssemblies()
+            .Select(a => a.Name ?? string.Empty)
+            .Where(n => n.StartsWith("EnterpriseObservatory.Collectors.", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.True(
+            vendors.Count == 0,
+            $"EnterpriseObservatory.Api references collectors: {string.Join(", ", vendors)}");
+    }
+
     // --- purity -----------------------------------------------------------
 
     [Theory]
