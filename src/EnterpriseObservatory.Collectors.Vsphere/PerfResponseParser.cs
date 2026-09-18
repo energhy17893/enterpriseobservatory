@@ -221,7 +221,10 @@ public static class PerfResponseParser
             CounterName = counter.Key,
             // The most recent point. Earlier points in the window belong to a
             // trend store, not to the current-state view this feeds.
-            Raw = points[^1],
+            //
+            // Normalised because vSphere reports percentages in hundredths:
+            // 26.69% arrives as 2669. See VsphereUnitNormalizer.
+            Raw = VsphereUnitNormalizer.Normalize(points[^1], counter.Unit),
             Rollup = counter.Rollup,
             Interval = interval,
             Unit = counter.Unit,

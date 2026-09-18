@@ -88,6 +88,37 @@ public class VsphereInventorySourceTests
     }
 
     [Fact]
+    public async Task A_host_registered_by_address_is_marked_as_an_address()
+    {
+        // An address contains dots, so a naive FQDN test accepts it and then
+        // derives a "short hostname" of "10" — a mark every host in the network
+        // would share. Found against a live vCenter whose hosts are registered
+        // by address.
+        var snapshot = await Read(Payload(hosts:
+            [Host(name: "10.5.1.76") with { Fqdn = null }]));
+
+        var host = snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost);
+
+        Assert.Contains(host.Marks, m =>
+            m.Kind == IdentityMarkKind.IpAddress && m.Value == "10.5.1.76");
+        Assert.DoesNotContain(host.Marks, m => m.Kind == IdentityMarkKind.Fqdn);
+        Assert.DoesNotContain(host.Marks, m =>
+            m.Kind == IdentityMarkKind.ShortHostname && m.Value == "10");
+    }
+
+    [Fact]
+    public async Task An_ipv6_address_is_also_recognised_as_an_address()
+    {
+        var snapshot = await Read(Payload(hosts:
+            [Host(name: "2001:db8::1") with { Fqdn = null, IpAddresses = [] }]));
+
+        var host = snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost);
+
+        Assert.Contains(host.Marks, m => m.Kind == IdentityMarkKind.IpAddress);
+        Assert.DoesNotContain(host.Marks, m => m.Kind == IdentityMarkKind.ShortHostname);
+    }
+
+    [Fact]
     public async Task Entity_ids_are_qualified_by_vcenter()
     {
         // Managed object references are unique within a vCenter but not between

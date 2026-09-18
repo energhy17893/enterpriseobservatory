@@ -45,6 +45,24 @@ ayrıntılı sayacı içermez. Bir sayaç seviye 3 gerektiriyorsa ve müşteri s
 
 Kaynak: [vSphere Performance Data Collection](https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere-sdks-tools/8-0/web-services-sdk-programming-guide/vsphere-performance/vsphere-performance-data-collection.html)
 
+## 1.1 Yüzdeler yüzde birin yüzde biri cinsinden gelir
+
+vSphere, birimi `percent` olan sayaçları **100 ile ölçekli** döndürür. Canlı bir
+vCenter 8'den gözlenen:
+
+| Ham değer | Birim | Gerçek |
+|---|---|---|
+| 2669 | `percent` | %26,69 |
+| 1441 | `percent` | %14,41 |
+
+Ham değeri olduğu gibi raporlamak ilk döngüde her eşiği tetikler. Dönüşüm
+**adaptörde** yapılır (`VsphereUnitNormalizer`), aşağıda değil: `CounterValue.Raw`
+"bu sayacın belirtilen birimdeki değeri" demektir ve satıcının kodlamasını bilen
+adaptördür. Ölçeklemeyi bir tüketicinin hatırlamasına bırakmak, bir tüketicinin
+unutmasının yoludur.
+
+Yalnızca doğrulanmış dönüşüm uygulanır; tanınmayan birim dokunulmadan geçer.
+
 ## 2. Rollup tipi metriğin anlamıdır
 
 Her sayacın bir `rollupType`'ı vardır ve bu, değerin **ne anlama geldiğini**
@@ -197,8 +215,13 @@ bu gecikmeyi hata olarak raporlamaz.
 >
 > Önceki üründe bu üçlü model seviyesinde **zaten vardı** (`DeviceLatencyMs`,
 > `KernelLatencyMs`, `QueueLatencyMs`). Bu belgenin ilk taslağında eksikti;
-> çapraz kontrolde fark edildi ve eklendi. Üçlü istatistik seviyesi 2
-> gerektirir — bkz. §6.1.
+> çapraz kontrolde fark edildi ve eklendi.
+>
+> **Sahadan düzeltme (2026-09-19, canlı vCenter 8):** üçlünün tamamının seviye 2
+> gerektirdiğini yazmıştım; doğru değil. `deviceLatency` **seviye 1**'de geliyor,
+> yalnızca `kernelLatency` ve `queueLatency` seviye 2. Ön koşul hâlâ geçerli ama
+> etkisi daha yumuşak: seviye 1'deki bir kurulum "array yavaş" diyebilir,
+> "host kuyruğu mu çekirdek mi" diyemez.
 
 ### Virtual Machine
 

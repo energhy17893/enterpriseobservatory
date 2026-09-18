@@ -261,25 +261,57 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             marks.Add(IdentityMark.Create(IdentityMarkKind.IpAddress, ip, InstanceId));
         }
 
-        // vCenter names a host by whatever it was added as: sometimes an FQDN,
-        // sometimes a bare address. Both spellings are reported and the
-        // resolver decides what they are worth.
+        // vCenter names a host by whatever it was added as: an FQDN, a short
+        // name, or a bare IP address. Which of those it is has to be decided
+        // here, because the resolver weighs the kinds differently.
         var name = string.IsNullOrWhiteSpace(host.Fqdn) ? host.Name : host.Fqdn;
-        if (!string.IsNullOrWhiteSpace(name))
-        {
-            if (name.Contains('.', StringComparison.Ordinal))
-            {
-                marks.Add(IdentityMark.Create(IdentityMarkKind.Fqdn, name, InstanceId));
-                marks.Add(IdentityMark.Create(
-                    IdentityMarkKind.ShortHostname, name[..name.IndexOf('.', StringComparison.Ordinal)], InstanceId));
-            }
-            else
-            {
-                marks.Add(IdentityMark.Create(IdentityMarkKind.ShortHostname, name, InstanceId));
-            }
-        }
+        marks.AddRange(MarksForName(name));
 
         return marks;
+    }
+
+    /// <summary>
+    /// Classifies whatever vCenter calls a host.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An address is checked for first. It contains dots, so a naive FQDN test
+    /// accepts it — and then derives a "short hostname" from the text before
+    /// the first dot, which for <c>10.5.1.76</c> is <c>10</c>. Every host in
+    /// the network would carry that same mark, which is exactly the kind of
+    /// worthless evidence that turns into a wrong match.
+    /// </para>
+    /// <para>
+    /// Found by running against a live vCenter whose hosts are registered by
+    /// address.
+    /// </para>
+    /// </remarks>
+    private IEnumerable<IdentityMark> MarksForName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            yield break;
+        }
+
+        var trimmed = name.Trim();
+
+        if (System.Net.IPAddress.TryParse(trimmed, out _))
+        {
+            yield return IdentityMark.Create(IdentityMarkKind.IpAddress, trimmed, InstanceId);
+            yield break;
+        }
+
+        var firstDot = trimmed.IndexOf('.', StringComparison.Ordinal);
+        if (firstDot > 0)
+        {
+            yield return IdentityMark.Create(IdentityMarkKind.Fqdn, trimmed, InstanceId);
+            yield return IdentityMark.Create(
+                IdentityMarkKind.ShortHostname, trimmed[..firstDot], InstanceId);
+        }
+        else
+        {
+            yield return IdentityMark.Create(IdentityMarkKind.ShortHostname, trimmed, InstanceId);
+        }
     }
 
     private static string InstanceIdOf(VsphereInventoryPayload payload) => payload.VCenterName;

@@ -142,13 +142,15 @@ public class PerfResponseParserTests
     [Fact]
     public void The_most_recent_point_in_a_series_is_taken()
     {
+        // Counter 180 is a latency in milliseconds, which is not rescaled, so
+        // this test stays about picking the latest point.
         const string xml = """
             <QueryPerfResponse xmlns="urn:vim25">
               <returnval>
                 <entity type="HostSystem">host-1</entity>
                 <sampleInfo><interval>20</interval></sampleInfo>
                 <value>
-                  <id><counterId>2</counterId><instance></instance></id>
+                  <id><counterId>180</counterId><instance></instance></id>
                   <value>10</value><value>20</value><value>35</value>
                 </value>
               </returnval>
@@ -257,12 +259,12 @@ public class PerfResponseParserTests
               <returnval>
                 <entity type="HostSystem">host-1</entity>
                 <sampleInfo><interval>20</interval></sampleInfo>
-                <value><id><counterId>2</counterId><instance></instance></id><value>10</value></value>
+                <value><id><counterId>180</counterId><instance></instance></id><value>10</value></value>
               </returnval>
               <returnval>
                 <entity type="HostSystem">host-2</entity>
                 <sampleInfo><interval>20</interval></sampleInfo>
-                <value><id><counterId>2</counterId><instance></instance></id><value>90</value></value>
+                <value><id><counterId>180</counterId><instance></instance></id><value>90</value></value>
               </returnval>
             </QueryPerfResponse>
             """;
