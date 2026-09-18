@@ -1,5 +1,15 @@
 namespace EnterpriseObservatory.Domain.Alerts;
 
+/// <summary>The outcome of a problem not being observed in a cycle.</summary>
+/// <param name="Instance">The next instance, or null when it should be forgotten.</param>
+/// <param name="CeasedFiring">
+/// Whether the problem stopped firing on this cycle. Feeds flap detection, which
+/// is why it is reported even when the instance is discarded: suppressing the
+/// noise of an unstable signal and losing the fact that it is unstable are
+/// different things.
+/// </param>
+public readonly record struct AbsenceResult(AlertInstance? Instance, bool CeasedFiring);
+
 /// <summary>
 /// The alert state machine. Pure functions: no clock, no storage, no I/O.
 /// </summary>
@@ -31,11 +41,16 @@ public static class AlertLifecycle
     /// <param name="observed">What was seen this cycle.</param>
     /// <param name="policy">Hysteresis thresholds.</param>
     /// <param name="nowUtc">Cycle timestamp.</param>
+    /// <param name="maintenanceWindows">
+    /// Windows that may suppress notification. Suppression never hides the
+    /// alert — see <see cref="MaintenanceWindow"/>.
+    /// </param>
     public static AlertInstance OnObserved(
         AlertInstance? existing,
         AlertDefinition observed,
         HysteresisPolicy policy,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        IReadOnlyList<MaintenanceWindow>? maintenanceWindows = null)
     {
         ArgumentNullException.ThrowIfNull(observed);
         ArgumentNullException.ThrowIfNull(policy);
@@ -46,9 +61,12 @@ public static class AlertLifecycle
                 "Info alerts do not enter the lifecycle.", nameof(observed));
         }
 
+        var suppressedBy = MaintenanceSuppression.WindowSuppressing(
+            observed.Entity, maintenanceWindows ?? [], nowUtc);
+
         if (existing is null)
         {
-            return Raise(observed, policy, nowUtc);
+            return Raise(observed, policy, nowUtc, suppressedBy);
         }
 
         if (existing.Fingerprint != observed.Fingerprint)
@@ -61,13 +79,28 @@ public static class AlertLifecycle
         // reopen or re-notify; only the fault disappearing ends the clear.
         if (existing is { State: AlertLifecycleState.Resolved, ClearedByOperator: true })
         {
-            return existing with { LastSeenUtc = nowUtc, NotifyPending = false };
+            return existing with
+            {
+                LastSeenUtc = nowUtc,
+                PendingNotification = AlertNotificationKind.None,
+                SuppressedByWindowId = suppressedBy,
+            };
         }
 
         var hits = existing.ConsecutiveHits + 1;
         var confirmed = existing.IsConfirmed || hits >= policy.RequiredHits(observed.Severity);
         var justConfirmed = confirmed && !existing.IsConfirmed;
         var escalated = observed.Severity > existing.Severity;
+        var improved = observed.Severity < existing.Severity;
+        var returned = existing.State == AlertLifecycleState.Resolved && confirmed;
+
+        var kind = Highest(
+            existing.PendingNotification,
+            escalated ? AlertNotificationKind.Escalated
+                : returned ? AlertNotificationKind.Returned
+                : justConfirmed ? AlertNotificationKind.Raised
+                : improved ? AlertNotificationKind.Improved
+                : AlertNotificationKind.None);
 
         var next = existing with
         {
@@ -77,10 +110,8 @@ public static class AlertLifecycle
             ConsecutiveHits = hits,
             IsConfirmed = confirmed,
             LastSeenUtc = nowUtc,
-            // Notify on first confirmation and on escalation. Not on every
-            // cycle, and not on de-escalation — a problem getting less bad is
-            // not news worth waking someone for.
-            NotifyPending = existing.NotifyPending || justConfirmed || escalated,
+            PendingNotification = confirmed ? kind : AlertNotificationKind.None,
+            SuppressedByWindowId = suppressedBy,
         };
 
         if (justConfirmed)
@@ -88,13 +119,9 @@ public static class AlertLifecycle
             next = next.With(AlertLifecycleState.Open, AlertTransitionReason.Confirmed, nowUtc);
         }
 
-        // The condition came back after resolving on its own.
-        if (existing.State == AlertLifecycleState.Resolved && confirmed)
+        if (returned)
         {
-            next = next.With(AlertLifecycleState.Open, AlertTransitionReason.ConditionReturned, nowUtc) with
-            {
-                NotifyPending = true,
-            };
+            next = next.With(AlertLifecycleState.Open, AlertTransitionReason.ConditionReturned, nowUtc);
         }
 
         // Escalation revokes an acknowledgement: the operator accepted the
@@ -103,42 +130,47 @@ public static class AlertLifecycle
         {
             next = next.With(AlertLifecycleState.Open, AlertTransitionReason.SeverityIncreased, nowUtc);
         }
+        else if (improved)
+        {
+            next = next.RecordEvent(AlertTransitionReason.SeverityDecreased, nowUtc);
+        }
 
-        next = ExpireSilenceIfDue(next, nowUtc);
-
-        return next;
+        return ExpireSilenceIfDue(next, nowUtc);
     }
 
     /// <summary>
     /// Applies the absence of a problem in the current cycle.
     /// </summary>
-    /// <returns>
-    /// The next instance, or <c>null</c> when it should be forgotten entirely.
-    /// </returns>
-    public static AlertInstance? OnAbsent(AlertInstance existing, DateTimeOffset nowUtc)
+    public static AbsenceResult OnAbsent(AlertInstance existing, DateTimeOffset nowUtc)
     {
         ArgumentNullException.ThrowIfNull(existing);
 
-        // Never confirmed, now gone: it was flapping. Forget it rather than
-        // leaving a resolved alert nobody ever needed to see.
+        // Never confirmed, now gone: it was flapping. Forget the instance
+        // rather than leaving a resolved alert nobody needed to see — but
+        // report that it stopped firing, because suppressing the noise and
+        // losing the fact that something is unstable are different things.
         if (!existing.IsConfirmed)
         {
-            return null;
+            return new AbsenceResult(null, CeasedFiring: true);
         }
 
         // Already resolved and now absent: this is where a sticky clear ends.
         // The fault is gone, so the instance retires; if it ever returns it
-        // will be born fresh and can notify again.
+        // will be born fresh and can notify again. It stopped firing on an
+        // earlier cycle, so this is not a new cessation.
         if (existing.State == AlertLifecycleState.Resolved)
         {
-            return null;
+            return new AbsenceResult(null, CeasedFiring: false);
         }
 
-        return existing.With(AlertLifecycleState.Resolved, AlertTransitionReason.ConditionCleared, nowUtc) with
+        var resolved = existing
+            .With(AlertLifecycleState.Resolved, AlertTransitionReason.ConditionCleared, nowUtc) with
         {
             ConsecutiveHits = 0,
-            NotifyPending = false,
+            PendingNotification = AlertNotificationKind.None,
         };
+
+        return new AbsenceResult(resolved, CeasedFiring: true);
     }
 
     /// <summary>An operator takes ownership. Notifications stop; the alert stays visible.</summary>
@@ -154,7 +186,7 @@ public static class AlertLifecycle
         return existing.With(
             AlertLifecycleState.Acknowledged, AlertTransitionReason.OperatorAcknowledged, nowUtc, actor) with
         {
-            NotifyPending = false,
+            PendingNotification = AlertNotificationKind.None,
         };
     }
 
@@ -169,7 +201,7 @@ public static class AlertLifecycle
             AlertLifecycleState.Resolved, AlertTransitionReason.OperatorCleared, nowUtc, actor) with
         {
             ClearedByOperator = true,
-            NotifyPending = false,
+            PendingNotification = AlertNotificationKind.None,
         };
     }
 
@@ -197,7 +229,7 @@ public static class AlertLifecycle
             AlertLifecycleState.Silenced, AlertTransitionReason.OperatorSilenced, nowUtc, actor) with
         {
             SilencedUntilUtc = untilUtc,
-            NotifyPending = false,
+            PendingNotification = AlertNotificationKind.None,
         };
     }
 
@@ -219,10 +251,26 @@ public static class AlertLifecycle
         };
     }
 
+    /// <summary>Records that a pending notification has been dispatched.</summary>
+    /// <remarks>
+    /// Exists so the application never has to reach into instance state to
+    /// clear a flag, which would put the same rule in two places.
+    /// </remarks>
+    public static AlertInstance MarkNotified(AlertInstance existing)
+    {
+        ArgumentNullException.ThrowIfNull(existing);
+
+        return existing with { PendingNotification = AlertNotificationKind.None };
+    }
+
+    private static AlertNotificationKind Highest(AlertNotificationKind a, AlertNotificationKind b) =>
+        a > b ? a : b;
+
     private static AlertInstance Raise(
         AlertDefinition observed,
         HysteresisPolicy policy,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        string? suppressedBy)
     {
         var confirmed = policy.RequiredHits(observed.Severity) <= 1;
 
@@ -237,9 +285,10 @@ public static class AlertLifecycle
             ConsecutiveHits = 1,
             IsConfirmed = confirmed,
             ClearedByOperator = false,
-            NotifyPending = confirmed,
+            PendingNotification = confirmed ? AlertNotificationKind.Raised : AlertNotificationKind.None,
             FirstSeenUtc = nowUtc,
             LastSeenUtc = nowUtc,
+            SuppressedByWindowId = suppressedBy,
         };
 
         return instance with

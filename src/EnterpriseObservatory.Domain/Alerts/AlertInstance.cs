@@ -1,5 +1,29 @@
 namespace EnterpriseObservatory.Domain.Alerts;
 
+/// <summary>
+/// What happened to an alert, so the application can decide how loudly to say it.
+/// </summary>
+/// <remarks>
+/// Ordered by urgency; when several apply in one cycle the highest wins.
+/// </remarks>
+public enum AlertNotificationKind
+{
+    /// <summary>Nothing to say.</summary>
+    None = 0,
+
+    /// <summary>The problem improved but is still present. Worth recording, not worth paging.</summary>
+    Improved = 1,
+
+    /// <summary>Confirmed for the first time.</summary>
+    Raised = 2,
+
+    /// <summary>Resolved on its own and has come back.</summary>
+    Returned = 3,
+
+    /// <summary>Got worse.</summary>
+    Escalated = 4,
+}
+
 public enum AlertLifecycleState
 {
     /// <summary>Firing and not yet handled.</summary>
@@ -96,8 +120,30 @@ public sealed record AlertInstance
     /// </remarks>
     public required bool ClearedByOperator { get; init; }
 
-    /// <summary>Whether a notification is owed for this instance.</summary>
-    public required bool NotifyPending { get; init; }
+    /// <summary>What kind of notification, if any, is owed for this instance.</summary>
+    /// <remarks>
+    /// The kind rather than a bare flag, because not every notification
+    /// deserves the same channel. "It got worse" should reach whoever is on
+    /// call; "it got better" should reach the record, not a pager at 3am.
+    /// Routing is the application's decision — the domain only says what
+    /// happened.
+    /// </remarks>
+    public required AlertNotificationKind PendingNotification { get; init; }
+
+    /// <summary>
+    /// The maintenance window currently suppressing notification, if any.
+    /// </summary>
+    /// <remarks>
+    /// The alert is still raised and still visible; only notification is
+    /// withheld. Recording which window is responsible lets an operator judge
+    /// whether it should be, and leaves an honest record of what broke during
+    /// planned work.
+    /// </remarks>
+    public string? SuppressedByWindowId { get; init; }
+
+    /// <summary>Whether a notification should actually be dispatched now.</summary>
+    public bool ShouldNotify =>
+        PendingNotification != AlertNotificationKind.None && SuppressedByWindowId is null;
 
     public required DateTimeOffset FirstSeenUtc { get; init; }
 
@@ -143,4 +189,30 @@ public sealed record AlertInstance
             }],
         };
     }
+
+    /// <summary>
+    /// Records something that happened without changing state.
+    /// </summary>
+    /// <remarks>
+    /// A severity change is the case that matters: an alert going from critical
+    /// to warning stays open, but the improvement is exactly the sort of thing
+    /// someone will later want to see in the history. <see cref="With"/>
+    /// deliberately ignores same-state calls, so this exists to say that the
+    /// no-op is not what was meant.
+    /// </remarks>
+    internal AlertInstance RecordEvent(
+        AlertTransitionReason reason,
+        DateTimeOffset atUtc,
+        string? actor = null) =>
+        this with
+        {
+            History = [.. History, new AlertTransition
+            {
+                From = State,
+                To = State,
+                Reason = reason,
+                AtUtc = atUtc,
+                Actor = actor,
+            }],
+        };
 }
