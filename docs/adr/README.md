@@ -42,6 +42,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 |---|---|---|
 | [0001](0001-modular-monolith-with-deployment-agnostic-core.md) | Deployment-agnostik çekirdekli modüler monolit | Kabul edildi |
 | [0002](0002-adr-and-commit-discipline.md) | ADR ve commit disiplini, dil seçimi | Kabul edildi |
+| [0003](0003-topology-first-entity-model.md) | Topoloji-önce varlık modeli | Kabul edildi |
 
 ## Şablon
 
