@@ -134,6 +134,40 @@ olarak modellenir, sıfır olarak değil.
 Ürün vaadi "3 saniye kuralı"dır: operatör ekrana baktığı ilk üç saniyede genel
 sıhhati görmeli. İlk dilim bunu karşılayacak asgari kümeyi toplar.
 
+### 6.1 İstatistik seviyesi 2 bir kurulum ön koşuludur
+
+**Karar:** Ürün, vCenter'da **istatistik seviyesi 2** gerektirir ve bunu
+kurulum ön koşulu olarak belgeler.
+
+Gerekçe: ürünün teşhis çekirdeği olan disk gecikmesi üçlüsü
+(`deviceLatency`, `kernelLatency`, `queueLatency`) seviye 1'de **gelmez**.
+Seviye 1 yalnızca temel ortalama sayaçları içerir. Bu üçlü olmadan ürün
+"disk yavaş" diyebilir ama "kim yavaş" diyemez — yani rakiplerinden ayrıştığı
+tek şeyi yapamaz.
+
+Bu bir tercih değil, ürünün çalışma koşuludur. Alternatifler değerlendirildi:
+
+| Alternatif | Neden değil |
+|---|---|
+| Seviye 1'le yetin, üçlüyü toplama | Ürünün ana teşhis yeteneği kaybolur |
+| Üçlüyü başka yoldan türet | Türetilemez; ESXi bunları ayrı ölçer |
+| Sessizce eksik veriyle çalış | README ilke 1'in doğrudan ihlali |
+
+**Uygulama gereği:** Collector bağlantı kurarken mevcut istatistik seviyesini
+sorgular. Seviye 2'nin altındaysa:
+
+1. Kurulum/bağlantı testi ekranında **engelleyici olmayan ama görünür** bir
+   uyarı verir, yükseltme adımlarını gösterir.
+2. Etkilenen metrikler `Unknown` olarak işaretlenir — sıfır veya "sağlıklı"
+   değil.
+3. Kalıcı bir `Configuration` kategorisinde alarm açılır. Bu alarm, seviye
+   yükseltilene kadar açık kalır ve hysteresis'e tabi değildir (durum
+   değişmiyor, gürültü üretmiyor).
+
+Seviye değişikliği vCenter tarafında etkili olduktan sonra ilgili sayaçların
+dolması **bir sonraki toplama aralığını** bekler (5 dakikaya kadar); collector
+bu gecikmeyi hata olarak raporlamaz.
+
 ### ESXi Host
 
 | Metrik | Sayaç | Rollup | Neden gerekli |
@@ -142,9 +176,29 @@ sıhhati görmeli. İlk dilim bunu karşılayacak asgari kümeyi toplar.
 | Bellek kullanımı | `mem.usage.average` | average | Doygunluk göstergesi |
 | Bellek balon | `mem.vmmemctl.average` | average | **Gerçek bellek baskısı göstergesi.** `mem.usage` yüksekliği tek başına sorun değildir; balon şişmesi sorundur. |
 | Bellek swap | `mem.swapused.average` | average | Kritik bellek baskısı |
-| Disk gecikmesi | `disk.maxTotalLatency.latest` | latest | Depolama sorununun ilk işareti |
+| **Cihaz gecikmesi** | `disk.deviceLatency.average` | average | **Array/SAN tarafındaki** gerçek hizmet süresi |
+| **Çekirdek gecikmesi** | `disk.kernelLatency.average` | average | **VMkernel'de** geçen süre |
+| **Kuyruk gecikmesi** | `disk.queueLatency.average` | average | **Kuyrukta bekleme** — queue depth doygunluğu |
+| Toplam gecikme | `disk.maxTotalLatency.latest` | latest | Hızlı tarama için özet; tek başına teşhis değeri yok |
 | Bağlantı durumu | `runtime.connectionState` (property) | — | Host erişilebilir mi |
 | Bakım modu | `runtime.inMaintenanceMode` (property) | — | Alarm bastırma için şart |
+
+> **Disk gecikmesi üçlüsü — ürünün teşhis çekirdeği.**
+>
+> `maxTotalLatency` bu üçünün toplamıdır ve *hangisinin* yüksek olduğunu
+> söylemez. Yani "disk yavaş" der, "kim yavaş" demez — ürünün bitirmeyi vaat
+> ettiği "storage suçlama çıkmazı"nın ta kendisi.
+>
+> | Gözlem | Sonuç |
+> |---|---|
+> | `deviceLatency` yüksek, `queueLatency` normal | Sorun array veya SAN kumaşında |
+> | `queueLatency` yüksek, `deviceLatency` normal | Sorun host tarafında: queue depth, aşırı taahhüt |
+> | `kernelLatency` yüksek | VMkernel / sürücü katmanı |
+>
+> Önceki üründe bu üçlü model seviyesinde **zaten vardı** (`DeviceLatencyMs`,
+> `KernelLatencyMs`, `QueueLatencyMs`). Bu belgenin ilk taslağında eksikti;
+> çapraz kontrolde fark edildi ve eklendi. Üçlü istatistik seviyesi 2
+> gerektirir — bkz. §6.1.
 
 ### Virtual Machine
 
@@ -190,9 +244,21 @@ sıhhati görmeli. İlk dilim bunu karşılayacak asgari kümeyi toplar.
 
 ## Açık sorular
 
-- İstatistik seviyesi yetersizse kullanıcıya nasıl bildirilecek? Kurulum
-  sihirbazında mı, sürekli bir Configuration alarmı olarak mı?
-- `WaitForUpdatesEx` ne zaman devreye alınacak — ilk dilimden sonra mı, yoksa
-  envanter modeliyle birlikte mi?
-- Çoklu vCenter ortamında aynı fiziksel host iki vCenter'da görünürse
-  (bağlantılı mod), kimlik çözümleme hangi kaynağı otoriter sayacak?
+- **`maxQueryMetrics` batch boyutu:** önceki üründeki `Chunk(32)` sabitinin
+  nereden geldiği bilinmiyor — sahada yaşanmış bir olaydan mı, temkinli bir
+  tahminden mi? Gerçek bir olaydan geliyorsa bu bilgi §3'e eklenmeli.
+- **`WaitForUpdatesEx` ne zaman?** İlk dilimden sonra mı, envanter modeliyle
+  birlikte mi? Model şimdiden buna uygun tasarlanıyor (envanter yenileme ve
+  metrik toplama ayrı ritimler) ama devreye alma zamanı açık.
+- **Çoklu vCenter otoritesi:** bağlantılı modda (linked mode) aynı host iki
+  vCenter'da görünürse kimlik çözümleme hangi kaynağı otoriter sayacak?
+  Önceki üründe `VCenterEndpoints` içinde `IsPrimary` bayrağı vardı — aynı
+  kural mı işletilecek, yoksa `SameAs` bileşeni içinde kaynak önceliği ayrı mı
+  tanımlanacak? (ADR-0004 §3 ile ilgili.)
+
+## Kararlaştırılanlar
+
+| Soru | Karar | Nerede |
+|---|---|---|
+| İstatistik seviyesi yetersizse ne olacak? | Seviye 2 kurulum ön koşulu; eksikse görünür uyarı + kalıcı Configuration alarmı + metrikler `Unknown` | §6.1 |
+| Disk gecikmesi hangi sayaçlardan? | Üçlü: `deviceLatency` / `kernelLatency` / `queueLatency`. `maxTotalLatency` yalnızca özet. | §6 ESXi Host |
