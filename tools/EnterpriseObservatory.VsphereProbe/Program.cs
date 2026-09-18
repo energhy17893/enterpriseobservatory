@@ -1,4 +1,5 @@
 using System.Globalization;
+using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Collectors.Vsphere;
 
 // Read-only probe against a live vCenter.
@@ -53,7 +54,7 @@ var options = new VsphereConnectionOptions
 {
     BaseAddress = baseAddress,
     Username = user,
-    Password = password,
+    Password = Secret.From(password),
     InstanceId = "probe",
     AcceptUntrustedCertificate = insecure,
     InventoryPageSize = pageSize,

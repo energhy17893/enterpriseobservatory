@@ -162,7 +162,12 @@ static void AddVsphere(IServiceCollection services, VsphereEndpointOptions endpo
         InventoryPageSize = endpoint.InventoryPageSize,
     };
 
-    services.AddSingleton(_ => new VsphereClient(CreateHttpClient(connection), connection));
+    // The handler comes from the collector, not from here. How certificate
+    // validation is relaxed is a security decision, and a second copy of it is
+    // how the two drift until one of them is quietly wrong.
+    services.AddSingleton(_ => new VsphereClient(
+        new HttpClient(VsphereClient.CreateHandler(connection)) { BaseAddress = connection.BaseAddress },
+        connection));
 
     services.AddSingleton<IInventorySource>(provider => new VsphereInventorySource(
         Client(provider, connection.InstanceId),
@@ -178,27 +183,3 @@ static void AddVsphere(IServiceCollection services, VsphereEndpointOptions endpo
 static VsphereClient Client(IServiceProvider provider, string instanceId) =>
     provider.GetServices<VsphereClient>().First(c =>
         string.Equals(c.InstanceId, instanceId, StringComparison.Ordinal));
-
-static HttpClient CreateHttpClient(VsphereConnectionOptions connection)
-{
-    var handler = new HttpClientHandler
-    {
-        // vim25 authenticates with a session cookie, so the handler must keep
-        // one. Without this every call would be unauthenticated and the
-        // symptom would be a login loop rather than an obvious error.
-        UseCookies = true,
-        CookieContainer = new System.Net.CookieContainer(),
-    };
-
-    if (connection.AcceptUntrustedCertificate)
-    {
-        // Scoped to this one vCenter's handler, never to the process. A global
-        // callback would silently relax validation for every other outbound
-        // call the product ever makes, including ones added years from now by
-        // someone who never saw this line.
-        handler.ServerCertificateCustomValidationCallback =
-            static (_, _, _, _) => true;
-    }
-
-    return new HttpClient(handler) { BaseAddress = connection.BaseAddress };
-}

@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Host.AllInOne.Configuration;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
@@ -9,7 +10,7 @@ public class VsphereEndpointOptionsTests
         InstanceId = "vc-1",
         BaseAddress = "https://vc01.corp.local",
         Username = "svc-observatory@vsphere.local",
-        Password = "supplied out of band",
+        Password = Secret.From("supplied out of band"),
     };
 
     [Fact]
@@ -44,7 +45,7 @@ public class VsphereEndpointOptionsTests
     public void A_missing_password_says_where_to_put_it_instead()
     {
         var options = Valid();
-        options.Password = string.Empty;
+        options.Password = Secret.Empty;
 
         var problem = Assert.Single(options.Validate(2));
 

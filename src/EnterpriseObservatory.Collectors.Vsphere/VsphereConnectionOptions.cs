@@ -1,3 +1,5 @@
+using EnterpriseObservatory.Application.Security;
+
 namespace EnterpriseObservatory.Collectors.Vsphere;
 
 /// <summary>How to reach one vCenter.</summary>
@@ -18,7 +20,15 @@ public sealed record VsphereConnectionOptions
     /// </remarks>
     public required string Username { get; init; }
 
-    public required string Password { get; init; }
+    /// <summary>
+    /// The password.
+    /// </summary>
+    /// <remarks>
+    /// A <see cref="Secret"/> rather than a string, so that it cannot be
+    /// logged, interpolated or serialised without someone writing
+    /// <c>Reveal()</c> and someone else reading it in a diff. See ADR-0010.
+    /// </remarks>
+    public required Secret Password { get; init; }
 
     /// <summary>
     /// A stable name for this vCenter, used in entity ids and health tracking.

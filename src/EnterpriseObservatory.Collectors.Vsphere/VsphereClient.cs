@@ -450,7 +450,10 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
                     "vCenter did not return usable service content. The endpoint may not be a vSphere SDK.");
 
             await PostAsync(
-                VsphereSoapRequests.Login(content.SessionManager, _options.Username, _options.Password),
+                // The one place the credential leaves its wrapper. It goes straight
+                // into the login request and nowhere else; see ADR-0010.
+                VsphereSoapRequests.Login(
+                    content.SessionManager, _options.Username, _options.Password.Reveal()),
                 cancellationToken).ConfigureAwait(false);
 
             _serviceContent = content;

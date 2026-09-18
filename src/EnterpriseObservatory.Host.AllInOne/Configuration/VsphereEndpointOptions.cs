@@ -1,3 +1,5 @@
+using EnterpriseObservatory.Application.Security;
+
 namespace EnterpriseObservatory.Host.AllInOne.Configuration;
 
 /// <summary>One configured vCenter, as it appears in configuration.</summary>
@@ -35,7 +37,7 @@ public sealed class VsphereEndpointOptions
     /// leak was a password sitting in a JSON file that was never meant to hold
     /// one. See <c>CredentialSourceGuard</c>.
     /// </remarks>
-    public string Password { get; set; } = string.Empty;
+    public Secret Password { get; set; } = Secret.Empty;
 
     /// <summary>
     /// Whether to accept a certificate that does not chain to a trusted root.
@@ -84,7 +86,7 @@ public sealed class VsphereEndpointOptions
             problems.Add($"{where}: Username is required.");
         }
 
-        if (string.IsNullOrWhiteSpace(Password))
+        if (Password.IsEmpty)
         {
             problems.Add($"{where}: no password was supplied. Set it with user secrets or the " +
                          $"environment variable VCenters__{index}__Password — not in appsettings.json.");
