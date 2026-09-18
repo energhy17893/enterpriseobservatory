@@ -113,6 +113,10 @@ tarafından zorlanan ve CI'da kırmızıya düşen kurallardır:
 
 Bir kuralı esnetmen gerekiyorsa, testi değiştirmeden önce bir ADR yaz.
 
+**Yeni bir proje eklerken:** EnterpriseObservatory.Architecture.Tests'e ondan
+bir proje referansı ekle. Kurallar test çıktı dizinindeki assembly'leri tarar;
+referans yoksa yeni proje sessizce denetlenmez.
+
 ## Mimari karar gerektiğinde
 
 `docs/adr/_template.md` dosyasını kopyala, numarayı bir artır, doldur.
