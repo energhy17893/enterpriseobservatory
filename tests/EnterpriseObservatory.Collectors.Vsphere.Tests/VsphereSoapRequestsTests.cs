@@ -33,7 +33,7 @@ public class VsphereSoapRequestsTests
             VsphereSoapRequests.Login("SessionManager", "svc-readonly@vsphere.local", "p"),
             VsphereSoapRequests.Logout("SessionManager"),
             VsphereSoapRequests.QueryMaxQueryMetrics("VpxSettings"),
-            VsphereSoapRequests.QueryPerfCounter("PerfMgr"),
+            VsphereSoapRequests.QueryPerfCounterByLevel("PerfMgr"),
             VsphereSoapRequests.QueryAvailablePerfMetric("PerfMgr", "host-1", "HostSystem", 20),
             VsphereSoapRequests.QueryPerf("PerfMgr", ["host-1"], "HostSystem", [CpuUsage], 20, 3),
             VsphereSoapRequests.CreateContainerView("ViewManager", "group-d1", ["HostSystem"]),
@@ -46,6 +46,17 @@ public class VsphereSoapRequestsTests
             var exception = Record.Exception(() => Parse(request));
             Assert.True(exception is null, $"Malformed request: {exception?.Message}");
         }
+    }
+
+    [Fact]
+    public void The_counter_catalogue_is_requested_at_the_level_that_returns_all_of_it()
+    {
+        // An earlier version used a different call and came back with 28
+        // counters where a vCenter defines several hundred.
+        var soap = VsphereSoapRequests.QueryPerfCounterByLevel("PerfMgr", level: 4);
+
+        Assert.Equal("4", Assert.Single(Named(Parse(soap), "level")).Value);
+        Assert.Single(Named(Parse(soap), "QueryPerfCounterByLevel"));
     }
 
     [Fact]

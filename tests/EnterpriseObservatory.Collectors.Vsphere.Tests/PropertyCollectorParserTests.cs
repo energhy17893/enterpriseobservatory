@@ -218,9 +218,56 @@ public class VsphereSoapFaultReaderTests
         // It has no dedicated fault type; vCenter reports it as a generic
         // RuntimeFault whose message is the only clue.
         var fault = VsphereSoapFaultReader.TryRead(
-            Fault("RuntimeFault", "Request processing is restricted by administrator."));
+            Fault("RuntimeFault", "Request processing is restricted by administrator."),
+            VsphereCallContext.PerformanceQuery);
 
         Assert.Equal(VsphereFaultKind.QuerySizeRefused, fault!.Kind);
+    }
+
+    [Fact]
+    public void A_size_refusal_is_only_read_into_a_performance_query()
+    {
+        // Outside one it is a guess, and a wrong guess sends the collector
+        // shrinking batches against a problem that has nothing to do with size.
+        var fault = VsphereSoapFaultReader.TryRead(
+            Fault("RuntimeFault", "Request processing is restricted by administrator."));
+
+        Assert.NotEqual(VsphereFaultKind.QuerySizeRefused, fault!.Kind);
+    }
+
+    [Fact]
+    public void An_unset_advanced_option_is_not_mistaken_for_a_size_refusal()
+    {
+        // A live vCenter 8 returned exactly this for an option that was never
+        // set. An earlier version matched "exceeds the maximum" and read it as
+        // a performance-query size refusal.
+        var fault = VsphereSoapFaultReader.TryRead(
+            Fault("InvalidNameFault",
+                "'config.vpxd.stats.maxQueryMetrics' is invalid or exceeds the maximum " +
+                "number of characters permitted."),
+            VsphereCallContext.PerformanceQuery);
+
+        Assert.Equal(VsphereFaultKind.InvalidName, fault!.Kind);
+        Assert.True(fault.IsSurvivable);
+    }
+
+    [Fact]
+    public void An_unset_option_is_survivable_so_the_cycle_continues()
+    {
+        // It costs the exact limit and nothing else; the batch sizer falls back
+        // to the documented default.
+        var fault = VsphereSoapFaultReader.TryRead(Fault("InvalidNameFault", "no such option"));
+
+        Assert.True(fault!.IsSurvivable);
+    }
+
+    [Fact]
+    public void An_invalid_message_is_never_read_as_a_size_problem()
+    {
+        // Belt and braces on the text matcher itself: "is invalid" rules it out
+        // regardless of what else the message says.
+        Assert.False(AdaptiveBatchSizer.IsQuerySizeRefusal(
+            "'something' is invalid or exceeds the maximum number of characters permitted."));
     }
 
     [Fact]
@@ -243,7 +290,9 @@ public class VsphereSoapFaultReaderTests
     {
         // It is fixed by asking for less, not by asking again.
         Assert.False(VsphereSoapFaultReader
-            .TryRead(Fault("RuntimeFault", "Request processing is restricted by administrator."))!
+            .TryRead(
+                Fault("RuntimeFault", "Request processing is restricted by administrator."),
+                VsphereCallContext.PerformanceQuery)!
             .IsWorthRetrying);
     }
 

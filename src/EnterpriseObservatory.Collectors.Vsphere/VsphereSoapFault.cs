@@ -23,8 +23,37 @@ public enum VsphereFaultKind
     /// <summary>The object was deleted between listing and reading it.</summary>
     ManagedObjectNotFound,
 
+    /// <summary>
+    /// A name or argument the server does not recognise.
+    /// </summary>
+    /// <remarks>
+    /// Usually an advanced setting that simply is not present on this
+    /// installation. Distinguished from a real failure because the caller can
+    /// often carry on without whatever it was asking for.
+    /// </remarks>
+    InvalidName,
+
     /// <summary>Something else.</summary>
     Other,
+}
+
+/// <summary>
+/// What the caller was doing, so a fault can be read in context.
+/// </summary>
+/// <remarks>
+/// Added after a live vCenter returned <c>'config.vpxd.stats.maxQueryMetrics'
+/// is invalid or exceeds the maximum number of characters permitted</c> for an
+/// unset option, and a context-free text match read "exceeds the maximum" as a
+/// performance-query size refusal. A refusal is only a meaningful reading of a
+/// performance query; interpreting one anywhere else is guessing.
+/// </remarks>
+public enum VsphereCallContext
+{
+    /// <summary>Anything other than a performance query.</summary>
+    General = 0,
+
+    /// <summary>A <c>QueryPerf</c> call, where a size refusal is possible.</summary>
+    PerformanceQuery,
 }
 
 /// <summary>A fault vCenter returned.</summary>
@@ -46,6 +75,16 @@ public sealed record VsphereSoapFault
     /// how a monitoring account ends up locked out by its own retry loop.
     /// </remarks>
     public bool IsWorthRetrying => Kind is VsphereFaultKind.NotAuthenticated or VsphereFaultKind.Other;
+
+    /// <summary>
+    /// Whether the caller can reasonably carry on without what it asked for.
+    /// </summary>
+    /// <remarks>
+    /// An advanced setting that is not present on this installation costs the
+    /// exact value and nothing else — falling back to a documented default is
+    /// correct, and failing the whole cycle over it would not be.
+    /// </remarks>
+    public bool IsSurvivable => Kind is VsphereFaultKind.InvalidName or VsphereFaultKind.NoPermission;
 }
 
 /// <summary>Reads SOAP faults out of a vCenter response.</summary>
@@ -66,7 +105,9 @@ public static class VsphereSoapFaultReader
     /// name so namespace prefixes do not matter.
     /// </para>
     /// </remarks>
-    public static VsphereSoapFault? TryRead(string responseBody)
+    public static VsphereSoapFault? TryRead(
+        string responseBody,
+        VsphereCallContext context = VsphereCallContext.General)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
         {
@@ -102,13 +143,13 @@ public static class VsphereSoapFaultReader
 
         return new VsphereSoapFault
         {
-            Kind = Classify(faultType, message),
+            Kind = Classify(faultType, message, context),
             FaultType = faultType,
             Message = message,
         };
     }
 
-    private static VsphereFaultKind Classify(string faultType, string message)
+    private static VsphereFaultKind Classify(string faultType, string message, VsphereCallContext context)
     {
         // The fault type is authoritative when present.
         if (faultType.Contains("InvalidLogin", StringComparison.OrdinalIgnoreCase))
@@ -131,10 +172,21 @@ public static class VsphereSoapFaultReader
             return VsphereFaultKind.ManagedObjectNotFound;
         }
 
+        if (faultType.Contains("InvalidName", StringComparison.OrdinalIgnoreCase) ||
+            faultType.Contains("InvalidArgument", StringComparison.OrdinalIgnoreCase))
+        {
+            return VsphereFaultKind.InvalidName;
+        }
+
         // The query-size refusal has no dedicated fault type; vCenter reports it
-        // as a generic RuntimeFault whose message is the only clue. Matching on
-        // text is unavoidable here.
-        if (AdaptiveBatchSizer.IsQuerySizeRefusal(message))
+        // as a generic RuntimeFault whose message is the only clue, so matching
+        // on text is unavoidable. It is only attempted for a performance query,
+        // because that is the only place the reading is meaningful — a live
+        // vCenter returns "'config.vpxd.stats.maxQueryMetrics' is invalid or
+        // exceeds the maximum number of characters permitted" for an unset
+        // option, and a context-free match read that as a size refusal.
+        if (context == VsphereCallContext.PerformanceQuery &&
+            AdaptiveBatchSizer.IsQuerySizeRefusal(message))
         {
             return VsphereFaultKind.QuerySizeRefused;
         }

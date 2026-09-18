@@ -65,10 +65,25 @@ public static class VsphereSoapRequests
             </vim25:QueryOptions>
         """);
 
-    public static string QueryPerfCounter(string perfManagerMoRef) => Envelope($"""
-            <vim25:QueryPerfCounterInt>
+    /// <summary>
+    /// Reads every counter definition up to a statistics level.
+    /// </summary>
+    /// <param name="level">
+    /// 4 returns the full catalogue. This asks what the server <em>defines</em>,
+    /// not what it is currently collecting — availability is a separate
+    /// question, answered by <see cref="QueryAvailablePerfMetric"/>.
+    /// </param>
+    /// <remarks>
+    /// The documented way to enumerate counters, and the one the previous
+    /// product used successfully against real servers. An earlier attempt here
+    /// used a different call and came back with 28 counters where a vCenter
+    /// defines several hundred.
+    /// </remarks>
+    public static string QueryPerfCounterByLevel(string perfManagerMoRef, int level = 4) => Envelope($"""
+            <vim25:QueryPerfCounterByLevel>
               <vim25:_this type="PerformanceManager">{Escape(perfManagerMoRef)}</vim25:_this>
-            </vim25:QueryPerfCounterInt>
+              <vim25:level>{level.ToString(CultureInfo.InvariantCulture)}</vim25:level>
+            </vim25:QueryPerfCounterByLevel>
         """);
 
     /// <summary>

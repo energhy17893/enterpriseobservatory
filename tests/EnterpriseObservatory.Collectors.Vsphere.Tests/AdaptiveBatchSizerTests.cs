@@ -100,13 +100,11 @@ public class AdaptiveBatchSizerTests
     [Theory]
     [InlineData("Request processing is restricted by administrator.")]
     [InlineData("The number of metrics exceeds the maximum allowed.")]
-    [InlineData("config.vpxd.stats.maxQueryMetrics limit reached")]
     [InlineData("Too many metrics requested")]
     public void A_query_size_refusal_is_recognised(string message)
     {
         // vCenter reports this as a generic fault whose message is the only
-        // distinguishing feature, so matching on text is unavoidable. Several
-        // phrasings are accepted because they differ between versions.
+        // distinguishing feature, so matching on text is unavoidable.
         Assert.True(AdaptiveBatchSizer.IsQuerySizeRefusal(message));
     }
 
@@ -119,6 +117,22 @@ public class AdaptiveBatchSizerTests
     {
         // Halving the batch in response to an authentication failure would loop
         // pointlessly and hide the real cause.
+        Assert.False(AdaptiveBatchSizer.IsQuerySizeRefusal(message));
+    }
+
+    [Theory]
+    [InlineData("'config.vpxd.stats.maxQueryMetrics' is invalid or exceeds the maximum number of characters permitted.")]
+    [InlineData("'some.other.option' is invalid")]
+    public void An_invalid_name_is_not_a_size_problem_however_it_is_worded(string message)
+    {
+        // A live vCenter 8 returned the first of these for an option that was
+        // never set. An earlier version of this matcher accepted "exceeds the
+        // maximum" and a bare mention of maxQueryMetrics, and read it as a
+        // performance-query size refusal — which would send the collector
+        // shrinking batches against a problem that has nothing to do with size.
+        //
+        // These cases were previously asserted the other way round. The test
+        // was codifying the bug.
         Assert.False(AdaptiveBatchSizer.IsQuerySizeRefusal(message));
     }
 }

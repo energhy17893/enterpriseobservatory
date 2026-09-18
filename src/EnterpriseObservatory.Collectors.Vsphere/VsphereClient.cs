@@ -58,6 +58,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
 
     private VsphereServiceContent? _serviceContent;
+    private IReadOnlyList<VsphereCounter>? _counterCatalog;
     private bool _loggedIn;
     private bool _disposed;
 
@@ -76,12 +77,25 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
 
     public async Task<IReadOnlyList<VsphereCounter>> GetCounterCatalogAsync(CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
-        var response = await SendAsync(
-            VsphereSoapRequests.QueryPerfCounter(content.PerformanceManager), cancellationToken)
-            .ConfigureAwait(false);
+        if (_counterCatalog is { } cached)
+        {
+            return cached;
+        }
 
-        return PerfResponseParser.ParseCounters(response);
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+
+        // Level 4 is the whole catalogue. This asks what the server defines,
+        // not what it is currently collecting; availability is a separate
+        // question and a separate call.
+        var response = await SendAsync(
+            VsphereSoapRequests.QueryPerfCounterByLevel(content.PerformanceManager, level: 4),
+            cancellationToken).ConfigureAwait(false);
+
+        // Counter ids are per vCenter and stable for the life of a connection,
+        // so this is cached: availability checks would otherwise re-read the
+        // whole catalogue for every entity type on every cycle.
+        _counterCatalog = PerfResponseParser.ParseCounters(response);
+        return _counterCatalog;
     }
 
     public async Task<int?> GetMaxQueryMetricsAsync(CancellationToken cancellationToken)
@@ -107,11 +121,15 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
                 ? parsed
                 : null;
         }
-        catch (VsphereApiException ex) when (ex.Kind is VsphereFaultKind.NoPermission)
+        catch (VsphereApiException ex) when (
+            ex.Kind is VsphereFaultKind.NoPermission or VsphereFaultKind.InvalidName)
         {
-            // A read-only account may not be granted Global.Settings. Costing
-            // us the exact limit is acceptable; failing the whole cycle over it
-            // would not be.
+            // Two survivable cases, both seen against a live server. A read-only
+            // account may not be granted Global.Settings; and the option itself
+            // is absent until someone sets it, which vCenter reports as an
+            // invalid name. Either costs us the exact limit and nothing else —
+            // the batch sizer falls back to the documented default. Failing the
+            // whole cycle over an optional reading would be worse.
             return null;
         }
         catch (System.Xml.XmlException)
@@ -177,7 +195,8 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             VsphereSoapRequests.QueryPerf(
                 content.PerformanceManager, entityMoRefs, entityType.ToString(),
                 counters, intervalSeconds, MaxSample),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            VsphereCallContext.PerformanceQuery).ConfigureAwait(false);
 
         var byId = counters.ToDictionary(c => c.Id);
 
@@ -451,21 +470,27 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
     /// rejected credential every cycle is how a monitoring account ends up
     /// locked out by its own retry loop.
     /// </remarks>
-    private async Task<string> SendAsync(string body, CancellationToken cancellationToken)
+    private async Task<string> SendAsync(
+        string body,
+        CancellationToken cancellationToken,
+        VsphereCallContext context = VsphereCallContext.General)
     {
         try
         {
-            return await PostAsync(body, cancellationToken).ConfigureAwait(false);
+            return await PostAsync(body, cancellationToken, context).ConfigureAwait(false);
         }
         catch (VsphereApiException ex) when (ex.Kind == VsphereFaultKind.NotAuthenticated)
         {
             _loggedIn = false;
             await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
-            return await PostAsync(body, cancellationToken).ConfigureAwait(false);
+            return await PostAsync(body, cancellationToken, context).ConfigureAwait(false);
         }
     }
 
-    private async Task<string> PostAsync(string body, CancellationToken cancellationToken)
+    private async Task<string> PostAsync(
+        string body,
+        CancellationToken cancellationToken,
+        VsphereCallContext context = VsphereCallContext.General)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/sdk")
         {
@@ -483,7 +508,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         // vCenter returns faults as HTTP 500 with a SOAP fault body, so the
         // status code alone cannot tell "your credentials are wrong" from "the
         // server is broken". The body decides.
-        if (VsphereSoapFaultReader.TryRead(content) is { } fault)
+        if (VsphereSoapFaultReader.TryRead(content, context) is { } fault)
         {
             throw fault.Kind == VsphereFaultKind.QuerySizeRefused
                 ? new VsphereQuerySizeRefusedException(fault.Message)

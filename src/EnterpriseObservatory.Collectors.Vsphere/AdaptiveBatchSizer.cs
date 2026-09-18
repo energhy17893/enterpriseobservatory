@@ -87,10 +87,21 @@ public sealed class AdaptiveBatchSizer
     /// Whether a server error is the query-size limit rather than something else.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// vCenter reports this as a generic fault whose message is the only
-    /// distinguishing feature, so matching on text is unavoidable. Several
-    /// phrasings are accepted because they differ between versions and locales;
-    /// a miss costs a retry that fails the same way, not incorrect data.
+    /// distinguishing feature, so matching on text is unavoidable. It should
+    /// only be applied to a performance query — see
+    /// <see cref="VsphereCallContext"/>.
+    /// </para>
+    /// <para>
+    /// The patterns are deliberately narrow. An earlier version also matched
+    /// "exceeds the maximum" and a bare "maxquerymetrics", which a live vCenter
+    /// triggered with <c>'config.vpxd.stats.maxQueryMetrics' is invalid or
+    /// exceeds the maximum number of characters permitted</c> — an unset option,
+    /// read as a size refusal. A missed match costs a retry that fails the same
+    /// way; a false match sends the collector shrinking batches forever against
+    /// a problem that has nothing to do with size.
+    /// </para>
     /// </remarks>
     public static bool IsQuerySizeRefusal(string? serverMessage)
     {
@@ -101,10 +112,16 @@ public sealed class AdaptiveBatchSizer
 
         var message = serverMessage.ToLowerInvariant();
 
+        // An "invalid" anything is a name or argument problem, never a size one.
+        if (message.Contains("is invalid", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         return message.Contains("restricted by administrator", StringComparison.Ordinal)
-            || message.Contains("maxquerymetrics", StringComparison.Ordinal)
             || message.Contains("too many metrics", StringComparison.Ordinal)
-            || message.Contains("exceeds the maximum", StringComparison.Ordinal);
+            || message.Contains("number of metrics exceeds", StringComparison.Ordinal)
+            || message.Contains("exceeds the maximum number of metrics", StringComparison.Ordinal);
     }
 
     public override string ToString() =>
