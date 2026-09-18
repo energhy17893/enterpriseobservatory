@@ -88,7 +88,8 @@ public static class AlertLifecycle
         }
 
         var hits = existing.ConsecutiveHits + 1;
-        var confirmed = existing.IsConfirmed || hits >= policy.RequiredHits(observed.Severity);
+        var confirmed = existing.IsConfirmed ||
+            policy.IsSatisfied(observed.Severity, hits, nowUtc - existing.FirstSeenUtc);
         var justConfirmed = confirmed && !existing.IsConfirmed;
         var escalated = observed.Severity > existing.Severity;
         var improved = observed.Severity < existing.Severity;
@@ -272,7 +273,9 @@ public static class AlertLifecycle
         DateTimeOffset nowUtc,
         string? suppressedBy)
     {
-        var confirmed = policy.RequiredHits(observed.Severity) <= 1;
+        // A brand new instance has been firing for no time at all, so a non-zero
+        // minimum duration always defers confirmation to a later cycle.
+        var confirmed = policy.IsSatisfied(observed.Severity, 1, TimeSpan.Zero);
 
         var instance = new AlertInstance
         {
@@ -282,6 +285,7 @@ public static class AlertLifecycle
             Title = observed.Title,
             Description = observed.Description,
             Entity = observed.Entity,
+            IsDerived = observed.IsDerived,
             ConsecutiveHits = 1,
             IsConfirmed = confirmed,
             ClearedByOperator = false,

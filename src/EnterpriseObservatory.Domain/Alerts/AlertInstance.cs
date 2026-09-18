@@ -99,6 +99,9 @@ public sealed record AlertInstance
 
     public EntityId? Entity { get; init; }
 
+    /// <summary>Whether the platform inferred this rather than observing it.</summary>
+    public bool IsDerived { get; init; }
+
     /// <summary>Consecutive observations so far, used for hysteresis.</summary>
     public required int ConsecutiveHits { get; init; }
 

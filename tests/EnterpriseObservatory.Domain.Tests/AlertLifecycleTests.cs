@@ -447,19 +447,23 @@ public class FlapDetectionTests
     }
 
     [Fact]
-    public void A_flapping_alert_is_raised_once_not_on_every_cycle()
+    public void Instability_is_re_asserted_every_cycle_while_it_lasts()
     {
+        // Raising it once and remembering that we had would leave it to be
+        // retired on the next cycle for not having been observed. Deduplication
+        // is the lifecycle''s job, by fingerprint.
         var history = Empty();
         for (var i = 0; i < FlapPolicy.Default.Threshold; i++)
         {
             history = history.RecordCeased(T0.AddMinutes(i), FlapPolicy.Default);
         }
 
-        var now = T0.AddMinutes(10);
-        Assert.NotNull(FlapDetection.Evaluate(history, now, FlapPolicy.Default));
+        var first = FlapDetection.Evaluate(history, T0.AddMinutes(10), FlapPolicy.Default);
+        var second = FlapDetection.Evaluate(history, T0.AddMinutes(11), FlapPolicy.Default);
 
-        history = history with { Reported = true };
-        Assert.Null(FlapDetection.Evaluate(history, now, FlapPolicy.Default));
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(first.Fingerprint, second.Fingerprint);
     }
 }
 

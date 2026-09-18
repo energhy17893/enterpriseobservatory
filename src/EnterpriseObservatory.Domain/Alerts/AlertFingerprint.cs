@@ -91,6 +91,16 @@ public sealed record AlertDefinition
     public string Category { get; init; } = string.Empty;
 
     public string Source { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Whether the platform inferred this rather than a collector observing it.
+    /// </summary>
+    /// <remarks>
+    /// Derived alerts are excluded from flap tracking. Otherwise the instability
+    /// detector becomes something whose own instability is detected, which
+    /// recurses and tells an operator nothing.
+    /// </remarks>
+    public bool IsDerived { get; init; }
 }
 
 /// <summary>
@@ -112,6 +122,34 @@ public sealed record HysteresisPolicy
 
     public int CriticalConsecutiveHits { get; init; } = 1;
 
+    /// <summary>
+    /// How long a warning must persist before it counts, on top of the hit count.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Hit counts and elapsed time filter different things. A hit count is
+    /// sensitive to the polling interval — shortening the interval to get
+    /// fresher data also shortens the filter, which is not what anyone
+    /// intended. A duration says what the operator actually means: "do not
+    /// bother me until this has been true for a while".
+    /// </para>
+    /// <para>
+    /// Zero by default, matching the previous product, so this changes nothing
+    /// unless deliberately configured.
+    /// </para>
+    /// </remarks>
+    public TimeSpan WarningMinimumDuration { get; init; } = TimeSpan.Zero;
+
+    /// <summary>
+    /// The same for criticals. Kept separate, and expected to stay zero.
+    /// </summary>
+    /// <remarks>
+    /// Delaying a confirmed critical trades away the thing the product exists
+    /// to do. It is configurable because a noisy vendor sensor might justify
+    /// it, but it should be a deliberate and uncomfortable decision.
+    /// </remarks>
+    public TimeSpan CriticalMinimumDuration { get; init; } = TimeSpan.Zero;
+
     public static HysteresisPolicy Default { get; } = new();
 
     public int RequiredHits(AlertSeverity severity) => severity switch
@@ -123,7 +161,26 @@ public sealed record HysteresisPolicy
         _ => throw new ArgumentOutOfRangeException(nameof(severity), severity, "Unknown severity."),
     };
 
+    public TimeSpan RequiredDuration(AlertSeverity severity) => severity switch
+    {
+        AlertSeverity.Critical => CriticalMinimumDuration,
+        AlertSeverity.Warning => WarningMinimumDuration,
+        AlertSeverity.Info => throw new ArgumentOutOfRangeException(
+            nameof(severity), severity, "Info alerts do not enter the lifecycle."),
+        _ => throw new ArgumentOutOfRangeException(nameof(severity), severity, "Unknown severity."),
+    };
+
+    /// <summary>
+    /// Whether a problem has now met both thresholds.
+    /// </summary>
+    /// <param name="severity">Severity as currently observed.</param>
+    /// <param name="consecutiveHits">Observations so far, including this one.</param>
+    /// <param name="firingFor">How long it has been firing.</param>
+    public bool IsSatisfied(AlertSeverity severity, int consecutiveHits, TimeSpan firingFor) =>
+        consecutiveHits >= RequiredHits(severity) && firingFor >= RequiredDuration(severity);
+
     public override string ToString() =>
         string.Create(CultureInfo.InvariantCulture,
-            $"warning={WarningConsecutiveHits}, critical={CriticalConsecutiveHits}");
+            $"warning={WarningConsecutiveHits}h/{WarningMinimumDuration.TotalSeconds:0}s, " +
+            $"critical={CriticalConsecutiveHits}h/{CriticalMinimumDuration.TotalSeconds:0}s");
 }

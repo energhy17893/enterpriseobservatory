@@ -40,12 +40,6 @@ public sealed record FlapHistory
     public IReadOnlyList<DateTimeOffset> CeasedAtUtc { get; init; } = [];
 
     /// <summary>
-    /// Whether a derived flapping alert has already been raised, so it is not
-    /// raised again on every subsequent cycle.
-    /// </summary>
-    public bool Reported { get; init; }
-
-    /// <summary>
     /// Records that the problem stopped firing, dropping anything that has
     /// aged out of the window.
     /// </summary>
@@ -79,15 +73,23 @@ public static class FlapDetection
     public const string Source = "platform";
 
     /// <summary>
-    /// Raises a flapping alert when a signal has become unstable.
+    /// Describes a signal as unstable, if it currently is.
     /// </summary>
-    /// <returns>The derived alert, or null when there is nothing new to report.</returns>
+    /// <returns>The derived alert, or null when the signal is steady enough.</returns>
     /// <remarks>
     /// <para>
     /// Deliberately a <em>different</em> alert rather than a variant of the
     /// original, because it tells the operator something different. "The PSU
     /// failed" is a hardware problem; "this PSU reading will not hold still"
     /// is a reliability problem, and the action is not the same.
+    /// </para>
+    /// <para>
+    /// Called on every cycle, not once when the threshold is first crossed.
+    /// The derived alert is fed through the ordinary lifecycle like any other
+    /// observation, so it confirms under hysteresis, can be acknowledged, and
+    /// resolves on its own once the transitions age out of the window. Raising
+    /// it once and remembering that we had would instead leave it to be retired
+    /// on the next cycle for not being observed.
     /// </para>
     /// <para>
     /// Severity is Warning rather than Critical: instability is worth knowing
@@ -103,7 +105,7 @@ public static class FlapDetection
         ArgumentNullException.ThrowIfNull(history);
         ArgumentNullException.ThrowIfNull(policy);
 
-        if (history.Reported || !history.IsFlapping(nowUtc, policy))
+        if (!history.IsFlapping(nowUtc, policy))
         {
             return null;
         }
@@ -122,6 +124,7 @@ public static class FlapDetection
                 "operating values.",
             Category = "Reliability",
             Source = Source,
+            IsDerived = true,
         };
     }
 

@@ -19,7 +19,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Domain\EnterpriseObservatory.Domain.csproj" />
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Application\EnterpriseObservatory.Application.csproj" />
   </ItemGroup>
 
