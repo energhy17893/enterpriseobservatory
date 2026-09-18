@@ -37,6 +37,14 @@ public enum RollupType
 /// </remarks>
 public readonly record struct CounterValue
 {
+    /// <summary>
+    /// Required by the language once any property has an initializer; the
+    /// required members still have to be supplied by the caller.
+    /// </summary>
+    public CounterValue()
+    {
+    }
+
     public required string CounterName { get; init; }
 
     /// <summary>The number as the platform reported it, unconverted.</summary>
@@ -49,6 +57,21 @@ public readonly record struct CounterValue
 
     /// <summary>Unit of <see cref="Raw"/>, as the platform names it.</summary>
     public required string Unit { get; init; }
+
+    /// <summary>
+    /// The device this sample is for, or empty when it covers all of them.
+    /// </summary>
+    /// <remarks>
+    /// Platforms report most counters once per device — per HBA, per NIC, per
+    /// disk — and usually also as one aggregate series. Keeping the distinction
+    /// matters because combining them is not a single rule: a total across
+    /// devices is still a total, but an average across them can hide one sick
+    /// path behind eleven healthy ones.
+    /// </remarks>
+    public string Instance { get; init; } = string.Empty;
+
+    /// <summary>Whether this covers all devices rather than one of them.</summary>
+    public bool IsAggregateInstance => string.IsNullOrEmpty(Instance);
 
     /// <summary>
     /// Expresses a summed duration as a percentage of the interval it was

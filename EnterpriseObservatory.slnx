@@ -1,11 +1,13 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/EnterpriseObservatory.Application/EnterpriseObservatory.Application.csproj" />
+    <Project Path="src/EnterpriseObservatory.Collectors.Vsphere/EnterpriseObservatory.Collectors.Vsphere.csproj" />
     <Project Path="src/EnterpriseObservatory.Domain/EnterpriseObservatory.Domain.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/EnterpriseObservatory.Application.Tests/EnterpriseObservatory.Application.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Architecture.Tests/EnterpriseObservatory.Architecture.Tests.csproj" />
+    <Project Path="tests/EnterpriseObservatory.Collectors.Vsphere.Tests/EnterpriseObservatory.Collectors.Vsphere.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Domain.Tests/EnterpriseObservatory.Domain.Tests.csproj" />
   </Folder>
 </Solution>
