@@ -50,6 +50,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0008](0008-design-token-architecture.md) | Tasarım token mimarisi ve kontrast kapısı | Kabul edildi |
 | [0009](0009-evaluation-scope-and-provenance.md) | Değerlendirme kapsamı ve köken damgası | Kabul edildi |
 | [0010](0010-credentials-never-in-configuration-files.md) | Kimlik bilgileri yapılandırma dosyasında bulunmaz | Kabul edildi |
+| [0011](0011-sqlite-state-persistence.md) | Durum kalıcılığı için gömülü SQLite | Kabul edildi |
 
 ## Şablon
 

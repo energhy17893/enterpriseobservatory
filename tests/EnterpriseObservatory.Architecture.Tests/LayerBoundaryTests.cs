@@ -81,6 +81,45 @@ public class LayerBoundaryTests
             $"EnterpriseObservatory.Api references collectors: {string.Join(", ", vendors)}");
     }
 
+    [Fact]
+    public void Persistence_cannot_see_any_collector()
+    {
+        // Storage stores what the application decided. A persistence layer that
+        // could reach a vendor's types would grow a vSphere-shaped table, and
+        // the schema would then encode one vendor's model of the world — which
+        // is the coupling the entity model in ADR-0003 exists to avoid.
+        var vendors = SolutionAssemblies.Layer("Persistence.Sqlite")
+            .GetReferencedAssemblies()
+            .Select(a => a.Name ?? string.Empty)
+            .Where(n => n.StartsWith("EnterpriseObservatory.Collectors.", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.True(
+            vendors.Count == 0,
+            $"EnterpriseObservatory.Persistence.Sqlite references collectors: {string.Join(", ", vendors)}");
+    }
+
+    [Fact]
+    public void Nothing_but_the_host_depends_on_a_particular_storage_engine()
+    {
+        // The choice of SQLite is a deployment decision (ADR-0011). It stays
+        // one only while exactly one project knows it was made; the day the
+        // application or the API references it, replacing it stops being a
+        // configuration change and becomes a rewrite.
+        var dependents = SolutionAssemblies.Production
+            .Where(a => SolutionAssemblies.Name(a) != "EnterpriseObservatory.Persistence.Sqlite")
+            .Where(a => !SolutionAssemblies.Name(a).StartsWith(
+                "EnterpriseObservatory.Host.", StringComparison.Ordinal))
+            .Where(a => a.GetReferencedAssemblies().Any(r =>
+                r.Name == "EnterpriseObservatory.Persistence.Sqlite"))
+            .Select(SolutionAssemblies.Name)
+            .ToList();
+
+        Assert.True(
+            dependents.Count == 0,
+            $"These reference the storage engine directly: {string.Join(", ", dependents)}");
+    }
+
     // --- purity -----------------------------------------------------------
 
     [Theory]

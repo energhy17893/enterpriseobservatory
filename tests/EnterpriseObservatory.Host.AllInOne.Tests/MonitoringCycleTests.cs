@@ -3,6 +3,7 @@ using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 using EnterpriseObservatory.Host.AllInOne.State;
+using EnterpriseObservatory.Persistence.Sqlite;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -16,15 +17,39 @@ namespace EnterpriseObservatory.Host.AllInOne.Tests;
 /// would have shipped silently — none produces an error, a log line or a
 /// visibly odd screen.
 /// </remarks>
-public class MonitoringCycleTests
+public class MonitoringCycleTests : IDisposable
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 19, 9, 0, 0, TimeSpan.Zero);
 
     private readonly TestClock _clock = new(T0);
-    private readonly InMemoryEntityGraphStore _graphs = new();
-    private readonly InMemoryAlertStateStore _alerts = new();
-    private readonly InMemoryCollectorHealthStore _health = new();
+
+    // The real stores against an in-memory database, not hand-written fakes.
+    // A second implementation of these ports would be a second set of
+    // semantics to keep in step, and the first thing to drift would be exactly
+    // the subtleties these tests exist to pin down.
+    private readonly ObservatoryDatabase _database = new(new SqliteStoreOptions
+    {
+        Path = string.Empty,
+        InMemory = true,
+    });
+
+    private readonly SqliteEntityGraphStore _graphs;
+    private readonly SqliteAlertStateStore _alerts;
+    private readonly SqliteCollectorHealthStore _health;
     private readonly RecordingNotifier _notifier = new();
+
+    public MonitoringCycleTests()
+    {
+        _graphs = new SqliteEntityGraphStore(_database);
+        _alerts = new SqliteAlertStateStore(_database);
+        _health = new SqliteCollectorHealthStore(_database);
+    }
+
+    public void Dispose()
+    {
+        _database.Dispose();
+        GC.SuppressFinalize(this);
+    }
 
     private static MonitoringOptions Options { get; } = new()
     {

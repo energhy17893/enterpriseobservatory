@@ -9,6 +9,7 @@ using EnterpriseObservatory.Host.AllInOne.Collectors;
 using EnterpriseObservatory.Host.AllInOne.Configuration;
 using EnterpriseObservatory.Host.AllInOne.Notifications;
 using EnterpriseObservatory.Host.AllInOne.State;
+using EnterpriseObservatory.Persistence.Sqlite;
 
 // The composition root, and the only place in the product that knows a
 // concrete collector exists. Everything below it is wired through ports, which
@@ -38,9 +39,14 @@ if (problems.Count > 0)
 
 builder.Services.AddSingleton(BuildMonitoringOptions(builder.Configuration));
 builder.Services.AddSingleton<IClock, SystemClock>();
-builder.Services.AddSingleton<IEntityGraphStore, InMemoryEntityGraphStore>();
-builder.Services.AddSingleton<IAlertStateStore, InMemoryAlertStateStore>();
-builder.Services.AddSingleton<ICollectorHealthStore, InMemoryCollectorHealthStore>();
+
+// State outlives the process. Losing it forgets every acknowledgement and
+// re-notifies every still-firing problem on restart, which is how a product
+// teaches people to ignore it. See ADR-0011.
+builder.Services.AddSingleton(new ObservatoryDatabase(BuildStoreOptions(builder.Configuration)));
+builder.Services.AddSingleton<IEntityGraphStore, SqliteEntityGraphStore>();
+builder.Services.AddSingleton<IAlertStateStore, SqliteAlertStateStore>();
+builder.Services.AddSingleton<ICollectorHealthStore, SqliteCollectorHealthStore>();
 builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();
@@ -104,6 +110,25 @@ foreach (var endpoint in endpoints)
 }
 
 await host.RunAsync();
+
+// A file beside the service, not a server. ADR-0001 requires an MSI that
+// installs without an appliance, and a database nobody has to provision is the
+// difference between a product an operator installs in a maintenance window and
+// one that needs a project. ProgramData rather than the install directory,
+// because data that survives an upgrade must not sit where the upgrade writes.
+static SqliteStoreOptions BuildStoreOptions(IConfiguration configuration)
+{
+    var configured = configuration["Storage:Path"];
+
+    var path = string.IsNullOrWhiteSpace(configured)
+        ? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "EnterpriseObservatory",
+            "observatory.db")
+        : configured;
+
+    return new SqliteStoreOptions { Path = path };
+}
 
 static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration)
 {

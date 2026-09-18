@@ -31,6 +31,29 @@ public readonly record struct AlertFingerprint
     public string Value { get; }
 
     /// <summary>
+    /// Rebuilds a fingerprint that was already built and then stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The constructor is private so that the only way to invent a fingerprint
+    /// is from its parts, through <see cref="Create"/>. Reading one back is the
+    /// one legitimate exception: the value came out of <see cref="Create"/>
+    /// before it was written down, and re-deriving it would mean storing all
+    /// five parts alongside it and trusting them to still agree.
+    /// </para>
+    /// <para>
+    /// Named for what it is, so that a call site using it to sidestep
+    /// <see cref="Create"/> reads as obviously wrong.
+    /// </para>
+    /// </remarks>
+    public static AlertFingerprint Restore(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+
+        return new AlertFingerprint(value);
+    }
+
+    /// <summary>
     /// Builds a fingerprint from the parts that identify a problem.
     /// </summary>
     /// <param name="source">Which collector or engine raised it.</param>
