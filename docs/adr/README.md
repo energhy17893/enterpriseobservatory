@@ -46,6 +46,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0004](0004-relationship-taxonomy-and-entity-lifecycle.md) | İlişki taksonomisi ve varlık yaşam döngüsü | Kabul edildi |
 | [0005](0005-collector-contract-and-collection-discipline.md) | Collector sözleşmesi ve toplama disiplini | Kabul edildi |
 | [0006](0006-web-stack-react-spa.md) | Web arayüzü React + TypeScript SPA | Kabul edildi |
+| [0007](0007-information-architecture-and-alert-centralization.md) | Bilgi mimarisi ve alarm merkezileştirme | Kabul edildi |
 
 ## Şablon
 
