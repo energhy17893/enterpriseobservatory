@@ -2,13 +2,24 @@ using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Alerts;
 
-/// <summary>Everything one reconciliation pass needs.</summary>
+/// <summary>
+/// Everything one reconciliation pass needs.
+/// </summary>
+/// <remarks>
+/// <see cref="Observed"/> and <see cref="Stored"/> must describe the same
+/// scope. Reconciliation treats what it is given as the whole truth, so an
+/// instance from another scope handed in here would be resolved for never
+/// having been observed. Slicing happens at the store — see
+/// <c>AlertScopes</c>.
+/// </remarks>
 public sealed record AlertReconciliationRequest
 {
-    /// <summary>Problems seen this cycle, from every source combined.</summary>
+    /// <summary>
+    /// Problems seen this cycle, from every source in this scope combined.
+    /// </summary>
     public IReadOnlyList<AlertDefinition> Observed { get; init; } = [];
 
-    /// <summary>Instances as currently stored.</summary>
+    /// <summary>Instances currently stored for this scope.</summary>
     public IReadOnlyList<AlertInstance> Stored { get; init; } = [];
 
     /// <summary>Flap counters, which outlive the instances they describe.</summary>
@@ -99,7 +110,12 @@ public static class AlertReconciler
 
             var history = flaps.TryGetValue(fingerprint, out var existing)
                 ? existing
-                : new FlapHistory { Fingerprint = fingerprint, ObjectName = instance.Title };
+                : new FlapHistory
+                {
+                    Fingerprint = fingerprint,
+                    ObjectName = instance.Title,
+                    Scope = instance.Scope,
+                };
 
             flaps[fingerprint] = history.RecordCeased(request.NowUtc, request.Flap);
         }

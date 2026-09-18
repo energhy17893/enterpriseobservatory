@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Collection;
@@ -53,9 +54,10 @@ public sealed class ObservationCollectionPipeline(IClock clock)
         var outcomes = await Task.WhenAll(sources.Select(source =>
             _runner.RunAsync(
                 source.InstanceId,
+                CollectorRole.Observation,
                 source.ReadAsync,
                 static batch => batch.Failures,
-                SourceRunner.Existing(priorHealth, source.InstanceId),
+                SourceRunner.Existing(priorHealth, source.InstanceId, CollectorRole.Observation),
                 policy,
                 gate,
                 cancellationToken))).ConfigureAwait(false);
@@ -65,6 +67,10 @@ public sealed class ObservationCollectionPipeline(IClock clock)
         var alerts = outcomes
             .SelectMany(o => o.CollectionAlerts)
             .Concat(batches.SelectMany(DetailLevelAlerts))
+            // Stamped here rather than at each producer: an alert with no scope
+            // belongs to no evaluation, and the reconciler would resolve it on
+            // the next pass of whichever cycle ran. See AlertDefinition.Scope.
+            .Select(a => a with { Scope = AlertScopes.Observation })
             .ToList();
 
         return new ObservationCycleResult

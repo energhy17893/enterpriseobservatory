@@ -93,6 +93,26 @@ public sealed record AlertDefinition
     public string Source { get; init; } = string.Empty;
 
     /// <summary>
+    /// Which evaluation owns this alert.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A reconciliation treats what it was given as the complete truth, so
+    /// anything stored but not observed is taken to have stopped. That is only
+    /// sound within one evaluation: the metric cycle runs every thirty seconds
+    /// and the inventory cycle every five minutes, and without a scope the
+    /// faster one would clear the slower one's alerts on every pass.
+    /// </para>
+    /// <para>
+    /// The same rule as <c>EntityGraph.Merge</c>'s reporting sources, applied to
+    /// alerts: only an evaluation that ran may decide the fate of what it
+    /// evaluated. Set by the pipeline rather than by the collector, so a new
+    /// collector cannot get it wrong.
+    /// </para>
+    /// </remarks>
+    public string Scope { get; init; } = string.Empty;
+
+    /// <summary>
     /// Whether the platform inferred this rather than a collector observing it.
     /// </summary>
     /// <remarks>

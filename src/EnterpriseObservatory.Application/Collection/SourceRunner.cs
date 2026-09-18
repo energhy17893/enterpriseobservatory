@@ -34,6 +34,7 @@ internal sealed class SourceRunner(IClock clock)
 
     public async Task<SourceRunOutcome<TResult>> RunAsync<TResult>(
         string instanceId,
+        CollectorRole role,
         Func<CancellationToken, Task<TResult>> read,
         Func<TResult, IReadOnlyList<CollectionFailure>> reportedFailures,
         CollectorHealth prior,
@@ -50,13 +51,13 @@ internal sealed class SourceRunner(IClock clock)
             return new SourceRunOutcome<TResult>(
                 null,
                 prior with { IsBackingOff = true, Health = HealthState.Unknown },
-                [UnreachableAlert(instanceId, prior, backingOff: true)]);
+                [UnreachableAlert(instanceId, role, prior, backingOff: true)]);
         }
 
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await AttemptAsync(instanceId, read, reportedFailures, prior, policy, cancellationToken)
+            return await AttemptAsync(instanceId, role, read, reportedFailures, prior, policy, cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
@@ -67,6 +68,7 @@ internal sealed class SourceRunner(IClock clock)
 
     private async Task<SourceRunOutcome<TResult>> AttemptAsync<TResult>(
         string instanceId,
+        CollectorRole role,
         Func<CancellationToken, Task<TResult>> read,
         Func<TResult, IReadOnlyList<CollectionFailure>> reportedFailures,
         CollectorHealth prior,
@@ -117,7 +119,7 @@ internal sealed class SourceRunner(IClock clock)
         var failed = Failed(prior, lastError);
 
         return new SourceRunOutcome<TResult>(
-            null, failed, [UnreachableAlert(instanceId, failed, backingOff: false)]);
+            null, failed, [UnreachableAlert(instanceId, role, failed, backingOff: false)]);
     }
 
     /// <summary>
@@ -215,9 +217,12 @@ internal sealed class SourceRunner(IClock clock)
 
     private static AlertDefinition UnreachableAlert(
         string instanceId,
+        CollectorRole role,
         CollectorHealth health,
         bool backingOff)
     {
+        var what = role == CollectorRole.Inventory ? "inventory" : "metrics";
+
         var detail = backingOff
             ? $"Not being polled: {health.ConsecutiveFailures} consecutive failures, backing off. " +
               $"Last failure: {health.LastFailureDetail}"
@@ -226,10 +231,18 @@ internal sealed class SourceRunner(IClock clock)
 
         return new AlertDefinition
         {
+            // The role is part of the identity, not decoration. Reading
+            // inventory and reading metrics fail independently, and one
+            // fingerprint for both would let each cycle resolve the other's
+            // alert on every pass.
             Fingerprint = AlertFingerprint.Create(
-                "platform", "Collector unreachable", "Configuration", instanceId, "collector-unreachable"),
+                "platform",
+                "Collector unreachable",
+                "Configuration",
+                instanceId,
+                $"collector-unreachable:{what}"),
             Severity = AlertSeverity.Warning,
-            Title = "Collector unreachable",
+            Title = $"Collector unreachable ({what})",
             Description = $"{detail} Everything this source reports on is Unknown, not healthy.",
             Category = "Configuration",
             Source = "platform",
@@ -239,7 +252,9 @@ internal sealed class SourceRunner(IClock clock)
 
     internal static CollectorHealth Existing(
         IReadOnlyList<CollectorHealth> health,
-        string instanceId) =>
-        health.FirstOrDefault(h => string.Equals(h.InstanceId, instanceId, StringComparison.Ordinal))
-        ?? new CollectorHealth { InstanceId = instanceId, Health = HealthState.Unknown };
+        string instanceId,
+        CollectorRole role) =>
+        health.FirstOrDefault(h =>
+            string.Equals(h.InstanceId, instanceId, StringComparison.Ordinal) && h.Role == role)
+        ?? new CollectorHealth { InstanceId = instanceId, Role = role, Health = HealthState.Unknown };
 }

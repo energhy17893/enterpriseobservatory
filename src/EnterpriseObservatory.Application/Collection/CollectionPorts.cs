@@ -108,6 +108,21 @@ public sealed record ObservationBatch
     public IReadOnlyList<CollectionFailure> Failures { get; init; } = [];
 }
 
+/// <summary>Which of a source's two jobs a health record describes.</summary>
+/// <remarks>
+/// One vCenter is read by two collectors on two schedules, and they fail
+/// independently: an account may be able to list inventory while the statistics
+/// level denies it metrics. Tracking one health record per address would let
+/// the thirty-second cycle's successes keep resetting the five-minute cycle's
+/// failure count, so a persistently broken inventory read would never reach the
+/// circuit breaker and never be reported.
+/// </remarks>
+public enum CollectorRole
+{
+    Inventory,
+    Observation,
+}
+
 /// <summary>How a source is behaving over time.</summary>
 /// <remarks>
 /// Collector health is observable state rather than a log line, so the question
@@ -117,6 +132,9 @@ public sealed record ObservationBatch
 public sealed record CollectorHealth
 {
     public required string InstanceId { get; init; }
+
+    /// <summary>Which job this describes. See <see cref="CollectorRole"/>.</summary>
+    public required CollectorRole Role { get; init; }
 
     public required HealthState Health { get; init; }
 

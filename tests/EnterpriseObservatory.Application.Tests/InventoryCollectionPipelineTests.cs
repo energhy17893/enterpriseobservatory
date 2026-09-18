@@ -225,6 +225,7 @@ public class InventoryCollectionPipelineTests
             new CollectorHealth
             {
                 InstanceId = "ilo-1",
+                Role = CollectorRole.Inventory,
                 Health = HealthState.Unknown,
                 ConsecutiveFailures = 5,
                 LastSuccessUtc = T0.AddMinutes(-1),
@@ -252,6 +253,7 @@ public class InventoryCollectionPipelineTests
             new CollectorHealth
             {
                 InstanceId = "ilo-1",
+                Role = CollectorRole.Inventory,
                 Health = HealthState.Unknown,
                 ConsecutiveFailures = 5,
                 LastSuccessUtc = T0.AddMinutes(-1),
@@ -276,6 +278,7 @@ public class InventoryCollectionPipelineTests
             new CollectorHealth
             {
                 InstanceId = "ilo-1",
+                Role = CollectorRole.Inventory,
                 Health = HealthState.Unknown,
                 ConsecutiveFailures = 5,
                 LastSuccessUtc = T0,
@@ -304,6 +307,7 @@ public class InventoryCollectionPipelineTests
             new CollectorHealth
             {
                 InstanceId = "ilo-1",
+                Role = CollectorRole.Inventory,
                 Health = HealthState.Unknown,
                 ConsecutiveFailures = 99,
                 LastSuccessUtc = null,

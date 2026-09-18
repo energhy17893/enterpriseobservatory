@@ -286,6 +286,7 @@ public static class AlertLifecycle
             Description = observed.Description,
             Entity = observed.Entity,
             IsDerived = observed.IsDerived,
+            Scope = observed.Scope,
             ConsecutiveHits = 1,
             IsConfirmed = confirmed,
             ClearedByOperator = false,

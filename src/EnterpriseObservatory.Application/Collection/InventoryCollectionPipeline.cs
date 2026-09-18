@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Collection;
@@ -50,18 +51,54 @@ public sealed class InventoryCollectionPipeline(IClock clock)
         var outcomes = await Task.WhenAll(sources.Select(source =>
             _runner.RunAsync(
                 source.InstanceId,
+                CollectorRole.Inventory,
                 source.ReadAsync,
                 static snapshot => snapshot.Failures,
-                SourceRunner.Existing(priorHealth, source.InstanceId),
+                SourceRunner.Existing(priorHealth, source.InstanceId, CollectorRole.Inventory),
                 policy,
                 gate,
                 cancellationToken))).ConfigureAwait(false);
 
         return new CollectionCycleResult
         {
-            Snapshots = [.. outcomes.Select(o => o.Result).OfType<InventorySnapshot>()],
+            Snapshots =
+            [
+                .. outcomes.Select(o => o.Result).OfType<InventorySnapshot>().Select(Attribute),
+            ],
             Health = [.. outcomes.Select(o => o.Health)],
-            CollectionAlerts = [.. outcomes.SelectMany(o => o.CollectionAlerts)],
+            CollectionAlerts =
+            [
+                .. outcomes.SelectMany(o => o.CollectionAlerts)
+                    .Select(a => a with { Scope = AlertScopes.Inventory }),
+            ],
         };
     }
+
+    /// <summary>
+    /// Stamps the provenance a collector cannot be trusted to remember.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both fields are load-bearing and both are invisible when wrong.
+    /// <see cref="Entity.SourceInstanceId"/> decides whether an entity may be
+    /// treated as vanished; left blank, no entity ever vanishes and a
+    /// decommissioned host stays in the graph forever. The alert scope decides
+    /// which evaluation may resolve an alert; left blank, the metric cycle
+    /// clears every inventory alert thirty seconds after it is raised.
+    /// </para>
+    /// <para>
+    /// Neither failure produces an error, a log line or a visibly odd screen,
+    /// so asking each collector to set them correctly would be asking to be
+    /// caught out later. The snapshot is already attributed to a source; this
+    /// simply propagates that attribution to what is inside it.
+    /// </para>
+    /// </remarks>
+    private static InventorySnapshot Attribute(InventorySnapshot snapshot) => snapshot with
+    {
+        Entities =
+        [
+            .. snapshot.Entities.Select(e => e with { SourceInstanceId = snapshot.SourceInstanceId }),
+        ],
+        Alerts = [.. snapshot.Alerts.Select(a => a with { Scope = AlertScopes.Inventory })],
+    };
 }

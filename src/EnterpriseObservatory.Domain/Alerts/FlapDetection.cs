@@ -36,6 +36,16 @@ public sealed record FlapHistory
     /// <summary>Carried so the derived alert can name what is unstable.</summary>
     public required string ObjectName { get; init; }
 
+    /// <summary>
+    /// The scope of the alert whose instability this records.
+    /// </summary>
+    /// <remarks>
+    /// Carried so the derived alert lands in the same evaluation as the thing
+    /// it describes. In any other scope it would be raised by one cycle and
+    /// resolved by the next. See <see cref="AlertDefinition.Scope"/>.
+    /// </remarks>
+    public string Scope { get; init; } = string.Empty;
+
     /// <summary>When the problem stopped firing, most recent last.</summary>
     public IReadOnlyList<DateTimeOffset> CeasedAtUtc { get; init; } = [];
 
@@ -124,6 +134,7 @@ public static class FlapDetection
                 "operating values.",
             Category = "Reliability",
             Source = Source,
+            Scope = history.Scope,
             IsDerived = true,
         };
     }

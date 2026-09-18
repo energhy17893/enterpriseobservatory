@@ -48,6 +48,8 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0006](0006-web-stack-react-spa.md) | Web arayüzü React + TypeScript SPA | Kabul edildi |
 | [0007](0007-information-architecture-and-alert-centralization.md) | Bilgi mimarisi ve alarm merkezileştirme | Kabul edildi |
 | [0008](0008-design-token-architecture.md) | Tasarım token mimarisi ve kontrast kapısı | Kabul edildi |
+| [0009](0009-evaluation-scope-and-provenance.md) | Değerlendirme kapsamı ve köken damgası | Kabul edildi |
+| [0010](0010-credentials-never-in-configuration-files.md) | Kimlik bilgileri yapılandırma dosyasında bulunmaz | Kabul edildi |
 
 ## Şablon
 
