@@ -10,4 +10,7 @@
     <Project Path="tests/EnterpriseObservatory.Collectors.Vsphere.Tests/EnterpriseObservatory.Collectors.Vsphere.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Domain.Tests/EnterpriseObservatory.Domain.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/EnterpriseObservatory.VsphereProbe/EnterpriseObservatory.VsphereProbe.csproj" />
+  </Folder>
 </Solution>
