@@ -130,12 +130,17 @@ public static class VsphereSoapRequests
                     <vim25:metricId><vim25:counterId>{c.Id.ToString(CultureInfo.InvariantCulture)}</vim25:counterId><vim25:instance>*</vim25:instance></vim25:metricId>
             """));
 
+        // Element order is part of the contract: PerfQuerySpec is an XSD
+        // sequence, so the server rejects a spec whose children are in any
+        // other order with "Unexpected element tag". The schema order is
+        // entity, startTime?, endTime?, maxSample?, metricId*, intervalId?,
+        // format? — metricId before intervalId, both after maxSample.
         var specs = string.Concat(entityMoRefs.Select(moRef => $"""
 
                   <vim25:querySpec>
                     <vim25:entity type="{Escape(entityType)}">{Escape(moRef)}</vim25:entity>
-                    <vim25:intervalId>{intervalSeconds.ToString(CultureInfo.InvariantCulture)}</vim25:intervalId>{metrics}
-                    <vim25:maxSample>{maxSample.ToString(CultureInfo.InvariantCulture)}</vim25:maxSample>
+                    <vim25:maxSample>{maxSample.ToString(CultureInfo.InvariantCulture)}</vim25:maxSample>{metrics}
+                    <vim25:intervalId>{intervalSeconds.ToString(CultureInfo.InvariantCulture)}</vim25:intervalId>
                     <vim25:format>normal</vim25:format>
                   </vim25:querySpec>
             """));

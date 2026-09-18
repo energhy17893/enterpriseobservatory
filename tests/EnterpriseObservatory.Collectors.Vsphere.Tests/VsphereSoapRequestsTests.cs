@@ -168,6 +168,26 @@ public class VsphereSoapRequestsTests
     }
 
     [Fact]
+    public void A_query_spec_puts_its_children_in_schema_order()
+    {
+        // PerfQuerySpec is an XSD sequence, so order is part of the contract.
+        // A live vCenter 8 rejected an out-of-order spec with
+        //   Unexpected element tag "vim25:metricId" seen
+        //   while parsing serialized DataObject of type vim.PerformanceManager.QuerySpec
+        // The schema order is entity, startTime?, endTime?, maxSample?,
+        // metricId*, intervalId?, format?.
+        var soap = VsphereSoapRequests.QueryPerf(
+            "PerfMgr", ["host-1"], "HostSystem", [CpuUsage, CpuReady], 20, 3);
+
+        var spec = Assert.Single(Named(Parse(soap), "querySpec"));
+        var order = spec.Elements().Select(e => e.Name.LocalName).ToList();
+
+        Assert.Equal(
+            ["entity", "maxSample", "metricId", "metricId", "intervalId", "format"],
+            order);
+    }
+
+    [Fact]
     public void An_entity_type_is_carried_as_an_attribute_not_guessed()
     {
         var soap = VsphereSoapRequests.QueryPerf("PerfMgr", ["vm-1"], "VirtualMachine", [CpuReady], 20, 3);
