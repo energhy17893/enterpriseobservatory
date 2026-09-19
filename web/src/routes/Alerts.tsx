@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { AlertActions } from '@/components/AlertActions'
+import { BulkBar } from '@/components/BulkBar'
 import { ago, cn, severityStatus } from '@/lib/ui'
 
 /**
@@ -19,6 +21,7 @@ import { ago, cn, severityStatus } from '@/lib/ui'
  */
 export function Alerts() {
   const [params, setParams] = useSearchParams()
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
 
   const severity = params.get('severity') ?? ''
   const search = params.get('search') ?? ''
@@ -37,7 +40,23 @@ export function Alerts() {
     if (value === '') next.delete(key)
     else next.set(key, value)
     setParams(next, { replace: true })
+
+    // A filter change makes the selection mean something else, so it goes.
+    // Carrying it across would let an operator acknowledge a set they are no
+    // longer looking at.
+    setSelected(new Set())
   }
+
+  function toggle(fingerprint: string) {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (!next.delete(fingerprint)) next.add(fingerprint)
+      return next
+    })
+  }
+
+  const visible = data?.items ?? []
+  const allSelected = visible.length > 0 && visible.every((a) => selected.has(a.fingerprint))
 
   return (
     <div className="space-y-4">
@@ -74,6 +93,21 @@ export function Alerts() {
         />
       </div>
 
+      {visible.length > 0 && (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={() =>
+              setSelected(allSelected ? new Set() : new Set(visible.map((a) => a.fingerprint)))
+            }
+          />
+          Select all {visible.length} shown
+        </label>
+      )}
+
+      <BulkBar selected={[...selected]} onDone={() => setSelected(new Set())} />
+
       {isError ? (
         <LoadFailure what="Alerts" error={error} />
       ) : isPending ? (
@@ -89,9 +123,16 @@ export function Alerts() {
         <ul className="space-y-2">
           {data.items.map((alert) => (
             <li key={alert.fingerprint}>
-              <Card className="p-3">
+              <Card className={cn('p-3', selected.has(alert.fingerprint) && 'border-primary')}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(alert.fingerprint)}
+                    onChange={() => toggle(alert.fingerprint)}
+                    className="mt-1"
+                    aria-label={`Select ${alert.title}`}
+                  />
+                  <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusBadge status={severityStatus(alert.severity)}>
                         {alert.severity}

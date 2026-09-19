@@ -396,6 +396,10 @@ public class ReadModelTests
         public AlertInstance? Mutate(AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change) =>
             throw new NotSupportedException("The read model never writes.");
 
+        public IReadOnlyList<AlertInstance> MutateMany(
+            IReadOnlyList<AlertFingerprint> fingerprints, Func<AlertInstance, AlertInstance> change) =>
+            throw new NotSupportedException("The read model never writes.");
+
         public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints) =>
             throw new NotSupportedException("The read model never writes.");
     }

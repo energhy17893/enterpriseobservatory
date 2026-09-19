@@ -227,3 +227,14 @@ export interface DeclareWindowCommand {
   endUtc: string
   entities: string[]
 }
+
+/** What a command against several alerts did. */
+export interface BulkActionView {
+  applied: boolean
+  requested: number
+  /** How many were no longer there — reported, not hidden. */
+  missing: number
+  alerts: AlertView[]
+  refusal: string | null
+  recordedAs: string
+}

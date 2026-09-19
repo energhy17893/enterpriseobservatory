@@ -355,3 +355,42 @@ public sealed record AlertActionView
 
     public required bool ActorVerified { get; init; }
 }
+
+/// <summary>An operator's command against several alerts at once.</summary>
+public sealed record BulkAlertCommand
+{
+    public required IReadOnlyList<string> Fingerprints { get; init; }
+}
+
+/// <summary>A command to mute several alerts until one deadline.</summary>
+public sealed record BulkSilenceCommand
+{
+    public required IReadOnlyList<string> Fingerprints { get; init; }
+
+    public required DateTimeOffset UntilUtc { get; init; }
+}
+
+/// <summary>What a command against several alerts did.</summary>
+public sealed record BulkActionView
+{
+    public required bool Applied { get; init; }
+
+    public required int Requested { get; init; }
+
+    /// <summary>
+    /// How many were no longer there.
+    /// </summary>
+    /// <remarks>
+    /// Reported rather than hidden. Alerts that resolved between the screen
+    /// being drawn and the button being pressed are simply gone, and an
+    /// operator who asked for twenty and changed eighteen should be told,
+    /// not left to count.
+    /// </remarks>
+    public required int Missing { get; init; }
+
+    public required IReadOnlyList<AlertView> Alerts { get; init; }
+
+    public string? Refusal { get; init; }
+
+    public required string RecordedAs { get; init; }
+}

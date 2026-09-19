@@ -128,6 +128,54 @@ public sealed class SqliteAlertStateStore : IAlertStateStore
         }
     }
 
+    public IReadOnlyList<AlertInstance> MutateMany(
+        IReadOnlyList<AlertFingerprint> fingerprints, Func<AlertInstance, AlertInstance> change)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+        ArgumentNullException.ThrowIfNull(change);
+
+        if (fingerprints.Count == 0)
+        {
+            return [];
+        }
+
+        lock (_gate)
+        {
+            var changed = new List<AlertInstance>(fingerprints.Count);
+
+            // One transaction as well as one lock: a bulk acknowledgement that
+            // half survived a crash would be worse than one that did not
+            // happen, because nothing would say which half.
+            _database.Write(connection =>
+            {
+                foreach (var fingerprint in fingerprints)
+                {
+                    foreach (var (scope, slice) in _instances)
+                    {
+                        var index = slice.FindIndex(i => i.Fingerprint == fingerprint);
+
+                        if (index < 0)
+                        {
+                            continue;
+                        }
+
+                        var next = change(slice[index]);
+
+                        DeleteInstance(connection, fingerprint);
+                        WriteInstance(connection, scope, next);
+
+                        slice[index] = next;
+                        changed.Add(next);
+
+                        break;
+                    }
+                }
+            });
+
+            return changed;
+        }
+    }
+
     private void Store(string scope, AlertReconciliationResult result)
     {
         ArgumentNullException.ThrowIfNull(result);

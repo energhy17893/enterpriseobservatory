@@ -12,6 +12,7 @@ import type {
   AccountView,
   AlertActionView,
   AuthStateView,
+  BulkActionView,
   DeclareWindowCommand,
   MaintenanceWindowView,
   Role,
@@ -169,6 +170,12 @@ export const api = {
     post<AccountView>('/api/accounts/role', { username, role }),
   removeAccount: (username: string) =>
     post<AccountView>('/api/accounts/remove', { username }),
+  acknowledgeMany: (fingerprints: string[]) =>
+    post<BulkActionView>('/api/alerts/acknowledge-many', { fingerprints }),
+  clearMany: (fingerprints: string[]) =>
+    post<BulkActionView>('/api/alerts/clear-many', { fingerprints }),
+  silenceMany: (fingerprints: string[], untilUtc: string) =>
+    post<BulkActionView>('/api/alerts/silence-many', { fingerprints, untilUtc }),
   acknowledge: (fingerprint: string) =>
     post<AlertActionView>('/api/alerts/acknowledge', { fingerprint }),
   clear: (fingerprint: string) => post<AlertActionView>('/api/alerts/clear', { fingerprint }),

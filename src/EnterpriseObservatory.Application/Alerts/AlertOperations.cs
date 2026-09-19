@@ -38,6 +38,28 @@ public sealed record AlertActionResult
         new() { Applied = false, Refusal = refusal };
 }
 
+/// <summary>What an operator's action on several alerts did.</summary>
+/// <remarks>
+/// Reports how many were asked for as well as what changed, because the
+/// difference is the interesting part: alerts that resolved between the screen
+/// being drawn and the button being pressed are simply gone, and the operator
+/// should be told that rather than left to count.
+/// </remarks>
+public sealed record BulkActionResult
+{
+    public required int Requested { get; init; }
+
+    public IReadOnlyList<AlertInstance> Changed { get; init; } = [];
+
+    /// <summary>How many were no longer there.</summary>
+    public int Missing => Requested - Changed.Count;
+
+    /// <summary>Set when the whole request was refused rather than applied.</summary>
+    public AlertActionRefusal Refusal { get; init; }
+
+    public bool Applied => Refusal == AlertActionRefusal.None;
+}
+
 /// <summary>
 /// What an operator can do to an alert.
 /// </summary>
@@ -109,6 +131,69 @@ public sealed class AlertOperations(IAlertStateStore store, IClock clock)
 
         return Apply(fingerprint, (instance, now) =>
             AlertLifecycle.Silence(instance, actor.AuditName, untilUtc, now));
+    }
+
+    // --- many at once ------------------------------------------------------
+
+    /// <summary>Acknowledges several alerts as one act.</summary>
+    /// <remarks>
+    /// Twenty alerts from one failed switch is one problem an operator is
+    /// taking on, not twenty decisions. Doing them one at a time is not just
+    /// tedious — a cycle landing part-way through would leave some
+    /// acknowledged and some not, with nothing on screen to say which.
+    /// </remarks>
+    public BulkActionResult AcknowledgeMany(
+        IReadOnlyList<AlertFingerprint> fingerprints, OperatorIdentity actor)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+
+        return ApplyMany(fingerprints, (instance, now) =>
+            AlertLifecycle.Acknowledge(instance, actor.AuditName, now));
+    }
+
+    /// <summary>Clears several alerts as one act.</summary>
+    public BulkActionResult ClearMany(
+        IReadOnlyList<AlertFingerprint> fingerprints, OperatorIdentity actor)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+
+        return ApplyMany(fingerprints, (instance, now) =>
+            AlertLifecycle.Clear(instance, actor.AuditName, now));
+    }
+
+    /// <summary>Silences several alerts until one deadline.</summary>
+    public BulkActionResult SilenceMany(
+        IReadOnlyList<AlertFingerprint> fingerprints, OperatorIdentity actor, DateTimeOffset untilUtc)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+
+        if (untilUtc <= _clock.UtcNow)
+        {
+            return new BulkActionResult
+            {
+                Requested = fingerprints?.Count ?? 0,
+                Refusal = AlertActionRefusal.DeadlineInThePast,
+            };
+        }
+
+        return ApplyMany(fingerprints, (instance, now) =>
+            AlertLifecycle.Silence(instance, actor.AuditName, untilUtc, now));
+    }
+
+    private BulkActionResult ApplyMany(
+        IReadOnlyList<AlertFingerprint> fingerprints,
+        Func<AlertInstance, DateTimeOffset, AlertInstance> transition)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+
+        var now = _clock.UtcNow;
+        var changed = _store.MutateMany(fingerprints, instance => transition(instance, now));
+
+        return new BulkActionResult
+        {
+            Requested = fingerprints.Count,
+            Changed = changed,
+        };
     }
 
     private AlertActionResult Apply(

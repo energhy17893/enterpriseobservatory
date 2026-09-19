@@ -86,6 +86,25 @@ public interface IAlertStateStore
     AlertInstance? Mutate(AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change);
 
     /// <summary>
+    /// Applies one change to many alerts, all under the same hold.
+    /// </summary>
+    /// <param name="fingerprints">Which alerts, in the order given.</param>
+    /// <param name="change">The transition to apply to each.</param>
+    /// <returns>
+    /// The resulting instance per fingerprint, omitting any that were not
+    /// found. A caller acting on a list that is thirty seconds old will hit
+    /// some that have resolved, and that is not an error.
+    /// </returns>
+    /// <remarks>
+    /// Not a loop over <see cref="Mutate"/>. A collection cycle could land
+    /// between two of those calls, and the operator would be left with twenty
+    /// alerts of which eleven are acknowledged — with nothing on the screen to
+    /// say which or why.
+    /// </remarks>
+    IReadOnlyList<AlertInstance> MutateMany(
+        IReadOnlyList<AlertFingerprint> fingerprints, Func<AlertInstance, AlertInstance> change);
+
+    /// <summary>
     /// Clears the pending notification on instances that have been dispatched.
     /// </summary>
     /// <remarks>

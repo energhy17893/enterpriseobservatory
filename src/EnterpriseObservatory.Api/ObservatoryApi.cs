@@ -126,6 +126,40 @@ public static class ObservatoryApi
             .RequireAuthorization(Policies.Operator)
             .WithName("SilenceAlert");
 
+        // The same three verbs, applied to a selection. Twenty alerts from one
+        // failed switch is one problem an operator is taking on, not twenty
+        // decisions.
+
+        api.MapPost("/alerts/acknowledge-many", (
+                HttpContext context,
+                ReadModel model,
+                AlertOperations operations,
+                BulkAlertCommand command) =>
+            ActMany(context, model, actor =>
+                operations.AcknowledgeMany(Fingerprints(command.Fingerprints), actor)))
+            .RequireAuthorization(Policies.Operator)
+            .WithName("AcknowledgeAlerts");
+
+        api.MapPost("/alerts/clear-many", (
+                HttpContext context,
+                ReadModel model,
+                AlertOperations operations,
+                BulkAlertCommand command) =>
+            ActMany(context, model, actor =>
+                operations.ClearMany(Fingerprints(command.Fingerprints), actor)))
+            .RequireAuthorization(Policies.Operator)
+            .WithName("ClearAlerts");
+
+        api.MapPost("/alerts/silence-many", (
+                HttpContext context,
+                ReadModel model,
+                AlertOperations operations,
+                BulkSilenceCommand command) =>
+            ActMany(context, model, actor =>
+                operations.SilenceMany(Fingerprints(command.Fingerprints), actor, command.UntilUtc)))
+            .RequireAuthorization(Policies.Operator)
+            .WithName("SilenceAlerts");
+
         // Anything under /api that matched no endpoint is a 404, not the SPA.
         // Without this the catch-all that serves the interface answers an
         // unmatched API request with a 200 carrying HTML, and the client's
@@ -188,6 +222,50 @@ public static class ObservatoryApi
             ? Results.NotFound(view)
             : result.Applied ? Results.Ok(view) : Results.BadRequest(view);
     }
+
+    /// <summary>Runs an operator command against several alerts.</summary>
+    /// <remarks>
+    /// A bulk action never partly fails: either the whole request is refused —
+    /// a silence deadline in the past refuses all of it — or every alert still
+    /// present is changed together. Alerts that have gone are counted and
+    /// reported, which is a different thing from failing.
+    /// </remarks>
+    private static IResult ActMany(
+        HttpContext context,
+        ReadModel model,
+        Func<OperatorIdentity, BulkActionResult> command)
+    {
+        if (AuthenticationApi.OperatorFor(context) is not { } actor)
+        {
+            return Results.Unauthorized();
+        }
+
+        var result = command(actor);
+
+        var view = new BulkActionView
+        {
+            Applied = result.Applied,
+            Requested = result.Requested,
+            Missing = result.Missing,
+            Alerts = [.. result.Changed.Select(model.Present)],
+            Refusal = result.Applied ? null : result.Refusal.ToString(),
+            RecordedAs = actor.AuditName,
+        };
+
+        return result.Applied ? Results.Ok(view) : Results.BadRequest(view);
+    }
+
+    /// <summary>The most alerts one command may touch.</summary>
+    /// <remarks>
+    /// A bound, because the whole batch is held under one lock while it is
+    /// applied and a collection cycle waits behind it. A thousand at once would
+    /// be somebody scripting against the API rather than an operator clearing a
+    /// screen.
+    /// </remarks>
+    public const int MaxBulkSize = 200;
+
+    private static IReadOnlyList<AlertFingerprint> Fingerprints(IReadOnlyList<string> values) =>
+        [.. values.Take(MaxBulkSize).Select(AlertFingerprint.Restore)];
 
     private static AlertFingerprint Fingerprint(string value) => AlertFingerprint.Restore(value);
 }

@@ -247,6 +247,116 @@ public class AlertOperationsTests : IDisposable
                 .Select(h => h.Actor));
     }
 
+    // --- many at once ------------------------------------------------------
+
+    [Fact]
+    public void Twenty_alerts_can_be_taken_on_as_one_act()
+    {
+        // Twenty alerts from one failed switch is one problem an operator is
+        // taking on, not twenty decisions.
+        var fingerprints = Given20();
+
+        var result = _operations.AcknowledgeMany(fingerprints, Ertugrul);
+
+        Assert.True(result.Applied);
+        Assert.Equal(20, result.Requested);
+        Assert.Equal(0, result.Missing);
+        Assert.All(_alerts.All, a => Assert.Equal(AlertLifecycleState.Acknowledged, a.State));
+    }
+
+    [Fact]
+    public void Alerts_that_have_gone_are_counted_rather_than_failed()
+    {
+        // The list came from a screen that is thirty seconds old. Some of it
+        // has resolved; that is not an error, and the operator should be told
+        // rather than left to count.
+        var fingerprints = Given20();
+        var withGhosts = fingerprints.Concat([Fingerprint("gone-1"), Fingerprint("gone-2")]).ToList();
+
+        var result = _operations.AcknowledgeMany(withGhosts, Ertugrul);
+
+        Assert.True(result.Applied);
+        Assert.Equal(22, result.Requested);
+        Assert.Equal(2, result.Missing);
+        Assert.Equal(20, result.Changed.Count);
+    }
+
+    [Fact]
+    public void A_bulk_silence_with_a_deadline_in_the_past_changes_nothing_at_all()
+    {
+        // Refused as a whole rather than per alert. Half a batch applied is
+        // the state the operator cannot reason about.
+        var fingerprints = Given20();
+
+        var result = _operations.SilenceMany(fingerprints, Ertugrul, T0.AddMinutes(-1));
+
+        Assert.False(result.Applied);
+        Assert.Equal(AlertActionRefusal.DeadlineInThePast, result.Refusal);
+        Assert.All(_alerts.All, a => Assert.Equal(AlertLifecycleState.Open, a.State));
+    }
+
+    [Fact]
+    public void Every_alert_in_a_batch_carries_the_same_instant_and_the_same_name()
+    {
+        // One act, one timestamp. A batch whose transitions are spread over
+        // three seconds reads afterwards like three decisions.
+        var fingerprints = Given20();
+
+        _operations.ClearMany(fingerprints, Ertugrul);
+
+        var steps = _alerts.All.Select(a => a.History[^1]).ToList();
+
+        Assert.All(steps, step => Assert.Equal(T0, step.AtUtc));
+        Assert.All(steps, step => Assert.Equal("ertugrul", step.Actor));
+    }
+
+    [Fact]
+    public async Task A_bulk_action_is_never_half_applied_by_a_cycle_landing_in_it()
+    {
+        // The reason MutateMany exists rather than a loop over Mutate: a cycle
+        // between two of those calls leaves the operator with twenty alerts of
+        // which eleven are acknowledged, and nothing on the screen to say which
+        // or why.
+        var fingerprints = Given20();
+
+        var work = Enumerable.Range(0, 20).Select(i => Task.Run(() =>
+        {
+            if (i % 2 == 0)
+            {
+                _alerts.Reconcile(AlertScopes.Inventory, (stored, flaps) =>
+                    AlertReconciler.Reconcile(new AlertReconciliationRequest
+                    {
+                        Observed = [.. Enumerable.Range(0, 20).Select(n => Definition($"a{n}"))],
+                        Stored = stored,
+                        FlapHistories = flaps,
+                        NowUtc = T0.AddMinutes(i),
+                    }));
+            }
+            else
+            {
+                _operations.AcknowledgeMany(fingerprints, Ertugrul);
+            }
+        }));
+
+        await Task.WhenAll(work);
+
+        // Whatever order they interleaved in, the twenty agree with each other.
+        var states = _alerts.All.Select(a => a.State).Distinct().ToList();
+
+        Assert.True(
+            states.Count == 1,
+            $"The batch was left in mixed states: {string.Join(", ", states)}.");
+    }
+
+    private List<AlertFingerprint> Given20()
+    {
+        var alerts = Enumerable.Range(0, 20).Select(i => Alert($"a{i}")).ToArray();
+
+        Given(alerts);
+
+        return [.. alerts.Select(a => a.Fingerprint)];
+    }
+
     // --- fixtures ---------------------------------------------------------
 
     private AlertReconciliationResult Cycle(DateTimeOffset now) =>
