@@ -8,7 +8,7 @@ namespace EnterpriseObservatory.Persistence.Postgres;
 /// <remarks>
 /// <para>
 /// Migrations are append-only and never edited once released, for the same
-/// reason SQLite's were: an installation that already ran migration 3 will
+/// reason SQLite's were: an installation that already ran migration 2 will
 /// never run it again, so changing it changes nothing except what a reader
 /// believes happened.
 /// </para>
@@ -23,11 +23,14 @@ internal static class PostgresSchema
 {
     private static readonly string[] Migrations =
     [
+        // --- 1: measurements -------------------------------------------------
+        //
+        // Shaped by volume in a way the state tables are not. A mid-sized
+        // estate produces on the order of ten thousand samples every sampling
+        // interval, so the width of one row is the whole design: repeating the
+        // entity id and the counter name on every sample would multiply the
+        // table by roughly ten and make every range scan read that much more.
         """
-        -- One row per distinct thing measured, so a sample can be three
-        -- numbers instead of five strings. A mid-sized estate produces on the
-        -- order of ten thousand samples per interval; the width of one row is
-        -- the whole design.
         CREATE TABLE series (
             id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             entity_id  text   NOT NULL,
@@ -84,6 +87,204 @@ internal static class PostgresSchema
             completed_to_utc bigint NOT NULL
         );
         """,
+
+        // --- 2: state --------------------------------------------------------
+        //
+        // The six SQLite migrations that built this are not replayed here. They
+        // are that database's history, not this one's, and an installation of
+        // this build starts empty — so the tables are created in the shape they
+        // ended up in. Append-only applies from here.
+        //
+        // State and measurements share one database, unlike the two SQLite
+        // files ADR-0012 separated. That separation was about file mechanics: a
+        // metric history churning one file should not be able to take alerting
+        // down with it. With a server there is no shared file to contend for,
+        // and one database is one backup, one connection and one operational
+        // story (ADR-0016).
+        //
+        // Timestamps here are timestamptz rather than the bigint the
+        // measurement tables use. State is small and read by people — an
+        // alert's history is evidence in an incident review — so it is worth
+        // the width to have the database itself understand the value. The
+        // measurement tables made the opposite trade for the opposite reason.
+        """
+        CREATE TABLE entity (
+            id                 text        NOT NULL PRIMARY KEY,
+            kind               text        NOT NULL,
+            display_name       text        NOT NULL,
+            source_instance_id text        NOT NULL,
+            health             text        NOT NULL,
+            observation_state  text        NOT NULL,
+            last_seen_utc      timestamptz NOT NULL
+        );
+
+        CREATE INDEX ix_entity_source ON entity (source_instance_id);
+        CREATE INDEX ix_entity_kind ON entity (kind);
+
+        CREATE TABLE identity_mark (
+            entity_id text NOT NULL REFERENCES entity (id) ON DELETE CASCADE,
+            kind      text NOT NULL,
+            value     text NOT NULL,
+            source    text NOT NULL,
+            PRIMARY KEY (entity_id, kind, value, source)
+        );
+
+        -- No foreign key to entity: a relationship may be observed before
+        -- either end has been collected, and refusing it would let the order
+        -- two independent collectors happen to run in decide what the graph
+        -- contains.
+        CREATE TABLE relationship (
+            from_id         text        NOT NULL,
+            to_id           text        NOT NULL,
+            kind            text        NOT NULL,
+            observed_at_utc timestamptz NOT NULL,
+            PRIMARY KEY (from_id, to_id, kind)
+        );
+
+        CREATE INDEX ix_relationship_to ON relationship (to_id);
+
+        CREATE TABLE relationship_evidence (
+            from_id     text NOT NULL,
+            to_id       text NOT NULL,
+            kind        text NOT NULL,
+            mark_kind   text NOT NULL,
+            mark_value  text NOT NULL,
+            mark_source text NOT NULL,
+            PRIMARY KEY (from_id, to_id, kind, mark_kind, mark_value, mark_source),
+            FOREIGN KEY (from_id, to_id, kind)
+                REFERENCES relationship (from_id, to_id, kind) ON DELETE CASCADE
+        );
+
+        CREATE TABLE alert_instance (
+            fingerprint             text        NOT NULL PRIMARY KEY,
+            scope                   text        NOT NULL,
+            severity                text        NOT NULL,
+            state                   text        NOT NULL,
+            title                   text        NOT NULL,
+            description             text        NOT NULL,
+            category                text        NOT NULL,
+            source                  text        NOT NULL,
+            entity_id               text        NULL,
+            is_derived              boolean     NOT NULL,
+            consecutive_hits        integer     NOT NULL,
+            is_confirmed            boolean     NOT NULL,
+            cleared_by_operator     boolean     NOT NULL,
+            pending_notification    text        NOT NULL,
+            suppressed_by_window_id text        NULL,
+            first_seen_utc          timestamptz NOT NULL,
+            last_seen_utc           timestamptz NOT NULL,
+            silenced_until_utc      timestamptz NULL
+        );
+
+        -- A reconciliation reads one scope at a time and treats what it reads
+        -- as the whole truth, so this index is on the path of every cycle.
+        CREATE INDEX ix_alert_scope ON alert_instance (scope);
+        CREATE INDEX ix_alert_entity ON alert_instance (entity_id);
+
+        CREATE TABLE alert_transition (
+            fingerprint text        NOT NULL REFERENCES alert_instance (fingerprint) ON DELETE CASCADE,
+            ordinal     integer     NOT NULL,
+            from_state  text        NOT NULL,
+            to_state    text        NOT NULL,
+            reason      text        NOT NULL,
+            at_utc      timestamptz NOT NULL,
+            actor       text        NULL,
+            PRIMARY KEY (fingerprint, ordinal)
+        );
+
+        CREATE TABLE flap_history (
+            fingerprint text NOT NULL PRIMARY KEY,
+            scope       text NOT NULL,
+            object_name text NOT NULL
+        );
+
+        CREATE INDEX ix_flap_scope ON flap_history (scope);
+
+        CREATE TABLE flap_cessation (
+            fingerprint   text        NOT NULL REFERENCES flap_history (fingerprint) ON DELETE CASCADE,
+            ordinal       integer     NOT NULL,
+            ceased_at_utc timestamptz NOT NULL,
+            PRIMARY KEY (fingerprint, ordinal)
+        );
+
+        -- Keyed by source and role together: one vCenter is read by two
+        -- collectors that fail independently. See ADR-0009.
+        CREATE TABLE collector_health (
+            instance_id          text        NOT NULL,
+            role                 text        NOT NULL,
+            health               text        NOT NULL,
+            last_success_utc     timestamptz NULL,
+            consecutive_failures integer     NOT NULL,
+            is_backing_off       boolean     NOT NULL,
+            last_failure_detail  text        NULL,
+            last_attempt_utc     timestamptz NULL,
+            last_failure_kind    text        NULL,
+            PRIMARY KEY (instance_id, role)
+        );
+
+        -- Everything a reachable source could not read. All of them, not the
+        -- first: keeping only one hid an entire class of measurement behind an
+        -- unrelated message about a different entity kind.
+        CREATE TABLE collector_partial_failure (
+            instance_id text NOT NULL,
+            role        text NOT NULL,
+            kind        text NOT NULL,
+            target      text NOT NULL,
+            detail      text NOT NULL,
+            PRIMARY KEY (instance_id, role, target, detail)
+        );
+
+        CREATE TABLE user_account (
+            username           text        NOT NULL PRIMARY KEY,
+            password_hash      text        NOT NULL,
+            role               text        NOT NULL,
+            created_utc        timestamptz NOT NULL,
+            last_signed_in_utc timestamptz NULL,
+            failed_attempts    integer     NOT NULL,
+            locked_until_utc   timestamptz NULL
+        );
+
+        CREATE TABLE maintenance_window (
+            id              text        NOT NULL PRIMARY KEY,
+            title           text        NOT NULL,
+            reason          text        NOT NULL,
+            start_utc       timestamptz NOT NULL,
+            end_utc         timestamptz NOT NULL,
+            declared_by     text        NOT NULL,
+            declared_at_utc timestamptz NOT NULL
+        );
+
+        -- Retention sweeps by end time across every window.
+        CREATE INDEX ix_window_end ON maintenance_window (end_utc);
+
+        -- No rows means the window covers the whole estate, which is what a
+        -- datacentre power test actually is. Deliberately expressible and
+        -- deliberately blunt: everything goes quiet, including the failure the
+        -- test was meant to reveal.
+        CREATE TABLE maintenance_window_entity (
+            window_id text NOT NULL REFERENCES maintenance_window (id) ON DELETE CASCADE,
+            entity_id text NOT NULL,
+            PRIMARY KEY (window_id, entity_id)
+        );
+
+        -- password_protected holds ciphertext, never a password. See ADR-0015
+        -- for what that protects and what it does not: it is a narrower claim
+        -- than "the password is encrypted", and the narrower one is the true
+        -- one.
+        CREATE TABLE source_connection (
+            instance_id        text        NOT NULL PRIMARY KEY,
+            kind               text        NOT NULL,
+            base_address       text        NOT NULL,
+            username           text        NOT NULL,
+            password_protected text        NOT NULL,
+            accept_untrusted   boolean     NOT NULL,
+            page_size          integer     NOT NULL,
+            is_enabled         boolean     NOT NULL,
+            created_utc        timestamptz NOT NULL,
+            created_by         text        NOT NULL,
+            password_set_utc   timestamptz NULL
+        );
+        """,
     ];
 
     public static int Current => Migrations.Length;
@@ -113,7 +314,8 @@ internal static class PostgresSchema
 
             using var read = connection.CreateCommand();
             read.CommandText = "SELECT version FROM schema_version;";
-            return Convert.ToInt32(read.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+            return Convert.ToInt32(
+                read.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
         });
 
         if (version > Current)
@@ -142,8 +344,8 @@ internal static class PostgresSchema
                 command.ExecuteNonQuery();
 
                 using var bump = connection.CreateCommand();
-                bump.CommandText = "UPDATE schema_version SET version = $1, applied_at = now();";
-                bump.Parameters.Add(new NpgsqlParameter { Value = target });
+                bump.CommandText = "UPDATE schema_version SET version = @version, applied_at = now();";
+                bump.Parameters.AddWithValue("version", target);
                 bump.ExecuteNonQuery();
             });
         }
