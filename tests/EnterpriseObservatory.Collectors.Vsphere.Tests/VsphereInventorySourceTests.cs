@@ -1,6 +1,7 @@
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Collectors.Vsphere;
 using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
 
@@ -210,6 +211,139 @@ public class VsphereInventorySourceTests
         Assert.Equal(HealthState.Unknown, Ds(snapshot, "vmfs01").Health);
         Assert.Equal(HealthState.Critical, Ds(snapshot, "vmfs02").Health);
         Assert.Equal(HealthState.Healthy, Ds(snapshot, "vmfs03").Health);
+    }
+
+    // --- datastore capacity -----------------------------------------------
+
+    private static VsphereDatastore Store(
+        string name, long? capacity, long? free, bool? accessible = true) => new()
+    {
+        MoRef = "ds-" + name,
+        Name = name,
+        CapacityBytes = capacity,
+        FreeSpaceBytes = free,
+        Accessible = accessible,
+    };
+
+    private const long Gb = 1024L * 1024 * 1024;
+
+    [Fact]
+    public async Task A_datastore_nearly_full_raises_a_warning()
+    {
+        // The data for this was already being fetched. summary.capacity and
+        // summary.freeSpace had been requested from vCenter on every cycle
+        // since the collector was written, parsed, and then dropped — so the
+        // most commonly configured alert in VMware monitoring was one the
+        // product could not raise, for want of using what it already had.
+        var snapshot = await Read(Payload(
+            datastores: [Store("vmfs01", capacity: 100 * Gb, free: 12 * Gb)]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Datastore nearly full");
+
+        Assert.Equal(AlertSeverity.Warning, alert.Severity);
+        Assert.Contains("88", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_datastore_almost_out_of_space_is_critical()
+    {
+        // A VMFS datastore that fills completely does not degrade: every
+        // machine with a snapshot or a thin disk on it stops, at once.
+        var snapshot = await Read(Payload(
+            datastores: [Store("vmfs01", capacity: 100 * Gb, free: 2 * Gb)]));
+
+        Assert.Equal(
+            AlertSeverity.Critical,
+            Assert.Single(snapshot.Alerts, a => a.Title == "Datastore nearly full").Severity);
+    }
+
+    [Fact]
+    public async Task A_datastore_with_room_raises_nothing()
+    {
+        var snapshot = await Read(Payload(
+            datastores: [Store("vmfs01", capacity: 100 * Gb, free: 60 * Gb)]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore nearly full");
+    }
+
+    [Fact]
+    public async Task Both_severities_share_one_fingerprint()
+    {
+        // A datastore crossing from warning to critical should make the inbox
+        // say the problem got worse, not that a second problem appeared
+        // beside the first.
+        var warning = await Read(Payload(datastores: [Store("vmfs01", 100 * Gb, 12 * Gb)]));
+        var critical = await Read(Payload(datastores: [Store("vmfs01", 100 * Gb, 2 * Gb)]));
+
+        Assert.Equal(
+            Assert.Single(warning.Alerts, a => a.Title == "Datastore nearly full").Fingerprint,
+            Assert.Single(critical.Alerts, a => a.Title == "Datastore nearly full").Fingerprint);
+    }
+
+    [Fact]
+    public async Task The_message_carries_the_free_space_as_well_as_the_percentage()
+    {
+        // Ninety percent of a hundred-terabyte volume is ten terabytes free and
+        // nobody's emergency; ninety percent of a five-hundred-gigabyte one is
+        // somebody's weekend. A percentage alone cannot tell those apart and an
+        // operator should not have to go and look.
+        var snapshot = await Read(Payload(
+            datastores: [Store("vmfs01", capacity: 100 * Gb, free: 10 * Gb)]));
+
+        var description = Assert.Single(
+            snapshot.Alerts, a => a.Title == "Datastore nearly full").Description;
+
+        Assert.Contains("GB free", description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_datastore_with_unreadable_capacity_is_not_called_full()
+    {
+        // Absent values mean the properties could not be read, and an
+        // unreadable datastore is not a full one. Principle 1.
+        var snapshot = await Read(Payload(datastores:
+        [
+            Store("nocapacity", capacity: null, free: 10 * Gb),
+            Store("nofree", capacity: 100 * Gb, free: null),
+        ]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore nearly full");
+    }
+
+    [Fact]
+    public async Task A_datastore_reporting_zero_capacity_is_not_called_full()
+    {
+        // Dividing by it would read as completely full, which is the most
+        // alarming possible answer to arrive at by accident.
+        var snapshot = await Read(Payload(
+            datastores: [Store("vmfs01", capacity: 0, free: 0)]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore nearly full");
+    }
+
+    [Fact]
+    public async Task An_inaccessible_datastore_raises_an_alert_not_only_a_health_state()
+    {
+        // It was marked Critical and nothing reached the inbox — the same gap
+        // the collector-unreachable alert exists to close, left open for the
+        // one entity kind where it means an outage rather than a degradation.
+        var snapshot = await Read(Payload(
+            datastores: [Store("vmfs01", 100 * Gb, 50 * Gb, accessible: false)]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Datastore not accessible");
+
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+        Assert.Equal(Ds(snapshot, "vmfs01").Id, alert.Entity);
+    }
+
+    [Fact]
+    public async Task An_unreadable_datastore_is_not_reported_as_inaccessible()
+    {
+        // Null is "we could not tell", which is not the same as "it is gone".
+        var snapshot = await Read(Payload(
+            datastores: [Store("vmfs01", 100 * Gb, 50 * Gb, accessible: null)]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore not accessible");
     }
 
     // --- cluster configuration --------------------------------------------
