@@ -41,9 +41,9 @@ public class GraphSampleTargetProviderTests : IDisposable
     public void Hosts_virtual_machines_and_datastores_are_sampled_by_managed_object_reference()
     {
         Given(
-            Entity("vc-1/host-1", EntityKind.EsxiHost),
-            Entity("vc-1/vm-10", EntityKind.VirtualMachine),
-            Entity("vc-1/datastore-5", EntityKind.Datastore));
+            Entity("vc-1:host-1", EntityKind.EsxiHost),
+            Entity("vc-1:vm-10", EntityKind.VirtualMachine),
+            Entity("vc-1:datastore-5", EntityKind.Datastore));
 
         var targets = Provider().Current;
 
@@ -59,8 +59,8 @@ public class GraphSampleTargetProviderTests : IDisposable
         // between them, so asking one server about another's moRef would
         // silently return somebody else's numbers.
         Given(
-            Entity("vc-1/host-1", EntityKind.EsxiHost),
-            Entity("vc-2/host-1", EntityKind.EsxiHost, source: "vc-2"));
+            Entity("vc-1:host-1", EntityKind.EsxiHost),
+            Entity("vc-2:host-1", EntityKind.EsxiHost, source: "vc-2"));
 
         Assert.Equal(["host-1"], Provider().Current.Hosts);
         Assert.Equal(["host-1"], Provider("vc-2").Current.Hosts);
@@ -72,7 +72,7 @@ public class GraphSampleTargetProviderTests : IDisposable
         // It is retained so its history survives, but asking vCenter for
         // metrics on an object it no longer has produces one failure per cycle
         // forever.
-        Given(Entity("vc-1/host-1", EntityKind.EsxiHost) with
+        Given(Entity("vc-1:host-1", EntityKind.EsxiHost) with
         {
             ObservationState = ObservationState.Vanished,
         });
@@ -86,7 +86,7 @@ public class GraphSampleTargetProviderTests : IDisposable
         // Maintenance suppresses notification, not observation. A host being
         // patched still produces real numbers, and dropping them leaves a hole
         // in the history exactly where someone will later want to look.
-        Given(Entity("vc-1/host-1", EntityKind.EsxiHost) with
+        Given(Entity("vc-1:host-1", EntityKind.EsxiHost) with
         {
             ObservationState = ObservationState.InMaintenance,
         });
@@ -99,9 +99,9 @@ public class GraphSampleTargetProviderTests : IDisposable
     {
         // A measurement with no subject is worse than no measurement: it looks
         // like data.
-        Given(Entity("vc-1/host-1", EntityKind.EsxiHost));
+        Given(Entity("vc-1:host-1", EntityKind.EsxiHost));
 
-        Assert.Equal(new EntityId("vc-1/host-1"), Provider().ResolveEntity("host-1"));
+        Assert.Equal(new EntityId("vc-1:host-1"), Provider().ResolveEntity("host-1"));
         Assert.Null(Provider().ResolveEntity("host-99"));
     }
 

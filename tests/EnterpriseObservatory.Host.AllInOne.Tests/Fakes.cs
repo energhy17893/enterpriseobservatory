@@ -70,3 +70,17 @@ internal sealed class FailingNotifier : IAlertNotifier
         throw new InvalidOperationException("the pager is down");
     }
 }
+
+/// <summary>A store whose disk is full, for the cycle that must survive it.</summary>
+internal sealed class FailingObservationStore : IObservationStore
+{
+    public void Append(IReadOnlyList<Observation> observations) =>
+        throw new IOException("the disk is full");
+
+    public SeriesResult Query(SeriesQuery query) =>
+        new() { Key = query.Key, Resolution = SeriesResolution.Raw, Exists = false };
+
+    public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+
+    public CompactionReport Compact(DateTimeOffset nowUtc, SeriesRetentionPolicy policy) => new();
+}

@@ -125,8 +125,14 @@ public class VsphereInventorySourceTests
         // them; host-1 exists in every installation.
         var snapshot = await Read(Payload(hosts: [Host()]));
 
-        Assert.StartsWith("vc-1/", snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost).Id.Value,
-            StringComparison.Ordinal);
+        var id = snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost).Id.Value;
+
+        Assert.StartsWith($"vc-1{EntityId.Separator}", id, StringComparison.Ordinal);
+
+        // And never with a slash. An id ends up in a URL path, where a slash
+        // silently becomes an extra segment — which made every entity page in
+        // the product answer with the wrong thing.
+        Assert.DoesNotContain('/', id);
     }
 
     // --- health honesty ---------------------------------------------------

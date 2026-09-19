@@ -16,8 +16,18 @@ public sealed record MonitoringCycleResult
     /// <summary>Alerts owing a notification that is not suppressed.</summary>
     public IReadOnlyList<AlertInstance> ToNotify { get; init; } = [];
 
-    /// <summary>Samples gathered, for whatever stores trends.</summary>
+    /// <summary>Samples gathered this cycle.</summary>
     public IReadOnlyList<Observation> Observations { get; init; } = [];
+
+    /// <summary>
+    /// Why the samples could not be recorded, if they could not.
+    /// </summary>
+    /// <remarks>
+    /// Collecting and keeping are different things, and a product that does the
+    /// first but not the second looks healthy right up until somebody asks what
+    /// happened yesterday.
+    /// </remarks>
+    public string? StorageFailure { get; init; }
 
     public int ActiveEntities { get; init; }
 
@@ -54,6 +64,7 @@ public sealed class MonitoringCycle(
     IAlertStateStore alertStore,
     ICollectorHealthStore healthStore,
     IAlertNotifier notifier,
+    IObservationStore observations,
     IClock clock)
 {
     private readonly InventoryCollectionPipeline _inventory =
@@ -73,6 +84,9 @@ public sealed class MonitoringCycle(
 
     private readonly IAlertNotifier _notifier =
         notifier ?? throw new ArgumentNullException(nameof(notifier));
+
+    private readonly IObservationStore _observationStore =
+        observations ?? throw new ArgumentNullException(nameof(observations));
 
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
@@ -106,7 +120,7 @@ public sealed class MonitoringCycle(
         var relationships = cycle.Snapshots.SelectMany(s => s.Relationships).ToList();
 
         var graph = _graphStore.Current.Merge(
-            entities, relationships, reporting, now, options.Retention);
+            entities, relationships, reporting, now, options.EntityRetention);
 
         graph = graph with { Relationships = [.. graph.Relationships, .. ResolveIdentity(graph, now)] };
 
@@ -148,6 +162,7 @@ public sealed class MonitoringCycle(
             .ConfigureAwait(false);
 
         _healthStore.Merge(cycle.Health);
+        StoreObservations(cycle.Observations);
 
         var reconciliation = Reconcile(AlertScopes.Observation, cycle.CollectionAlerts, options, now);
 
@@ -163,6 +178,7 @@ public sealed class MonitoringCycle(
             Visible = VisibleInbox(),
             ToNotify = reconciliation.ToNotify,
             Observations = cycle.Observations,
+            StorageFailure = _lastStorageFailure,
             ActiveEntities = graph.Active.Count(),
             VanishedEntities = graph.Vanished.Count(),
             SilentSources =
@@ -203,6 +219,44 @@ public sealed class MonitoringCycle(
 
         _alertStore.MarkNotified(scope, [.. reconciliation.ToNotify.Select(a => a.Fingerprint)]);
     }
+
+    /// <summary>
+    /// Records this cycle's samples.
+    /// </summary>
+    /// <remarks>
+    /// A storage failure must not end the cycle. Losing a sample costs one
+    /// point on one chart and the next cycle replaces it; a collection loop
+    /// that stopped because the disk was busy is a blind monitoring system, and
+    /// that is very much worse. The failure is rethrown as nothing and instead
+    /// surfaces where it belongs — the samples simply are not there, and a gap
+    /// is already how this product says "we were not looking".
+    /// </remarks>
+    private void StoreObservations(IReadOnlyList<Observation> observations)
+    {
+        if (observations.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _observationStore.Append(observations);
+        }
+#pragma warning disable CA1031 // Justified: see the remarks above.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            _lastStorageFailure = ex.Message;
+        }
+    }
+
+    /// <summary>Why the last attempt to record samples failed, if it did.</summary>
+    /// <remarks>
+    /// Reported on the cycle result rather than only logged, so that "we are
+    /// collecting but not keeping" is visible in the product rather than in a
+    /// file on the server. See ADR-0005.
+    /// </remarks>
+    private string? _lastStorageFailure;
 
     /// <summary>
     /// What an operator should see right now, across every scope.

@@ -40,7 +40,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
 
         // Managed-object references are unique within a vCenter but not between
         // them, so they are qualified before becoming entity ids.
-        EntityId Id(string moRef) => new($"{InstanceId}/{moRef}");
+        EntityId Id(string moRef) => EntityId.For(InstanceId, moRef);
 
         var vCenter = new Entity
         {

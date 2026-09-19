@@ -128,3 +128,48 @@ export interface OverviewView {
   /** The oldest successful collector read: how current this screen really is. */
   oldestSuccessfulReadUtc: string | null
 }
+
+export type SeriesResolution = 'Raw' | 'FiveMinutes' | 'OneHour'
+
+export type RollupType =
+  | 'Unknown'
+  | 'Average'
+  | 'Latest'
+  | 'Summation'
+  | 'Maximum'
+  | 'Minimum'
+  | 'None'
+
+export interface SeriesOptionView {
+  counter: string
+  /** The device, or empty for the aggregate across devices. */
+  instance: string
+}
+
+/**
+ * One point. Five numbers rather than one, because drawing only the average
+ * hides the two minutes at 100% the operator is looking for.
+ */
+export interface SeriesPointView {
+  atUtc: string
+  min: number
+  max: number
+  average: number
+  last: number
+  count: number
+}
+
+export interface SeriesView {
+  entityId: string
+  counter: string
+  instance: string
+  /** Whether this counter has ever been recorded — distinct from an empty window. */
+  exists: boolean
+  /** Always shown in the UI: an hourly average must not read as a live figure. */
+  resolution: SeriesResolution
+  unit: string
+  rollup: RollupType
+  truncated: boolean
+  /** Oldest first. Missing buckets are missing, never zero. */
+  points: SeriesPointView[]
+}

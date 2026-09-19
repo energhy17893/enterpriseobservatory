@@ -5,6 +5,8 @@ import type {
   EntityView,
   OverviewView,
   Page,
+  SeriesOptionView,
+  SeriesView,
 } from './types'
 
 /**
@@ -64,6 +66,13 @@ export interface AlertQuery extends Query {
   limit?: number
 }
 
+export interface SeriesQuery extends Query {
+  instance?: string
+  from?: string
+  to?: string
+  maxPoints?: number
+}
+
 export interface EntityQuery extends Query {
   kind?: string
   health?: string
@@ -80,4 +89,11 @@ export const api = {
   entities: (query: EntityQuery = {}) => get<Page<EntityView>>('/api/entities', query),
   entity: (id: string) => get<EntityDetailView>(`/api/entities/${encodeURIComponent(id)}`),
   collectors: () => get<CollectorView[]>('/api/collectors'),
+  seriesFor: (entityId: string) =>
+    get<SeriesOptionView[]>(`/api/entities/${encodeURIComponent(entityId)}/series`),
+  series: (entityId: string, counter: string, query: SeriesQuery = {}) =>
+    get<SeriesView>(
+      `/api/entities/${encodeURIComponent(entityId)}/series/${encodeURIComponent(counter)}`,
+      query,
+    ),
 }

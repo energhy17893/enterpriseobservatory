@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { Link, Outlet, useLocation } from 'react-router-dom'
+import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { ago, cn, isStale } from '@/lib/ui'
@@ -63,20 +64,9 @@ export function Shell() {
             <ul>
               {group.items.map((item) => (
                 <li key={item.to}>
-                  <NavLink
-                    to={item.to}
-                    end={'end' in item ? item.end : false}
-                    className={({ isActive }) =>
-                      cn(
-                        'block rounded-md px-2 py-1.5 text-sm',
-                        isActive
-                          ? 'bg-primary text-primary-on font-medium'
-                          : 'text-muted-foreground hover:text-foreground',
-                      )
-                    }
-                  >
+                  <NavItem to={item.to} exact={'end' in item ? item.end : false}>
                     {item.label}
-                  </NavLink>
+                  </NavItem>
                 </li>
               ))}
             </ul>
@@ -91,6 +81,43 @@ export function Shell() {
         </main>
       </div>
     </div>
+  )
+}
+
+/**
+ * One navigation entry.
+ *
+ * Active state is worked out here rather than left to NavLink, because several
+ * of these differ only by query string — Hosts, Virtual machines and Datastores
+ * are all /entities. NavLink matches on the path alone and lit all four at
+ * once, which is a menu telling the operator they are in four places.
+ */
+function NavItem({ to, exact, children }: { to: string; exact: boolean; children: ReactNode }) {
+  const location = useLocation()
+  const [path, search = ''] = to.split('?')
+  const wanted = new URLSearchParams(search).get('kind')
+  const current = new URLSearchParams(location.search).get('kind')
+
+  const pathMatches = exact
+    ? location.pathname === path
+    : location.pathname === path || location.pathname.startsWith(`${path}/`)
+
+  // The filter has to match too. On an entity's own page there is no filter, so
+  // the unfiltered explorer lights up — which is where "back" goes.
+  const isActive = pathMatches && wanted === current
+
+  return (
+    <Link
+      to={to}
+      className={cn(
+        'block rounded-md px-2 py-1.5 text-sm',
+        isActive
+          ? 'bg-primary text-primary-on font-medium'
+          : 'text-muted-foreground hover:text-foreground',
+      )}
+    >
+      {children}
+    </Link>
   )
 }
 

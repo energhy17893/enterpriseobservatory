@@ -68,6 +68,27 @@ public static class ObservatoryApi
         api.MapGet("/collectors", (ReadModel model) => model.Collectors())
             .WithName("GetCollectors");
 
+        api.MapGet("/entities/{id}/series", (ReadModel model, string id) => model.SeriesFor(id))
+            .WithName("GetEntitySeries");
+
+        api.MapGet("/entities/{id}/series/{counter}", (
+                ReadModel model,
+                string id,
+                string counter,
+                string? instance,
+                DateTimeOffset? from,
+                DateTimeOffset? to,
+                int? maxPoints) =>
+            model.Series(id, counter, instance, from, to, maxPoints ?? 720))
+            .WithName("GetSeries");
+
+        // Anything under /api that matched no endpoint is a 404, not the SPA.
+        // Without this the catch-all that serves the interface answers an
+        // unmatched API request with a 200 carrying HTML, and the client's
+        // symptom is a JSON parse error a long way from the cause.
+        endpoints.MapFallback("/api/{**rest}", () => Results.NotFound())
+            .WithName("ApiNotFound");
+
         return endpoints;
     }
 }

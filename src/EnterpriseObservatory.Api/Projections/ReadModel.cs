@@ -27,6 +27,7 @@ public sealed class ReadModel(
     IEntityGraphStore graphs,
     IAlertStateStore alerts,
     ICollectorHealthStore collectors,
+    IObservationStore observations,
     IClock clock)
 {
     private readonly IEntityGraphStore _graphs = graphs ?? throw new ArgumentNullException(nameof(graphs));
@@ -34,6 +35,9 @@ public sealed class ReadModel(
 
     private readonly ICollectorHealthStore _collectors =
         collectors ?? throw new ArgumentNullException(nameof(collectors));
+
+    private readonly IObservationStore _observations =
+        observations ?? throw new ArgumentNullException(nameof(observations));
 
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
@@ -211,6 +215,65 @@ public sealed class ReadModel(
                 LastFailureDetail = c.LastFailureDetail,
             }),
     ];
+
+    // --- measurements -----------------------------------------------------
+
+    /// <summary>Which counters exist for an entity.</summary>
+    /// <remarks>
+    /// Read from what has actually been recorded rather than from a fixed menu
+    /// per entity type. A menu would be wrong for half of them and would go on
+    /// offering a counter the platform stopped providing.
+    /// </remarks>
+    public IReadOnlyList<SeriesOptionView> SeriesFor(string entityId) =>
+    [
+        .. _observations.SeriesFor(new EntityId(entityId))
+            .Select(k => new SeriesOptionView { Counter = k.Counter, Instance = k.Instance }),
+    ];
+
+    /// <summary>One series over a window.</summary>
+    public SeriesView Series(
+        string entityId,
+        string counter,
+        string? instance,
+        DateTimeOffset? fromUtc,
+        DateTimeOffset? toUtc,
+        int maxPoints)
+    {
+        var to = toUtc ?? _clock.UtcNow;
+        var from = fromUtc ?? to.AddHours(-1);
+
+        var result = _observations.Query(new SeriesQuery
+        {
+            Key = new SeriesKey(new EntityId(entityId), counter, instance ?? string.Empty),
+            FromUtc = from,
+            ToUtc = to,
+            MaxPoints = Math.Clamp(maxPoints, 1, 2_000),
+        });
+
+        return new SeriesView
+        {
+            EntityId = entityId,
+            Counter = counter,
+            Instance = instance ?? string.Empty,
+            Exists = result.Exists,
+            Resolution = result.Resolution,
+            Unit = result.Unit,
+            Rollup = result.Rollup,
+            Truncated = result.Truncated,
+            Points =
+            [
+                .. result.Points.Select(p => new SeriesPointView
+                {
+                    AtUtc = p.StartUtc,
+                    Min = p.Min,
+                    Max = p.Max,
+                    Average = p.Average,
+                    Last = p.Last,
+                    Count = p.Count,
+                }),
+            ],
+        };
+    }
 
     // --- internals --------------------------------------------------------
 

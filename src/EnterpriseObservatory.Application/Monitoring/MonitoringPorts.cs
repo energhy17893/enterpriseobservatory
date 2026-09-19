@@ -110,7 +110,17 @@ public sealed record MonitoringOptions
 
     public FlapPolicy Flap { get; init; } = FlapPolicy.Default;
 
-    public EntityRetentionPolicy Retention { get; init; } = EntityRetentionPolicy.Default;
+    public EntityRetentionPolicy EntityRetention { get; init; } = EntityRetentionPolicy.Default;
+
+    /// <summary>How often measurements are folded down and swept.</summary>
+    /// <remarks>
+    /// The shortest useful cadence is the finest bucket it produces: running
+    /// more often than that finds no complete bucket to fold.
+    /// </remarks>
+    public TimeSpan CompactionInterval { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>How long measurements are kept at each resolution.</summary>
+    public SeriesRetentionPolicy Retention { get; init; } = SeriesRetentionPolicy.Default;
 
     public static MonitoringOptions Default { get; } = new();
 }

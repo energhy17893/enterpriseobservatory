@@ -51,6 +51,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0009](0009-evaluation-scope-and-provenance.md) | Değerlendirme kapsamı ve köken damgası | Kabul edildi |
 | [0010](0010-credentials-never-in-configuration-files.md) | Kimlik bilgileri yapılandırma dosyasında bulunmaz | Kabul edildi |
 | [0011](0011-sqlite-state-persistence.md) | Durum kalıcılığı için gömülü SQLite | Kabul edildi |
+| [0012](0012-time-series-storage-and-downsampling.md) | Zaman serisi depolama ve aşağı örnekleme | Kabul edildi |
 
 ## Şablon
 

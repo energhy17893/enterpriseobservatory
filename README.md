@@ -75,7 +75,7 @@ src/
   EnterpriseObservatory.Application/          use-case'ler, port arayüzleri
   EnterpriseObservatory.Collectors.Vsphere/   satıcı adaptörü
   EnterpriseObservatory.Api/                  BFF okuma yüzeyi (kütüphane)
-  EnterpriseObservatory.Persistence.Sqlite/   gömülü durum deposu
+  EnterpriseObservatory.Persistence.Sqlite/   gömülü durum ve ölçüm deposu
   EnterpriseObservatory.Host.AllInOne/        tek proses: toplama + web (MSI hedefi)
 web/                                          React + TypeScript SPA (Tailwind v4)
 tools/
@@ -84,15 +84,14 @@ tests/
   EnterpriseObservatory.Domain.Tests/         hızlı, I/O yok
   EnterpriseObservatory.Application.Tests/    use-case testleri
   EnterpriseObservatory.Api.Tests/            projeksiyon testleri
-  EnterpriseObservatory.Persistence.Sqlite.Tests/  yeniden başlatma testleri
+  EnterpriseObservatory.Persistence.Sqlite.Tests/  yeniden başlatma ve aşağı örnekleme
   EnterpriseObservatory.Host.AllInOne.Tests/  bileşim testleri
   EnterpriseObservatory.Collectors.Vsphere.Tests/
   EnterpriseObservatory.Architecture.Tests/   katman sınırlarını CI'da zorlar
 ```
 
-Henüz yazılmamış: çok-proses topoloji soyutlaması (`Hosting`) ve metriklerin
-zaman serisi deposu. İkisi de mimaride yeri olan ama bugün gerekmeyen parçalar;
-gerekçeleri ADR-0001 ve ADR-0011'de yazılı.
+Henüz yazılmamış: çok-proses topoloji soyutlaması (`Hosting`). Mimaride yeri
+olan ama bugün gerekmeyen bir parça; gerekçesi ADR-0001'de yazılı.
 
 Bağımlılık yönü tek yönlüdür ve `Architecture.Tests` tarafından zorlanır:
 

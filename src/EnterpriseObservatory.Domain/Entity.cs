@@ -52,9 +52,50 @@ public enum EntityKind
 /// <see cref="EntityId"/>; that resolution is the job of the identity resolver,
 /// never of a collector. See ADR-0003.
 /// </remarks>
-public readonly record struct EntityId(string Value)
+public readonly record struct EntityId
 {
+    /// <summary>
+    /// Separates the source from the identifier it gave the thing.
+    /// </summary>
+    /// <remarks>
+    /// A colon rather than a slash. Managed object references are unique within
+    /// a vCenter but not between them, so an id has to carry its source — and
+    /// an id ends up in a URL path, where a slash silently becomes an extra
+    /// segment. That is not a hypothetical: it made every entity page in the
+    /// product return the wrong thing, and with a catch-all route in front of
+    /// it the failure was a 200 carrying HTML rather than an honest 404.
+    /// </remarks>
+    public const char Separator = ':';
+
+    public EntityId(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        if (value.Contains('/', StringComparison.Ordinal) ||
+            value.Contains('\\', StringComparison.Ordinal))
+        {
+            // Rejected here rather than escaped at each boundary. An identifier
+            // that is safe everywhere is one fewer thing every caller has to
+            // remember, and the caller who forgets is the one who finds out in
+            // production.
+            throw new ArgumentException(
+                $"An entity id must not contain a path separator: '{value}'. " +
+                $"Compose one with {nameof(EntityId)}.{nameof(For)}.",
+                nameof(value));
+        }
+
+        Value = value;
+    }
+
+    public string Value { get; }
+
     public override string ToString() => Value;
+
+    /// <summary>Composes the id of something a source reported.</summary>
+    /// <param name="source">The collector instance, e.g. a particular vCenter.</param>
+    /// <param name="localId">What that source calls it.</param>
+    public static EntityId For(string source, string localId) =>
+        new($"{source}{Separator}{localId}");
 
     public static EntityId New() => new(Guid.NewGuid().ToString("n"));
 }

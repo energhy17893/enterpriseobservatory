@@ -232,3 +232,75 @@ public sealed record OverviewView
     /// </remarks>
     public DateTimeOffset? OldestSuccessfulReadUtc { get; init; }
 }
+
+/// <summary>One counter available for an entity.</summary>
+public sealed record SeriesOptionView
+{
+    public required string Counter { get; init; }
+
+    /// <summary>The device, or empty for the aggregate across devices.</summary>
+    public required string Instance { get; init; }
+}
+
+/// <summary>One point of a series.</summary>
+/// <remarks>
+/// Five numbers rather than one. A chart that draws only the average hides the
+/// two minutes at 100% that the operator is looking for — see
+/// <see cref="AggregatedSample"/>.
+/// </remarks>
+public sealed record SeriesPointView
+{
+    public required DateTimeOffset AtUtc { get; init; }
+
+    public required double Min { get; init; }
+
+    public required double Max { get; init; }
+
+    public required double Average { get; init; }
+
+    public required double Last { get; init; }
+
+    public required int Count { get; init; }
+}
+
+/// <summary>A series, as a chart consumes it.</summary>
+public sealed record SeriesView
+{
+    public required string EntityId { get; init; }
+
+    public required string Counter { get; init; }
+
+    public required string Instance { get; init; }
+
+    /// <summary>
+    /// Whether this counter has ever been recorded for this entity.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from having no points in the requested window. "We have never
+    /// measured this" and "we measured it and there was nothing" are different
+    /// answers and must not render the same way.
+    /// </remarks>
+    public required bool Exists { get; init; }
+
+    /// <summary>
+    /// The resolution actually used, which the interface is expected to show.
+    /// </summary>
+    /// <remarks>
+    /// A chart that does not say it is drawing hourly averages reads as a live
+    /// measurement. See ADR-0012.
+    /// </remarks>
+    public required SeriesResolution Resolution { get; init; }
+
+    public required string Unit { get; init; }
+
+    /// <summary>How the platform combined the samples; decides what may be read off a point.</summary>
+    public required RollupType Rollup { get; init; }
+
+    /// <summary>Whether points were dropped to keep the response bounded.</summary>
+    public required bool Truncated { get; init; }
+
+    /// <summary>
+    /// The points, oldest first. Missing buckets are missing, never zero.
+    /// </summary>
+    public required IReadOnlyList<SeriesPointView> Points { get; init; }
+}

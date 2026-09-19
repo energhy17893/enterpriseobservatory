@@ -57,6 +57,27 @@ internal static partial class HostLog
     public static partial void CycleFailed(ILogger logger, Exception exception, string cycle);
 
     [LoggerMessage(
+        EventId = 1014,
+        Level = LogLevel.Debug,
+        Message = "Compaction: {Written} buckets written, {SamplesDeleted} samples and " +
+                  "{BucketsDeleted} buckets aged out, {SeriesForgotten} series forgotten.")]
+    public static partial void Compacted(
+        ILogger logger, int written, int samplesDeleted, int bucketsDeleted, int seriesForgotten);
+
+    [LoggerMessage(
+        EventId = 1015,
+        Level = LogLevel.Error,
+        Message = "Compaction failed; the next pass will pick it up.")]
+    public static partial void CompactionFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        EventId = 1016,
+        Level = LogLevel.Warning,
+        Message = "Samples could not be recorded: {Detail}. Collection continues; the history will " +
+                  "have a gap, which is how this product says it was not looking.")]
+    public static partial void StorageFailed(ILogger logger, string detail);
+
+    [LoggerMessage(
         EventId = 1020,
         Message = "[{Kind}] {Severity} {Title}: {Description}")]
     public static partial void AlertNotification(

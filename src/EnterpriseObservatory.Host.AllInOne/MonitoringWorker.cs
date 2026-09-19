@@ -70,6 +70,14 @@ public sealed class MonitoringWorker(
 
                 HostLog.ObservationCycle(_logger, result.Observations.Count, result.Visible.Count);
 
+                if (result.StorageFailure is { } failure)
+                {
+                    // Collecting and keeping are different things, and a product
+                    // that does the first but not the second looks healthy right
+                    // up until somebody asks what happened yesterday.
+                    HostLog.StorageFailed(_logger, failure);
+                }
+
                 WarnAboutSilence(result);
             },
             stoppingToken);

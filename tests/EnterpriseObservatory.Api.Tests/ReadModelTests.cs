@@ -18,8 +18,9 @@ public class ReadModelTests
     private readonly StubGraphStore _graphs = new();
     private readonly StubAlertStore _alerts = new();
     private readonly StubHealthStore _collectors = new();
+    private readonly StubObservationStore _observations = new();
 
-    private ReadModel Model() => new(_graphs, _alerts, _collectors, new StubClock(T0));
+    private ReadModel Model() => new(_graphs, _alerts, _collectors, _observations, new StubClock(T0));
 
     // --- overview ---------------------------------------------------------
 
@@ -392,6 +393,24 @@ public class ReadModelTests
 
         public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints) =>
             throw new NotSupportedException("The read model never writes.");
+    }
+
+    /// <summary>
+    /// Measurements are covered by the persistence tests against the real
+    /// store; the read model only passes them through.
+    /// </summary>
+    private sealed class StubObservationStore : IObservationStore
+    {
+        public List<Observation> Appended { get; } = [];
+
+        public void Append(IReadOnlyList<Observation> observations) => Appended.AddRange(observations);
+
+        public SeriesResult Query(SeriesQuery query) =>
+            new() { Key = query.Key, Resolution = SeriesResolution.Raw, Exists = false };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+
+        public CompactionReport Compact(DateTimeOffset nowUtc, SeriesRetentionPolicy policy) => new();
     }
 
     private sealed class StubHealthStore : ICollectorHealthStore

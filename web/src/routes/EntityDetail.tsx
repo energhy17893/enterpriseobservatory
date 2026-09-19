@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { api, ApiError } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
+import { SeriesChart } from '@/components/SeriesChart'
 import { ago, healthStatus, severityStatus } from '@/lib/ui'
 import type { RelationshipKind, RelationshipView } from '@/api/types'
 
@@ -112,6 +113,11 @@ export function EntityDetail() {
             ))}
           </ul>
         )}
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-medium">Measurements</h2>
+        <SeriesChart entityId={entity.id} />
       </section>
 
       <section className="space-y-2">

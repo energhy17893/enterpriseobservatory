@@ -4,6 +4,7 @@ using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Collectors.Vsphere;
+using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Host.AllInOne;
 using EnterpriseObservatory.Host.AllInOne.Collectors;
 using EnterpriseObservatory.Host.AllInOne.Configuration;
@@ -47,6 +48,13 @@ builder.Services.AddSingleton(new ObservatoryDatabase(BuildStoreOptions(builder.
 builder.Services.AddSingleton<IEntityGraphStore, SqliteEntityGraphStore>();
 builder.Services.AddSingleton<IAlertStateStore, SqliteAlertStateStore>();
 builder.Services.AddSingleton<ICollectorHealthStore, SqliteCollectorHealthStore>();
+
+// Measurements live in their own file. They are append-heavy and swept by
+// retention every few minutes, which churns a file over time; keeping alert
+// state out of that means a large metric history cannot take alerting down
+// with it. See ADR-0012.
+builder.Services.AddSingleton(new MetricsDatabase(BuildMetricsOptions(builder.Configuration)));
+builder.Services.AddSingleton<IObservationStore, SqliteObservationStore>();
 builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();
@@ -65,6 +73,7 @@ foreach (var endpoint in endpoints)
 }
 
 builder.Services.AddHostedService<MonitoringWorker>();
+builder.Services.AddHostedService<CompactionWorker>();
 
 var host = builder.Build();
 
@@ -130,6 +139,23 @@ static SqliteStoreOptions BuildStoreOptions(IConfiguration configuration)
     return new SqliteStoreOptions { Path = path };
 }
 
+// Beside the state database by default, and separately configurable — the
+// measurement file is the one that grows, and an installation with a small
+// system disk needs to be able to put it somewhere else.
+static MetricsStoreOptions BuildMetricsOptions(IConfiguration configuration)
+{
+    var configured = configuration["Storage:MetricsPath"];
+
+    var path = string.IsNullOrWhiteSpace(configured)
+        ? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "EnterpriseObservatory",
+            "metrics.db")
+        : configured;
+
+    return new MetricsStoreOptions { Path = path };
+}
+
 static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration)
 {
     var section = configuration.GetSection("Monitoring");
@@ -139,6 +165,13 @@ static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration)
     {
         InventoryInterval = Seconds(section["InventoryIntervalSeconds"], defaults.InventoryInterval),
         ObservationInterval = Seconds(section["ObservationIntervalSeconds"], defaults.ObservationInterval),
+        CompactionInterval = Seconds(section["CompactionIntervalSeconds"], defaults.CompactionInterval),
+        Retention = new SeriesRetentionPolicy
+        {
+            Raw = Days(section["Retention:RawDays"], defaults.Retention.Raw),
+            FiveMinutes = Days(section["Retention:FiveMinuteDays"], defaults.Retention.FiveMinutes),
+            OneHour = Days(section["Retention:HourlyDays"], defaults.Retention.OneHour),
+        },
     };
 }
 
@@ -146,6 +179,9 @@ static TimeSpan Seconds(string? value, TimeSpan fallback) =>
     int.TryParse(value, out var seconds) && seconds > 0
         ? TimeSpan.FromSeconds(seconds)
         : fallback;
+
+static TimeSpan Days(string? value, TimeSpan fallback) =>
+    int.TryParse(value, out var days) && days > 0 ? TimeSpan.FromDays(days) : fallback;
 
 // One vCenter becomes two collectors sharing one client: they read the same
 // server with the same session, but on different schedules and failing

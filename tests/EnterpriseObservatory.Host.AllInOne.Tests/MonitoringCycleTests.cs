@@ -33,9 +33,16 @@ public class MonitoringCycleTests : IDisposable
         InMemory = true,
     });
 
+    private readonly MetricsDatabase _metrics = new(new MetricsStoreOptions
+    {
+        Path = string.Empty,
+        InMemory = true,
+    });
+
     private readonly SqliteEntityGraphStore _graphs;
     private readonly SqliteAlertStateStore _alerts;
     private readonly SqliteCollectorHealthStore _health;
+    private readonly SqliteObservationStore _observations;
     private readonly RecordingNotifier _notifier = new();
 
     public MonitoringCycleTests()
@@ -43,11 +50,13 @@ public class MonitoringCycleTests : IDisposable
         _graphs = new SqliteEntityGraphStore(_database);
         _alerts = new SqliteAlertStateStore(_database);
         _health = new SqliteCollectorHealthStore(_database);
+        _observations = new SqliteObservationStore(_metrics);
     }
 
     public void Dispose()
     {
         _database.Dispose();
+        _metrics.Dispose();
         GC.SuppressFinalize(this);
     }
 
@@ -63,6 +72,7 @@ public class MonitoringCycleTests : IDisposable
         _alerts,
         _health,
         notifier ?? _notifier,
+        _observations,
         _clock);
 
     // --- scoping ----------------------------------------------------------
@@ -266,6 +276,67 @@ public class MonitoringCycleTests : IDisposable
         Assert.Equal(2, notifier.Calls);
     }
 
+    // --- measurements -----------------------------------------------------
+
+    [Fact]
+    public async Task What_the_cycle_samples_is_what_the_store_keeps()
+    {
+        // The link between collecting and keeping. Without it the product looks
+        // healthy right up until somebody asks what happened yesterday.
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Reading("cpu.usage.average", 42.5, _clock.UtcNow)],
+            },
+        };
+
+        await Cycle().RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        var series = _observations.Query(new SeriesQuery
+        {
+            Key = new SeriesKey(new EntityId("vc-1:host-1"), "cpu.usage.average", string.Empty),
+            FromUtc = T0.AddMinutes(-1),
+            ToUtc = T0.AddMinutes(1),
+            Resolution = SeriesResolution.Raw,
+        });
+
+        Assert.True(series.Exists);
+        Assert.Equal(42.5, Assert.Single(series.Points).Last);
+    }
+
+    [Fact]
+    public async Task A_storage_failure_does_not_stop_the_cycle()
+    {
+        // Losing a sample costs one point on one chart and the next cycle
+        // replaces it. A collection loop that stopped because the disk was busy
+        // is a blind monitoring system, which is very much worse.
+        var cycle = new MonitoringCycle(
+            new InventoryCollectionPipeline(_clock),
+            new ObservationCollectionPipeline(_clock),
+            _graphs,
+            _alerts,
+            _health,
+            _notifier,
+            new FailingObservationStore(),
+            _clock);
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Reading("cpu.usage.average", 1, _clock.UtcNow)],
+            },
+        };
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        // Reported rather than swallowed: "we are collecting but not keeping"
+        // has to be visible in the product.
+        Assert.NotNull(result.StorageFailure);
+        Assert.Single(result.Observations);
+    }
+
     // --- provenance -------------------------------------------------------
 
     [Fact]
@@ -282,7 +353,7 @@ public class MonitoringCycleTests : IDisposable
             Behaviour = () => Snapshot(
                 "vc-1",
                 _clock.UtcNow,
-                entities: present ? [Host("vc-1/host-1", _clock.UtcNow)] : []),
+                entities: present ? [Host("vc-1:host-1", _clock.UtcNow)] : []),
         };
 
         var cycle = Cycle();
@@ -307,7 +378,7 @@ public class MonitoringCycleTests : IDisposable
         var inventory = new FakeInventorySource("vc-1")
         {
             Behaviour = () => reachable
-                ? Snapshot("vc-1", _clock.UtcNow, entities: [Host("vc-1/host-1", _clock.UtcNow)])
+                ? Snapshot("vc-1", _clock.UtcNow, entities: [Host("vc-1:host-1", _clock.UtcNow)])
                 : throw new InvalidOperationException("unreachable"),
         };
 
@@ -347,6 +418,21 @@ public class MonitoringCycleTests : IDisposable
     {
         SourceInstanceId = source,
         ReadAtUtc = now,
+    };
+
+    private static Observation Reading(string counter, double value, DateTimeOffset at) => new()
+    {
+        Entity = new EntityId("vc-1:host-1"),
+        SampledAtUtc = at,
+        Source = "vc-1",
+        Value = new CounterValue
+        {
+            CounterName = counter,
+            Raw = value,
+            Rollup = RollupType.Average,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "percent",
+        },
     };
 
     private static Entity Host(string id, DateTimeOffset now) => new()

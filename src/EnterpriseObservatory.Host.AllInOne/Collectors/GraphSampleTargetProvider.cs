@@ -41,7 +41,7 @@ public sealed class GraphSampleTargetProvider(IEntityGraphStore store, string in
     /// with. Managed object references are unique within a vCenter but not
     /// between them, so the entity id carries the source.
     /// </summary>
-    private string Prefix => _instanceId + "/";
+    private string Prefix => _instanceId + EntityId.Separator;
 
     public VsphereSampleTargets Current
     {
@@ -64,7 +64,7 @@ public sealed class GraphSampleTargetProvider(IEntityGraphStore store, string in
 
     public EntityId? ResolveEntity(string moRef)
     {
-        var id = new EntityId(Prefix + moRef);
+        var id = EntityId.For(_instanceId, moRef);
 
         // Checked against the graph rather than returned unconditionally. A
         // sample for an entity we do not know about would attach to nothing,
