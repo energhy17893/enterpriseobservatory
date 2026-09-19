@@ -187,6 +187,56 @@ public class PerfResponseParserTests
     }
 
     [Fact]
+    public void A_combined_value_is_not_labelled_with_one_device()
+    {
+        // The defect this replaces was a number that lied about its subject.
+        // A host's storage latency was stored as the maximum across thirty-two
+        // LUNs, carrying the name of whichever LUN the server happened to
+        // return first — precise enough to be believed, and about nothing.
+        // Worse, "first" is reply order, so the device a series claimed to
+        // describe could change between cycles with nothing on screen moving.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>180</counterId><instance>naa.aaa</instance></id><value>3</value></value>
+                <value><id><counterId>180</counterId><instance>naa.bbb</instance></id><value>99</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var value = Assert.Single(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+
+        Assert.Equal(99d, value.Raw);
+        Assert.Equal(string.Empty, value.Instance);
+    }
+
+    [Fact]
+    public void A_summed_value_is_not_labelled_with_one_device_either()
+    {
+        // A total across devices belongs to no device. Counter 12 is a
+        // summation, so this exercises the other branch of the same mistake.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>12</counterId><instance>vmnic0</instance></id><value>4</value></value>
+                <value><id><counterId>12</counterId><instance>vmnic1</instance></id><value>6</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var value = Assert.Single(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+
+        Assert.Equal(10d, value.Raw);
+        Assert.Equal(string.Empty, value.Instance);
+    }
+
+    [Fact]
     public void Without_an_aggregate_the_worst_device_wins_for_a_latency_counter()
     {
         // Averaging across devices is how one sick path hides behind eleven

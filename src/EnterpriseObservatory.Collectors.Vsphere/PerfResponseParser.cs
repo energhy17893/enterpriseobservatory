@@ -156,6 +156,20 @@ public static class PerfResponseParser
     /// averaging it away is how a single sick path hides behind eleven healthy
     /// ones.
     /// </para>
+    /// <para>
+    /// A combined value carries no instance, and that is the correction rather
+    /// than a detail. This kept the instance of whichever series happened to
+    /// come back first, so a host's storage latency was stored as the maximum
+    /// across thirty-two LUNs while labelled with one arbitrary LUN's name —
+    /// a number that is wrong about what it describes, wearing an identifier
+    /// precise enough to be believed. Worse, "first" is whatever order the
+    /// server replied in, so the device a series claimed to be about could
+    /// change between cycles without anything changing on screen.
+    /// </para>
+    /// <para>
+    /// Storing the per-device series instead would be better still and is not
+    /// what this does; see docs/collectors/vsphere-counter-map.md §2.
+    /// </para>
     /// </remarks>
     private static List<CounterValue> Aggregate(List<CounterValue> values)
     {
@@ -174,7 +188,9 @@ public static class PerfResponseParser
                     ? group.Sum(v => v.Raw)
                     : group.Max(v => v.Raw);
 
-                return first with { Raw = combined };
+                // Instance cleared: the sum across devices belongs to no device,
+                // and neither does the worst of them.
+                return first with { Raw = combined, Instance = string.Empty };
             });
 
         return [.. byCounter];
