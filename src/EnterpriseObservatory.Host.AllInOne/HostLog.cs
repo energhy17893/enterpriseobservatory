@@ -35,10 +35,11 @@ internal static partial class HostLog
     [LoggerMessage(
         EventId = 1003,
         Level = LogLevel.Warning,
-        Message = "Unauthenticated alert changes are enabled. Anyone who can reach this service " +
-                  "can acknowledge or clear an alert; every change is recorded as unverified, " +
-                  "naming the address it came from.")]
-    public static partial void UnauthenticatedWritesAllowed(ILogger logger);
+        Message = "This installation has no accounts yet and nothing can be seen or changed until " +
+                  "it does. Create the first administrator with this one-time setup token: " +
+                  "{Token}. It is valid only until an account exists, and restarting the service " +
+                  "issues a new one.")]
+    public static partial void SetupTokenIssued(ILogger logger, string token);
 
     [LoggerMessage(
         EventId = 1010,

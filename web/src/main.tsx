@@ -1,8 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { api } from '@/api/client'
 import { Shell } from '@/components/Shell'
+import { SignIn } from '@/routes/SignIn'
 import { Overview } from '@/routes/Overview'
 import { Alerts } from '@/routes/Alerts'
 import { Entities } from '@/routes/Entities'
@@ -24,20 +26,55 @@ const queryClient = new QueryClient({
   },
 })
 
+/**
+ * Nothing renders until the product knows who is asking.
+ *
+ * Reads are not harmless here: the estate's hostnames, addresses and serial
+ * numbers are exactly what somebody would want before attacking it. So the gate
+ * is in front of the whole application rather than around the buttons.
+ */
+function Application() {
+  const { data, isPending, isError } = useQuery({
+    queryKey: ['auth'],
+    queryFn: api.authState,
+    retry: false,
+  })
+
+  if (isPending) {
+    return <div className="p-6 text-sm text-muted-foreground">Connecting…</div>
+  }
+
+  if (isError || data === undefined) {
+    return (
+      <div className="p-6 text-sm text-status-warning-text">
+        The server could not be reached. Nothing on this screen would be current anyway.
+      </div>
+    )
+  }
+
+  if (!data.signedIn) {
+    return <SignIn state={data} />
+  }
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route element={<Shell identity={data} />}>
+          <Route index element={<Overview />} />
+          <Route path="alerts" element={<Alerts />} />
+          <Route path="entities" element={<Entities />} />
+          <Route path="entities/:id" element={<EntityDetail />} />
+          <Route path="collectors" element={<Collectors />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  )
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Routes>
-          <Route element={<Shell />}>
-            <Route index element={<Overview />} />
-            <Route path="alerts" element={<Alerts />} />
-            <Route path="entities" element={<Entities />} />
-            <Route path="entities/:id" element={<EntityDetail />} />
-            <Route path="collectors" element={<Collectors />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <Application />
     </QueryClientProvider>
   </StrictMode>,
 )

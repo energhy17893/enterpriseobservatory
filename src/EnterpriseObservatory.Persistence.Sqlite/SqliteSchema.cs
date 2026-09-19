@@ -152,6 +152,24 @@ internal static class SqliteSchema
             PRIMARY KEY (instance_id, role)
         ) STRICT;
         """,
+
+        // --- 2: accounts -------------------------------------------------
+        //
+        // Added rather than folded into migration 1, because migration 1 has
+        // been released and an accepted migration is never edited — an
+        // installation that already ran it will never run it again, so changing
+        // it changes nothing except what a reader believes happened.
+        """
+        CREATE TABLE user_account (
+            username           TEXT    NOT NULL PRIMARY KEY,
+            password_hash      TEXT    NOT NULL,
+            role               TEXT    NOT NULL,
+            created_utc        TEXT    NOT NULL,
+            last_signed_in_utc TEXT    NULL,
+            failed_attempts    INTEGER NOT NULL,
+            locked_until_utc   TEXT    NULL
+        ) STRICT;
+        """,
     ];
 
     /// <summary>The version a database is brought up to.</summary>

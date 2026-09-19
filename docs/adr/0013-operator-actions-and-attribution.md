@@ -1,6 +1,6 @@
 # ADR-0013: Operatör eylemleri ve atıf
 
-- **Durum:** Kabul edildi
+- **Durum:** Kabul edildi — **§2 (`AllowUnauthenticatedWrites`) yerini ADR-0014'e bıraktı**
 - **Tarih:** 2026-09-19
 - **Karar verenler:** Ertuğrul Ünal
 - **İlgili:** ADR-0006 (web stack, kimlik doğrulama mekanizması),

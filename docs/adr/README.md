@@ -52,7 +52,8 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0010](0010-credentials-never-in-configuration-files.md) | Kimlik bilgileri yapılandırma dosyasında bulunmaz | Kabul edildi |
 | [0011](0011-sqlite-state-persistence.md) | Durum kalıcılığı için gömülü SQLite | Kabul edildi |
 | [0012](0012-time-series-storage-and-downsampling.md) | Zaman serisi depolama ve aşağı örnekleme | Kabul edildi |
-| [0013](0013-operator-actions-and-attribution.md) | Operatör eylemleri ve atıf | Kabul edildi |
+| [0013](0013-operator-actions-and-attribution.md) | Operatör eylemleri ve atıf | Kabul edildi (§2 yerini ADR-0014'e bıraktı) |
+| [0014](0014-local-accounts-and-cookie-sessions.md) | Yerel hesaplar ve çerez oturumları | Kabul edildi |
 
 ## Şablon
 

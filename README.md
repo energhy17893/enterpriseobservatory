@@ -145,11 +145,17 @@ cd web && npm run dev
 vCenter parolası **hiçbir zaman** ayar dosyasına yazılmaz; host dosyadan gelen
 bir parola görürse başlamayı reddeder (ADR-0010).
 
-Alarm değiştirme (onayla / sustur / kapat) kimlik doğrulama gerektirir. Kimlik
-doğrulama henüz yazılmadığı için bu uçlar varsayılan olarak 403 döner;
-geliştirirken veya kapalı bir yönetim ağında `Operations:AllowUnauthenticatedWrites`
-ile açılabilir — o zaman her değişiklik `unverified:<adres>` olarak kaydedilir
-(ADR-0013).
+Her şey — okumalar dahil — kimlik doğrulama gerektirir. Yeni bir kurulumda hiç
+hesap yoktur: servis açılışta tek kullanımlık bir **kurulum jetonu** loga yazar,
+ve ilk yönetici o jetonla oluşturulur. Varsayılan parola yoktur ve ilk açılış
+açık değildir (ADR-0014).
+
+```
+warn: This installation has no accounts yet ... setup token: 6ruVRxIS...
+```
+
+Roller: `Viewer` (görür), `Operator` (alarm onaylar/susturur/kapatır),
+`Administrator` (ayrıca hesap ve yapılandırma). Her rol altındakini içerir.
 
 ```bash
 dotnet user-secrets --project src/EnterpriseObservatory.Host.AllInOne set "VCenters:0:Password" "..."

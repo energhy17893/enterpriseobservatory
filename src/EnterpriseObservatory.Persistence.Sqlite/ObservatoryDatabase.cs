@@ -116,13 +116,26 @@ public sealed class ObservatoryDatabase : IDisposable
     public void Write(Action<SqliteConnection> work)
     {
         ArgumentNullException.ThrowIfNull(work);
+
+        Write(connection =>
+        {
+            work(connection);
+            return 0;
+        });
+    }
+
+    /// <summary>Runs work inside a transaction and returns its result.</summary>
+    public T Write<T>(Func<SqliteConnection, T> work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         lock (_gate)
         {
             using var transaction = _connection.BeginTransaction();
-            work(_connection);
+            var result = work(_connection);
             transaction.Commit();
+            return result;
         }
     }
 

@@ -183,3 +183,15 @@ export interface AlertActionView {
   recordedAs: string
   actorVerified: boolean
 }
+
+export type Role = 'Viewer' | 'Operator' | 'Administrator'
+
+/** Who the caller is, and what this installation still needs. */
+export interface AuthStateView {
+  signedIn: boolean
+  username: string | null
+  role: Role | null
+  /** True only before anyone has claimed the installation. */
+  needsSetup: boolean
+  minimumPasswordLength: number
+}

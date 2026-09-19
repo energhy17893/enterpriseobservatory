@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using EnterpriseObservatory.Api;
 using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
@@ -62,7 +63,63 @@ builder.Services.AddSingleton<ObservationCollectionPipeline>();
 builder.Services.AddSingleton<MonitoringCycle>();
 builder.Services.AddSingleton<AlertOperations>();
 builder.Services.AddSingleton<ReadModel>();
-builder.Services.AddSingleton(BuildOperationsOptions(builder.Configuration));
+
+// --- who may do what -----------------------------------------------------
+//
+// A cookie rather than a token in browser storage. The interface and the API
+// share an origin precisely so this works: HttpOnly keeps a script that gets
+// into the page from reading it, and SameSite keeps another site from making
+// the browser send it. See ADR-0006 and ADR-0014.
+builder.Services.AddSingleton<IUserAccountStore, SqliteUserAccountStore>();
+builder.Services.AddSingleton<AuthenticationService>();
+
+builder.Services
+    .AddAuthentication(AuthenticationApi.Scheme)
+    .AddCookie(AuthenticationApi.Scheme, options =>
+    {
+        options.Cookie.Name = "eo.session";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+
+        // Secure when the request arrived over HTTPS, and not otherwise. Fixed
+        // to Always would make the product unusable over plain http on a
+        // closed management network without saying why; SameAsRequest at least
+        // never downgrades a secure session.
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+
+        options.SlidingExpiration = true;
+        options.ExpireTimeSpan = TimeSpan.FromHours(12);
+
+        // An API answers with a status, never a redirect to a login page. A
+        // 302 to HTML is what turns "your session expired" into a JSON parse
+        // error somewhere far from the cause.
+        options.Events.OnRedirectToLogin = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
+
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
+    });
+
+builder.Services.AddAuthorizationBuilder()
+    // Named policies rather than a role string at each call site, so that
+    // adding a command cannot quietly add one anybody can run.
+    .AddPolicy(ObservatoryApi.Policies.Operator, policy =>
+        policy.RequireAssertion(context =>
+            AuthenticationApi.RoleOf(context.User) >= Role.Operator))
+    .AddPolicy(ObservatoryApi.Policies.Administrator, policy =>
+        policy.RequireAssertion(context =>
+            AuthenticationApi.RoleOf(context.User) >= Role.Administrator));
+
+// Issued per run and never stored: nothing to steal from the database, and a
+// restart invalidates whatever was in an old log. It is only usable while the
+// installation has no accounts at all.
+var setupToken = AuthenticationService.NewSetupToken();
 
 // Enums travel as their names, not their numbers. A client reading
 // "severity": 2 has to keep a copy of our enum ordering, and the day someone
@@ -80,6 +137,10 @@ builder.Services.AddHostedService<CompactionWorker>();
 
 var host = builder.Build();
 
+host.UseAuthentication();
+host.UseAuthorization();
+
+host.MapAuthenticationApi(setupToken);
 host.MapObservatoryApi();
 
 // The SPA's build output, when it has been built. Serving the interface from
@@ -109,9 +170,11 @@ if (Directory.Exists(host.Environment.WebRootPath))
 // be as easy to find in a log as it was to turn on.
 var startupLog = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("EnterpriseObservatory");
 
-if (host.Services.GetRequiredService<OperationsOptions>().AllowUnauthenticatedWrites)
+// Printed only while it is usable. A token in a log for an installation that
+// already has an administrator is noise that looks like a secret.
+if (host.Services.GetRequiredService<AuthenticationService>().NeedsBootstrap)
 {
-    HostLog.UnauthenticatedWritesAllowed(startupLog);
+    HostLog.SetupTokenIssued(startupLog, setupToken);
 }
 
 foreach (var endpoint in endpoints)
@@ -150,16 +213,6 @@ static SqliteStoreOptions BuildStoreOptions(IConfiguration configuration)
 // Beside the state database by default, and separately configurable — the
 // measurement file is the one that grows, and an installation with a small
 // system disk needs to be able to put it somewhere else.
-// Off unless somebody turned it on. Authentication is not built yet, so with
-// this enabled anyone who can reach the port can acknowledge or clear an alert.
-// On a management network that may be a reasonable trade; it is not one the
-// product should make on an operator's behalf. See ADR-0013.
-static OperationsOptions BuildOperationsOptions(IConfiguration configuration) => new()
-{
-    AllowUnauthenticatedWrites =
-        bool.TryParse(configuration["Operations:AllowUnauthenticatedWrites"], out var allow) && allow,
-};
-
 static MetricsStoreOptions BuildMetricsOptions(IConfiguration configuration)
 {
     var configured = configuration["Storage:MetricsPath"];

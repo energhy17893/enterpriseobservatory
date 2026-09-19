@@ -1,8 +1,9 @@
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { ago, cn, isStale } from '@/lib/ui'
+import type { AuthStateView } from '@/api/types'
 
 /**
  * Top-level navigation, grouped by what the operator is trying to do.
@@ -42,7 +43,7 @@ const GROUPS = [
   },
 ] as const
 
-export function Shell() {
+export function Shell({ identity }: { identity: AuthStateView }) {
   return (
     <div className="flex min-h-screen">
       <nav
@@ -75,11 +76,43 @@ export function Shell() {
       </nav>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Freshness />
+        <div className="flex items-center justify-between gap-4 border-b border-border px-6 py-2 text-xs">
+          <Identity identity={identity} />
+          <Freshness />
+        </div>
         <main className="min-w-0 flex-1 p-6">
           <Outlet />
         </main>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Who you are, and the way out.
+ *
+ * The role is shown because it decides what the buttons will do. An operator
+ * who does not know they are a viewer reads a refused action as a bug.
+ */
+function Identity({ identity }: { identity: AuthStateView }) {
+  const queryClient = useQueryClient()
+
+  return (
+    <div className="flex items-center gap-2 text-muted-foreground">
+      <span>
+        {identity.username}
+        {identity.role !== null && ` · ${identity.role}`}
+      </span>
+      <button
+        type="button"
+        onClick={async () => {
+          await api.signOut()
+          void queryClient.invalidateQueries()
+        }}
+        className="rounded-md border border-border px-2 py-0.5 hover:text-foreground"
+      >
+        Sign out
+      </button>
     </div>
   )
 }
@@ -145,7 +178,7 @@ function Freshness() {
   return (
     <div
       className={cn(
-        'flex items-center justify-end gap-2 border-b border-border px-6 py-2 text-xs',
+        'flex items-center justify-end gap-2',
         stale ? 'text-status-warning-text' : 'text-muted-foreground',
       )}
     >

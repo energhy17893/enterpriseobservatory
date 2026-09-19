@@ -8,7 +8,7 @@ import type {
   SeriesOptionView,
   SeriesView,
 } from './types'
-import type { AlertActionView } from './types'
+import type { AlertActionView, AuthStateView } from './types'
 
 /**
  * A failed request, carrying enough to say something true about it.
@@ -77,11 +77,17 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     throw new ApiError(messageFor(response.status, detail), response.status)
   }
 
+  if (response.status === 401 || response.status === 429) {
+    const detail = await response.json().catch(() => null)
+    throw new ApiError(messageFor(response.status, detail), response.status)
+  }
+
   if (!response.ok) {
     throw new ApiError(`The server answered ${response.status}.`, response.status)
   }
 
-  return (await response.json()) as T
+  // 204, from signing out.
+  return (response.status === 204 ? null : await response.json()) as T
 }
 
 function messageFor(status: number, detail: unknown): string {
@@ -92,6 +98,9 @@ function messageFor(status: number, detail: unknown): string {
     if (body.refusal === 'NotFound') return 'That alert is no longer firing.'
     if (body.refusal === 'DeadlineInThePast') return 'A silence has to end in the future.'
   }
+
+  if (status === 403) return 'Your account is not allowed to do that.'
+  if (status === 401) return 'You are not signed in.'
 
   return `The server answered ${status}.`
 }
@@ -131,6 +140,12 @@ export const api = {
   collectors: () => get<CollectorView[]>('/api/collectors'),
   seriesFor: (entityId: string) =>
     get<SeriesOptionView[]>(`/api/entities/${encodeURIComponent(entityId)}/series`),
+  authState: () => get<AuthStateView>('/api/auth/state'),
+  signIn: (username: string, password: string) =>
+    post<AuthStateView>('/api/auth/signin', { username, password }),
+  signOut: () => post<null>('/api/auth/signout', {}),
+  bootstrap: (token: string, username: string, password: string) =>
+    post<AuthStateView>('/api/auth/bootstrap', { token, username, password }),
   acknowledge: (fingerprint: string) =>
     post<AlertActionView>('/api/alerts/acknowledge', { fingerprint }),
   clear: (fingerprint: string) => post<AlertActionView>('/api/alerts/clear', { fingerprint }),

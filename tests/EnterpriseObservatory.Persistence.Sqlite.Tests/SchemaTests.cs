@@ -37,14 +37,17 @@ public class SchemaTests : IDisposable
         // The obvious failure: migrations that run every time. It would show up
         // as a startup crash on the second run, which is at least honest — but
         // only if something checks.
+        int applied;
+
         using (var first = Open())
         {
-            Assert.Equal(1, UserVersion(first));
+            applied = UserVersion(first);
         }
 
         using var second = Open();
 
-        Assert.Equal(1, UserVersion(second));
+        Assert.True(applied > 0, "The schema never ran.");
+        Assert.Equal(applied, UserVersion(second));
     }
 
     [Fact]
@@ -100,7 +103,7 @@ public class SchemaTests : IDisposable
 
         using (var database = new ObservatoryDatabase(new SqliteStoreOptions { Path = nested }))
         {
-            Assert.Equal(1, UserVersion(database));
+            Assert.True(UserVersion(database) > 0);
         }
 
         Assert.True(File.Exists(nested));

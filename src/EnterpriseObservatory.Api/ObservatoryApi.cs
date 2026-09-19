@@ -35,7 +35,10 @@ public static class ObservatoryApi
     {
         ArgumentNullException.ThrowIfNull(endpoints);
 
-        var api = endpoints.MapGroup("/api");
+        // Everything here needs an account. Reads are not harmless in this
+        // product: the estate's hostnames, addresses and serial numbers are
+        // exactly what somebody would want before attacking it.
+        var api = endpoints.MapGroup("/api").RequireAuthorization();
 
         api.MapGet("/overview", (ReadModel model) => model.Overview())
             .WithName("GetOverview");
@@ -97,30 +100,30 @@ public static class ObservatoryApi
                 HttpContext context,
                 ReadModel model,
                 AlertOperations operations,
-                OperationsOptions options,
                 AlertCommand command) =>
-            Act(context, model, options, actor =>
+            Act(context, model, actor =>
                 operations.Acknowledge(Fingerprint(command.Fingerprint), actor)))
+            .RequireAuthorization(Policies.Operator)
             .WithName("AcknowledgeAlert");
 
         api.MapPost("/alerts/clear", (
                 HttpContext context,
                 ReadModel model,
                 AlertOperations operations,
-                OperationsOptions options,
                 AlertCommand command) =>
-            Act(context, model, options, actor =>
+            Act(context, model, actor =>
                 operations.Clear(Fingerprint(command.Fingerprint), actor)))
+            .RequireAuthorization(Policies.Operator)
             .WithName("ClearAlert");
 
         api.MapPost("/alerts/silence", (
                 HttpContext context,
                 ReadModel model,
                 AlertOperations operations,
-                OperationsOptions options,
                 SilenceCommand command) =>
-            Act(context, model, options, actor =>
+            Act(context, model, actor =>
                 operations.Silence(Fingerprint(command.Fingerprint), actor, command.UntilUtc)))
+            .RequireAuthorization(Policies.Operator)
             .WithName("SilenceAlert");
 
         // Anything under /api that matched no endpoint is a 404, not the SPA.
@@ -133,23 +136,38 @@ public static class ObservatoryApi
         return endpoints;
     }
 
+    /// <summary>The authorization policies the write endpoints require.</summary>
+    /// <remarks>
+    /// Named rather than repeated inline, so that adding a command cannot
+    /// quietly add one that nobody has to be anybody to run.
+    /// </remarks>
+    public static class Policies
+    {
+        public const string Operator = nameof(Operator);
+
+        public const string Administrator = nameof(Administrator);
+    }
+
     /// <summary>
-    /// Runs an operator command, if the product is willing to attribute it.
+    /// Runs an operator command and reports what it did.
     /// </summary>
     /// <remarks>
-    /// The attribution check comes first, before the alert is even looked up.
-    /// Refusing after doing the work would tell an unauthenticated caller
-    /// whether an alert exists, and would be a longer road to the same no.
+    /// The identity is already established by the time this runs — an
+    /// unauthenticated request never reaches a handler — so the only thing left
+    /// is recording who it was.
     /// </remarks>
     private static IResult Act(
         HttpContext context,
         ReadModel model,
-        OperationsOptions options,
         Func<OperatorIdentity, AlertActionResult> command)
     {
-        if (OperatorResolver.Resolve(context, options) is not { } actor)
+        if (AuthenticationApi.OperatorFor(context) is not { } actor)
         {
-            return OperatorResolver.Refused();
+            // Should be unreachable: the policy ran first. Kept because an
+            // unattributed change is worse than a refused one, and a future
+            // endpoint added without its policy would otherwise write "null"
+            // into the audit trail.
+            return Results.Unauthorized();
         }
 
         var result = command(actor);
