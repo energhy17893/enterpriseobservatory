@@ -111,6 +111,21 @@ dağıtım kararı olarak kaldığı sürece değiştirilebilir. İkisi de birer
 `Domain` hiçbir projeye referans veremez. Bu kural bir konvansiyon değil, kırmızıya
 düşen bir testtir.
 
+## Ürün kurgusu
+
+Ürünün **ne olduğu**, hangi dört soruyu cevapladığı, teşhis merdiveni ve hangi
+katmanlarda hangi best practice kontrollerinin yapılacağı:
+
+> **[docs/product-architecture.md](docs/product-architecture.md)**
+
+Bu belge koddan önce gelir. Yeni bir yetenek önerilmeden önce oraya bakılır;
+orada tarif edilmemiş bir yetenek, inşa edilmeden önce oraya yazılır.
+
+Yanındaki ölçülmüş referans: [vSphere sayaç haritası](docs/collectors/vsphere-counter-map.md)
+— hangi sayacın **hangi nesnede** toplandığı, gerçek bir vCenter'dan çıkarılmış.
+Yeni bir sayaç eklenmeden önce buraya bakılır; sayacın adı, onu nereden
+isteyeceğinizi söylemez.
+
 ## Mimari kararlar
 
 Her önemli karar `docs/adr/` altında numaralı bir kayıttır: bağlam, karar,
