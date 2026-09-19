@@ -66,11 +66,72 @@ public sealed class SqliteAlertStateStore : IAlertStateStore
         }
     }
 
-    public void Apply(string scope, AlertReconciliationResult result)
+    public AlertReconciliationResult Reconcile(
+        string scope,
+        Func<IReadOnlyList<AlertInstance>, IReadOnlyList<FlapHistory>, AlertReconciliationResult> reconcile)
+    {
+        ArgumentNullException.ThrowIfNull(reconcile);
+
+        lock (_gate)
+        {
+            // Read, decide and store without letting go in between. An operator
+            // acknowledging an alert in the gap would otherwise be overwritten
+            // by this result — the button would appear to work and the alert
+            // would reopen, with nothing to show why.
+            var stored = _instances.TryGetValue(scope, out var slice)
+                ? (IReadOnlyList<AlertInstance>)[.. slice]
+                : [];
+
+            var flaps = _flaps.TryGetValue(scope, out var histories)
+                ? (IReadOnlyList<FlapHistory>)[.. histories]
+                : [];
+
+            var result = reconcile(stored, flaps);
+
+            Store(scope, result);
+
+            return result;
+        }
+    }
+
+    public AlertInstance? Mutate(AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+
+        lock (_gate)
+        {
+            foreach (var (scope, slice) in _instances)
+            {
+                var index = slice.FindIndex(i => i.Fingerprint == fingerprint);
+
+                if (index < 0)
+                {
+                    continue;
+                }
+
+                // Applied to the instance as stored, never to a copy the caller
+                // brought with it.
+                var next = change(slice[index]);
+
+                _database.Write(connection =>
+                {
+                    DeleteInstance(connection, fingerprint);
+                    WriteInstance(connection, scope, next);
+                });
+
+                slice[index] = next;
+
+                return next;
+            }
+
+            return null;
+        }
+    }
+
+    private void Store(string scope, AlertReconciliationResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
 
-        lock (_gate)
         {
             _database.Write(connection =>
             {
@@ -144,6 +205,17 @@ public sealed class SqliteAlertStateStore : IAlertStateStore
     }
 
     // --- writing ----------------------------------------------------------
+
+    private static void DeleteInstance(SqliteConnection connection, AlertFingerprint fingerprint)
+    {
+        // The transitions go with it by cascade, and are rewritten from the new
+        // instance's own history.
+        using var command = Command(
+            connection, "DELETE FROM alert_instance WHERE fingerprint = $fingerprint;");
+
+        command.Bind("$fingerprint", fingerprint.Value);
+        command.ExecuteNonQuery();
+    }
 
     private static void DeleteScope(SqliteConnection connection, string scope)
     {

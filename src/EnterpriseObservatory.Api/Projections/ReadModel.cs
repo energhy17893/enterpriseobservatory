@@ -308,6 +308,9 @@ public sealed class ReadModel(
         };
     }
 
+    /// <summary>Presents one alert instance, for a command's response.</summary>
+    public AlertView Present(AlertInstance alert) => ToView(alert, _graphs.Current);
+
     private static AlertView ToView(AlertInstance alert, EntityGraph graph)
     {
         string? name = null;

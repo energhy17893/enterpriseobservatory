@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using EnterpriseObservatory.Api;
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
@@ -59,7 +60,9 @@ builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();
 builder.Services.AddSingleton<MonitoringCycle>();
+builder.Services.AddSingleton<AlertOperations>();
 builder.Services.AddSingleton<ReadModel>();
+builder.Services.AddSingleton(BuildOperationsOptions(builder.Configuration));
 
 // Enums travel as their names, not their numbers. A client reading
 // "severity": 2 has to keep a copy of our enum ordering, and the day someone
@@ -106,6 +109,11 @@ if (Directory.Exists(host.Environment.WebRootPath))
 // be as easy to find in a log as it was to turn on.
 var startupLog = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("EnterpriseObservatory");
 
+if (host.Services.GetRequiredService<OperationsOptions>().AllowUnauthenticatedWrites)
+{
+    HostLog.UnauthenticatedWritesAllowed(startupLog);
+}
+
 foreach (var endpoint in endpoints)
 {
     var address = new Uri(endpoint.BaseAddress);
@@ -142,6 +150,16 @@ static SqliteStoreOptions BuildStoreOptions(IConfiguration configuration)
 // Beside the state database by default, and separately configurable — the
 // measurement file is the one that grows, and an installation with a small
 // system disk needs to be able to put it somewhere else.
+// Off unless somebody turned it on. Authentication is not built yet, so with
+// this enabled anyone who can reach the port can acknowledge or clear an alert.
+// On a management network that may be a reasonable trade; it is not one the
+// product should make on an operator's behalf. See ADR-0013.
+static OperationsOptions BuildOperationsOptions(IConfiguration configuration) => new()
+{
+    AllowUnauthenticatedWrites =
+        bool.TryParse(configuration["Operations:AllowUnauthenticatedWrites"], out var allow) && allow,
+};
+
 static MetricsStoreOptions BuildMetricsOptions(IConfiguration configuration)
 {
     var configured = configuration["Storage:MetricsPath"];

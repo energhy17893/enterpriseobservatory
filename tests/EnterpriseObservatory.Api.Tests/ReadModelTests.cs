@@ -388,7 +388,12 @@ public class ReadModelTests
 
         public IReadOnlyList<FlapHistory> FlapHistoriesIn(string scope) => [];
 
-        public void Apply(string scope, AlertReconciliationResult result) =>
+        public AlertReconciliationResult Reconcile(
+            string scope,
+            Func<IReadOnlyList<AlertInstance>, IReadOnlyList<FlapHistory>, AlertReconciliationResult> reconcile) =>
+            throw new NotSupportedException("The read model never writes.");
+
+        public AlertInstance? Mutate(AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change) =>
             throw new NotSupportedException("The read model never writes.");
 
         public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints) =>

@@ -2,6 +2,7 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
+import { AlertActions } from '@/components/AlertActions'
 import { ago, cn, severityStatus } from '@/lib/ui'
 
 /**
@@ -136,6 +137,7 @@ export function Alerts() {
                         {alert.source} · {alert.category}
                       </Identifier>
                     </div>
+                    <AlertActions alert={alert} />
                   </div>
                   <div className="shrink-0 text-right text-xs text-muted-foreground">
                     <div>seen {ago(alert.lastSeenUtc)}</div>

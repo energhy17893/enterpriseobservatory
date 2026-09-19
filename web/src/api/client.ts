@@ -8,6 +8,7 @@ import type {
   SeriesOptionView,
   SeriesView,
 } from './types'
+import type { AlertActionView } from './types'
 
 /**
  * A failed request, carrying enough to say something true about it.
@@ -56,6 +57,45 @@ async function get<T>(path: string, query: Query = {}): Promise<T> {
   return (await response.json()) as T
 }
 
+async function post<T>(path: string, body: unknown): Promise<T> {
+  let response: Response
+
+  try {
+    response = await fetch(new URL(path, window.location.origin), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    })
+  } catch (cause) {
+    throw new ApiError('The server could not be reached.', null, { cause })
+  }
+
+  // A refusal carries a body explaining itself — "not signed in", "that alert
+  // is gone" — and the caller needs it more than it needs an exception.
+  if (response.status === 403 || response.status === 404 || response.status === 400) {
+    const detail = await response.json().catch(() => null)
+    throw new ApiError(messageFor(response.status, detail), response.status)
+  }
+
+  if (!response.ok) {
+    throw new ApiError(`The server answered ${response.status}.`, response.status)
+  }
+
+  return (await response.json()) as T
+}
+
+function messageFor(status: number, detail: unknown): string {
+  if (detail !== null && typeof detail === 'object') {
+    const body = detail as { detail?: string; refusal?: string }
+
+    if (typeof body.detail === 'string') return body.detail
+    if (body.refusal === 'NotFound') return 'That alert is no longer firing.'
+    if (body.refusal === 'DeadlineInThePast') return 'A silence has to end in the future.'
+  }
+
+  return `The server answered ${status}.`
+}
+
 export interface AlertQuery extends Query {
   severity?: string
   state?: string
@@ -91,6 +131,11 @@ export const api = {
   collectors: () => get<CollectorView[]>('/api/collectors'),
   seriesFor: (entityId: string) =>
     get<SeriesOptionView[]>(`/api/entities/${encodeURIComponent(entityId)}/series`),
+  acknowledge: (fingerprint: string) =>
+    post<AlertActionView>('/api/alerts/acknowledge', { fingerprint }),
+  clear: (fingerprint: string) => post<AlertActionView>('/api/alerts/clear', { fingerprint }),
+  silence: (fingerprint: string, untilUtc: string) =>
+    post<AlertActionView>('/api/alerts/silence', { fingerprint, untilUtc }),
   series: (entityId: string, counter: string, query: SeriesQuery = {}) =>
     get<SeriesView>(
       `/api/entities/${encodeURIComponent(entityId)}/series/${encodeURIComponent(counter)}`,

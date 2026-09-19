@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { api, ApiError } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { SeriesChart } from '@/components/SeriesChart'
+import { AlertActions } from '@/components/AlertActions'
 import { ago, healthStatus, severityStatus } from '@/lib/ui'
 import type { RelationshipKind, RelationshipView } from '@/api/types'
 
@@ -95,19 +96,27 @@ export function EntityDetail() {
           <ul className="space-y-2">
             {alerts.map((alert) => (
               <li key={alert.fingerprint}>
-                <Card className="flex flex-wrap items-center justify-between gap-3 p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <StatusBadge status={severityStatus(alert.severity)}>
-                      {alert.severity}
-                    </StatusBadge>
-                    <span className="font-medium">{alert.title}</span>
-                    {alert.state !== 'Open' && (
-                      <span className="text-xs text-muted-foreground">{alert.state}</span>
-                    )}
+                <Card className="p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <StatusBadge status={severityStatus(alert.severity)}>
+                        {alert.severity}
+                      </StatusBadge>
+                      <span className="font-medium">{alert.title}</span>
+                      {alert.state !== 'Open' && (
+                        <span className="text-xs text-muted-foreground">{alert.state}</span>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      since {ago(alert.firstSeenUtc)}
+                    </span>
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    since {ago(alert.firstSeenUtc)}
-                  </span>
+                  {/*
+                    The same actions as the inbox, on the same instances. An
+                    alert acknowledged here is acknowledged there — that is the
+                    whole point of one model. See ADR-0007.
+                  */}
+                  <AlertActions alert={alert} />
                 </Card>
               </li>
             ))}

@@ -283,21 +283,17 @@ public sealed class MonitoringCycle(
         string scope,
         IReadOnlyList<AlertDefinition> observed,
         MonitoringOptions options,
-        DateTimeOffset now)
-    {
-        var result = AlertReconciler.Reconcile(new AlertReconciliationRequest
-        {
-            Observed = observed,
-            Stored = _alertStore.InstancesIn(scope),
-            FlapHistories = _alertStore.FlapHistoriesIn(scope),
-            Hysteresis = options.Hysteresis,
-            Flap = options.Flap,
-            NowUtc = now,
-        });
-
-        _alertStore.Apply(scope, result);
-        return result;
-    }
+        DateTimeOffset now) =>
+        _alertStore.Reconcile(scope, (stored, flaps) => AlertReconciler.Reconcile(
+            new AlertReconciliationRequest
+            {
+                Observed = observed,
+                Stored = stored,
+                FlapHistories = flaps,
+                Hysteresis = options.Hysteresis,
+                Flap = options.Flap,
+                NowUtc = now,
+            }));
 
     /// <summary>
     /// Links records that describe the same real machine.

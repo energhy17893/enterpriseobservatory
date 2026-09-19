@@ -65,7 +65,7 @@ public class RestartTests : IDisposable
         var store = new SqliteAlertStateStore(_database);
         var acknowledged = AlertLifecycle.Acknowledge(Alert("psu"), "ertugrul", T0);
 
-        store.Apply(AlertScopes.Inventory, Reconciled(acknowledged));
+        Store(store, AlertScopes.Inventory, Reconciled(acknowledged));
 
         Restart();
 
@@ -82,7 +82,7 @@ public class RestartTests : IDisposable
         var store = new SqliteAlertStateStore(_database);
         var raised = Alert("psu") with { PendingNotification = AlertNotificationKind.Raised };
 
-        store.Apply(AlertScopes.Inventory, Reconciled(raised));
+        Store(store, AlertScopes.Inventory, Reconciled(raised));
         store.MarkNotified(AlertScopes.Inventory, [raised.Fingerprint]);
 
         Restart();
@@ -100,7 +100,7 @@ public class RestartTests : IDisposable
         // reopen it. That promise is only kept if the clear is durable.
         var store = new SqliteAlertStateStore(_database);
 
-        store.Apply(AlertScopes.Inventory, Reconciled(
+        Store(store, AlertScopes.Inventory, Reconciled(
             AlertLifecycle.Clear(Alert("psu"), "ertugrul", T0)));
 
         Restart();
@@ -119,7 +119,7 @@ public class RestartTests : IDisposable
         var store = new SqliteAlertStateStore(_database);
         var acknowledged = AlertLifecycle.Acknowledge(Alert("psu"), "ertugrul", T0.AddMinutes(1));
 
-        store.Apply(AlertScopes.Inventory, Reconciled(acknowledged));
+        Store(store, AlertScopes.Inventory, Reconciled(acknowledged));
 
         Restart();
 
@@ -147,7 +147,7 @@ public class RestartTests : IDisposable
             CeasedAtUtc = [T0, T0.AddMinutes(5), T0.AddMinutes(9)],
         };
 
-        store.Apply(AlertScopes.Inventory, new AlertReconciliationResult { FlapHistories = [history] });
+        Store(store, AlertScopes.Inventory, new AlertReconciliationResult { FlapHistories = [history] });
 
         Restart();
 
@@ -166,8 +166,8 @@ public class RestartTests : IDisposable
         // show up.
         var store = new SqliteAlertStateStore(_database);
 
-        store.Apply(AlertScopes.Inventory, Reconciled(Alert("psu")));
-        store.Apply(AlertScopes.Observation, Reconciled(Alert("latency")));
+        Store(store, AlertScopes.Inventory, Reconciled(Alert("psu")));
+        Store(store, AlertScopes.Observation, Reconciled(Alert("latency")));
 
         Restart();
 
@@ -182,8 +182,8 @@ public class RestartTests : IDisposable
     {
         var store = new SqliteAlertStateStore(_database);
 
-        store.Apply(AlertScopes.Inventory, Reconciled(Alert("psu")));
-        store.Apply(AlertScopes.Inventory, new AlertReconciliationResult());
+        Store(store, AlertScopes.Inventory, Reconciled(Alert("psu")));
+        Store(store, AlertScopes.Inventory, new AlertReconciliationResult());
 
         Restart();
 
@@ -380,6 +380,19 @@ public class RestartTests : IDisposable
 
     private static AlertReconciliationResult Reconciled(params AlertInstance[] instances) =>
         new() { Instances = instances };
+
+    /// <summary>
+    /// Stores a made-up reconciliation result.
+    /// </summary>
+    /// <remarks>
+    /// The store reconciles through a callback so that reading, deciding and
+    /// writing happen without releasing alert state in between — which is what
+    /// stops an operator's acknowledgement being lost to a cycle that happened
+    /// to be running. Here the "decision" is simply the fixture.
+    /// </remarks>
+    private static void Store(
+        SqliteAlertStateStore store, string scope, AlertReconciliationResult result) =>
+        store.Reconcile(scope, (_, _) => result);
 
     private static AlertInstance Alert(string id) => new()
     {

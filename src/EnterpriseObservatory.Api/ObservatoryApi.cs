@@ -1,4 +1,7 @@
+using EnterpriseObservatory.Api.Contracts;
 using EnterpriseObservatory.Api.Projections;
+using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 using Microsoft.AspNetCore.Builder;
@@ -19,9 +22,10 @@ namespace EnterpriseObservatory.Api;
 /// fetch entity names one by one would be a worse product, not a purer API.
 /// </para>
 /// <para>
-/// Read-only throughout. Acknowledging and clearing alerts are writes and will
-/// arrive with the commands that carry an operator's identity; until then, the
-/// product shows and does not change.
+/// Mostly reads. The writes are the operator's four verbs against an alert, and
+/// every one of them is attributed: a change nobody can be named for would
+/// make the audit trail worse than empty, because it would look authoritative.
+/// See <see cref="OperatorResolver"/> and ADR-0013.
 /// </para>
 /// </remarks>
 public static class ObservatoryApi
@@ -82,6 +86,43 @@ public static class ObservatoryApi
             model.Series(id, counter, instance, from, to, maxPoints ?? 720))
             .WithName("GetSeries");
 
+        // --- operator commands ---------------------------------------------
+        //
+        // POST rather than PATCH on a resource, and the fingerprint in the body
+        // rather than the path. These are things an operator does, not fields
+        // they edit; and an opaque identifier in a URL segment is the mistake
+        // that made every entity page return the wrong thing.
+
+        api.MapPost("/alerts/acknowledge", (
+                HttpContext context,
+                ReadModel model,
+                AlertOperations operations,
+                OperationsOptions options,
+                AlertCommand command) =>
+            Act(context, model, options, actor =>
+                operations.Acknowledge(Fingerprint(command.Fingerprint), actor)))
+            .WithName("AcknowledgeAlert");
+
+        api.MapPost("/alerts/clear", (
+                HttpContext context,
+                ReadModel model,
+                AlertOperations operations,
+                OperationsOptions options,
+                AlertCommand command) =>
+            Act(context, model, options, actor =>
+                operations.Clear(Fingerprint(command.Fingerprint), actor)))
+            .WithName("ClearAlert");
+
+        api.MapPost("/alerts/silence", (
+                HttpContext context,
+                ReadModel model,
+                AlertOperations operations,
+                OperationsOptions options,
+                SilenceCommand command) =>
+            Act(context, model, options, actor =>
+                operations.Silence(Fingerprint(command.Fingerprint), actor, command.UntilUtc)))
+            .WithName("SilenceAlert");
+
         // Anything under /api that matched no endpoint is a 404, not the SPA.
         // Without this the catch-all that serves the interface answers an
         // unmatched API request with a 200 carrying HTML, and the client's
@@ -91,4 +132,44 @@ public static class ObservatoryApi
 
         return endpoints;
     }
+
+    /// <summary>
+    /// Runs an operator command, if the product is willing to attribute it.
+    /// </summary>
+    /// <remarks>
+    /// The attribution check comes first, before the alert is even looked up.
+    /// Refusing after doing the work would tell an unauthenticated caller
+    /// whether an alert exists, and would be a longer road to the same no.
+    /// </remarks>
+    private static IResult Act(
+        HttpContext context,
+        ReadModel model,
+        OperationsOptions options,
+        Func<OperatorIdentity, AlertActionResult> command)
+    {
+        if (OperatorResolver.Resolve(context, options) is not { } actor)
+        {
+            return OperatorResolver.Refused();
+        }
+
+        var result = command(actor);
+
+        var view = new AlertActionView
+        {
+            Applied = result.Applied,
+            Alert = result.Instance is { } instance ? model.Present(instance) : null,
+            Refusal = result.Applied ? null : result.Refusal.ToString(),
+            RecordedAs = actor.AuditName,
+            ActorVerified = actor.IsVerified,
+        };
+
+        // A command against an alert that is no longer there is a 404 rather
+        // than a failure: an operator acting on a screen thirty seconds old has
+        // not made a mistake, and the interface should simply refresh.
+        return result.Refusal == AlertActionRefusal.NotFound
+            ? Results.NotFound(view)
+            : result.Applied ? Results.Ok(view) : Results.BadRequest(view);
+    }
+
+    private static AlertFingerprint Fingerprint(string value) => AlertFingerprint.Restore(value);
 }

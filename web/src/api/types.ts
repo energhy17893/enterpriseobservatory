@@ -173,3 +173,13 @@ export interface SeriesView {
   /** Oldest first. Missing buckets are missing, never zero. */
   points: SeriesPointView[]
 }
+
+/** What an operator's command did. */
+export interface AlertActionView {
+  applied: boolean
+  alert: AlertView | null
+  refusal: string | null
+  /** Who it was recorded as — echoed back so nobody has to assume. */
+  recordedAs: string
+  actorVerified: boolean
+}

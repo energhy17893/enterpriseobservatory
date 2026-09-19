@@ -43,16 +43,47 @@ public interface IAlertStateStore
     IReadOnlyList<FlapHistory> FlapHistoriesIn(string scope);
 
     /// <summary>
-    /// Applies a reconciliation to one scope, including retiring what it
-    /// retired.
+    /// Reconciles one scope: reads its state, hands it to
+    /// <paramref name="reconcile"/>, and stores what comes back — all without
+    /// releasing its hold on that state in between.
     /// </summary>
     /// <remarks>
-    /// Takes the whole result rather than a list of instances, because
+    /// <para>
+    /// Shaped as a callback rather than a read and a write because an operator
+    /// acknowledging an alert in the gap between the two would be silently
+    /// overwritten by the cycle's result: the button would appear to work and
+    /// then the alert would reopen. Holding alert state across the whole
+    /// decision makes a cycle and an operator's change serialise, so whichever
+    /// goes second wins and neither is lost. The window is short and the loss
+    /// is invisible, which is exactly the kind of defect worth designing out
+    /// rather than hoping about.
+    /// </para>
+    /// <para>
+    /// The whole result is stored rather than a list of instances, because
     /// forgetting to apply the retirements would leave resolved alerts
-    /// accumulating forever — and nothing about the remaining state would look
+    /// accumulating forever, and nothing about the remaining state would look
     /// wrong.
+    /// </para>
+    /// <para>
+    /// The callback must be pure and quick. It runs while alert state is held,
+    /// and <see cref="AlertReconciler"/> is both.
+    /// </para>
     /// </remarks>
-    void Apply(string scope, AlertReconciliationResult result);
+    AlertReconciliationResult Reconcile(
+        string scope,
+        Func<IReadOnlyList<AlertInstance>, IReadOnlyList<FlapHistory>, AlertReconciliationResult> reconcile);
+
+    /// <summary>
+    /// Applies an operator's change to one alert, atomically.
+    /// </summary>
+    /// <param name="fingerprint">Which alert.</param>
+    /// <param name="change">
+    /// The lifecycle transition to apply. Runs against the instance as stored,
+    /// never against a copy the caller brought with it — a client acting on
+    /// what it last saw would otherwise undo whatever happened since.
+    /// </param>
+    /// <returns>The resulting instance, or null when there is no such alert.</returns>
+    AlertInstance? Mutate(AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change);
 
     /// <summary>
     /// Clears the pending notification on instances that have been dispatched.

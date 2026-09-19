@@ -33,6 +33,14 @@ internal static partial class HostLog
     public static partial void UntrustedCertificateAccepted(ILogger logger, string instanceId);
 
     [LoggerMessage(
+        EventId = 1003,
+        Level = LogLevel.Warning,
+        Message = "Unauthenticated alert changes are enabled. Anyone who can reach this service " +
+                  "can acknowledge or clear an alert; every change is recorded as unverified, " +
+                  "naming the address it came from.")]
+    public static partial void UnauthenticatedWritesAllowed(ILogger logger);
+
+    [LoggerMessage(
         EventId = 1010,
         Level = LogLevel.Information,
         Message = "Inventory cycle: {Active} active, {Vanished} vanished, {Visible} alerts visible.")]

@@ -304,3 +304,54 @@ public sealed record SeriesView
     /// </summary>
     public required IReadOnlyList<SeriesPointView> Points { get; init; }
 }
+
+/// <summary>An operator's command against one alert.</summary>
+/// <remarks>
+/// The fingerprint travels in the body rather than the path. It contains
+/// separators and spaces, and putting an opaque identifier into a URL segment
+/// is the mistake that made every entity page return the wrong thing — see
+/// <see cref="EntityId.Separator"/>. These are commands, not resources, so a
+/// body is also the more honest shape.
+/// </remarks>
+public sealed record AlertCommand
+{
+    public required string Fingerprint { get; init; }
+}
+
+/// <summary>A command to mute an alert until a deadline.</summary>
+public sealed record SilenceCommand
+{
+    public required string Fingerprint { get; init; }
+
+    /// <summary>
+    /// When the silence ends and the alert returns on its own.
+    /// </summary>
+    /// <remarks>
+    /// Required, with no indefinite option. Something switched off for ever is
+    /// something nobody remembers to switch back on. See product principle 4.
+    /// </remarks>
+    public required DateTimeOffset UntilUtc { get; init; }
+}
+
+/// <summary>What an operator's command did.</summary>
+public sealed record AlertActionView
+{
+    public required bool Applied { get; init; }
+
+    /// <summary>The alert as it now stands, when the command applied.</summary>
+    public AlertView? Alert { get; init; }
+
+    /// <summary>Why not, when it did not.</summary>
+    public string? Refusal { get; init; }
+
+    /// <summary>
+    /// Who this was recorded as, and whether the product could verify it.
+    /// </summary>
+    /// <remarks>
+    /// Echoed back so the interface can show an operator what went into the
+    /// audit trail under their name, rather than letting them assume.
+    /// </remarks>
+    public required string RecordedAs { get; init; }
+
+    public required bool ActorVerified { get; init; }
+}
