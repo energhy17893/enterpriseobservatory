@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -55,7 +56,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
 
         AddClusters(payload, Id, now, entities, relationships, alerts);
         AddHosts(payload, Id, now, vCenter.Id, entities, relationships, alerts);
-        AddDatastores(payload, Id, now, entities, relationships);
+        AddDatastores(payload, Id, now, entities, relationships, alerts);
         AddVirtualMachines(payload, Id, now, entities, relationships);
 
         return new InventorySnapshot
@@ -174,12 +175,13 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         }
     }
 
-    private static void AddDatastores(
+    private void AddDatastores(
         VsphereInventoryPayload payload,
         Func<string, EntityId> id,
         DateTimeOffset now,
         List<Entity> entities,
-        List<Relationship> relationships)
+        List<Relationship> relationships,
+        List<AlertDefinition> alerts)
     {
         foreach (var datastore in payload.Datastores)
         {
@@ -200,8 +202,128 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             });
 
             relationships.Add(Edge(id(datastore.MoRef), id("vcenter"), RelationshipKind.ManagedBy, now));
+
+            // Health said Critical and nothing reached the inbox. The same gap
+            // the collector-unreachable alert exists to close, left open for
+            // the one entity kind where it means an outage rather than a
+            // degradation: virtual machines on an inaccessible datastore are
+            // not slow, they are stopped.
+            if (datastore.Accessible == false)
+            {
+                alerts.Add(new AlertDefinition
+                {
+                    Fingerprint = AlertFingerprint.Create(
+                        InstanceId, "Datastore not accessible", "Inventory",
+                        datastore.Name, "datastore-inaccessible"),
+                    Severity = AlertSeverity.Critical,
+                    Title = "Datastore not accessible",
+                    Description =
+                        $"vCenter reports '{datastore.Name}' as inaccessible. Virtual machines " +
+                        "stored on it cannot read or write, and anything this datastore is the " +
+                        "only copy of is unavailable.",
+                    Category = "Inventory",
+                    Source = InstanceId,
+                    Entity = id(datastore.MoRef),
+                });
+            }
+
+            if (Fullness(datastore) is { } fullness)
+            {
+                AddFullnessAlert(datastore, fullness, id(datastore.MoRef), InstanceId, alerts);
+            }
         }
     }
+
+    /// <summary>
+    /// How full a datastore is, or null when the numbers cannot say.
+    /// </summary>
+    /// <remarks>
+    /// Zero capacity is refused rather than divided by: it would read as
+    /// completely full, which is the most alarming possible answer to arrive at
+    /// by accident. Absent values mean the properties were not readable, and an
+    /// unreadable datastore is not a full one.
+    /// </remarks>
+    private static double? Fullness(VsphereDatastore datastore) =>
+        datastore is { CapacityBytes: > 0 and { } capacity, FreeSpaceBytes: >= 0 and { } free }
+            ? (capacity - free) / (double)capacity * 100d
+            : null;
+
+    /// <summary>
+    /// Raises the fullness alert, when there is one to raise.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The data for this was already being fetched. <c>summary.capacity</c> and
+    /// <c>summary.freeSpace</c> have been requested from vCenter on every
+    /// inventory cycle since the collector was written, parsed, and then
+    /// dropped on the floor — no entity field, no series, no alert, nothing on
+    /// screen. "This datastore is nearly full" is the most commonly configured
+    /// alert in VMware monitoring and the product could not say it, for want of
+    /// using what it already had.
+    /// </para>
+    /// <para>
+    /// The free space is in the message beside the percentage, deliberately.
+    /// Ninety percent of a hundred-terabyte volume is ten terabytes free and
+    /// nobody's emergency; ninety percent of a five-hundred-gigabyte one is
+    /// fifty gigabytes and somebody's weekend. A percentage alone cannot tell
+    /// those apart and an operator should not have to go and look.
+    /// </para>
+    /// </remarks>
+    private static void AddFullnessAlert(
+        VsphereDatastore datastore,
+        double fullness,
+        EntityId entity,
+        string instanceId,
+        List<AlertDefinition> alerts)
+    {
+        var severity = fullness switch
+        {
+            >= CriticalFullnessPercent => AlertSeverity.Critical,
+            >= WarningFullnessPercent => AlertSeverity.Warning,
+            _ => (AlertSeverity?)null,
+        };
+
+        if (severity is not { } level)
+        {
+            return;
+        }
+
+        var free = datastore.FreeSpaceBytes ?? 0;
+
+        alerts.Add(new AlertDefinition
+        {
+            // One fingerprint across both severities, so a datastore crossing
+            // from warning to critical raises the same alert rather than a
+            // second one beside it — the inbox should say the problem got
+            // worse, not that a new problem appeared.
+            Fingerprint = AlertFingerprint.Create(
+                instanceId, "Datastore nearly full", "Capacity",
+                datastore.Name, "datastore-full"),
+            Severity = level,
+            Title = "Datastore nearly full",
+            Description = string.Create(
+                CultureInfo.InvariantCulture,
+                $"'{datastore.Name}' is {fullness:0.#}% full, with {Gigabytes(free):0.#} GB free " +
+                $"of {Gigabytes(datastore.CapacityBytes ?? 0):0.#} GB."),
+            Category = "Capacity",
+            Source = instanceId,
+            Entity = entity,
+        });
+    }
+
+    /// <summary>Warn here. Not a crisis, but the point where somebody plans.</summary>
+    private const double WarningFullnessPercent = 85d;
+
+    /// <summary>
+    /// And here it is a crisis.
+    /// </summary>
+    /// <remarks>
+    /// A VMFS datastore that fills completely does not degrade: every virtual
+    /// machine with a snapshot or a thin disk on it stops, at once.
+    /// </remarks>
+    private const double CriticalFullnessPercent = 95d;
+
+    private static double Gigabytes(long bytes) => bytes / 1024d / 1024d / 1024d;
 
     private static void AddVirtualMachines(
         VsphereInventoryPayload payload,

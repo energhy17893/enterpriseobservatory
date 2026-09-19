@@ -1,6 +1,6 @@
 # ADR-0011: Durum kalıcılığı için gömülü SQLite
 
-- **Durum:** Kabul edildi
+- **Durum:** Geçersiz kılındı — yerini ADR-0016 aldı
 - **Tarih:** 2026-09-19
 - **Karar verenler:** Ertuğrul Ünal
 - **İlgili:** ADR-0001 (dağıtım kısıtı), ADR-0004 (varlık yaşam döngüsü),

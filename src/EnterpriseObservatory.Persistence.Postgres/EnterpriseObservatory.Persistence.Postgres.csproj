@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    PostgreSQL as an OPTIONAL backend, not a replacement. ADR-0001 requires an
+    MSI that installs without an appliance and ADR-0011 chose SQLite for
+    exactly that; an installation with no database server keeps working
+    unchanged. This exists for estates that already run PostgreSQL and want
+    measurement history kept far longer than a file on the service's disk
+    should be asked to hold.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="9.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EnterpriseObservatory.Application\EnterpriseObservatory.Application.csproj" />
+  </ItemGroup>
+
+</Project>
