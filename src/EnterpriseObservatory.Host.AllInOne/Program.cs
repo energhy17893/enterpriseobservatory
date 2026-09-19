@@ -197,7 +197,10 @@ else
 
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
 builder.Services.AddSingleton<ISourceConnectionStore, SqliteSourceConnectionStore>();
-builder.Services.AddSingleton<IConnectionProbe, VsphereConnectionProbe>();
+builder.Services.AddSingleton<VsphereConnectionProbe>();
+builder.Services.AddSingleton<IConnectionProbe>(p => p.GetRequiredService<VsphereConnectionProbe>());
+builder.Services.AddSingleton<ISourceCapabilityReader>(
+    p => p.GetRequiredService<VsphereConnectionProbe>());
 
 // Configured connections keep working exactly as before. They are merged with
 // the stored ones by the catalogue, which is the single place that decides

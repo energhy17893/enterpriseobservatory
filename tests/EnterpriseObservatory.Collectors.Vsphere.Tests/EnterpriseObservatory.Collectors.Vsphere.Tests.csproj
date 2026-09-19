@@ -22,4 +22,11 @@
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
   </ItemGroup>
 
+
+  <ItemGroup>
+    <!-- Reference data taken from a live vCenter, not written from memory. -->
+    <None Update="Fixtures/vsphere8-counter-catalogue.tsv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>

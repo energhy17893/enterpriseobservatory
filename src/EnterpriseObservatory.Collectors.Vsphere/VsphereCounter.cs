@@ -122,17 +122,35 @@ public static class VsphereCounters
         "cpu.ready.summation",
         "cpu.costop.summation",
         "mem.vmmemctl.average",
-        "virtualDisk.totalLatency.average",
+
+        // Read and write separately, because vSphere has no combined virtual
+        // disk latency counter and because the two mean different things: read
+        // latency points at the array or the cache, write latency at the write
+        // path — mirroring, replication, a full cache. Both are level 1, so
+        // they arrive without anyone changing a statistics level.
+        "virtualDisk.totalReadLatency.average",
+        "virtualDisk.totalWriteLatency.average",
     ];
 
     /// <summary>Counters for a datastore.</summary>
     /// <remarks>
+    /// <para>
     /// Datastores have no real-time feed, so these come from the 5-minute
     /// historical interval. See the metric contract §5.
+    /// </para>
+    /// <para>
+    /// This list asked for <c>datastore.totalLatency.average</c> until it was
+    /// run against a real vCenter. No such counter exists — vSphere separates
+    /// read and write — so every datastore in the estate went unmeasured, and
+    /// the only trace was a partial failure the product was discarding.
+    /// The names here were taken from a live counter catalogue, not written
+    /// from memory, which is the only way this is ever right.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<string> Datastore { get; } =
     [
-        "datastore.totalLatency.average",
+        "datastore.totalReadLatency.average",
+        "datastore.totalWriteLatency.average",
     ];
 
     public static IReadOnlyList<string> For(VsphereEntityType entityType) => entityType switch

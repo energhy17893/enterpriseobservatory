@@ -78,6 +78,17 @@ public sealed record ConnectionCommand
     public bool IsEnabled { get; init; } = true;
 }
 
+/// <summary>One counter a source says it can supply.</summary>
+public sealed record CounterView
+{
+    public required string Key { get; init; }
+
+    public required string Unit { get; init; }
+
+    /// <summary>The statistics level at which the platform starts collecting it.</summary>
+    public required int Level { get; init; }
+}
+
 /// <summary>What one test attempt found.</summary>
 public sealed record ProbeView
 {
@@ -210,6 +221,36 @@ public static class ConnectionsApi
                 });
             })
             .WithName("TestConnection");
+
+        // What this source can actually supply. The question an operator has
+        // the moment they see "counter is not defined", and the one the
+        // product could not answer from inside itself — which is how two
+        // counter names that do not exist survived months of development.
+        connections.MapGet("/{instanceId}/counters", async (
+                ISourceCapabilityReader reader,
+                SourceConnectionCatalogue catalogue,
+                string instanceId,
+                string? prefix,
+                CancellationToken cancellationToken) =>
+            {
+                if (catalogue.Find(instanceId) is not { } connection)
+                {
+                    return Results.NotFound();
+                }
+
+                var counters = await reader
+                    .CountersAsync(connection, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // A live vCenter defines several hundred, which is a useless
+                // wall of text and a large response. The filter is what makes
+                // it answerable: "what datastore counters exist here".
+                return Results.Ok(counters
+                    .Where(c => string.IsNullOrEmpty(prefix) ||
+                                c.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    .Select(c => new CounterView { Key = c.Key, Unit = c.Unit, Level = c.Level }));
+            })
+            .WithName("GetConnectionCounters");
 
         return endpoints;
     }

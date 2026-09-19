@@ -23,7 +23,7 @@ namespace EnterpriseObservatory.Host.AllInOne.Collectors;
 /// thirty seconds between tries.
 /// </para>
 /// </remarks>
-public sealed class VsphereConnectionProbe : IConnectionProbe
+public sealed class VsphereConnectionProbe : IConnectionProbe, ISourceCapabilityReader
 {
     /// <summary>How long a test may take before it is called a failure.</summary>
     /// <remarks>
@@ -151,5 +151,48 @@ public sealed class VsphereConnectionProbe : IConnectionProbe
                 Detail = ex.Message,
             };
         }
+    }
+
+    /// <summary>
+    /// Every counter this vCenter defines.
+    /// </summary>
+    /// <remarks>
+    /// The catalogue is the authority on what a name means, and counter ids
+    /// differ between installations, so this is read from the server rather
+    /// than assumed. Had it been consulted once against a real vCenter, the
+    /// product would not have spent its development asking for two counters
+    /// that do not exist.
+    /// </remarks>
+    public async Task<IReadOnlyList<SourceCounter>> CountersAsync(
+        SourceConnection connection, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        var options = new VsphereConnectionOptions
+        {
+            InstanceId = connection.InstanceId,
+            BaseAddress = connection.BaseAddress,
+            Username = connection.Username,
+            Password = connection.Password,
+            AcceptUntrustedCertificate = connection.AcceptUntrustedCertificate,
+            InventoryPageSize = connection.PageSize,
+        };
+
+        using var http = new HttpClient(VsphereClient.CreateHandler(options))
+        {
+            BaseAddress = options.BaseAddress,
+        };
+
+        var catalogue = await new VsphereClient(http, options)
+            .GetCounterCatalogAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return
+        [
+            .. catalogue
+                .Select(c => new SourceCounter { Key = c.Key, Unit = c.Unit, Level = c.Level })
+                .DistinctBy(c => c.Key)
+                .OrderBy(c => c.Key, StringComparer.Ordinal),
+        ];
     }
 }

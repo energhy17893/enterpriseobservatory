@@ -1,0 +1,74 @@
+# A real vSphere 8 counter catalogue, as read from a production vCenter on
+# 2026-09-19 through the product's own /api/connections/{id}/counters endpoint.
+#
+# Partial: the datastore and virtualDisk groups only. Those are the two the
+# product got wrong — it asked for datastore.totalLatency.average and
+# virtualDisk.totalLatency.average, neither of which exists, so every datastore
+# and every virtual machine in the estate went unmeasured for storage latency
+# and nothing said so.
+#
+# The trap is worth seeing: disk.totalLatency.average DOES exist, at level 3.
+# The name is plausible precisely because a sibling group has it. Plausible is
+# how it survived being written down, reviewed and shipped without once being
+# compared against a server.
+#
+# Groups not listed here are not checked. Add a group by pasting what a real
+# vCenter returns — never by writing out what a counter is expected to be
+# called, which is the mistake this file exists to stop repeating.
+#
+# key	unit	level
+datastore.busResets.summation	number	2
+datastore.commandsAborted.summation	number	2
+datastore.datastoreIops.average	number	1
+datastore.datastoreMaxQueueDepth.latest	number	1
+datastore.datastoreNormalReadLatency.latest	number	2
+datastore.datastoreNormalWriteLatency.latest	number	2
+datastore.datastoreReadBytes.latest	number	2
+datastore.datastoreReadIops.latest	number	1
+datastore.datastoreReadLoadMetric.latest	number	4
+datastore.datastoreReadOIO.latest	number	1
+datastore.datastoreVMObservedLatency.latest	microsecond	1
+datastore.datastoreWriteBytes.latest	number	2
+datastore.datastoreWriteIops.latest	number	1
+datastore.datastoreWriteLoadMetric.latest	number	4
+datastore.datastoreWriteOIO.latest	number	1
+datastore.maxTotalLatency.latest	millisecond	3
+datastore.numberReadAveraged.average	number	1
+datastore.numberWriteAveraged.average	number	1
+datastore.read.average	kiloBytesPerSecond	2
+datastore.siocActiveTimePercentage.average	percent	1
+datastore.sizeNormalizedDatastoreLatency.average	microsecond	1
+datastore.throughput.contention.average	millisecond	4
+datastore.throughput.usage.average	kiloBytesPerSecond	4
+datastore.totalReadLatency.average	millisecond	1
+datastore.totalWriteLatency.average	millisecond	1
+datastore.unmapIOs.summation	number	4
+datastore.unmapSize.summation	megaBytes	4
+datastore.vmfs.apdCount.latest	number	4
+datastore.vmfs.apdState.latest	number	4
+datastore.vmfs.cancelledTxn.latest	number	4
+datastore.vmfs.totalTxn.latest	number	4
+datastore.write.average	kiloBytesPerSecond	2
+virtualDisk.busResets.summation	number	2
+virtualDisk.commandsAborted.summation	number	2
+virtualDisk.hbr.readLatencyMS.latest	millisecond	4
+virtualDisk.hbr.stallLatencyMS.latest	millisecond	4
+virtualDisk.largeSeeks.latest	number	4
+virtualDisk.mediumSeeks.latest	number	4
+virtualDisk.numberReadAveraged.average	number	1
+virtualDisk.numberWriteAveraged.average	number	1
+virtualDisk.read.average	kiloBytesPerSecond	2
+virtualDisk.readIOSize.latest	number	4
+virtualDisk.readLatencyUS.latest	microsecond	4
+virtualDisk.readLoadMetric.latest	number	2
+virtualDisk.readOIO.latest	number	2
+virtualDisk.smallSeeks.latest	number	4
+virtualDisk.throughput.cont.average	millisecond	4
+virtualDisk.throughput.usage.average	kiloBytesPerSecond	4
+virtualDisk.totalReadLatency.average	millisecond	1
+virtualDisk.totalWriteLatency.average	millisecond	1
+virtualDisk.write.average	kiloBytesPerSecond	2
+virtualDisk.writeIOSize.latest	number	4
+virtualDisk.writeLatencyUS.latest	microsecond	4
+virtualDisk.writeLoadMetric.latest	number	2
+virtualDisk.writeOIO.latest	number	2

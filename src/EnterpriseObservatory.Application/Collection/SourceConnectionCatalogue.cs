@@ -214,6 +214,44 @@ public sealed record ConnectionProbeResult
     public bool CredentialsRejected { get; init; }
 }
 
+/// <summary>One counter a source says it can supply.</summary>
+public sealed record SourceCounter
+{
+    /// <summary>The portable name, e.g. <c>datastore.totalReadLatency.average</c>.</summary>
+    public required string Key { get; init; }
+
+    public required string Unit { get; init; }
+
+    /// <summary>The statistics level at which the platform starts collecting it.</summary>
+    public required int Level { get; init; }
+}
+
+/// <summary>
+/// Asks a source what it can actually supply.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This exists because of a defect it would have prevented. The product asked
+/// a live vCenter for <c>datastore.totalLatency.average</c> and
+/// <c>virtualDisk.totalLatency.average</c> for months of development; neither
+/// name exists in vSphere's catalogue, so every datastore and every virtual
+/// machine went unmeasured for storage latency. The names had never been
+/// checked against a real server, only written down.
+/// </para>
+/// <para>
+/// "Counter is not defined on this vCenter" is a true statement that helps
+/// nobody. Being able to ask what <em>is</em> defined turns it into a
+/// decision — and answers the question an operator has anyway, which is what
+/// their statistics level is costing them.
+/// </para>
+/// </remarks>
+public interface ISourceCapabilityReader
+{
+    /// <summary>Every counter this source defines, whatever its level.</summary>
+    Task<IReadOnlyList<SourceCounter>> CountersAsync(
+        SourceConnection connection, CancellationToken cancellationToken);
+}
+
 /// <summary>
 /// Tries a connection once, on demand.
 /// </summary>

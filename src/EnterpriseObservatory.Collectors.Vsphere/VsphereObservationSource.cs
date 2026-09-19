@@ -104,13 +104,22 @@ public sealed class VsphereObservationSource(
         {
             if (!catalog.TryGetValue(key, out var counter))
             {
-                // The counter does not exist on this vCenter at all. A version
-                // difference, not a configuration problem.
+                // The counter does not exist on this vCenter at all. Worth
+                // saying whose problem that is: raising a statistics level
+                // cannot conjure a counter the server has never heard of, so
+                // an operator reading this should not go looking in settings.
+                // It is either a version difference or — as it was for
+                // datastore and virtual disk latency — a name this product got
+                // wrong and never checked against a real catalogue.
                 failures.Add(new CollectionFailure
                 {
                     Kind = CollectionFailureKind.ProtocolError,
                     Target = key,
-                    Detail = $"Counter is not defined on this vCenter for {entityType}.",
+                    Detail =
+                        $"This vCenter has no counter called '{key}' for {entityType}, so it is " +
+                        "not being measured. Changing the statistics level will not help: either " +
+                        "this vCenter version does not provide it, or the product is asking for " +
+                        "the wrong name.",
                 });
                 continue;
             }
