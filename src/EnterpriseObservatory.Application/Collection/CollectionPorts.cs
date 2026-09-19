@@ -112,6 +112,33 @@ public sealed record CollectionFailure
     public EntityId? Entity { get; init; }
 }
 
+/// <summary>
+/// One thing a reachable source could not read, kept with its health.
+/// </summary>
+/// <remarks>
+/// Deliberately not <see cref="CollectionFailure"/>. That one carries an
+/// <see cref="EntityId"/> and belongs to a single collection pass; this is the
+/// durable summary an operator reads days later, and keeping an entity
+/// reference in it would mean a health record pointing at something the
+/// retention sweep has since removed.
+/// </remarks>
+public sealed record PartialFailure
+{
+    public required CollectionFailureKind Kind { get; init; }
+
+    /// <summary>
+    /// What could not be read — a counter name, a device, an endpoint.
+    /// </summary>
+    /// <remarks>
+    /// The actionable half. "A counter is not defined on this vCenter" sends
+    /// nobody anywhere; naming the counter turns it into a decision about
+    /// statistics levels or product versions.
+    /// </remarks>
+    public required string Target { get; init; }
+
+    public required string Detail { get; init; }
+}
+
 /// <summary>Entities and relationships as one source currently sees them.</summary>
 public sealed record InventorySnapshot
 {
@@ -182,7 +209,35 @@ public sealed record CollectorHealth
     /// <summary>Whether the circuit breaker is currently holding off.</summary>
     public bool IsBackingOff { get; init; }
 
+    /// <summary>
+    /// Why the last attempt failed outright, when it did.
+    /// </summary>
+    /// <remarks>
+    /// Reaching a source and failing to read all of it is a different thing
+    /// from not reaching it, and this used to carry both. One string cannot,
+    /// so the two were indistinguishable on screen: a collector that could not
+    /// authenticate and a collector missing one counter read the same.
+    /// See <see cref="PartialFailures"/>.
+    /// </remarks>
     public string? LastFailureDetail { get; init; }
+
+    /// <summary>
+    /// What the source could not read on the last attempt that otherwise worked.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// All of them, which is the point. This was a single string holding
+    /// <c>failures[0]</c>, so a collector with three unrelated problems showed
+    /// one and silently dropped the rest — and the dropped ones were invisible
+    /// everywhere, including the API. Against a real estate that hid an entire
+    /// class of measurement behind an unrelated message about a different
+    /// entity type.
+    /// </para>
+    /// <para>
+    /// Anything named here is <see cref="HealthState.Unknown"/>, never healthy.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<PartialFailure> PartialFailures { get; init; } = [];
 
     /// <summary>When the source was last actually asked, successfully or not.</summary>
     /// <remarks>

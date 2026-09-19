@@ -423,6 +423,108 @@ public class RestartTests : IDisposable
         Assert.Null(Assert.Single(new SqliteCollectorHealthStore(_database).Current).LastFailureKind);
     }
 
+    [Fact]
+    public void Everything_a_collector_could_not_read_survives_a_restart()
+    {
+        var store = new SqliteCollectorHealthStore(_database);
+
+        store.Merge([
+            Health("vc-1", CollectorRole.Observation, failures: 0) with
+            {
+                Health = HealthState.Warning,
+                PartialFailures =
+                [
+                    new PartialFailure
+                    {
+                        Kind = CollectionFailureKind.ProtocolError,
+                        Target = "datastore.totalLatency.average",
+                        Detail = "Counter is not defined on this vCenter for Datastore.",
+                    },
+                    new PartialFailure
+                    {
+                        Kind = CollectionFailureKind.InsufficientDetailLevel,
+                        Target = "virtualDisk.totalLatency.average",
+                        Detail = "Counter requires statistics level 3.",
+                    },
+                ],
+            },
+        ]);
+
+        Restart();
+
+        var recovered = Assert.Single(new SqliteCollectorHealthStore(_database).Current);
+
+        Assert.Equal(2, recovered.PartialFailures.Count);
+        Assert.Contains(
+            recovered.PartialFailures,
+            f => f.Target == "datastore.totalLatency.average");
+        Assert.Contains(
+            recovered.PartialFailures,
+            f => f.Kind == CollectionFailureKind.InsufficientDetailLevel);
+    }
+
+    [Fact]
+    public void A_problem_that_stopped_happening_is_removed_rather_than_accumulated()
+    {
+        // Written afresh each cycle, not merged. A list that only ever grows
+        // stops being read, and a fixed statistics level would otherwise be
+        // reported as broken forever.
+        var store = new SqliteCollectorHealthStore(_database);
+
+        store.Merge([
+            Health("vc-1", CollectorRole.Observation, failures: 0) with
+            {
+                PartialFailures =
+                [
+                    new PartialFailure
+                    {
+                        Kind = CollectionFailureKind.ProtocolError,
+                        Target = "a.counter",
+                        Detail = "Counter is not defined.",
+                    },
+                ],
+            },
+        ]);
+
+        store.Merge([Health("vc-1", CollectorRole.Observation, failures: 0)]);
+
+        Restart();
+
+        Assert.Empty(Assert.Single(new SqliteCollectorHealthStore(_database).Current).PartialFailures);
+    }
+
+    [Fact]
+    public void One_role_s_problems_do_not_appear_under_the_other()
+    {
+        // The two collectors fail independently (ADR-0009), and a key that
+        // ignored the role would quietly attribute a metrics problem to the
+        // inventory reader.
+        var store = new SqliteCollectorHealthStore(_database);
+
+        store.Merge([
+            Health("vc-1", CollectorRole.Observation, failures: 0) with
+            {
+                PartialFailures =
+                [
+                    new PartialFailure
+                    {
+                        Kind = CollectionFailureKind.ProtocolError,
+                        Target = "a.counter",
+                        Detail = "Counter is not defined.",
+                    },
+                ],
+            },
+            Health("vc-1", CollectorRole.Inventory, failures: 0),
+        ]);
+
+        Restart();
+
+        var recovered = new SqliteCollectorHealthStore(_database).Current;
+
+        Assert.Single(recovered.Single(c => c.Role == CollectorRole.Observation).PartialFailures);
+        Assert.Empty(recovered.Single(c => c.Role == CollectorRole.Inventory).PartialFailures);
+    }
+
     // --- fixtures ---------------------------------------------------------
 
     private static AlertReconciliationResult Reconciled(params AlertInstance[] instances) =>

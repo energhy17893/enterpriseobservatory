@@ -114,6 +114,7 @@ export interface CollectorView {
   isBackingOff: boolean
   lastSuccessUtc: string | null
   lastFailureDetail: string | null
+  partialFailures: PartialFailureView[]
 }
 
 export interface OverviewView {
@@ -329,4 +330,12 @@ export interface ProbeView {
   identified: string | null
   /** Shown differently: the next attempt may lock the account out. */
   credentialsRejected: boolean
+}
+
+/** One thing a collector reached but could not read. */
+export interface PartialFailureView {
+  kind: string
+  /** The counter, device or endpoint. The half that makes it actionable. */
+  target: string
+  detail: string
 }

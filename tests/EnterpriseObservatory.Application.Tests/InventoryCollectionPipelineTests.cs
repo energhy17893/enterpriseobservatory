@@ -510,6 +510,143 @@ public class InventoryCollectionPipelineTests
     }
 
     [Fact]
+    public async Task Every_thing_that_could_not_be_read_is_kept_not_just_the_first()
+    {
+        // The defect this replaces was invisible in the worst way: a collector
+        // with three problems reported one, and the other two did not exist
+        // anywhere — not in the API, not on screen, not in the database. It
+        // took counting measurements against a real estate to notice that an
+        // entire entity kind was unmeasured behind a message about a different
+        // one.
+        var partial = new FakeSource("vc-1")
+        {
+            Behaviour = _ => Task.FromResult(Ok(
+                "vc-1",
+                Failure("virtualDisk.totalLatency.average", "Counter is not defined."),
+                Failure("datastore.totalLatency.average", "Counter is not defined."),
+                Failure("cpu.costop.summation", "Statistics level too low."))),
+        };
+
+        var result = await Pipeline().RunAsync([partial], [], Fast, CancellationToken.None);
+
+        var health = result.Health[0];
+
+        Assert.Equal(HealthState.Warning, health.Health);
+        Assert.Equal(3, health.PartialFailures.Count);
+        Assert.Contains(health.PartialFailures, f => f.Target == "datastore.totalLatency.average");
+    }
+
+    [Fact]
+    public async Task The_same_problem_on_two_hundred_entities_is_reported_once()
+    {
+        // One missing counter across an estate is one problem. Two hundred
+        // identical lines is a list nobody reads, which is the same as not
+        // reporting it.
+        var repeated = new FakeSource("vc-1")
+        {
+            Behaviour = _ => Task.FromResult(Ok(
+                "vc-1",
+                [.. Enumerable.Range(0, 200).Select(_ =>
+                    Failure("datastore.totalLatency.average", "Counter is not defined."))])),
+        };
+
+        var result = await Pipeline().RunAsync([repeated], [], Fast, CancellationToken.None);
+
+        Assert.Single(result.Health[0].PartialFailures);
+    }
+
+    [Fact]
+    public async Task What_could_not_be_read_names_what_it_was()
+    {
+        // "A counter is not defined on this vCenter" sends nobody anywhere.
+        // The target is the half that turns it into a decision, and it was the
+        // half being thrown away.
+        var partial = new FakeSource("vc-1")
+        {
+            Behaviour = _ => Task.FromResult(Ok(
+                "vc-1", Failure("datastore.totalLatency.average", "Counter is not defined."))),
+        };
+
+        var result = await Pipeline().RunAsync([partial], [], Fast, CancellationToken.None);
+
+        Assert.Equal(
+            "datastore.totalLatency.average",
+            Assert.Single(result.Health[0].PartialFailures).Target);
+    }
+
+    [Fact]
+    public async Task A_problem_that_has_been_fixed_stops_being_reported()
+    {
+        // A list that only grows is a list that stops being read.
+        var source = new FakeSource("vc-1")
+        {
+            Behaviour = attempt => Task.FromResult(attempt == 1
+                ? Ok("vc-1", Failure("a.counter", "Counter is not defined."))
+                : Ok("vc-1")),
+        };
+        var pipeline = Pipeline();
+
+        var first = await pipeline.RunAsync([source], [], Fast, CancellationToken.None);
+        var second = await pipeline.RunAsync([source], [.. first.Health], Fast, CancellationToken.None);
+
+        Assert.Single(first.Health[0].PartialFailures);
+        Assert.Empty(second.Health[0].PartialFailures);
+        Assert.Equal(HealthState.Healthy, second.Health[0].Health);
+    }
+
+    [Fact]
+    public async Task A_source_that_could_not_be_reached_reports_no_partial_failures()
+    {
+        // These describe what a reachable source could not read. Carrying them
+        // forward through an outage would state something we did not observe.
+        var source = new FakeSource("vc-1")
+        {
+            Behaviour = attempt => attempt == 1
+                ? Task.FromResult(Ok("vc-1", Failure("a.counter", "Counter is not defined.")))
+                : throw new InvalidOperationException("connection refused"),
+        };
+        var pipeline = Pipeline();
+
+        var first = await pipeline.RunAsync([source], [], Fast, CancellationToken.None);
+        var second = await pipeline.RunAsync([source], [.. first.Health], Fast, CancellationToken.None);
+
+        Assert.Empty(second.Health[0].PartialFailures);
+        Assert.NotNull(second.Health[0].LastFailureDetail);
+    }
+
+    [Fact]
+    public async Task A_success_clears_the_reason_the_previous_attempt_failed()
+    {
+        // Otherwise a working collector goes on explaining why it could not
+        // authenticate yesterday.
+        var source = new FakeSource("vc-1");
+
+        var prior = new[]
+        {
+            new CollectorHealth
+            {
+                InstanceId = "vc-1",
+                Role = CollectorRole.Inventory,
+                Health = HealthState.Unknown,
+                ConsecutiveFailures = 1,
+                LastFailureDetail = "vCenter rejected the credentials.",
+                LastAttemptUtc = T0.AddMinutes(-30),
+            },
+        };
+
+        var result = await Pipeline().RunAsync([source], prior, Fast, CancellationToken.None);
+
+        Assert.Null(result.Health[0].LastFailureDetail);
+    }
+
+    private static CollectionFailure Failure(string target, string detail) => new()
+    {
+        Kind = CollectionFailureKind.ProtocolError,
+        Target = target,
+        Detail = detail,
+    };
+
+    [Fact]
     public async Task An_unclassified_failure_is_still_retried()
     {
         // The forgiving direction, deliberately. An exception nobody

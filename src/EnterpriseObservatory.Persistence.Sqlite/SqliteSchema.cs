@@ -241,6 +241,29 @@ internal static class SqliteSchema
             password_set_utc   TEXT    NULL
         ) STRICT;
         """,
+
+        // --- 6: everything a reachable source could not read -----------------
+        //
+        // Collector health carried one string for this, holding failures[0].
+        // Against a real estate that meant a message about a missing virtual
+        // machine counter was the only thing visible, while a second problem —
+        // no datastore measurements at all, across forty-one volumes — sat
+        // behind it with nothing anywhere to suggest it existed.
+        //
+        // A table rather than a column, because the operator's question is
+        // "what can this collector not read", and the answer is a list whose
+        // useful half is the target: naming the counter is what turns a
+        // sentence into a decision.
+        """
+        CREATE TABLE collector_partial_failure (
+            instance_id TEXT NOT NULL,
+            role        TEXT NOT NULL,
+            kind        TEXT NOT NULL,
+            target      TEXT NOT NULL,
+            detail      TEXT NOT NULL,
+            PRIMARY KEY (instance_id, role, target, detail)
+        ) STRICT;
+        """,
     ];
 
     /// <summary>The version a database is brought up to.</summary>

@@ -81,6 +81,11 @@ public sealed class SqliteCollectorHealthStore : ICollectorHealthStore
                     command.Bind("$kind", TextOrNull(entry.LastFailureKind?.ToString()));
                     command.ExecuteNonQuery();
                 }
+
+                // Replaced wholesale per collector, never merged. These describe
+                // one attempt, so a problem that has been fixed has to disappear
+                // — a list that only ever grows is a list that stops being read.
+                WritePartialFailures(connection, health);
             });
 
             // Merged rather than replaced: a cycle only reports on the sources
@@ -89,6 +94,40 @@ public sealed class SqliteCollectorHealthStore : ICollectorHealthStore
             foreach (var entry in health)
             {
                 _health[(entry.InstanceId, entry.Role)] = entry;
+            }
+        }
+    }
+
+    private static void WritePartialFailures(
+        SqliteConnection connection, IReadOnlyList<CollectorHealth> health)
+    {
+        using var clear = Command(connection, """
+            DELETE FROM collector_partial_failure
+            WHERE instance_id = $instance AND role = $role;
+            """);
+
+        using var insert = Command(connection, """
+            INSERT OR REPLACE INTO collector_partial_failure (
+                instance_id, role, kind, target, detail)
+            VALUES ($instance, $role, $kind, $target, $detail);
+            """);
+
+        foreach (var entry in health)
+        {
+            clear.Parameters.Clear();
+            clear.Bind("$instance", entry.InstanceId);
+            clear.Bind("$role", entry.Role.ToString());
+            clear.ExecuteNonQuery();
+
+            foreach (var failure in entry.PartialFailures)
+            {
+                insert.Parameters.Clear();
+                insert.Bind("$instance", entry.InstanceId);
+                insert.Bind("$role", entry.Role.ToString());
+                insert.Bind("$kind", failure.Kind.ToString());
+                insert.Bind("$target", failure.Target);
+                insert.Bind("$detail", failure.Detail);
+                insert.ExecuteNonQuery();
             }
         }
     }
@@ -125,6 +164,50 @@ public sealed class SqliteCollectorHealthStore : ICollectorHealthStore
             };
 
             health[(entry.InstanceId, entry.Role)] = entry;
+        }
+
+        return WithPartialFailures(connection, health);
+    }
+
+    private static Dictionary<(string, CollectorRole), CollectorHealth> WithPartialFailures(
+        SqliteConnection connection,
+        Dictionary<(string, CollectorRole), CollectorHealth> health)
+    {
+        var byCollector = new Dictionary<(string, CollectorRole), List<PartialFailure>>();
+
+        using var command = Command(connection, """
+            SELECT instance_id, role, kind, target, detail
+            FROM collector_partial_failure
+            ORDER BY target, detail;
+            """);
+        using var reader = command.ExecuteReader();
+
+        while (reader.Read())
+        {
+            var key = (reader.GetString(0), ReadEnum<CollectorRole>(reader, 1));
+
+            if (!byCollector.TryGetValue(key, out var list))
+            {
+                byCollector[key] = list = [];
+            }
+
+            list.Add(new PartialFailure
+            {
+                Kind = ReadEnum<CollectionFailureKind>(reader, 2),
+                Target = reader.GetString(3),
+                Detail = reader.GetString(4),
+            });
+        }
+
+        foreach (var (key, failures) in byCollector)
+        {
+            // A row with no matching collector is skipped rather than
+            // resurrecting one: the health record is the thing that exists, and
+            // these only describe it.
+            if (health.TryGetValue(key, out var entry))
+            {
+                health[key] = entry with { PartialFailures = failures };
+            }
         }
 
         return health;

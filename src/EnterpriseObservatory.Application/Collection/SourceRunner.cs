@@ -239,7 +239,17 @@ internal sealed class SourceRunner(IClock clock)
             LastSuccessUtc = now,
             ConsecutiveFailures = 0,
             IsBackingOff = false,
-            LastFailureDetail = failures.Count == 0 ? null : failures[0].Detail,
+
+            // Cleared, not overwritten. This one means "the last attempt failed
+            // outright", and the attempt succeeded — leaving the old reason
+            // behind would have a working collector still explaining why it
+            // could not authenticate yesterday.
+            LastFailureDetail = null,
+
+            // All of them. Keeping only failures[0] hid every problem after the
+            // first, and against a real estate that meant an entire class of
+            // measurement was missing behind a message about something else.
+            PartialFailures = Summarise(failures),
             LastAttemptUtc = now,
 
             // Cleared, or the one-strike rule would outlive the problem: a
@@ -259,6 +269,11 @@ internal sealed class SourceRunner(IClock clock)
             LastFailureDetail = error?.Message ?? "Collection failed.",
             LastSuccessUtc = prior.LastSuccessUtc,
             LastAttemptUtc = now,
+
+            // Not carried forward. These describe what one reachable source
+            // could not read; the source was not reached at all this time, so
+            // repeating them would be stating something we did not observe.
+            PartialFailures = [],
 
             // An exception nobody classified might be anything, so it stays
             // retryable. Guessing in the other direction would silently stop
@@ -281,7 +296,25 @@ internal sealed class SourceRunner(IClock clock)
             LastSuccessUtc = prior.LastSuccessUtc,
             LastAttemptUtc = now,
             LastFailureKind = kind,
+            PartialFailures = [],
         };
+
+    /// <summary>
+    /// Every distinct thing that could not be read, in a stable order.
+    /// </summary>
+    /// <remarks>
+    /// Deduplicated because one missing counter across two hundred entities is
+    /// one problem, not two hundred, and a list that says it two hundred times
+    /// is one nobody reads. Ordered so that an unchanged set of problems does
+    /// not appear to change every cycle.
+    /// </remarks>
+    private static IReadOnlyList<PartialFailure> Summarise(
+        IReadOnlyList<CollectionFailure> failures) =>
+        [.. failures
+            .Select(f => new PartialFailure { Kind = f.Kind, Target = f.Target, Detail = f.Detail })
+            .DistinctBy(f => (f.Kind, f.Target, f.Detail))
+            .OrderBy(f => f.Target, StringComparer.Ordinal)
+            .ThenBy(f => f.Detail, StringComparer.Ordinal)];
 
     private static AlertDefinition UnreachableAlert(
         string instanceId,

@@ -66,6 +66,31 @@ export function Collectors() {
                     {collector.lastFailureDetail}
                   </div>
                 )}
+
+                {/*
+                  Every one of them, with what it applies to. This used to be a
+                  single line holding the first, which against a real estate
+                  meant a message about one missing virtual machine counter was
+                  all anyone saw while forty-one datastores went unmeasured
+                  behind it. A list that shows one of three problems is worse
+                  than none: it looks like the whole answer.
+                */}
+                {collector.partialFailures.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <div className="text-sm text-muted-foreground">
+                      Reached, but could not read {collector.partialFailures.length}{' '}
+                      {collector.partialFailures.length === 1 ? 'thing' : 'things'}:
+                    </div>
+                    <ul className="space-y-1">
+                      {collector.partialFailures.map((failure) => (
+                        <li key={`${failure.target}-${failure.detail}`} className="text-xs">
+                          <span className="font-mono">{failure.target}</span>
+                          <span className="text-muted-foreground"> — {failure.detail}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
               <div className="shrink-0 text-right text-xs text-muted-foreground">
                 <div>last success {ago(collector.lastSuccessUtc)}</div>

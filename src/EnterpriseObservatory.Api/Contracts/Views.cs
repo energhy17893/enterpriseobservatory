@@ -185,7 +185,29 @@ public sealed record CollectorView
 
     public DateTimeOffset? LastSuccessUtc { get; init; }
 
+    /// <summary>Why the last attempt failed outright, when it did.</summary>
     public string? LastFailureDetail { get; init; }
+
+    /// <summary>
+    /// What this collector reached but could not read.
+    /// </summary>
+    /// <remarks>
+    /// All of them. This was one string carrying the first of them, which meant
+    /// a collector with two unrelated problems reported one — and against a
+    /// real estate the hidden one was an entire class of measurement missing.
+    /// </remarks>
+    public IReadOnlyList<PartialFailureView> PartialFailures { get; init; } = [];
+}
+
+/// <summary>One thing a collector could not read, and what it is.</summary>
+public sealed record PartialFailureView
+{
+    public required string Kind { get; init; }
+
+    /// <summary>The counter, device or endpoint. The actionable half.</summary>
+    public required string Target { get; init; }
+
+    public required string Detail { get; init; }
 }
 
 /// <summary>The triage summary: what is happening right now.</summary>

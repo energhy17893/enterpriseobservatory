@@ -213,6 +213,12 @@ public sealed class ReadModel(
                 IsBackingOff = c.IsBackingOff,
                 LastSuccessUtc = c.LastSuccessUtc,
                 LastFailureDetail = c.LastFailureDetail,
+                PartialFailures = [.. c.PartialFailures.Select(f => new PartialFailureView
+                {
+                    Kind = f.Kind.ToString(),
+                    Target = f.Target,
+                    Detail = f.Detail,
+                })],
             }),
     ];
 
