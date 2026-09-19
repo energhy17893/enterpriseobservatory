@@ -394,3 +394,87 @@ public sealed record BulkActionView
 
     public required string RecordedAs { get; init; }
 }
+
+/// <summary>One step of the path that proves a group.</summary>
+public sealed record CorrelationLinkView
+{
+    public required string FromId { get; init; }
+
+    public required string FromName { get; init; }
+
+    public required RelationshipKind Kind { get; init; }
+
+    public required string ToId { get; init; }
+
+    public required string ToName { get; init; }
+}
+
+/// <summary>Several alerts that are one thing going wrong.</summary>
+public sealed record EventView
+{
+    public required string Id { get; init; }
+
+    public required string Title { get; init; }
+
+    public required AlertSeverity Severity { get; init; }
+
+    public required string RootId { get; init; }
+
+    public required string RootName { get; init; }
+
+    /// <summary>
+    /// How many alerts and how many things, in the header.
+    /// </summary>
+    /// <remarks>
+    /// The real counts. An operator will not accept a folded group without
+    /// seeing what was folded into it -- ADR-0007 5.1.
+    /// </remarks>
+    public required int AlertCount { get; init; }
+
+    public required int EntityCount { get; init; }
+
+    public required DateTimeOffset FirstSeenUtc { get; init; }
+
+    public required DateTimeOffset LastSeenUtc { get; init; }
+
+    /// <summary>Every alert in the group, worst first. Never a sample.</summary>
+    public required IReadOnlyList<AlertView> Alerts { get; init; }
+
+    /// <summary>Why these were grouped.</summary>
+    public required IReadOnlyList<CorrelationLinkView> Explanation { get; init; }
+}
+
+/// <summary>Alerts that started together and may be one thing.</summary>
+/// <remarks>
+/// Deliberately not an <see cref="EventView"/>. The evidence is only that they
+/// appeared together, and the interface offers it rather than folding it.
+/// </remarks>
+public sealed record SuggestionView
+{
+    public required DateTimeOffset WithinUtc { get; init; }
+
+    public required int WindowSeconds { get; init; }
+
+    public required IReadOnlyList<AlertView> Alerts { get; init; }
+}
+
+/// <summary>The inbox, grouped.</summary>
+public sealed record EventBoardView
+{
+    public required IReadOnlyList<EventView> Events { get; init; }
+
+    public required IReadOnlyList<SuggestionView> Suggestions { get; init; }
+
+    /// <summary>Alerts belonging to no event, worst first.</summary>
+    public required IReadOnlyList<AlertView> Ungrouped { get; init; }
+
+    /// <summary>
+    /// Every visible alert, so the two views can be checked against each other.
+    /// </summary>
+    /// <remarks>
+    /// No alert may live only inside a group. Reporting the total lets the
+    /// interface say "12 alerts in 3 events and 4 on their own" and lets
+    /// anyone verify the arithmetic.
+    /// </remarks>
+    public required int TotalAlerts { get; init; }
+}

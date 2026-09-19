@@ -23,7 +23,8 @@ const GROUPS = [
     question: 'What needs me right now?',
     items: [
       { to: '/', label: 'Overview', end: true },
-      { to: '/alerts', label: 'Alert inbox' },
+      { to: '/events', label: 'Events' },
+      { to: '/alerts', label: 'All alerts' },
     ],
   },
   {

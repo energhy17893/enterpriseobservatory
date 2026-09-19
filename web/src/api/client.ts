@@ -14,6 +14,7 @@ import type {
   AuthStateView,
   BulkActionView,
   DeclareWindowCommand,
+  EventBoardView,
   MaintenanceWindowView,
   Role,
 } from './types'
@@ -154,6 +155,7 @@ export const api = {
   signOut: () => post<null>('/api/auth/signout', {}),
   bootstrap: (token: string, username: string, password: string) =>
     post<AuthStateView>('/api/auth/bootstrap', { token, username, password }),
+  events: () => get<EventBoardView>('/api/events'),
   maintenanceWindows: () => get<MaintenanceWindowView[]>('/api/maintenance'),
   declareMaintenanceWindow: (command: DeclareWindowCommand) =>
     post<MaintenanceWindowView>('/api/maintenance/declare', command),

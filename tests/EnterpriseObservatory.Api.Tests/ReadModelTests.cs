@@ -315,6 +315,109 @@ public class ReadModelTests
         Assert.Equal(HealthState.Healthy, views.Single(c => c.Role == "Observation").Health);
     }
 
+    // --- the grouped view -------------------------------------------------
+
+    [Fact]
+    public void The_two_views_account_for_exactly_the_same_alerts()
+    {
+        // ADR-0007 5.1: no alert may live only inside a group, and none may
+        // fall between the two lists either. Counted twice it is acted on
+        // twice; counted never it is invisible.
+        GivenEntities(Host("esx01", HealthState.Critical), Host("vm-a", HealthState.Warning));
+        GivenRelationships(new Relationship
+        {
+            From = new EntityId("vm-a"),
+            To = new EntityId("esx01"),
+            Kind = RelationshipKind.RunsOn,
+            ObservedAtUtc = T0,
+        });
+
+        GivenAlerts(
+            Alert("down", AlertSeverity.Critical) with { Entity = new EntityId("esx01") },
+            Alert("slow", AlertSeverity.Warning) with { Entity = new EntityId("vm-a") },
+            Alert("lonely", AlertSeverity.Warning));
+
+        var board = Model().Events();
+        var flat = Model().Alerts();
+
+        var inBoard = board.Events
+            .SelectMany(e => e.Alerts)
+            .Concat(board.Ungrouped)
+            .Select(a => a.Fingerprint)
+            .ToList();
+
+        Assert.Equal(flat.Total, board.TotalAlerts);
+        Assert.Equal(board.TotalAlerts, inBoard.Count);
+        Assert.Equal(inBoard.Count, inBoard.Distinct().Count());
+    }
+
+    [Fact]
+    public void An_event_header_carries_the_real_counts()
+    {
+        // An operator will not accept a folded group without seeing what was
+        // folded into it.
+        GivenEntities(Host("esx01", HealthState.Critical), Host("vm-a", HealthState.Warning));
+        GivenRelationships(new Relationship
+        {
+            From = new EntityId("vm-a"),
+            To = new EntityId("esx01"),
+            Kind = RelationshipKind.RunsOn,
+            ObservedAtUtc = T0,
+        });
+
+        GivenAlerts(
+            Alert("down", AlertSeverity.Critical) with { Entity = new EntityId("esx01") },
+            Alert("slow", AlertSeverity.Warning) with { Entity = new EntityId("vm-a") });
+
+        var incident = Assert.Single(Model().Events().Events);
+
+        Assert.Equal(2, incident.AlertCount);
+        Assert.Equal(2, incident.EntityCount);
+        Assert.Equal(2, incident.Alerts.Count);
+        Assert.Equal(AlertSeverity.Critical, incident.Severity);
+    }
+
+    [Fact]
+    public void The_explanation_names_the_entities_rather_than_their_identifiers()
+    {
+        // "esx01.corp.local runs vm-a.corp.local" is an explanation; a pair of
+        // opaque ids is a puzzle.
+        GivenEntities(Host("esx01", HealthState.Critical), Host("vm-a", HealthState.Warning));
+        GivenRelationships(new Relationship
+        {
+            From = new EntityId("vm-a"),
+            To = new EntityId("esx01"),
+            Kind = RelationshipKind.RunsOn,
+            ObservedAtUtc = T0,
+        });
+
+        GivenAlerts(
+            Alert("down", AlertSeverity.Critical) with { Entity = new EntityId("esx01") },
+            Alert("slow", AlertSeverity.Warning) with { Entity = new EntityId("vm-a") });
+
+        var link = Assert.Single(Assert.Single(Model().Events().Events).Explanation);
+
+        Assert.Equal("esx01.corp.local", link.FromName);
+        Assert.Equal("vm-a.corp.local", link.ToName);
+    }
+
+    [Fact]
+    public void A_coincidence_is_offered_and_never_folded_into_an_event()
+    {
+        // Three unrelated alerts at lunchtime look exactly like one failure,
+        // so the product points rather than claims.
+        GivenAlerts(
+            Alert("a", AlertSeverity.Warning),
+            Alert("b", AlertSeverity.Warning),
+            Alert("c", AlertSeverity.Warning));
+
+        var board = Model().Events();
+
+        Assert.Empty(board.Events);
+        Assert.Equal(3, Assert.Single(board.Suggestions).Alerts.Count);
+        Assert.Equal(3, board.Ungrouped.Count);
+    }
+
     // --- fixtures ---------------------------------------------------------
 
     private void GivenEntities(params Entity[] entities) =>

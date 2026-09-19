@@ -72,6 +72,12 @@ public static class ObservatoryApi
                 model.Entity(id) is { } detail ? Results.Ok(detail) : Results.NotFound())
             .WithName("GetEntity");
 
+        // The grouped view of the same instances the flat list shows. Both are
+        // always available: grouping that cannot be switched off is a way of
+        // hiding things.
+        api.MapGet("/events", (ReadModel model) => model.Events())
+            .WithName("GetEvents");
+
         api.MapGet("/collectors", (ReadModel model) => model.Collectors())
             .WithName("GetCollectors");
 

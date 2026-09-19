@@ -61,12 +61,25 @@ export function Alerts() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Alert inbox</h1>
+        <h1 className="text-xl font-semibold">All alerts</h1>
         {data !== undefined && (
           <span className="text-sm text-muted-foreground tabular">
             {data.items.length} of {data.total}
           </span>
         )}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {/* The switch works both ways: grouping is a view, not a mode. */}
+        <Link
+          to="/events"
+          className="rounded-md border border-border px-3 py-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          Events
+        </Link>
+        <span className="rounded-md border border-border bg-primary px-3 py-1 text-sm text-primary-on">
+          All alerts
+        </span>
       </div>
 
       <div className="flex flex-wrap gap-2">

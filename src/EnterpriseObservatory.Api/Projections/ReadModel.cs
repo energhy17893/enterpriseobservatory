@@ -216,6 +216,90 @@ public sealed class ReadModel(
             }),
     ];
 
+    // --- events -------------------------------------------------------------
+
+    /// <summary>
+    /// The inbox, grouped into what is actually going wrong.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A projection over the same instances the flat list shows, computed on
+    /// demand rather than stored. Correlation depends on the graph, and the
+    /// graph changes; a stored grouping would be a claim about a topology that
+    /// no longer exists.
+    /// </para>
+    /// <para>
+    /// Every visible alert appears exactly once, in an event or on its own, and
+    /// the total is reported so the arithmetic can be checked. See ADR-0007.
+    /// </para>
+    /// </remarks>
+    public EventBoardView Events(CorrelationPolicy? policy = null)
+    {
+        var graph = _graphs.Current;
+        var visible = Visible();
+        var byFingerprint = visible.ToDictionary(a => a.Fingerprint);
+
+        var result = EventCorrelator.Correlate(visible, graph, policy ?? CorrelationPolicy.Default);
+
+        AlertView Look(AlertFingerprint fingerprint) => ToView(byFingerprint[fingerprint], graph);
+
+        return new EventBoardView
+        {
+            Events =
+            [
+                .. result.Events.Select(e => new EventView
+                {
+                    Id = e.Id,
+                    Title = e.Title,
+                    Severity = e.Severity,
+                    RootId = e.Root.Value,
+                    RootName = NameOf(graph, e.Root),
+                    AlertCount = e.Alerts.Count,
+                    EntityCount = e.Entities.Count,
+                    FirstSeenUtc = e.FirstSeenUtc,
+                    LastSeenUtc = e.LastSeenUtc,
+                    Alerts = [.. e.Alerts.Select(Look)],
+                    Explanation =
+                    [
+                        .. e.Explanation.Select(link => new CorrelationLinkView
+                        {
+                            FromId = link.From.Value,
+                            FromName = NameOf(graph, link.From),
+                            Kind = link.Kind,
+                            ToId = link.To.Value,
+                            ToName = NameOf(graph, link.To),
+                        }),
+                    ],
+                }),
+            ],
+            Suggestions =
+            [
+                .. result.Suggestions.Select(s => new SuggestionView
+                {
+                    WithinUtc = s.WithinUtc,
+                    WindowSeconds = (int)s.Window.TotalSeconds,
+                    Alerts = [.. s.Alerts.Select(Look)],
+                }),
+            ],
+            Ungrouped =
+            [
+                .. result.Ungrouped
+                    .Select(Look)
+                    .OrderByDescending(a => a.Severity)
+                    .ThenByDescending(a => a.LastSeenUtc),
+            ],
+            TotalAlerts = visible.Count,
+        };
+    }
+
+    /// <summary>An entity display name, or its id when it is not in the graph.</summary>
+    /// <remarks>
+    /// An identifier is a poor thing to show an operator, but it beats an empty
+    /// space: it at least says which thing the product means.
+    /// </remarks>
+    private static string NameOf(EntityGraph graph, EntityId id) =>
+        graph.Entities.TryGetValue(id, out var entity) ? entity.DisplayName : id.Value;
+
     // --- measurements -----------------------------------------------------
 
     /// <summary>Which counters exist for an entity.</summary>

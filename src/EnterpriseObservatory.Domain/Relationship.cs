@@ -114,4 +114,67 @@ public static class RelationshipRules
     /// </summary>
     public static bool PropagatesHealth(RelationshipKind kind) =>
         ClassOf(kind) is EdgeClass.Containment or EdgeClass.Dependency;
+
+    /// <summary>Which way a failure travels along an edge.</summary>
+    public static ImpactDirection ImpactFlow(RelationshipKind kind) => kind switch
+    {
+        // A failed part degrades the whole it belongs to: the edge already
+        // points child to parent, so impact runs with it.
+        RelationshipKind.PartOf => ImpactDirection.WithEdge,
+
+        // The edge reads "guest runs on host"; the failure runs the other way.
+        // A host going down takes its guests with it, never the reverse.
+        RelationshipKind.RunsOn => ImpactDirection.AgainstEdge,
+
+        // The edge reads "consumer is backed by provider"; again the failure
+        // runs from provider to consumer.
+        RelationshipKind.BackedBy => ImpactDirection.AgainstEdge,
+
+        // Physical connectivity carries a fault both ways: a dead SFP is as
+        // visible from the HBA as from the switch port.
+        RelationshipKind.ConnectedTo => ImpactDirection.BothWays,
+
+        // The same machine seen twice. Anything wrong with one is wrong with
+        // the other by definition.
+        RelationshipKind.SameAs => ImpactDirection.BothWays,
+
+        // Deliberately none. A manager failing is a loss of visibility, not a
+        // shared fault — and everything in an estate is managed by the same
+        // one or two things, so correlating through it would collapse every
+        // alert in the product into a single "event".
+        RelationshipKind.ManagedBy => ImpactDirection.Neither,
+
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unhandled relationship kind."),
+    };
+}
+
+/// <summary>
+/// Which way a failure travels along a relationship.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A different question from <see cref="RelationshipRules.PropagatesHealth"/>,
+/// and the two must not be conflated. Health rolls <em>up</em>: a failed disk
+/// makes its host unhealthy. Impact rolls <em>down</em>: a failed host makes
+/// its guests suffer. Using one rule for both would group every sibling in a
+/// cluster as a single incident.
+/// </para>
+/// <para>
+/// This is what lets the product say "these twelve alerts are one event"
+/// and show the path that proves it. See ADR-0007 §5.2.
+/// </para>
+/// </remarks>
+public enum ImpactDirection
+{
+    /// <summary>A failure does not travel along this edge at all.</summary>
+    Neither = 0,
+
+    /// <summary>From the edge's <c>From</c> to its <c>To</c>.</summary>
+    WithEdge,
+
+    /// <summary>From the edge's <c>To</c> to its <c>From</c>.</summary>
+    AgainstEdge,
+
+    /// <summary>Either way.</summary>
+    BothWays,
 }

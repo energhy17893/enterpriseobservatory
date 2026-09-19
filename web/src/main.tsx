@@ -7,6 +7,7 @@ import { Shell } from '@/components/Shell'
 import { SignIn } from '@/routes/SignIn'
 import { Overview } from '@/routes/Overview'
 import { Alerts } from '@/routes/Alerts'
+import { Events } from '@/routes/Events'
 import { Entities } from '@/routes/Entities'
 import { EntityDetail } from '@/routes/EntityDetail'
 import { Collectors } from '@/routes/Collectors'
@@ -63,6 +64,7 @@ function Application() {
       <Routes>
         <Route element={<Shell identity={data} />}>
           <Route index element={<Overview />} />
+          <Route path="events" element={<Events />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="entities" element={<Entities />} />
           <Route path="entities/:id" element={<EntityDetail />} />

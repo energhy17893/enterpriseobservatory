@@ -238,3 +238,49 @@ export interface BulkActionView {
   refusal: string | null
   recordedAs: string
 }
+
+/** One step of the path that proves a group. */
+export interface CorrelationLinkView {
+  fromId: string
+  fromName: string
+  kind: RelationshipKind
+  toId: string
+  toName: string
+}
+
+/** Several alerts that are one thing going wrong. */
+export interface EventView {
+  id: string
+  title: string
+  severity: AlertSeverity
+  rootId: string
+  rootName: string
+  /** The real counts, for the header. Never a sample. */
+  alertCount: number
+  entityCount: number
+  firstSeenUtc: string
+  lastSeenUtc: string
+  alerts: AlertView[]
+  /** Why these were grouped. */
+  explanation: CorrelationLinkView[]
+}
+
+/**
+ * Alerts that started together and may be one thing.
+ *
+ * Deliberately not an EventView: the evidence is only that they appeared
+ * together, so the interface offers it rather than folding it.
+ */
+export interface SuggestionView {
+  withinUtc: string
+  windowSeconds: number
+  alerts: AlertView[]
+}
+
+export interface EventBoardView {
+  events: EventView[]
+  suggestions: SuggestionView[]
+  ungrouped: AlertView[]
+  /** Every visible alert, so the two views can be checked against each other. */
+  totalAlerts: number
+}
