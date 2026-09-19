@@ -206,17 +206,74 @@ public static class AuthenticationApi
             : null;
     }
 
-    private static Task SignInAsync(HttpContext context, UserAccount account)
+    /// <summary>What a cookie's principal turned out to be worth.</summary>
+    public enum PrincipalStatus
     {
-        var identity = new ClaimsIdentity(
+        /// <summary>Still matches the account as it stands.</summary>
+        Valid,
+
+        /// <summary>The account changed; the principal must be rebuilt.</summary>
+        Stale,
+
+        /// <summary>There is no such account any more.</summary>
+        Gone,
+    }
+
+    /// <summary>
+    /// Re-checks a cookie's principal against the account as it stands now.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A cookie carries what was true when it was issued. Without this,
+    /// removing an account removes nothing: the session keeps working until the
+    /// cookie expires, which is hours. A demotion has the same problem, and a
+    /// promotion the mirror image — somebody granted a role would be told they
+    /// lack it until they signed out and in again.
+    /// </para>
+    /// <para>
+    /// A function rather than a lambda in the host's startup, because this is
+    /// the rule that decides whether removal means anything, and a rule nothing
+    /// can test is a rule that regresses quietly.
+    /// </para>
+    /// </remarks>
+    public static (PrincipalStatus Status, ClaimsPrincipal? Replacement) Revalidate(
+        IUserAccountStore accounts, ClaimsPrincipal? principal)
+    {
+        ArgumentNullException.ThrowIfNull(accounts);
+
+        var username = principal?.Identity?.Name;
+
+        if (username is null || accounts.Find(username) is not { } account)
+        {
+            return (PrincipalStatus.Gone, null);
+        }
+
+        return RoleOf(principal!) == account.Role
+            ? (PrincipalStatus.Valid, null)
+            : (PrincipalStatus.Stale, PrincipalFor(account));
+    }
+
+    /// <summary>The principal an account signs in as.</summary>
+    /// <remarks>
+    /// Public because the cookie handler rebuilds it on every request, against
+    /// the account as it stands rather than as it stood when the cookie was
+    /// issued. Otherwise removing an account removes nothing until the cookie
+    /// expires.
+    /// </remarks>
+    public static ClaimsPrincipal PrincipalFor(UserAccount account)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+
+        return new ClaimsPrincipal(new ClaimsIdentity(
             [
                 new Claim(ClaimTypes.Name, account.Username),
                 new Claim(RoleClaim, account.Role.ToString()),
             ],
-            Scheme);
-
-        return context.SignInAsync(Scheme, new ClaimsPrincipal(identity));
+            Scheme));
     }
+
+    private static Task SignInAsync(HttpContext context, UserAccount account) =>
+        context.SignInAsync(Scheme, PrincipalFor(account));
 
     private static string Explain(BootstrapFailure failure) => failure switch
     {

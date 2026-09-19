@@ -8,7 +8,7 @@ import type {
   SeriesOptionView,
   SeriesView,
 } from './types'
-import type { AlertActionView, AuthStateView } from './types'
+import type { AccountView, AlertActionView, AuthStateView, Role } from './types'
 
 /**
  * A failed request, carrying enough to say something true about it.
@@ -72,7 +72,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
   // A refusal carries a body explaining itself — "not signed in", "that alert
   // is gone" — and the caller needs it more than it needs an exception.
-  if (response.status === 403 || response.status === 404 || response.status === 400) {
+  if ([400, 403, 404, 409].includes(response.status)) {
     const detail = await response.json().catch(() => null)
     throw new ApiError(messageFor(response.status, detail), response.status)
   }
@@ -146,6 +146,17 @@ export const api = {
   signOut: () => post<null>('/api/auth/signout', {}),
   bootstrap: (token: string, username: string, password: string) =>
     post<AuthStateView>('/api/auth/bootstrap', { token, username, password }),
+  accounts: () => get<AccountView[]>('/api/accounts'),
+  createAccount: (username: string, password: string, role: Role) =>
+    post<AccountView>('/api/accounts/create', { username, password, role }),
+  changeOwnPassword: (currentPassword: string, newPassword: string) =>
+    post<AccountView>('/api/accounts/password', { currentPassword, newPassword }),
+  resetPassword: (username: string, newPassword: string) =>
+    post<AccountView>('/api/accounts/reset-password', { username, newPassword }),
+  changeRole: (username: string, role: Role) =>
+    post<AccountView>('/api/accounts/role', { username, role }),
+  removeAccount: (username: string) =>
+    post<AccountView>('/api/accounts/remove', { username }),
   acknowledge: (fingerprint: string) =>
     post<AlertActionView>('/api/alerts/acknowledge', { fingerprint }),
   clear: (fingerprint: string) => post<AlertActionView>('/api/alerts/clear', { fingerprint }),

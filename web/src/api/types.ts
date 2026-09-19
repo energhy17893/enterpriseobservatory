@@ -195,3 +195,12 @@ export interface AuthStateView {
   needsSetup: boolean
   minimumPasswordLength: number
 }
+
+/** An account, as the interface lists it. No verifier, not even redacted. */
+export interface AccountView {
+  username: string
+  role: Role
+  createdUtc: string
+  lastSignedInUtc: string | null
+  lockedOut: boolean
+}

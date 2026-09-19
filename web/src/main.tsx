@@ -10,6 +10,7 @@ import { Alerts } from '@/routes/Alerts'
 import { Entities } from '@/routes/Entities'
 import { EntityDetail } from '@/routes/EntityDetail'
 import { Collectors } from '@/routes/Collectors'
+import { Accounts } from '@/routes/Accounts'
 import './styles/index.css'
 
 const queryClient = new QueryClient({
@@ -65,6 +66,7 @@ function Application() {
           <Route path="entities" element={<Entities />} />
           <Route path="entities/:id" element={<EntityDetail />} />
           <Route path="collectors" element={<Collectors />} />
+          <Route path="accounts" element={<Accounts identity={data} />} />
         </Route>
       </Routes>
     </BrowserRouter>

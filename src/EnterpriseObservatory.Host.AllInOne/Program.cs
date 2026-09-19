@@ -72,6 +72,7 @@ builder.Services.AddSingleton<ReadModel>();
 // the browser send it. See ADR-0006 and ADR-0014.
 builder.Services.AddSingleton<IUserAccountStore, SqliteUserAccountStore>();
 builder.Services.AddSingleton<AuthenticationService>();
+builder.Services.AddSingleton<AccountService>();
 
 builder.Services
     .AddAuthentication(AuthenticationApi.Scheme)
@@ -102,6 +103,35 @@ builder.Services
         options.Events.OnRedirectToAccessDenied = context =>
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
+
+        // Checked on every request against the account as it stands now, not as
+        // it stood when the cookie was issued. Without this, removing an
+        // account does not remove anything: the session keeps working until the
+        // cookie expires, which is hours. A demotion has the same problem in
+        // the other direction, so the role is refreshed here too.
+        //
+        // The cost is one lookup of a small, primary-keyed table per request.
+        options.Events.OnValidatePrincipal = context =>
+        {
+            var accounts = context.HttpContext.RequestServices.GetRequiredService<IUserAccountStore>();
+            var (status, replacement) = AuthenticationApi.Revalidate(accounts, context.Principal);
+
+            switch (status)
+            {
+                case AuthenticationApi.PrincipalStatus.Gone:
+                    context.RejectPrincipal();
+
+                    return Microsoft.AspNetCore.Authentication.AuthenticationHttpContextExtensions
+                        .SignOutAsync(context.HttpContext, AuthenticationApi.Scheme);
+
+                case AuthenticationApi.PrincipalStatus.Stale:
+                    context.ReplacePrincipal(replacement!);
+                    context.ShouldRenew = true;
+                    break;
+            }
+
             return Task.CompletedTask;
         };
     });
@@ -141,6 +171,7 @@ host.UseAuthentication();
 host.UseAuthorization();
 
 host.MapAuthenticationApi(setupToken);
+host.MapAccountsApi();
 host.MapObservatoryApi();
 
 // The SPA's build output, when it has been built. Serving the interface from

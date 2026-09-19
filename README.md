@@ -157,6 +157,11 @@ warn: This installation has no accounts yet ... setup token: 6ruVRxIS...
 Roller: `Viewer` (görür), `Operator` (alarm onaylar/susturur/kapatır),
 `Administrator` (ayrıca hesap ve yapılandırma). Her rol altındakini içerir.
 
+Hesap yönetimi **Yapılandırma → Hesaplar** altında. Parolasını herkes kendi
+değiştirebilir (mevcut parolayı sorarak); geri kalanı yöneticiye ait. Ürün son
+yöneticinin silinmesini veya rolünün düşürülmesini reddeder — kimsenin
+yönetemediği bir kurulum ancak veritabanı elle düzenlenerek onarılır.
+
 ```bash
 dotnet user-secrets --project src/EnterpriseObservatory.Host.AllInOne set "VCenters:0:Password" "..."
 ```
