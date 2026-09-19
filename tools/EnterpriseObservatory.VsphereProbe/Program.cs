@@ -185,6 +185,50 @@ try
                           "   (reported Unknown, never assumed off)");
     }
 
+    // The numbers the fullness rule is judging, printed whether or not it
+    // fires. An estate where nothing crosses the threshold and an estate where
+    // the capacity properties came back null produce the same empty inbox, and
+    // the difference between them is the difference between "nothing is wrong"
+    // and "nothing is being checked".
+    if (payload.Datastores.Count > 0)
+    {
+        Section("Datastore fullness");
+
+        var measured = payload.Datastores
+            .Select(d => (
+                d.Name,
+                d.Accessible,
+                Percent: d is { CapacityBytes: > 0 and { } cap, FreeSpaceBytes: >= 0 and { } free }
+                    ? (cap - free) / (double)cap * 100d
+                    : (double?)null,
+                FreeGb: (d.FreeSpaceBytes ?? 0) / 1024d / 1024d / 1024d))
+            .OrderByDescending(d => d.Percent ?? -1)
+            .ToList();
+
+        var unreadable = measured.Count(d => d.Percent is null);
+        var critical = measured.Count(d => d.Percent >= 95d);
+        var warning = measured.Count(d => d.Percent is >= 85d and < 95d);
+
+        Console.WriteLine($"  measured                 {measured.Count - unreadable} of {measured.Count}");
+        Console.WriteLine($"  unreadable capacity      {unreadable}   (reported Unknown, never as full)");
+        Console.WriteLine($"  inaccessible             {measured.Count(d => d.Accessible == false)}");
+        Console.WriteLine($"  at or above 95%          {critical}   -> Critical");
+        Console.WriteLine($"  85% to 95%               {warning}   -> Warning");
+        Console.WriteLine();
+        Console.WriteLine("  fullest five:");
+
+        foreach (var datastore in measured.Take(5))
+        {
+            var percent = datastore.Percent is { } p
+                ? string.Create(CultureInfo.InvariantCulture, $"{p,5:0.0}%")
+                : "    ?";
+
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"    {percent}  {datastore.FreeGb,9:0.#} GB free   {Show(datastore.Name, mask)}"));
+        }
+    }
+
     if (payload.Hosts.Count == 0)
     {
         Console.WriteLine();
