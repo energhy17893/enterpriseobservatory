@@ -22,6 +22,18 @@ public sealed record PostgresOptions
 
     public string Username { get; init; } = "observatory";
 
+    /// <summary>
+    /// The schema the product's tables live in.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than assumed <c>public</c> so that one database can hold
+    /// more than one installation — a lab beside production, or a restore being
+    /// checked without disturbing the live one. It also gives a test suite a
+    /// place to work that it can drop afterwards, which matters here because
+    /// the tests that count are the ones run against a real server.
+    /// </remarks>
+    public string Schema { get; init; } = "public";
+
     public Secret Password { get; init; } = Secret.Empty;
 
     /// <summary>
@@ -62,6 +74,11 @@ public sealed record PostgresOptions
             problems.Add("A username is required.");
         }
 
+        if (string.IsNullOrWhiteSpace(Schema))
+        {
+            problems.Add("A schema is required; use 'public' if you have no reason to change it.");
+        }
+
         if (Password.IsEmpty)
         {
             problems.Add(
@@ -81,6 +98,7 @@ public sealed record PostgresOptions
             Username = Username,
             Password = Password.Reveal(),
             SslMode = RequireTls ? SslMode.Require : SslMode.Prefer,
+            SearchPath = Schema,
 
             // The pool is the reason for choosing this engine over a file, so
             // it is left on and sized rather than disabled. A collection cycle
@@ -131,6 +149,15 @@ public sealed class PostgresDatabase : IDisposable
         }
 
         _source = NpgsqlDataSource.Create(options.ToConnectionString());
+
+        // Created before the migrations, because they are created inside it.
+        // Harmless when it is "public", which already exists.
+        using (var connection = _source.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"CREATE SCHEMA IF NOT EXISTS \"{options.Schema.Replace("\"", "\"\"", StringComparison.Ordinal)}\";";
+            command.ExecuteNonQuery();
+        }
 
         PostgresSchema.Apply(this);
     }

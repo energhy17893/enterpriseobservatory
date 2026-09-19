@@ -5,6 +5,7 @@
     <Project Path="src/EnterpriseObservatory.Collectors.Vsphere/EnterpriseObservatory.Collectors.Vsphere.csproj" />
     <Project Path="src/EnterpriseObservatory.Domain/EnterpriseObservatory.Domain.csproj" />
     <Project Path="src/EnterpriseObservatory.Host.AllInOne/EnterpriseObservatory.Host.AllInOne.csproj" />
+    <Project Path="src/EnterpriseObservatory.Persistence.Postgres/EnterpriseObservatory.Persistence.Postgres.csproj" />
     <Project Path="src/EnterpriseObservatory.Persistence.Sqlite/EnterpriseObservatory.Persistence.Sqlite.csproj" />
   </Folder>
   <Folder Name="/tests/">
@@ -14,6 +15,7 @@
     <Project Path="tests/EnterpriseObservatory.Collectors.Vsphere.Tests/EnterpriseObservatory.Collectors.Vsphere.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Domain.Tests/EnterpriseObservatory.Domain.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Host.AllInOne.Tests/EnterpriseObservatory.Host.AllInOne.Tests.csproj" />
+    <Project Path="tests/EnterpriseObservatory.Persistence.Postgres.Tests/EnterpriseObservatory.Persistence.Postgres.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Persistence.Sqlite.Tests/EnterpriseObservatory.Persistence.Sqlite.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
