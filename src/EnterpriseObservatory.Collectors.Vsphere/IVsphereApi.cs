@@ -44,16 +44,23 @@ public interface IVsphereApi
     Task<IReadOnlyList<string>> GetAvailableCounterKeysAsync(
         string entityMoRef,
         VsphereEntityType entityType,
+        DateTimeOffset nowUtc,
         CancellationToken cancellationToken);
 
     /// <summary>Reads samples for a batch of entities of one type.</summary>
     /// <exception cref="VsphereQuerySizeRefusedException">
     /// When the server refuses the query for being too large.
     /// </exception>
+    /// <param name="nowUtc">
+    /// The caller's clock, used to bound a historical query. Passed in rather
+    /// than read here so the transport has no opinion about time and the
+    /// request is reproducible in a test.
+    /// </param>
     Task<IReadOnlyList<PerfEntitySamples>> QueryPerfAsync(
         IReadOnlyList<string> entityMoRefs,
         VsphereEntityType entityType,
         IReadOnlyList<VsphereCounter> counters,
+        DateTimeOffset nowUtc,
         CancellationToken cancellationToken);
 }
 

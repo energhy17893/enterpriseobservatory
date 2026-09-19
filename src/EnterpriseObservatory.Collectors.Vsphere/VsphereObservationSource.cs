@@ -41,6 +41,29 @@ public sealed class VsphereObservationSource(
         targets ?? throw new ArgumentNullException(nameof(targets));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
+    /// <summary>How long a "nothing is available" answer is taken at its word.</summary>
+    /// <remarks>
+    /// Long enough that the re-check costs nothing measurable, short enough
+    /// that a statistics level someone raised this morning starts producing
+    /// data the same day rather than at the next restart.
+    /// </remarks>
+    private static readonly TimeSpan RecheckInterval = TimeSpan.FromHours(1);
+
+    /// <summary>When each type the probe dismissed may be tried again.</summary>
+    private readonly Dictionary<VsphereEntityType, DateTimeOffset> _nextRecheck = [];
+
+    /// <summary>
+    /// Types where the probe said "nothing" and the data disagreed.
+    /// </summary>
+    /// <remarks>
+    /// In memory rather than stored, deliberately. It is an observation about
+    /// this session's conversation with one server, and a restart re-reads the
+    /// connection anyway — persisting it would mean a vCenter that was fixed
+    /// yesterday is still being second-guessed today on the strength of a
+    /// disagreement nobody can see.
+    /// </remarks>
+    private readonly HashSet<VsphereEntityType> _probeProvedWrong = [];
+
     public string InstanceId => _api.InstanceId;
 
     public async Task<ObservationBatch> ReadAsync(CancellationToken cancellationToken)
@@ -94,10 +117,54 @@ public sealed class VsphereObservationSource(
         // the individual object, so one probe answers for the type — and one
         // probe per cycle is affordable where one per entity would not be.
         var available = await _api
-            .GetAvailableCounterKeysAsync(moRefs[0], entityType, cancellationToken)
+            .GetAvailableCounterKeysAsync(moRefs[0], entityType, now, cancellationToken)
             .ConfigureAwait(false);
 
         var availableSet = new HashSet<string>(available, StringComparer.OrdinalIgnoreCase);
+
+        // The source supplied nothing at all for this entity type. Reported as
+        // one fact rather than as one complaint per counter, because it is one
+        // fact: against a live vCenter this produced two separate messages both
+        // claiming a counter "requires statistics level 1", which is not a
+        // thing that can be true — level 1 is the floor every installation
+        // collects at. Two impossible sentences in place of one true one.
+        // The probe is trusted, but not indefinitely and not on its own word.
+        //
+        // When it reports nothing for a whole entity type we stop querying —
+        // asking every thirty seconds for an answer that will not change is a
+        // monitoring tool making work for the system it monitors. But the probe
+        // is also the thing that has been wrong all day, and a plain skip makes
+        // that self-confirming: never ask, never learn it was available. So the
+        // skip expires. Once an hour the query goes out regardless, and if data
+        // comes back the probe has been proven wrong for this type and is not
+        // consulted for it again.
+        var trustTheProbe = availableSet.Count == 0 && !_probeProvedWrong.Contains(entityType);
+
+        if (trustTheProbe)
+        {
+            failures.Add(new CollectionFailure
+            {
+                Kind = CollectionFailureKind.NotConfigured,
+                Target = entityType.ToString(),
+                Detail =
+                    $"This vCenter reports no performance data at all for {entityType} at the " +
+                    $"{VsphereIntervals.IntervalSecondsFor(entityType)}s interval, so nothing of " +
+                    "that kind can be measured. This is about what the platform keeps, not about " +
+                    "which counters the product asked for. The product re-checks hourly rather " +
+                    "than taking the answer as permanent.",
+            });
+
+            if (_nextRecheck.TryGetValue(entityType, out var due) && now < due)
+            {
+                return;
+            }
+
+            _nextRecheck[entityType] = now + RecheckInterval;
+        }
+
+        // A type the probe has been caught out on, or an hourly re-check: use
+        // every counter this vCenter actually defines and let the data answer.
+        var ignoreTheProbe = availableSet.Count == 0;
 
         var usable = new List<VsphereCounter>();
         foreach (var key in wanted)
@@ -124,19 +191,30 @@ public sealed class VsphereObservationSource(
                 continue;
             }
 
-            if (!availableSet.Contains(key))
+            if (!ignoreTheProbe && !availableSet.Contains(key))
             {
-                // Defined but not being collected: the statistics level is too
-                // low. Reported rather than tolerated, because the affected
-                // metrics are Unknown and a monitoring product that hides what
-                // it cannot see is worse than one that is absent.
+                // Defined but not being collected. Usually the statistics
+                // level — but only when the counter needs a level above the
+                // floor. A level-1 counter that is unavailable cannot be
+                // explained by the statistics level, and saying so anyway
+                // sends an operator to raise a setting that is already high
+                // enough. Reported either way: the affected metrics are
+                // Unknown, and a product that hides what it cannot see is
+                // worse than one that is absent.
+                var raisingTheLevelCouldHelp = counter.Level > 1;
+
                 failures.Add(new CollectionFailure
                 {
-                    Kind = CollectionFailureKind.InsufficientDetailLevel,
+                    Kind = raisingTheLevelCouldHelp
+                        ? CollectionFailureKind.InsufficientDetailLevel
+                        : CollectionFailureKind.NotConfigured,
                     Target = key,
-                    Detail =
-                        $"Counter requires statistics level {counter.Level} for {entityType}; " +
-                        "the platform is not currently collecting it.",
+                    Detail = raisingTheLevelCouldHelp
+                        ? $"Counter requires statistics level {counter.Level} for {entityType}; " +
+                          "the platform is collecting at a lower level, so this is not measured."
+                        : $"This vCenter defines '{key}' but is not keeping it for {entityType}. " +
+                          "It needs no statistics level above the default, so raising the level " +
+                          "will not help — the platform simply holds no data of this kind.",
                 });
                 continue;
             }
@@ -160,10 +238,22 @@ public sealed class VsphereObservationSource(
             try
             {
                 var samples = await _api
-                    .QueryPerfAsync(batch, entityType, usable, cancellationToken)
+                    .QueryPerfAsync(batch, entityType, usable, now, cancellationToken)
                     .ConfigureAwait(false);
 
-                observations.AddRange(ToObservations(samples, fallbackInterval, now));
+                var read = ToObservations(samples, fallbackInterval, now).ToList();
+
+                // Data arrived for a type the probe said had none. The probe is
+                // wrong here — recorded so the hourly re-check becomes a
+                // permanent one, rather than this measuring an hour apart
+                // forever while the data was there all along.
+                if (ignoreTheProbe && read.Count > 0)
+                {
+                    _probeProvedWrong.Add(entityType);
+                    _nextRecheck.Remove(entityType);
+                }
+
+                observations.AddRange(read);
             }
             catch (VsphereQuerySizeRefusedException ex)
             {

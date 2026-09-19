@@ -153,18 +153,24 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
     public async Task<IReadOnlyList<string>> GetAvailableCounterKeysAsync(
         string entityMoRef,
         VsphereEntityType entityType,
+        DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
         var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var catalog = await GetCounterCatalogAsync(cancellationToken).ConfigureAwait(false);
         var byId = catalog.ToDictionary(c => c.Id);
 
+        var window = VsphereIntervals.SupportsRealTime(entityType)
+            ? default((DateTimeOffset, DateTimeOffset)?)
+            : (nowUtc - VsphereIntervals.HistoricalWindow, nowUtc);
+
         var response = await SendAsync(
             VsphereSoapRequests.QueryAvailablePerfMetric(
                 content.PerformanceManager,
                 entityMoRef,
                 entityType.ToString(),
-                VsphereIntervals.IntervalSecondsFor(entityType)),
+                VsphereIntervals.IntervalSecondsFor(entityType),
+                window),
             cancellationToken).ConfigureAwait(false);
 
         XDocument document;
@@ -195,6 +201,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         IReadOnlyList<string> entityMoRefs,
         VsphereEntityType entityType,
         IReadOnlyList<VsphereCounter> counters,
+        DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(entityMoRefs);
@@ -203,10 +210,17 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var intervalSeconds = VsphereIntervals.IntervalSecondsFor(entityType);
 
+        // Real-time takes maxSample; a historical interval ignores it and needs
+        // a range instead. Sending neither is what made every datastore in a
+        // live estate come back empty without a single error.
+        var window = VsphereIntervals.SupportsRealTime(entityType)
+            ? default((DateTimeOffset, DateTimeOffset)?)
+            : (nowUtc - VsphereIntervals.HistoricalWindow, nowUtc);
+
         var response = await SendAsync(
             VsphereSoapRequests.QueryPerf(
                 content.PerformanceManager, entityMoRefs, entityType.ToString(),
-                counters, intervalSeconds, MaxSample),
+                counters, intervalSeconds, MaxSample, window),
             cancellationToken,
             VsphereCallContext.PerformanceQuery).ConfigureAwait(false);
 

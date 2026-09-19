@@ -1,7 +1,27 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
+
+    <!--
+      For reading a stored connection, so nobody retypes a password to
+      diagnose one. Referenced rather than adding Microsoft.Data.Sqlite here:
+      that package's transitive SQLitePCLRaw carries a known advisory, and the
+      pin that deals with it already lives in this project. One pin, one place.
+    -->
+    <ProjectReference Include="..\..\src\EnterpriseObservatory.Persistence.Sqlite\EnterpriseObservatory.Persistence.Sqlite.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Data protection from the shared framework rather than as a standalone
+      package. The package pulls System.Security.Cryptography.Xml, which
+      carries several advisories the audit fails the build on; the framework
+      ships a serviced copy. The service gets it the same way — and a
+      diagnostic tool that decrypts differently from the service it diagnoses
+      would be answering a different question.
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <PropertyGroup>

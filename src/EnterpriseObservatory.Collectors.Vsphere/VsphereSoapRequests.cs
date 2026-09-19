@@ -94,17 +94,41 @@ public static class VsphereSoapRequests
     /// reasoning about how level numbers map to counters across versions, ask
     /// the server what it has.
     /// </remarks>
+    /// <param name="window">
+    /// The time range, for a historical interval. Null for real-time.
+    /// </param>
+    /// <remarks>
+    /// The same range a historical <see cref="QueryPerf"/> needs, and for the
+    /// same reason — but this one bites harder, because it gates the other.
+    /// Asked without a range, a historical availability probe answers "nothing
+    /// is available", the collector concludes the statistics level is too low,
+    /// and the data query is never issued at all. Fixing the range on the data
+    /// query alone changed nothing for exactly this reason.
+    /// </remarks>
     public static string QueryAvailablePerfMetric(
         string perfManagerMoRef,
         string entityMoRef,
         string entityType,
-        int intervalSeconds) => Envelope($"""
+        int intervalSeconds,
+        (DateTimeOffset From, DateTimeOffset To)? window = null)
+    {
+        // Schema order: entity, beginTime?, endTime?, intervalId?.
+        var range = window is { } w
+            ? $"""
+
+              <vim25:beginTime>{w.From.UtcDateTime.ToString("o", CultureInfo.InvariantCulture)}</vim25:beginTime>
+              <vim25:endTime>{w.To.UtcDateTime.ToString("o", CultureInfo.InvariantCulture)}</vim25:endTime>
+        """
+            : string.Empty;
+
+        return Envelope($"""
             <vim25:QueryAvailablePerfMetric>
               <vim25:_this type="PerformanceManager">{Escape(perfManagerMoRef)}</vim25:_this>
-              <vim25:entity type="{Escape(entityType)}">{Escape(entityMoRef)}</vim25:entity>
+              <vim25:entity type="{Escape(entityType)}">{Escape(entityMoRef)}</vim25:entity>{range}
               <vim25:intervalId>{intervalSeconds.ToString(CultureInfo.InvariantCulture)}</vim25:intervalId>
             </vim25:QueryAvailablePerfMetric>
         """);
+    }
 
     /// <summary>Requests samples for a batch of entities of one type.</summary>
     /// <param name="maxSample">
@@ -112,16 +136,39 @@ public static class VsphereSoapRequests
     /// short spike between polls is not missed entirely; the parser keeps the
     /// latest for current state. The previous product asked for exactly one.
     /// </param>
+    /// <param name="window">
+    /// The time range, for a historical interval. Null for real-time.
+    /// </param>
+    /// <remarks>
+    /// A historical query without a range returns nothing. vim25 ignores
+    /// <c>maxSample</c> outside real-time, so the range is the only thing
+    /// selecting any samples at all — and its absence produces an empty answer
+    /// rather than a fault, which is why every datastore in a live estate read
+    /// as unmeasured with nothing anywhere saying why.
+    /// </remarks>
     public static string QueryPerf(
         string perfManagerMoRef,
         IReadOnlyList<string> entityMoRefs,
         string entityType,
         IReadOnlyList<VsphereCounter> counters,
         int intervalSeconds,
-        int maxSample)
+        int maxSample,
+        (DateTimeOffset From, DateTimeOffset To)? window = null)
     {
         ArgumentNullException.ThrowIfNull(entityMoRefs);
         ArgumentNullException.ThrowIfNull(counters);
+
+        // Schema order: entity, startTime?, endTime?, maxSample?, metricId*,
+        // intervalId?, format?. PerfQuerySpec is an xsd:sequence, so a range
+        // emitted anywhere else is rejected outright with "Unexpected element
+        // tag" rather than ignored.
+        var range = window is { } w
+            ? $"""
+
+                    <vim25:startTime>{w.From.UtcDateTime.ToString("o", CultureInfo.InvariantCulture)}</vim25:startTime>
+                    <vim25:endTime>{w.To.UtcDateTime.ToString("o", CultureInfo.InvariantCulture)}</vim25:endTime>
+            """
+            : string.Empty;
 
         // instance "*" asks for every device series plus the aggregate; the
         // parser decides how to combine them.
@@ -138,7 +185,7 @@ public static class VsphereSoapRequests
         var specs = string.Concat(entityMoRefs.Select(moRef => $"""
 
                   <vim25:querySpec>
-                    <vim25:entity type="{Escape(entityType)}">{Escape(moRef)}</vim25:entity>
+                    <vim25:entity type="{Escape(entityType)}">{Escape(moRef)}</vim25:entity>{range}
                     <vim25:maxSample>{maxSample.ToString(CultureInfo.InvariantCulture)}</vim25:maxSample>{metrics}
                     <vim25:intervalId>{intervalSeconds.ToString(CultureInfo.InvariantCulture)}</vim25:intervalId>
                     <vim25:format>normal</vim25:format>

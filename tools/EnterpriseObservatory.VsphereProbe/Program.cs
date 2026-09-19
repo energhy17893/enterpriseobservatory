@@ -32,15 +32,49 @@ if (pageSizeIndex >= 0 && pageSizeIndex + 1 < args.Length &&
     pageSize = requested;
 }
 
-var url = Environment.GetEnvironmentVariable("EO_VCENTER_URL");
-var user = Environment.GetEnvironmentVariable("EO_VCENTER_USER");
-var password = Environment.GetEnvironmentVariable("EO_VCENTER_PASSWORD");
-var insecure = string.Equals(
-    Environment.GetEnvironmentVariable("EO_VCENTER_INSECURE"), "true", StringComparison.OrdinalIgnoreCase);
+// A connection the product already holds, read from its database and decrypted
+// with its own key ring. Diagnosing a connection should never require retyping
+// its password: a shell rewrites what it is given, and that is how this product
+// spent a day chasing a credential that had been correct all along.
+//
+//   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- //     --from-store C:/ProgramData/EnterpriseObservatory/observatory.db
+var storeIndex = Array.FindIndex(args, a =>
+    string.Equals(a, "--from-store", StringComparison.OrdinalIgnoreCase));
+
+string? url;
+string? user;
+string? password;
+bool insecure;
+
+if (storeIndex >= 0 && storeIndex + 1 < args.Length)
+{
+    try
+    {
+        (url, user, password, insecure) =
+            EnterpriseObservatory.VsphereProbe.StoredConnection.Read(args[storeIndex + 1]);
+    }
+#pragma warning disable CA1031 // Justified: a probe reports, it does not throw.
+    catch (Exception ex)
+#pragma warning restore CA1031
+    {
+        Console.Error.WriteLine($"Could not read a stored connection: {ex.Message}");
+        return 2;
+    }
+}
+else
+{
+    url = Environment.GetEnvironmentVariable("EO_VCENTER_URL");
+    user = Environment.GetEnvironmentVariable("EO_VCENTER_USER");
+    password = Environment.GetEnvironmentVariable("EO_VCENTER_PASSWORD");
+    insecure = string.Equals(
+        Environment.GetEnvironmentVariable("EO_VCENTER_INSECURE"), "true", StringComparison.OrdinalIgnoreCase);
+}
 
 if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(password))
 {
-    Console.Error.WriteLine("Set EO_VCENTER_URL, EO_VCENTER_USER and EO_VCENTER_PASSWORD first.");
+    Console.Error.WriteLine(
+        "Pass --from-store <observatory.db>, or set EO_VCENTER_URL, EO_VCENTER_USER and " +
+        "EO_VCENTER_PASSWORD first.");
     return 2;
 }
 
@@ -161,7 +195,7 @@ try
 
     var probeHost = payload.Hosts[0];
     var available = await client.GetAvailableCounterKeysAsync(
-        probeHost.MoRef, VsphereEntityType.HostSystem, cancellation.Token);
+        probeHost.MoRef, VsphereEntityType.HostSystem, DateTimeOffset.UtcNow, cancellation.Token);
 
     var availableSet = new HashSet<string>(available, StringComparer.OrdinalIgnoreCase);
     var byKey = VsphereCounterIndex.ByKey(catalog);
@@ -193,6 +227,24 @@ try
         Console.WriteLine("  Until then those metrics are reported as Unknown, never as zero or healthy.");
     }
 
+    // Does the HOST supply the datastore counters the datastore itself will
+    // not? In vim25 a counter's entity is not always the object it describes:
+    // per-datastore latency is collected on the host, with the datastore as the
+    // instance — the same shape as per-LUN disk latency. If that is what is
+    // happening here, asking the datastore for it can never work, however
+    // correct the name and the interval.
+    var datastoreOnHost = availableSet
+        .Where(k => k.StartsWith("datastore.", StringComparison.Ordinal))
+        .OrderBy(k => k, StringComparer.Ordinal)
+        .ToList();
+
+    Section("Datastore counters supplied by the host");
+    Console.WriteLine($"  count                    {datastoreOnHost.Count}");
+    foreach (var key in datastoreOnHost)
+    {
+        Console.WriteLine($"    {key}");
+    }
+
     Section("Sample read");
     var usable = VsphereCounters.Host.Where(availableSet.Contains).Select(k => byKey[k]).ToList();
 
@@ -203,7 +255,8 @@ try
     }
 
     var samples = await client.QueryPerfAsync(
-        [probeHost.MoRef], VsphereEntityType.HostSystem, usable, cancellation.Token);
+        [probeHost.MoRef], VsphereEntityType.HostSystem, usable,
+        DateTimeOffset.UtcNow, cancellation.Token);
 
     Console.WriteLine($"  host                     {Show(probeHost.Name, mask)}");
     Console.WriteLine($"  connection state         {probeHost.ConnectionState}");
@@ -222,6 +275,56 @@ try
     Console.WriteLine();
     Console.WriteLine("  The interval above is read from the response, not assumed from the request:");
     Console.WriteLine("  a summation counter is meaningless without it.");
+
+    // The question a host probe cannot answer. Datastores are read on the
+    // 5-minute historical interval rather than the real-time feed, and the two
+    // behave differently enough that "hosts work" says nothing about them:
+    // against a live estate every datastore came back unmeasured while every
+    // host was fine.
+    Section("Datastore availability");
+
+    if (payload.Datastores.Count == 0)
+    {
+        Console.WriteLine("  No datastores in this inventory.");
+    }
+    else
+    {
+        var probeDatastore = payload.Datastores[0];
+        var datastoreInterval = VsphereIntervals.IntervalSecondsFor(VsphereEntityType.Datastore);
+
+        var datastoreAvailable = await client.GetAvailableCounterKeysAsync(
+            probeDatastore.MoRef, VsphereEntityType.Datastore,
+            DateTimeOffset.UtcNow, cancellation.Token);
+
+        Console.WriteLine($"  datastore                {Show(probeDatastore.Name, mask)}");
+        Console.WriteLine($"  interval                 {datastoreInterval}s");
+        Console.WriteLine($"  counters it will supply  {datastoreAvailable.Count}");
+        Console.WriteLine();
+
+        foreach (var key in datastoreAvailable.OrderBy(k => k, StringComparer.Ordinal))
+        {
+            var level = byKey.TryGetValue(key, out var known)
+                ? known.Level.ToString(CultureInfo.InvariantCulture)
+                : "?";
+
+            Console.WriteLine($"    {key,-52} level={level}");
+        }
+
+        Console.WriteLine();
+
+        var wantedDatastore = VsphereCounters.Datastore;
+        var supplied = new HashSet<string>(datastoreAvailable, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var key in wantedDatastore)
+        {
+            var defined = byKey.ContainsKey(key);
+            var verdict = supplied.Contains(key)
+                ? "available"
+                : defined ? "defined but not supplied" : "not defined on this vCenter";
+
+            Console.WriteLine($"  wanted: {key,-44} {verdict}");
+        }
+    }
 
     Section("Result");
     Console.WriteLine("  The probe completed. Nothing was written to vCenter.");

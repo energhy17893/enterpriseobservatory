@@ -103,11 +103,82 @@ public class VsphereSoapRequestsTests
     public void The_interval_travels_with_the_request()
     {
         // Datastores have no real-time feed, so they must be asked at 300s.
+        //
+        // This test passed while every datastore in a live estate went
+        // unmeasured. Sending the right interval is half the request; the other
+        // half is below, and checking one half is how a request can be provably
+        // correct and still return nothing.
         var realtime = VsphereSoapRequests.QueryPerf("PerfMgr", ["host-1"], "HostSystem", [CpuUsage], 20, 3);
         var historical = VsphereSoapRequests.QueryPerf("PerfMgr", ["ds-1"], "Datastore", [CpuUsage], 300, 3);
 
         Assert.Equal("20", Assert.Single(Named(Parse(realtime), "intervalId")).Value);
         Assert.Equal("300", Assert.Single(Named(Parse(historical), "intervalId")).Value);
+    }
+
+    [Fact]
+    public void A_historical_query_carries_the_time_range_it_needs()
+    {
+        // vim25 honours maxSample only for real-time series. For a historical
+        // interval it is ignored, and a query with no range returns nothing —
+        // no fault, no error, an empty answer that reads exactly like an idle
+        // datastore. Forty-one of them read that way for months.
+        var from = new DateTimeOffset(2026, 9, 19, 23, 0, 0, TimeSpan.Zero);
+        var to = from.AddMinutes(20);
+
+        var soap = VsphereSoapRequests.QueryPerf(
+            "PerfMgr", ["ds-1"], "Datastore", [CpuUsage], 300, 3, (from, to));
+
+        var parsed = Parse(soap);
+
+        Assert.Equal(
+            "2026-09-19T23:00:00.0000000Z",
+            Assert.Single(Named(parsed, "startTime")).Value);
+        Assert.Equal(
+            "2026-09-19T23:20:00.0000000Z",
+            Assert.Single(Named(parsed, "endTime")).Value);
+    }
+
+    [Fact]
+    public void A_real_time_query_carries_no_range()
+    {
+        // Real-time is selected by maxSample, and a range would narrow it to
+        // whatever clock skew exists between us and the server.
+        var soap = VsphereSoapRequests.QueryPerf(
+            "PerfMgr", ["host-1"], "HostSystem", [CpuUsage], 20, 3);
+
+        Assert.Empty(Named(Parse(soap), "startTime"));
+        Assert.Empty(Named(Parse(soap), "endTime"));
+    }
+
+    [Fact]
+    public void The_range_sits_where_the_schema_requires()
+    {
+        // PerfQuerySpec is an xsd:sequence: entity, startTime?, endTime?,
+        // maxSample?, metricId*, intervalId?, format?. An element in the wrong
+        // position is not ignored — the server rejects the whole request with
+        // "Unexpected element tag", so the order is a contract rather than a
+        // tidiness preference.
+        var from = new DateTimeOffset(2026, 9, 19, 23, 0, 0, TimeSpan.Zero);
+
+        var soap = VsphereSoapRequests.QueryPerf(
+            "PerfMgr", ["ds-1"], "Datastore", [CpuUsage], 300, 3, (from, from.AddMinutes(20)));
+
+        var spec = Assert.Single(Named(Parse(soap), "querySpec"));
+        var order = spec.Elements().Select(e => e.Name.LocalName).ToList();
+
+        Assert.Equal(
+            ["entity", "startTime", "endTime", "maxSample", "metricId", "intervalId", "format"],
+            order);
+    }
+
+    [Fact]
+    public void The_window_is_wide_enough_to_outlast_the_rollup_lag()
+    {
+        // vCenter finishes a five-minute bucket some minutes after the fact.
+        // A window of one interval would intermittently return nothing and the
+        // series would have holes nobody could account for.
+        Assert.True(VsphereIntervals.HistoricalWindow.TotalSeconds
+            >= VsphereIntervals.HistoricalLevel1Seconds * 3);
     }
 
     [Fact]

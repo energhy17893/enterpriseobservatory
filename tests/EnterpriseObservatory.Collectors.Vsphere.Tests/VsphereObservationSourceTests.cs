@@ -10,7 +10,7 @@ public class VsphereObservationSourceTests
 
     private sealed class FixedClock : IClock
     {
-        public DateTimeOffset UtcNow => T0;
+        public DateTimeOffset UtcNow { get; set; } = T0;
     }
 
     private sealed class Targets(params string[] hosts) : IVsphereSampleTargetProvider
@@ -35,6 +35,13 @@ public class VsphereObservationSourceTests
         /// <summary>What the platform is actually collecting. Defaults to everything.</summary>
         public HashSet<string>? Available { get; init; }
 
+        /// <summary>A server that answers the query but has nothing to give.</summary>
+        /// <remarks>
+        /// The case that separates "the probe was wrong" from "the probe was
+        /// right": both return a query, only one returns data.
+        /// </remarks>
+        public bool EmptySamples { get; init; }
+
         /// <summary>Batch sizes the server refuses, to exercise adaptive sizing.</summary>
         public int RefuseBatchesLargerThan { get; init; } = int.MaxValue;
 
@@ -47,21 +54,36 @@ public class VsphereObservationSourceTests
             Task.FromResult(MaxQueryMetrics);
 
         public Task<IReadOnlyList<string>> GetAvailableCounterKeysAsync(
-            string entityMoRef, VsphereEntityType entityType, CancellationToken ct) =>
+            string entityMoRef, VsphereEntityType entityType, DateTimeOffset nowUtc,
+            CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<string>>(
                 [.. Available ?? [.. Catalog.Select(c => c.Key)]]);
+
+        /// <summary>The window each query asked for, or null for real-time.</summary>
+        /// <remarks>
+        /// Recorded because its absence was the defect: a historical query
+        /// with no range comes back empty, and empty is not an error.
+        /// </remarks>
+        public List<(DateTimeOffset Now, VsphereEntityType Type)> ObservedQueries { get; } = [];
 
         public Task<IReadOnlyList<PerfEntitySamples>> QueryPerfAsync(
             IReadOnlyList<string> entityMoRefs,
             VsphereEntityType entityType,
             IReadOnlyList<VsphereCounter> counters,
+            DateTimeOffset nowUtc,
             CancellationToken ct)
         {
             ObservedBatchSizes.Add(entityMoRefs.Count);
+            ObservedQueries.Add((nowUtc, entityType));
 
             if (entityMoRefs.Count > RefuseBatchesLargerThan)
             {
                 throw new VsphereQuerySizeRefusedException("Request processing is restricted by administrator.");
+            }
+
+            if (EmptySamples)
+            {
+                return Task.FromResult<IReadOnlyList<PerfEntitySamples>>([]);
             }
 
             return Task.FromResult<IReadOnlyList<PerfEntitySamples>>(
@@ -97,8 +119,12 @@ public class VsphereObservationSourceTests
             });
     }
 
-    private static VsphereObservationSource Source(FakeApi api, IVsphereSampleTargetProvider targets) =>
-        new(api, targets, new FixedClock());
+    private static VsphereObservationSource Source(
+        FakeApi api, IVsphereSampleTargetProvider targets, IClock? clock = null) =>
+        new(api, targets, clock ?? new FixedClock());
+
+    /// <summary>A vCenter that admits to nothing, whatever it actually holds.</summary>
+    private static FakeApi SilentProbe() => new() { Available = [] };
 
     [Fact]
     public async Task Samples_are_attributed_to_the_entity_they_belong_to()
@@ -254,5 +280,100 @@ public class VsphereObservationSourceTests
 
         Assert.Empty(batch.Observations);
         Assert.Empty(batch.Failures);
+    }
+
+    [Fact]
+    public async Task A_source_that_admits_to_nothing_is_still_asked_once()
+    {
+        // The first cycle queries regardless. Trusting the probe from the
+        // outset is what made forty-one datastores read as unmeasured, and a
+        // product that never asks cannot discover it was wrong to stop.
+        var api = SilentProbe();
+
+        await Source(api, new Targets("host-1")).ReadAsync(CancellationToken.None);
+
+        Assert.Single(api.ObservedQueries);
+    }
+
+    [Fact]
+    public async Task And_then_left_alone_until_the_hour_is_up()
+    {
+        // Asking every thirty seconds for an answer that will not change is a
+        // monitoring tool making work for the system it monitors.
+        var api = new FakeApi
+        {
+            Available = [],
+            EmptySamples = true,
+        };
+        var clock = new FixedClock();
+        var source = Source(api, new Targets("host-1"), clock);
+
+        await source.ReadAsync(CancellationToken.None);
+        clock.UtcNow = T0.AddMinutes(30);
+        await source.ReadAsync(CancellationToken.None);
+
+        Assert.Single(api.ObservedQueries);
+    }
+
+    [Fact]
+    public async Task And_asked_again_once_it_is()
+    {
+        // The skip expires. A statistics level raised this morning starts
+        // producing data the same day rather than at the next restart.
+        var api = new FakeApi
+        {
+            Available = [],
+            EmptySamples = true,
+        };
+        var clock = new FixedClock();
+        var source = Source(api, new Targets("host-1"), clock);
+
+        await source.ReadAsync(CancellationToken.None);
+        clock.UtcNow = T0.AddHours(2);
+        await source.ReadAsync(CancellationToken.None);
+
+        Assert.Equal(2, api.ObservedQueries.Count);
+    }
+
+    [Fact]
+    public async Task A_probe_the_data_contradicts_stops_being_consulted()
+    {
+        // The point of re-checking. If the query returns data for a type the
+        // probe dismissed, the probe is wrong here — and measuring once an
+        // hour while the data was there all along would be its own defect.
+        var api = SilentProbe();
+        var clock = new FixedClock();
+        var source = Source(api, new Targets("host-1"), clock);
+
+        await source.ReadAsync(CancellationToken.None);
+        clock.UtcNow = T0.AddSeconds(30);
+        await source.ReadAsync(CancellationToken.None);
+        clock.UtcNow = T0.AddSeconds(60);
+        var third = await source.ReadAsync(CancellationToken.None);
+
+        Assert.Equal(3, api.ObservedQueries.Count);
+        Assert.NotEmpty(third.Observations);
+        Assert.Empty(third.Failures);
+    }
+
+    [Fact]
+    public async Task A_source_that_admits_to_nothing_says_so_in_one_sentence()
+    {
+        // Not one complaint per counter. Against a live vCenter that produced
+        // two messages each claiming a counter "requires statistics level 1",
+        // which is not a thing that can be true — level 1 is the floor.
+        var api = new FakeApi
+        {
+            Available = [],
+            EmptySamples = true,
+        };
+
+        var batch = await Source(api, new Targets("host-1")).ReadAsync(CancellationToken.None);
+
+        var failure = Assert.Single(batch.Failures);
+
+        Assert.Equal(CollectionFailureKind.NotConfigured, failure.Kind);
+        Assert.Equal("HostSystem", failure.Target);
+        Assert.DoesNotContain("level 1", failure.Detail, StringComparison.OrdinalIgnoreCase);
     }
 }

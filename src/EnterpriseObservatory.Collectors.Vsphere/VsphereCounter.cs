@@ -199,4 +199,24 @@ public static class VsphereIntervals
 
     public static int IntervalSecondsFor(VsphereEntityType entityType) =>
         SupportsRealTime(entityType) ? RealTimeSeconds : HistoricalLevel1Seconds;
+
+    /// <summary>
+    /// How far back a historical query asks.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Historical queries need an explicit time range and real-time ones do
+    /// not, which is the whole reason this exists. vim25 honours
+    /// <c>maxSample</c> only for real-time series; for a historical interval it
+    /// is ignored, and a query with no range comes back empty. Not an error, not
+    /// a fault — an empty answer, indistinguishable from an idle datastore.
+    /// </para>
+    /// <para>
+    /// Wide enough to survive the rollup lag. vCenter finishes a five-minute
+    /// bucket some minutes after the fact, so a window of one or two intervals
+    /// would intermittently return nothing and the series would have holes
+    /// nobody could explain.
+    /// </para>
+    /// </remarks>
+    public static readonly TimeSpan HistoricalWindow = TimeSpan.FromMinutes(20);
 }
