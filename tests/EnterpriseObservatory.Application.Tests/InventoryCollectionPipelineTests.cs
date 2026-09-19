@@ -229,6 +229,7 @@ public class InventoryCollectionPipelineTests
                 Health = HealthState.Unknown,
                 ConsecutiveFailures = 5,
                 LastSuccessUtc = T0.AddMinutes(-1),
+                LastAttemptUtc = T0.AddMinutes(-1),
             },
         };
 
@@ -257,6 +258,7 @@ public class InventoryCollectionPipelineTests
                 Health = HealthState.Unknown,
                 ConsecutiveFailures = 5,
                 LastSuccessUtc = T0.AddMinutes(-1),
+                LastAttemptUtc = T0.AddMinutes(-1),
             },
         };
 
@@ -363,5 +365,163 @@ public class InventoryCollectionPipelineTests
         Assert.Empty(result.Snapshots);
         Assert.Empty(result.Health);
         Assert.Empty(result.CollectionAlerts);
+    }
+
+    // ---------------------------------------------------------------------
+    // The cases below were all found against a live vCenter, not in a test.
+    // The two breaker tests above passed throughout, because both described a
+    // source that had SUCCEEDED a minute ago — the only situation the old
+    // breaker ever opened in. Neither shape that actually occurs in the field
+    // was ever constructed.
+    // ---------------------------------------------------------------------
+
+    /// <summary>An exception that knows retrying it cannot help.</summary>
+    private sealed class RejectedLogin()
+        : InvalidOperationException("vCenter rejected the credentials."), ICollectionFault
+    {
+        public CollectionFailureKind Kind => CollectionFailureKind.AuthenticationRejected;
+    }
+
+    [Fact]
+    public async Task A_source_that_has_never_succeeded_is_still_held_off()
+    {
+        // A fresh installation with a wrong password never succeeds, so the
+        // old rule ("keep the breaker closed until it has succeeded once")
+        // meant it was never held off at all. That is not a slow recovery,
+        // it is an unbounded retry loop against a directory that locks
+        // accounts — on the one configuration every new customer starts from.
+        var clock = new FixedClock(T0);
+        var bad = new FakeSource("vc-1") { Behaviour = _ => throw new RejectedLogin() };
+
+        var prior = new[]
+        {
+            new CollectorHealth
+            {
+                InstanceId = "vc-1",
+                Role = CollectorRole.Inventory,
+                Health = HealthState.Unknown,
+                ConsecutiveFailures = 5,
+                LastSuccessUtc = null,
+                LastAttemptUtc = T0.AddSeconds(-30),
+                LastFailureKind = CollectionFailureKind.AuthenticationRejected,
+            },
+        };
+
+        var result = await Pipeline(clock).RunAsync([bad], prior, Fast, CancellationToken.None);
+
+        Assert.Equal(0, bad.Attempts);
+        Assert.True(result.Health[0].IsBackingOff);
+    }
+
+    [Fact]
+    public async Task A_source_down_for_hours_is_held_off_rather_than_asked_every_cycle()
+    {
+        // The cooldown used to be measured from the last success, so the
+        // longer a source had been down the less it was protected: after five
+        // minutes of outage the breaker closed for good and the source was
+        // asked on every cycle thereafter. Exactly backwards, and exactly what
+        // the cooldown's own comment said it existed to prevent.
+        var clock = new FixedClock(T0);
+        var bad = new FakeSource("ilo-1")
+        {
+            Behaviour = _ => throw new InvalidOperationException("down"),
+        };
+
+        var prior = new[]
+        {
+            new CollectorHealth
+            {
+                InstanceId = "ilo-1",
+                Role = CollectorRole.Inventory,
+                Health = HealthState.Unknown,
+                ConsecutiveFailures = 240,
+                LastSuccessUtc = T0.AddHours(-9),
+                LastAttemptUtc = T0.AddSeconds(-30),
+            },
+        };
+
+        var result = await Pipeline(clock).RunAsync([bad], prior, Fast, CancellationToken.None);
+
+        Assert.Equal(0, bad.Attempts);
+        Assert.True(result.Health[0].IsBackingOff);
+    }
+
+    [Fact]
+    public async Task A_rejected_credential_is_asked_once_and_not_retried()
+    {
+        // The message the operator is shown says "This is not retried, so that
+        // repeated attempts cannot lock the monitoring account out." It was
+        // retried MaxRetries times inside the cycle, so the sentence was false
+        // at the moment it was printed.
+        var bad = new FakeSource("vc-1") { Behaviour = _ => throw new RejectedLogin() };
+
+        await Pipeline().RunAsync([bad], [], Fast with { MaxRetries = 2 }, CancellationToken.None);
+
+        Assert.Equal(1, bad.Attempts);
+    }
+
+    [Fact]
+    public async Task A_rejected_credential_holds_the_source_off_after_one_failure()
+    {
+        // One strike, not five. Five rejected logins already exceeds vSphere
+        // SSO's default lockout policy, so a threshold of five would lock the
+        // account before the breaker ever protected it.
+        var clock = new FixedClock(T0);
+        var bad = new FakeSource("vc-1") { Behaviour = _ => throw new RejectedLogin() };
+        var pipeline = Pipeline(clock);
+
+        var first = await pipeline.RunAsync([bad], [], Fast, CancellationToken.None);
+        var second = await pipeline.RunAsync(
+            [bad], [.. first.Health], Fast, CancellationToken.None);
+
+        Assert.Equal(1, bad.Attempts);
+        Assert.True(second.Health[0].IsBackingOff);
+    }
+
+    [Fact]
+    public async Task A_corrected_credential_is_picked_up_without_a_restart()
+    {
+        // The other half of the rule. Holding a source off forever because it
+        // once had the wrong password would turn a five-minute fix into a
+        // support call, so the hold expires and the classification is cleared
+        // by the first success.
+        var clock = new FixedClock(T0);
+        var fixedNow = new FakeSource("vc-1");
+
+        var prior = new[]
+        {
+            new CollectorHealth
+            {
+                InstanceId = "vc-1",
+                Role = CollectorRole.Inventory,
+                Health = HealthState.Unknown,
+                ConsecutiveFailures = 1,
+                LastSuccessUtc = null,
+                LastAttemptUtc = T0.AddMinutes(-10),
+                LastFailureKind = CollectionFailureKind.AuthenticationRejected,
+            },
+        };
+
+        var result = await Pipeline(clock).RunAsync([fixedNow], prior, Fast, CancellationToken.None);
+
+        Assert.Equal(1, fixedNow.Attempts);
+        Assert.Equal(HealthState.Healthy, result.Health[0].Health);
+        Assert.Null(result.Health[0].LastFailureKind);
+    }
+
+    [Fact]
+    public async Task An_unclassified_failure_is_still_retried()
+    {
+        // The forgiving direction, deliberately. An exception nobody
+        // classified might be a reset connection, and refusing to retry those
+        // would turn the fix for a lockout into a different outage.
+        var bad = new FakeSource("ilo-1")
+        {
+            Behaviour = _ => throw new InvalidOperationException("connection reset"),
+        };
+
+        await Pipeline().RunAsync([bad], [], Fast with { MaxRetries = 2 }, CancellationToken.None);
+
+        Assert.Equal(3, bad.Attempts);
     }
 }

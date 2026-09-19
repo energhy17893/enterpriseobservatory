@@ -376,6 +376,53 @@ public class RestartTests : IDisposable
         Assert.Null(Assert.Single(new SqliteCollectorHealthStore(_database).Current).LastSuccessUtc);
     }
 
+    [Fact]
+    public void What_the_breaker_decides_with_survives_a_restart()
+    {
+        // Without these two, a restart re-opens the gates: the cooldown has
+        // nothing to count from and the one-strike rule forgets that the
+        // password was rejected, so the service comes back up and starts
+        // guessing again. That is the lockout this whole record exists to
+        // prevent, reintroduced by the act of restarting.
+        var store = new SqliteCollectorHealthStore(_database);
+
+        store.Merge([
+            new CollectorHealth
+            {
+                InstanceId = "vc-1",
+                Role = CollectorRole.Inventory,
+                Health = HealthState.Unknown,
+                ConsecutiveFailures = 1,
+                LastSuccessUtc = null,
+                LastAttemptUtc = T0.AddMinutes(-2),
+                LastFailureKind = CollectionFailureKind.AuthenticationRejected,
+                LastFailureDetail = "vCenter rejected the credentials.",
+            },
+        ]);
+
+        Restart();
+
+        var recovered = Assert.Single(new SqliteCollectorHealthStore(_database).Current);
+
+        Assert.Equal(T0.AddMinutes(-2), recovered.LastAttemptUtc);
+        Assert.Equal(CollectionFailureKind.AuthenticationRejected, recovered.LastFailureKind);
+    }
+
+    [Fact]
+    public void A_failure_nobody_classified_is_stored_as_unclassified()
+    {
+        // Null, not a guess. Every row written before the column existed is
+        // null, and reading those as "authentication rejected" would hold a
+        // perfectly healthy source off after an upgrade.
+        var store = new SqliteCollectorHealthStore(_database);
+
+        store.Merge([Health("vc-1", CollectorRole.Inventory, failures: 1)]);
+
+        Restart();
+
+        Assert.Null(Assert.Single(new SqliteCollectorHealthStore(_database).Current).LastFailureKind);
+    }
+
     // --- fixtures ---------------------------------------------------------
 
     private static AlertReconciliationResult Reconciled(params AlertInstance[] instances) =>

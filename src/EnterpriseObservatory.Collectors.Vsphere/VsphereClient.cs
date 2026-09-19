@@ -2,11 +2,12 @@ using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Xml.Linq;
+using EnterpriseObservatory.Application.Collection;
 
 namespace EnterpriseObservatory.Collectors.Vsphere;
 
 /// <summary>A vCenter call failed in a way the caller should know about.</summary>
-public sealed class VsphereApiException : Exception
+public sealed class VsphereApiException : Exception, ICollectionFault
 {
     public VsphereApiException(VsphereFaultKind kind, string message)
         : base(message) => Kind = kind;
@@ -21,6 +22,20 @@ public sealed class VsphereApiException : Exception
         : base("The vCenter call failed.") => Kind = VsphereFaultKind.Other;
 
     public VsphereFaultKind Kind { get; }
+
+    /// <summary>What this fault means to the collection runner.</summary>
+    /// <remarks>
+    /// The runner cannot know a vim25 fault from a Redfish one, and it must
+    /// not retry a rejected login. So the translation happens here, where the
+    /// vocabulary is already understood, rather than by the runner guessing
+    /// from a message string.
+    /// </remarks>
+    CollectionFailureKind ICollectionFault.Kind => Kind switch
+    {
+        VsphereFaultKind.InvalidLogin => CollectionFailureKind.AuthenticationRejected,
+        VsphereFaultKind.NoPermission => CollectionFailureKind.AuthorizationDenied,
+        _ => CollectionFailureKind.ProtocolError,
+    };
 }
 
 /// <summary>

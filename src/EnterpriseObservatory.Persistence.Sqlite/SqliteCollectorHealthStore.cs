@@ -61,8 +61,10 @@ public sealed class SqliteCollectorHealthStore : ICollectorHealthStore
                 using var command = Command(connection, """
                     INSERT OR REPLACE INTO collector_health (
                         instance_id, role, health, last_success_utc,
-                        consecutive_failures, is_backing_off, last_failure_detail)
-                    VALUES ($instance, $role, $health, $success, $failures, $backing, $detail);
+                        consecutive_failures, is_backing_off, last_failure_detail,
+                        last_attempt_utc, last_failure_kind)
+                    VALUES ($instance, $role, $health, $success, $failures, $backing, $detail,
+                            $attempt, $kind);
                     """);
 
                 foreach (var entry in health)
@@ -75,6 +77,8 @@ public sealed class SqliteCollectorHealthStore : ICollectorHealthStore
                     command.Bind("$failures", entry.ConsecutiveFailures);
                     command.Bind("$backing", entry.IsBackingOff ? 1 : 0);
                     command.Bind("$detail", TextOrNull(entry.LastFailureDetail));
+                    command.Bind("$attempt", TimestampOrNull(entry.LastAttemptUtc));
+                    command.Bind("$kind", TextOrNull(entry.LastFailureKind?.ToString()));
                     command.ExecuteNonQuery();
                 }
             });
@@ -95,7 +99,8 @@ public sealed class SqliteCollectorHealthStore : ICollectorHealthStore
 
         using var command = Command(connection, """
             SELECT instance_id, role, health, last_success_utc,
-                   consecutive_failures, is_backing_off, last_failure_detail
+                   consecutive_failures, is_backing_off, last_failure_detail,
+                   last_attempt_utc, last_failure_kind
             FROM collector_health;
             """);
         using var reader = command.ExecuteReader();
@@ -111,6 +116,12 @@ public sealed class SqliteCollectorHealthStore : ICollectorHealthStore
                 ConsecutiveFailures = (int)reader.GetInt64(4),
                 IsBackingOff = reader.GetInt64(5) != 0,
                 LastFailureDetail = ReadTextOrNull(reader, 6),
+                LastAttemptUtc = ReadTimestampOrNull(reader, 7),
+
+                // Null for every row written before migration 4, which reads
+                // as "retryable" — the forgiving direction, and the right one:
+                // a stored classification nobody recorded must not be invented.
+                LastFailureKind = ReadEnumOrNull<CollectionFailureKind>(reader, 8),
             };
 
             health[(entry.InstanceId, entry.Role)] = entry;

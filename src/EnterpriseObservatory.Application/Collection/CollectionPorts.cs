@@ -56,6 +56,43 @@ public enum CollectionFailureKind
     NotConfigured,
 }
 
+/// <summary>Whether asking again could plausibly give a different answer.</summary>
+/// <remarks>
+/// <para>
+/// Not a cosmetic distinction. A timeout may clear on its own; a rejected
+/// password will not, and every retry of one is another failed login against
+/// the directory. vSphere SSO locks an account after a handful of those, so
+/// retrying a credential failure is how a monitoring tool takes production
+/// down — exactly what product principle 5 forbids.
+/// </para>
+/// <para>
+/// This was discovered live rather than reasoned about: the runner retried a
+/// rejected password three times a cycle, every cycle, while the message it
+/// showed the operator said it did not.
+/// </para>
+/// </remarks>
+public static class CollectionFailures
+{
+    /// <summary>Whether a failure of this kind should be attempted again.</summary>
+    public static bool IsWorthRetrying(CollectionFailureKind kind) =>
+        kind is not (CollectionFailureKind.AuthenticationRejected
+            or CollectionFailureKind.AuthorizationDenied
+            or CollectionFailureKind.NotConfigured);
+}
+
+/// <summary>An exception that already knows why collection failed.</summary>
+/// <remarks>
+/// A vendor client is the only thing that can tell "wrong password" from
+/// "connection reset", and the runner must not retry the first. Declared here
+/// so an adapter can answer that question without the application layer
+/// learning anything about the vendor.
+/// </remarks>
+public interface ICollectionFault
+{
+    /// <summary>What the source says went wrong.</summary>
+    CollectionFailureKind Kind { get; }
+}
+
 /// <summary>One thing that could not be collected, and why.</summary>
 /// <remarks>
 /// Failures are data, not exceptions. A collector that reached seventeen of
@@ -146,4 +183,21 @@ public sealed record CollectorHealth
     public bool IsBackingOff { get; init; }
 
     public string? LastFailureDetail { get; init; }
+
+    /// <summary>When the source was last actually asked, successfully or not.</summary>
+    /// <remarks>
+    /// The breaker's cooldown is measured from here, not from the last success.
+    /// Measuring from the last success means a source that has been down longer
+    /// than the cooldown is never held off at all — the opposite of what a
+    /// breaker is for, and the reason a wrong password was retried every cycle.
+    /// </remarks>
+    public DateTimeOffset? LastAttemptUtc { get; init; }
+
+    /// <summary>Why the last attempt failed, when the source said why.</summary>
+    /// <remarks>
+    /// Kept because the answer changes what the breaker does: a kind that is
+    /// not worth retrying holds the source off after a single failure rather
+    /// than after five.
+    /// </remarks>
+    public CollectionFailureKind? LastFailureKind { get; init; }
 }

@@ -105,6 +105,19 @@ internal sealed class SourceRunner(IClock clock)
             {
                 lastError = ex;
 
+                if (ex is ICollectionFault fault && !CollectionFailures.IsWorthRetrying(fault.Kind))
+                {
+                    // The source has told us asking again cannot help. Asking
+                    // anyway is not merely wasteful: three rejected logins a
+                    // cycle is how the monitoring account gets locked out, and
+                    // the operator is being shown a message that promises this
+                    // does not happen.
+                    var fatal = FailedFatally(prior, ex, fault.Kind, _clock.UtcNow);
+
+                    return new SourceRunOutcome<TResult>(
+                        null, fatal, [UnreachableAlert(instanceId, role, fatal, backingOff: false)]);
+                }
+
                 if (attempt <= policy.MaxRetries)
                 {
                     // Jitter matters because every source is driven by the same
@@ -116,7 +129,7 @@ internal sealed class SourceRunner(IClock clock)
             }
         }
 
-        var failed = Failed(prior, lastError);
+        var failed = Failed(prior, lastError, _clock.UtcNow);
 
         return new SourceRunOutcome<TResult>(
             null, failed, [UnreachableAlert(instanceId, role, failed, backingOff: false)]);
@@ -171,21 +184,47 @@ internal sealed class SourceRunner(IClock clock)
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
 
+    /// <summary>Whether this source should be left alone for now.</summary>
+    /// <remarks>
+    /// <para>
+    /// Two earlier readings of this were wrong in the same direction, and both
+    /// were found against a live vCenter rather than in a test.
+    /// </para>
+    /// <para>
+    /// It measured the cooldown from the last <em>success</em>, so a source
+    /// down for longer than the cooldown was never held off — an endpoint
+    /// broken for a day got asked every thirty seconds, which is the precise
+    /// behaviour the cooldown was written to prevent. And it refused to open
+    /// at all for a source that had never succeeded, so a fresh installation
+    /// with a wrong password hammered the directory indefinitely.
+    /// </para>
+    /// <para>
+    /// The cooldown now runs from the last attempt, which is the only clock
+    /// that answers "how long since we last bothered them". A source that has
+    /// never succeeded is treated no differently: it is still retried, once a
+    /// cooldown, so a configuration fixed at noon is picked up by itself.
+    /// </para>
+    /// </remarks>
     private static bool IsBreakerOpen(CollectorHealth prior, CollectionPolicy policy, DateTimeOffset now)
     {
-        if (prior.ConsecutiveFailures < policy.CircuitBreakerThreshold)
+        if (prior.LastAttemptUtc is not { } lastAttempt)
         {
             return false;
         }
 
-        // Never succeeded at all: keep it closed so a source that is merely
-        // misconfigured at startup still gets retried once the config is fixed.
-        if (prior.LastSuccessUtc is not { } lastSuccess)
+        // A failure the source says cannot clear by retrying gets one strike,
+        // not five. Five rejected logins is already an account lockout at
+        // vSphere SSO's default policy.
+        var threshold = prior.LastFailureKind is { } kind && !CollectionFailures.IsWorthRetrying(kind)
+            ? 1
+            : policy.CircuitBreakerThreshold;
+
+        if (prior.ConsecutiveFailures < threshold)
         {
             return false;
         }
 
-        return now - lastSuccess < policy.CircuitBreakerCooldown;
+        return now - lastAttempt < policy.CircuitBreakerCooldown;
     }
 
     private static CollectorHealth Succeeded(
@@ -201,9 +240,15 @@ internal sealed class SourceRunner(IClock clock)
             ConsecutiveFailures = 0,
             IsBackingOff = false,
             LastFailureDetail = failures.Count == 0 ? null : failures[0].Detail,
+            LastAttemptUtc = now,
+
+            // Cleared, or the one-strike rule would outlive the problem: a
+            // password corrected at noon would still be treated as rejected.
+            LastFailureKind = null,
         };
 
-    private static CollectorHealth Failed(CollectorHealth prior, Exception? error) =>
+    private static CollectorHealth Failed(
+        CollectorHealth prior, Exception? error, DateTimeOffset now) =>
         prior with
         {
             // Not Critical: we do not know the estate is broken, only that we
@@ -213,6 +258,29 @@ internal sealed class SourceRunner(IClock clock)
             IsBackingOff = false,
             LastFailureDetail = error?.Message ?? "Collection failed.",
             LastSuccessUtc = prior.LastSuccessUtc,
+            LastAttemptUtc = now,
+
+            // An exception nobody classified might be anything, so it stays
+            // retryable. Guessing in the other direction would silently stop
+            // collecting from a source that was only briefly unwell.
+            LastFailureKind = (error as ICollectionFault)?.Kind,
+        };
+
+    /// <summary>A failure the source itself says will not clear by retrying.</summary>
+    private static CollectorHealth FailedFatally(
+        CollectorHealth prior,
+        Exception error,
+        CollectionFailureKind kind,
+        DateTimeOffset now) =>
+        prior with
+        {
+            Health = HealthState.Unknown,
+            ConsecutiveFailures = prior.ConsecutiveFailures + 1,
+            IsBackingOff = false,
+            LastFailureDetail = error.Message,
+            LastSuccessUtc = prior.LastSuccessUtc,
+            LastAttemptUtc = now,
+            LastFailureKind = kind,
         };
 
     private static AlertDefinition UnreachableAlert(

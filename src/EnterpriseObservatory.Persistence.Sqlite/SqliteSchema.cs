@@ -196,6 +196,22 @@ internal static class SqliteSchema
             PRIMARY KEY (window_id, entity_id)
         ) STRICT;
         """,
+
+        // --- 4: what the breaker needs to decide with -----------------------
+        //
+        // The breaker measured its cooldown from the last success, so a source
+        // that had been down longer than the cooldown was never held off, and
+        // it refused to open at all for a source that had never succeeded. A
+        // wrong vCenter password was therefore retried three times a cycle,
+        // every cycle, against a directory that locks accounts after five.
+        //
+        // Deciding otherwise needs two facts that were not being kept: when
+        // the source was last asked, and whether the last answer was one that
+        // retrying cannot change.
+        """
+        ALTER TABLE collector_health ADD COLUMN last_attempt_utc TEXT NULL;
+        ALTER TABLE collector_health ADD COLUMN last_failure_kind TEXT NULL;
+        """,
     ];
 
     /// <summary>The version a database is brought up to.</summary>

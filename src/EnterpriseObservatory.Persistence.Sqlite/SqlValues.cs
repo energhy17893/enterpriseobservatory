@@ -56,6 +56,16 @@ internal static class SqlValues
                 "different version of the product, or has been edited by hand.");
     }
 
+    /// <summary>Reads an enum that may legitimately be absent.</summary>
+    /// <remarks>
+    /// Distinct from <see cref="ReadEnum{TEnum}"/> because null means something
+    /// here: a row written before the column existed never recorded the fact,
+    /// and "not recorded" must not be turned into a value nobody wrote.
+    /// </remarks>
+    public static TEnum? ReadEnumOrNull<TEnum>(SqliteDataReader reader, int ordinal)
+        where TEnum : struct, Enum =>
+        reader.IsDBNull(ordinal) ? null : ReadEnum<TEnum>(reader, ordinal);
+
     public static SqliteCommand Command(SqliteConnection connection, string sql)
     {
         var command = connection.CreateCommand();
