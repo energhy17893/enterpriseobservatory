@@ -187,6 +187,16 @@ try
         return 0;
     }
 
+    // The full map, and then nothing else: it is a reference document, not a
+    // section of a health check, and burying it under a sample read would make
+    // it something nobody pastes into a file.
+    if (args.Contains("--map", StringComparer.OrdinalIgnoreCase))
+    {
+        await EnterpriseObservatory.VsphereProbe.CounterMap.WriteAsync(
+            client, payload, mask, cancellation.Token);
+        return 0;
+    }
+
     Section("Counter availability");
     Console.WriteLine("  The disk latency triad is the product's diagnostic core: it is what lets the");
     Console.WriteLine("  platform say WHICH layer is slow rather than merely that something is.");

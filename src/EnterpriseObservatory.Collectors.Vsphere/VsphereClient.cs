@@ -38,6 +38,21 @@ public sealed class VsphereApiException : Exception, ICollectionFault
     };
 }
 
+/// <summary>One series an entity will supply: a counter, for a device.</summary>
+/// <remarks>
+/// A counter and a series are not the same thing. <c>disk.deviceLatency</c> is
+/// one counter and, on a host with six LUNs, seven series — one per device and
+/// one aggregate. The instance is what tells them apart, and an empty instance
+/// is the aggregate rather than a missing value.
+/// </remarks>
+public sealed record VsphereAvailableMetric
+{
+    public required VsphereCounter Counter { get; init; }
+
+    /// <summary>The device, or empty for the aggregate across all of them.</summary>
+    public required string Instance { get; init; }
+}
+
 /// <summary>
 /// Talks vim25 SOAP to one vCenter.
 /// </summary>
@@ -156,6 +171,36 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
+        var metrics = await GetAvailableMetricsAsync(
+            entityMoRef, entityType, nowUtc, cancellationToken).ConfigureAwait(false);
+
+        return [.. metrics.Select(m => m.Counter.Key).Distinct(StringComparer.OrdinalIgnoreCase)];
+    }
+
+    /// <summary>
+    /// Every series this entity will supply, counter and instance together.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The pairing is the information. A counter is not a series: the same
+    /// counter appears once per device plus once as an aggregate, and which
+    /// devices exist is the difference between "the host has slow storage" and
+    /// "one LUN is slow". Reading the counter ids alone throws that away.
+    /// </para>
+    /// <para>
+    /// It also answers a question that cost this product several wrong fixes:
+    /// which <em>object</em> a measurement is collected on. Per-datastore
+    /// latency is a host counter whose instance is the datastore, so asking a
+    /// datastore for it returns nothing however correct the name — and the only
+    /// way to know that is to look at what each entity offers.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<VsphereAvailableMetric>> GetAvailableMetricsAsync(
+        string entityMoRef,
+        VsphereEntityType entityType,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken)
+    {
         var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var catalog = await GetCounterCatalogAsync(cancellationToken).ConfigureAwait(false);
         var byId = catalog.ToDictionary(c => c.Id);
@@ -183,18 +228,29 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             return [];
         }
 
-        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var metrics = new List<VsphereAvailableMetric>();
 
-        foreach (var element in document.Descendants().Where(e => e.Name.LocalName == "counterId"))
+        // Walked as PerfMetricId elements rather than as loose counterId
+        // descendants, so each counter keeps the instance it arrived with.
+        foreach (var metric in document.Descendants()
+                     .Where(e => e.Elements().Any(c => c.Name.LocalName == "counterId")))
         {
-            if (int.TryParse(element.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) &&
-                byId.TryGetValue(id, out var counter))
+            var idText = metric.Elements()
+                .First(c => c.Name.LocalName == "counterId").Value;
+
+            if (!int.TryParse(idText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) ||
+                !byId.TryGetValue(id, out var counter))
             {
-                keys.Add(counter.Key);
+                continue;
             }
+
+            var instance = metric.Elements()
+                .FirstOrDefault(c => c.Name.LocalName == "instance")?.Value ?? string.Empty;
+
+            metrics.Add(new VsphereAvailableMetric { Counter = counter, Instance = instance });
         }
 
-        return [.. keys];
+        return metrics;
     }
 
     public async Task<IReadOnlyList<PerfEntitySamples>> QueryPerfAsync(
