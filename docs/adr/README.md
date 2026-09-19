@@ -54,6 +54,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0012](0012-time-series-storage-and-downsampling.md) | Zaman serisi depolama ve aşağı örnekleme | Kabul edildi |
 | [0013](0013-operator-actions-and-attribution.md) | Operatör eylemleri ve atıf | Kabul edildi (§2 yerini ADR-0014'e bıraktı) |
 | [0014](0014-local-accounts-and-cookie-sessions.md) | Yerel hesaplar ve çerez oturumları | Kabul edildi |
+| [0015](0015-connections-entered-in-the-product.md) | Bağlantılar üründen girilir, parola şifrelenmiş saklanır | Kabul edildi |
 
 ## Şablon
 

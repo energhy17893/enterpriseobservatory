@@ -22,34 +22,38 @@ namespace EnterpriseObservatory.Host.AllInOne;
 /// </remarks>
 public sealed class MonitoringWorker(
     MonitoringCycle cycle,
-    IEnumerable<IInventorySource> inventorySources,
-    IEnumerable<IObservationSource> observationSources,
+    ISourceRegistry sources,
     MonitoringOptions options,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
     private readonly MonitoringCycle _cycle = cycle ?? throw new ArgumentNullException(nameof(cycle));
-    private readonly List<IInventorySource> _inventorySources = [.. inventorySources];
-    private readonly List<IObservationSource> _observationSources = [.. observationSources];
+    private readonly ISourceRegistry _sources = sources ?? throw new ArgumentNullException(nameof(sources));
     private readonly MonitoringOptions _options = options ?? throw new ArgumentNullException(nameof(options));
     private readonly ILogger<MonitoringWorker> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
+    /// <summary>Whether the last cycle found nothing to read.</summary>
+    /// <remarks>
+    /// Kept so the "nothing is configured" line is said when it becomes true
+    /// and not on every cycle thereafter. A warning repeated every thirty
+    /// seconds is one nobody reads by the time it matters.
+    /// </remarks>
+    private bool _saidThereAreNoSources;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (_inventorySources.Count == 0 && _observationSources.Count == 0)
-        {
-            // Said plainly rather than left as silence. An installation with no
-            // sources configured looks identical to a healthy empty one, and an
-            // operator deserves to know which they are looking at.
-            HostLog.NoCollectorsConfigured(_logger);
-        }
-
         var inventory = RunLoopAsync(
             "inventory",
             _options.InventoryInterval,
             async token =>
             {
+                // Asked every cycle, not captured at startup: a vCenter added
+                // in the product has to be read without a restart.
+                var sources = _sources.Inventory;
+
+                NoteWhetherAnythingIsConfigured(sources.Count);
+
                 var result = await _cycle
-                    .RunInventoryAsync(_inventorySources, _options, token)
+                    .RunInventoryAsync(sources, _options, token)
                     .ConfigureAwait(false);
 
                 HostLog.InventoryCycle(
@@ -65,7 +69,7 @@ public sealed class MonitoringWorker(
             async token =>
             {
                 var result = await _cycle
-                    .RunObservationsAsync(_observationSources, _options, token)
+                    .RunObservationsAsync(_sources.Observations, _options, token)
                     .ConfigureAwait(false);
 
                 HostLog.ObservationCycle(_logger, result.Observations.Count, result.Visible.Count);
@@ -83,6 +87,25 @@ public sealed class MonitoringWorker(
             stoppingToken);
 
         await Task.WhenAll(inventory, observations).ConfigureAwait(false);
+    }
+
+    /// <summary>Says so, once, when there is nothing to read.</summary>
+    /// <remarks>
+    /// An installation with no sources looks exactly like a healthy empty one:
+    /// no alerts, no failures, a green screen. An operator deserves to know
+    /// which of the two they are looking at.
+    /// </remarks>
+    private void NoteWhetherAnythingIsConfigured(int count)
+    {
+        if (count == 0 && !_saidThereAreNoSources)
+        {
+            HostLog.NoCollectorsConfigured(_logger);
+            _saidThereAreNoSources = true;
+        }
+        else if (count > 0)
+        {
+            _saidThereAreNoSources = false;
+        }
     }
 
     private void WarnAboutSilence(MonitoringCycleResult result)

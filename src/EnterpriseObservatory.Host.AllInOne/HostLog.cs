@@ -96,4 +96,18 @@ internal static partial class HostLog
         Domain.Alerts.AlertSeverity severity,
         string title,
         string description);
+
+    /// <summary>A connection exists but is not being read, and why.</summary>
+    /// <remarks>
+    /// Said out loud because the alternative is silence that looks like health.
+    /// A connection sitting in the list with nothing coming from it produces no
+    /// alert — there is no collector to fail — so without this line the screen
+    /// shows a vCenter and the estate shows nothing, with nothing anywhere to
+    /// connect the two.
+    /// </remarks>
+    [LoggerMessage(
+        EventId = 1013,
+        Level = LogLevel.Warning,
+        Message = "Connection {InstanceId} is not being polled: {Reason}.")]
+    public static partial void ConnectionNotPolled(ILogger logger, string instanceId, string reason);
 }

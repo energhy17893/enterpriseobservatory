@@ -212,6 +212,35 @@ internal static class SqliteSchema
         ALTER TABLE collector_health ADD COLUMN last_attempt_utc TEXT NULL;
         ALTER TABLE collector_health ADD COLUMN last_failure_kind TEXT NULL;
         """,
+
+        // --- 5: connections entered in the product --------------------------
+        //
+        // Until now a vCenter could only arrive from configuration, which
+        // means a shell, which means shell quoting: a password with a '$' in
+        // it is silently altered by PowerShell before the product ever sees
+        // it, and what comes back is "vCenter rejected the credentials" with
+        // nothing to suggest the value was mangled in transit. A form in the
+        // product removes the quoting layer entirely.
+        //
+        // The password column holds ciphertext, never a password. See
+        // ADR-0015 for what that does and does not protect — it is not the
+        // same claim as "the password is safe", and pretending otherwise is
+        // how the previous product was described right up until it leaked.
+        """
+        CREATE TABLE source_connection (
+            instance_id        TEXT    NOT NULL PRIMARY KEY,
+            kind               TEXT    NOT NULL,
+            base_address       TEXT    NOT NULL,
+            username           TEXT    NOT NULL,
+            password_protected TEXT    NOT NULL,
+            accept_untrusted   INTEGER NOT NULL,
+            page_size          INTEGER NOT NULL,
+            is_enabled         INTEGER NOT NULL,
+            created_utc        TEXT    NOT NULL,
+            created_by         TEXT    NOT NULL,
+            password_set_utc   TEXT    NULL
+        ) STRICT;
+        """,
     ];
 
     /// <summary>The version a database is brought up to.</summary>

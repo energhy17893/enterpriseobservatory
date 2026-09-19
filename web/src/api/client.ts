@@ -10,6 +10,9 @@ import type {
 } from './types'
 import type {
   AccountView,
+  ConnectionCommand,
+  ConnectionView,
+  ProbeView,
   AlertActionView,
   AuthStateView,
   BulkActionView,
@@ -99,6 +102,30 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return (response.status === 204 ? null : await response.json()) as T
 }
 
+/** PUT and DELETE, which only the connection screens need. */
+async function send<T>(method: 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
+  let response: Response
+
+  try {
+    response = await fetch(new URL(path, window.location.origin), {
+      method,
+      headers: body === undefined
+        ? { Accept: 'application/json' }
+        : { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch (cause) {
+    throw new ApiError('The server could not be reached.', null, { cause })
+  }
+
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null)
+    throw new ApiError(messageFor(response.status, detail), response.status)
+  }
+
+  return (response.status === 204 ? null : await response.json()) as T
+}
+
 function messageFor(status: number, detail: unknown): string {
   if (detail !== null && typeof detail === 'object') {
     const body = detail as { detail?: string; refusal?: string }
@@ -183,6 +210,18 @@ export const api = {
   clear: (fingerprint: string) => post<AlertActionView>('/api/alerts/clear', { fingerprint }),
   silence: (fingerprint: string, untilUtc: string) =>
     post<AlertActionView>('/api/alerts/silence', { fingerprint, untilUtc }),
+  connections: () => get<ConnectionView[]>('/api/connections'),
+  addConnection: (command: ConnectionCommand) =>
+    post<ConnectionView>('/api/connections', command),
+  updateConnection: (instanceId: string, command: ConnectionCommand) =>
+    send<ConnectionView>('PUT', `/api/connections/${encodeURIComponent(instanceId)}`, command),
+  removeConnection: (instanceId: string) =>
+    send<ConnectionView>('DELETE', `/api/connections/${encodeURIComponent(instanceId)}`),
+
+  // Takes the form's contents, not the stored connection: the whole point is
+  // finding out whether a password works before saving it.
+  testConnection: (command: ConnectionCommand) =>
+    post<ProbeView>('/api/connections/test', command),
   series: (entityId: string, counter: string, query: SeriesQuery = {}) =>
     get<SeriesView>(
       `/api/entities/${encodeURIComponent(entityId)}/series/${encodeURIComponent(counter)}`,

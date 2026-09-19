@@ -12,6 +12,7 @@ import { Entities } from '@/routes/Entities'
 import { EntityDetail } from '@/routes/EntityDetail'
 import { Collectors } from '@/routes/Collectors'
 import { Accounts } from '@/routes/Accounts'
+import { Connections } from '@/routes/Connections'
 import { Maintenance } from '@/routes/Maintenance'
 import './styles/index.css'
 
@@ -70,6 +71,7 @@ function Application() {
           <Route path="entities/:id" element={<EntityDetail />} />
           <Route path="collectors" element={<Collectors />} />
           <Route path="maintenance" element={<Maintenance identity={data} />} />
+          <Route path="connections" element={<Connections identity={data} />} />
           <Route path="accounts" element={<Accounts identity={data} />} />
         </Route>
       </Routes>

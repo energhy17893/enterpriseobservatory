@@ -284,3 +284,49 @@ export interface EventBoardView {
   /** Every visible alert, so the two views can be checked against each other. */
   totalAlerts: number
 }
+
+/** How a connection was configured. A configured one cannot be edited here. */
+export type ConnectionOrigin = 'Managed' | 'Configuration'
+
+/**
+ * A connection the product reads from.
+ *
+ * There is no password on this type and no endpoint that returns one. That is
+ * deliberate rather than missing: a credential that can be read back out is one
+ * that leaks through a screenshot or a support session.
+ */
+export interface ConnectionView {
+  instanceId: string
+  kind: string
+  baseAddress: string
+  username: string
+  acceptUntrustedCertificate: boolean
+  pageSize: number
+  isEnabled: boolean
+  origin: ConnectionOrigin
+  hasPassword: boolean
+  passwordUnreadable: boolean
+  passwordSetUtc: string | null
+  createdUtc: string
+  createdBy: string
+}
+
+export interface ConnectionCommand {
+  instanceId: string
+  kind: string
+  baseAddress: string
+  username: string
+  /** Empty when editing means "keep the stored password". */
+  password: string
+  acceptUntrustedCertificate: boolean
+  pageSize: number
+  isEnabled: boolean
+}
+
+export interface ProbeView {
+  succeeded: boolean
+  detail: string
+  identified: string | null
+  /** Shown differently: the next attempt may lock the account out. */
+  credentialsRejected: boolean
+}

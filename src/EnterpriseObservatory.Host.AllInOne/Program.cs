@@ -11,8 +11,10 @@ using EnterpriseObservatory.Host.AllInOne;
 using EnterpriseObservatory.Host.AllInOne.Collectors;
 using EnterpriseObservatory.Host.AllInOne.Configuration;
 using EnterpriseObservatory.Host.AllInOne.Notifications;
+using EnterpriseObservatory.Host.AllInOne.Security;
 using EnterpriseObservatory.Host.AllInOne.State;
 using EnterpriseObservatory.Persistence.Sqlite;
+using Microsoft.AspNetCore.DataProtection;
 
 // The composition root, and the only place in the product that knows a
 // concrete collector exists. Everything below it is wired through ports, which
@@ -160,10 +162,33 @@ var setupToken = AuthenticationService.NewSetupToken();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
-foreach (var endpoint in endpoints)
-{
-    AddVsphere(builder.Services, endpoint);
-}
+// Credentials entered in the product are encrypted at rest, and the key ring
+// lives beside the database rather than inside it. Beside, not in: a backup
+// that captures both is a backup that captures the passwords in usable form,
+// and an operator has to be able to treat the two differently. See ADR-0015.
+builder.Services.AddDataProtection()
+    .SetApplicationName("EnterpriseObservatory")
+    .PersistKeysToFileSystem(new DirectoryInfo(KeyRingPath(builder.Configuration)));
+
+builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+builder.Services.AddSingleton<ISourceConnectionStore, SqliteSourceConnectionStore>();
+builder.Services.AddSingleton<IConnectionProbe, VsphereConnectionProbe>();
+
+// Configured connections keep working exactly as before. They are merged with
+// the stored ones by the catalogue, which is the single place that decides
+// which of the two wins — two copies of that rule is how the screen and the
+// collector start disagreeing about what is being polled.
+builder.Services.AddSingleton(provider => new SourceConnectionCatalogue(
+    provider.GetRequiredService<ISourceConnectionStore>(),
+    [.. endpoints.Select(AsConnection)],
+    provider.GetRequiredService<IClock>()));
+
+builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegistry(
+    provider.GetRequiredService<SourceConnectionCatalogue>(),
+    provider.GetRequiredService<IEntityGraphStore>(),
+    provider.GetRequiredService<IClock>(),
+    (instance, why) => HostLog.ConnectionNotPolled(
+        provider.GetRequiredService<ILogger<VsphereSourceRegistry>>(), instance, why)));
 
 builder.Services.AddHostedService<MonitoringWorker>();
 builder.Services.AddHostedService<CompactionWorker>();
@@ -176,6 +201,7 @@ host.UseAuthorization();
 host.MapAuthenticationApi(setupToken);
 host.MapAccountsApi();
 host.MapMaintenanceApi();
+host.MapConnections();
 host.MapObservatoryApi();
 
 // The SPA's build output, when it has been built. Serving the interface from
@@ -289,39 +315,36 @@ static TimeSpan Seconds(string? value, TimeSpan fallback) =>
 static TimeSpan Days(string? value, TimeSpan fallback) =>
     int.TryParse(value, out var days) && days > 0 ? TimeSpan.FromDays(days) : fallback;
 
-// One vCenter becomes two collectors sharing one client: they read the same
-// server with the same session, but on different schedules and failing
-// independently. See ADR-0005.
-static void AddVsphere(IServiceCollection services, VsphereEndpointOptions endpoint)
+// A configured vCenter, as the rest of the product sees it. Configuration and
+// a form now describe the same thing, so they become the same type as early as
+// possible — the alternative is two parallel shapes that drift a field at a
+// time until one of them silently stops being honoured.
+static SourceConnection AsConnection(VsphereEndpointOptions endpoint) => new()
 {
-    var connection = new VsphereConnectionOptions
-    {
-        InstanceId = endpoint.InstanceId,
-        BaseAddress = new Uri(endpoint.BaseAddress),
-        Username = endpoint.Username,
-        Password = endpoint.Password,
-        AcceptUntrustedCertificate = endpoint.AcceptUntrustedCertificate,
-        InventoryPageSize = endpoint.InventoryPageSize,
-    };
+    InstanceId = endpoint.InstanceId,
+    Kind = VsphereSourceRegistry.VsphereKind,
+    BaseAddress = new Uri(endpoint.BaseAddress),
+    Username = endpoint.Username,
+    Password = endpoint.Password,
+    AcceptUntrustedCertificate = endpoint.AcceptUntrustedCertificate,
+    PageSize = endpoint.InventoryPageSize,
+    Origin = ConnectionOrigin.Configuration,
+};
 
-    // The handler comes from the collector, not from here. How certificate
-    // validation is relaxed is a security decision, and a second copy of it is
-    // how the two drift until one of them is quietly wrong.
-    services.AddSingleton(_ => new VsphereClient(
-        new HttpClient(VsphereClient.CreateHandler(connection)) { BaseAddress = connection.BaseAddress },
-        connection));
+// Beside the database, not inside it. The key ring protects what is in the
+// database, so keeping it in the same file would be a lock stored in the box
+// it locks; keeping it in the same backup is the same mistake spread over two
+// files, which is why this is called out in ADR-0015 rather than left to
+// whoever writes the backup job.
+static string KeyRingPath(IConfiguration configuration)
+{
+    var database = configuration["Storage:Path"];
 
-    services.AddSingleton<IInventorySource>(provider => new VsphereInventorySource(
-        Client(provider, connection.InstanceId),
-        provider.GetRequiredService<IClock>()));
+    var directory = string.IsNullOrWhiteSpace(database)
+        ? AppContext.BaseDirectory
+        : Path.GetDirectoryName(Path.GetFullPath(database)) ?? AppContext.BaseDirectory;
 
-    services.AddSingleton<IObservationSource>(provider => new VsphereObservationSource(
-        Client(provider, connection.InstanceId),
-        new GraphSampleTargetProvider(
-            provider.GetRequiredService<IEntityGraphStore>(), connection.InstanceId),
-        provider.GetRequiredService<IClock>()));
+    var keys = Path.Combine(directory, "keys");
+    Directory.CreateDirectory(keys);
+    return keys;
 }
-
-static VsphereClient Client(IServiceProvider provider, string instanceId) =>
-    provider.GetServices<VsphereClient>().First(c =>
-        string.Equals(c.InstanceId, instanceId, StringComparison.Ordinal));

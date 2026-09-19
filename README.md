@@ -162,9 +162,41 @@ değiştirebilir (mevcut parolayı sorarak); geri kalanı yöneticiye ait. Ürü
 yöneticinin silinmesini veya rolünün düşürülmesini reddeder — kimsenin
 yönetemediği bir kurulum ancak veritabanı elle düzenlenerek onarılır.
 
+### vCenter bağlantısı
+
+İki yol var ve ikisi de desteklenir.
+
+**Üründen (önerilen).** Yönetici olarak **Yapılandırma → Connections** →
+*Add a vCenter*. Ad, adres, kullanıcı ve parola girilir; **Test** düğmesi
+kaydetmeden önce tek bir deneme yapar ve ne olduğunu söyler. Parola şifrelenmiş
+olarak saklanır ve hiçbir yerden geri okunamaz — düzenleme formu alanı boş
+açar, boş bırakmak "saklı olanı koru" demektir (ADR-0015).
+
+Bu yol, kabuk tırnaklaması sorununu ortadan kaldırdığı için önerilir:
+PowerShell çift tırnak içinde `$` ve ters tırnağı yorumlar ve parolayı ürün
+görmeden değiştirir.
+
+**Yapılandırmadan.** Otomatik dağıtım için. Bu bağlantılar ekranda görünür ama
+düzenlenemez — dağıtımı yapan taraf sahibidir ve bir düzenleme sonraki yeniden
+başlatmada geri alınırdı.
+
 ```bash
-dotnet user-secrets --project src/EnterpriseObservatory.Host.AllInOne set "VCenters:0:Password" "..."
+dotnet user-secrets --project src/EnterpriseObservatory.Host.AllInOne set "VCenters:0:Password" '...'
 ```
+
+> Tek tırnak kullanın. Çift tırnak içinde PowerShell `$` ile başlayan her şeyi
+> değişken olarak yorumlar.
+
+### Yedekleme
+
+Parolalar `observatory.db` içinde şifreli durur; anahtar zinciri veritabanının
+yanındaki `keys/` klasöründedir.
+
+> **İkisini aynı yedeğe koymayın.** Aynı yedekte bulunmaları, korumayı tamamen
+> ortadan kaldırır. Ayrı yedekleyin, ayrı erişim haklarıyla (ADR-0015).
+
+Anahtarsız geri yüklenen bir veritabanı servisi durdurmaz: bağlantılar
+"parola çözülemiyor" der, sorgulanmaz, ve parolalar yeniden girilir.
 
 Katkı kuralları, commit formatı ve dal stratejisi için
 [CONTRIBUTING.md](CONTRIBUTING.md).
