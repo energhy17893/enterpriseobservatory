@@ -63,6 +63,27 @@ public sealed class VsphereEndpointOptions
         var problems = new List<string>();
         var where = string.IsNullOrWhiteSpace(InstanceId) ? $"VCenters[{index}]" : InstanceId;
 
+        // A password on its own, with nothing else. This is what a user secret
+        // left behind after the connection moved into the product looks like,
+        // and reported as three separate missing fields it sends someone
+        // looking for a settings file that no longer mentions this vCenter.
+        // One sentence naming the actual situation is worth more than three
+        // accurate ones describing its symptoms.
+        if (!Password.IsEmpty &&
+            string.IsNullOrWhiteSpace(InstanceId) &&
+            string.IsNullOrWhiteSpace(BaseAddress) &&
+            string.IsNullOrWhiteSpace(Username))
+        {
+            return
+            [
+                $"{where}: a password is configured but nothing else is. This usually means a " +
+                $"user secret outlived the connection it belonged to. Remove it with " +
+                $"\"dotnet user-secrets remove \"VCenters:{index}:Password\"\", or add the rest " +
+                "of the connection. Connections can also be added in the product under " +
+                "Configuration -> Connections.",
+            ];
+        }
+
         if (string.IsNullOrWhiteSpace(InstanceId))
         {
             problems.Add($"{where}: InstanceId is required. Entity ids are built from it, " +

@@ -54,6 +54,13 @@ ASP.NET Core Data Protection ile, amaç dizesi sürümlenmiş olarak
 (`EnterpriseObservatory.SourceConnection.Password.v1`). Anahtar zinciri
 veritabanının **yanında**, içinde değil.
 
+Anahtar zincirinin kendisi Windows'ta DPAPI ile, **makine kapsamında**
+korunur. Kullanıcı kapsamı daha güçlüdür ama yüklenmiş bir kullanıcı profili
+gerektirir; LocalSystem veya yönetilen bir hizmet hesabıyla çalışan bir
+Windows servisinde bu her zaman yoktur, ve hesap değiştiğinde sessizce
+çözülemeyen bir anahtar zinciri hiç kimsenin belirtisinden teşhis edemeyeceği
+bir kesintidir. Seçim bilinçlidir ve bedeli aşağıda yazılıdır.
+
 ### 4. Parola geri okunamaz
 
 Parolayı döndüren bir uç yoktur ve olmayacak. Düzenleme formu alanı boş açar;
@@ -92,6 +99,11 @@ Bunu değiştiren hiçbir düzenleme yoktur: ürün, gece üçte kimse bir şey
 yazmadan vCenter'a kimlik doğrulamak zorundadır, dolayısıyla orijinal değeri
 gözetimsiz geri elde edebilmek zorundadır. Bunu yapabilen her şema tanımı
 gereği tersine çevrilebilirdir.
+
+**Korumaz:** aynı makinedeki başka bir yöneticiyi. DPAPI makine kapsamında
+olduğu için, o makinede kod çalıştırabilen herkes anahtar zincirini çözebilir.
+Korunan şey, dosyaların makineden *çıkması*dır — yedek, kopyalanmış klasör,
+geri yüklenmiş sanal makine.
 
 Önceki üründen çıkarılacak ders "şifreleme başarısız oldu" değildir. Şifreleme
 çalıştı. Başarısız olan, korumanın **kapsamı** ve bu konudaki **sessizlikti** —
@@ -134,9 +146,11 @@ görünür, bu görünmemeli.
   anahtarlarını döndürür ve eskisiyle yazılanı okumaya devam eder; ama
   anahtarları kasıtlı olarak geçersiz kılmak isteyen birinin ne yapacağı
   belgelenmedi.
-- **Windows dışında DPAPI yok.** Anahtar zinciri dosya sisteminde korumasız
-  durur. Bugün ürün yalnızca Windows'a kuruluyor (ADR-0001, MSI), ama bu bir
-  varsayım ve burada yazılı olması gerekiyor.
+- **Windows dışında anahtar zinciri korumasız.** DPAPI yoktur; anahtar
+  zinciri dosya sisteminde düz XML olarak durur ve veritabanı şifrelemesi o
+  klasörün dosya izinleri kadar güçlü olur — yukarıda tarif edilenden farklı
+  bir garanti. Bugün ürün yalnızca Windows'a kuruluyor (ADR-0001, MSI), ama
+  bu bir varsayım ve burada yazılı olması gerekiyor.
 - **Bağlantı değişikliklerinin denetim kaydı yok.** Kimin eklediği saklanıyor;
   kimin değiştirdiği veya sildiği saklanmıyor. Alarm eylemlerinde (ADR-0013)
   olan disiplin burada henüz yok.

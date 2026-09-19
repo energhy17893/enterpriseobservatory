@@ -166,9 +166,34 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // lives beside the database rather than inside it. Beside, not in: a backup
 // that captures both is a backup that captures the passwords in usable form,
 // and an operator has to be able to treat the two differently. See ADR-0015.
-builder.Services.AddDataProtection()
+var keyRing = builder.Services.AddDataProtection()
     .SetApplicationName("EnterpriseObservatory")
     .PersistKeysToFileSystem(new DirectoryInfo(KeyRingPath(builder.Configuration)));
+
+if (OperatingSystem.IsWindows())
+{
+    // Machine scope rather than user scope, and the trade is worth stating.
+    //
+    // User scope is the stronger of the two, but it needs a loaded user
+    // profile, which a Windows service running as LocalSystem or a managed
+    // service account does not reliably have — and a key ring that silently
+    // fails to decrypt after an account change is an outage nobody can
+    // diagnose from the symptom.
+    //
+    // So: this protects the files leaving the machine, which is the realistic
+    // case (a backup, a copied folder, a restored VM). It does not protect
+    // against another administrator on this same machine. Said plainly in
+    // ADR-0015 rather than implied by the absence of a comment.
+    keyRing.ProtectKeysWithDpapi(protectToLocalMachine: true);
+}
+else
+{
+    // Not silently weaker. Without DPAPI the key ring is XML on disk, and the
+    // encryption of the database is then only as good as the file permissions
+    // on the folder beside it — which is a different guarantee from the one
+    // ADR-0015 describes, so it is said out loud at startup.
+    builder.Logging.AddFilter("Microsoft.AspNetCore.DataProtection", LogLevel.Warning);
+}
 
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
 builder.Services.AddSingleton<ISourceConnectionStore, SqliteSourceConnectionStore>();
