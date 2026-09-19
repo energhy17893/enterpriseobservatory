@@ -4,7 +4,6 @@ using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
-using EnterpriseObservatory.Persistence.Sqlite;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -23,34 +22,20 @@ public class MaintenanceTests : IDisposable
 
     private readonly TestClock _clock = new(T0);
 
-    private readonly ObservatoryDatabase _database = new(new SqliteStoreOptions
-    {
-        Path = string.Empty,
-        InMemory = true,
-    });
-
-    private readonly MetricsDatabase _metrics = new(new MetricsStoreOptions
-    {
-        Path = string.Empty,
-        InMemory = true,
-    });
-
-    private readonly SqliteAlertStateStore _alerts;
-    private readonly SqliteMaintenanceWindowStore _windows;
+    private readonly InMemoryAlertStateStore _alerts;
+    private readonly InMemoryMaintenanceWindowStore _windows;
     private readonly MaintenanceService _maintenance;
     private readonly RecordingNotifier _notifier = new();
 
     public MaintenanceTests()
     {
-        _alerts = new SqliteAlertStateStore(_database);
-        _windows = new SqliteMaintenanceWindowStore(_database);
+        _alerts = new InMemoryAlertStateStore();
+        _windows = new InMemoryMaintenanceWindowStore();
         _maintenance = new MaintenanceService(_windows, _clock);
     }
 
     public void Dispose()
     {
-        _database.Dispose();
-        _metrics.Dispose();
         GC.SuppressFinalize(this);
     }
 
@@ -64,11 +49,11 @@ public class MaintenanceTests : IDisposable
     private MonitoringCycle Cycle() => new(
         new InventoryCollectionPipeline(_clock),
         new ObservationCollectionPipeline(_clock),
-        new SqliteEntityGraphStore(_database),
+        new InMemoryEntityGraphStore(),
         _alerts,
-        new SqliteCollectorHealthStore(_database),
+        new InMemoryCollectorHealthStore(),
         _notifier,
-        new SqliteObservationStore(_metrics),
+        new InMemoryObservationStore(),
         _windows,
         _clock);
 
@@ -231,21 +216,6 @@ public class MaintenanceTests : IDisposable
     }
 
     // --- durability --------------------------------------------------------
-
-    [Fact]
-    public void Windows_survive_a_restart()
-    {
-        // A window declared before a patch reboot has to still be a window
-        // after it, which is precisely when the service restarts.
-        var window = Declare(T0.AddMinutes(-1), T0.AddHours(4), Host);
-
-        var afterRestart = new SqliteMaintenanceWindowStore(_database);
-        var recovered = Assert.Single(afterRestart.ActiveAt(T0));
-
-        Assert.Equal(window.Id, recovered.Id);
-        Assert.Equal(Host, Assert.Single(recovered.Entities));
-        Assert.Equal("ertugrul", recovered.DeclaredBy);
-    }
 
     [Fact]
     public void A_finished_window_is_kept_as_a_record()

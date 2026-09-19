@@ -1,6 +1,11 @@
+using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Security;
+using EnterpriseObservatory.Persistence.Postgres;
 using Microsoft.AspNetCore.DataProtection;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+
+// The framework has its own type called Secret, and it is not this one.
+using Secret = EnterpriseObservatory.Application.Security.Secret;
 
 namespace EnterpriseObservatory.VsphereProbe;
 
@@ -9,18 +14,21 @@ namespace EnterpriseObservatory.VsphereProbe;
 /// </summary>
 /// <remarks>
 /// <para>
-/// So that diagnosing a connection never requires retyping its credential.
+/// So that diagnosing a vCenter never requires retyping its credential.
 /// Retyping is not a neutral act: PowerShell rewrites <c>$</c> and backticks
 /// inside double quotes, and this product spent a day chasing "vCenter rejected
-/// the credentials" for a password that had been correct the whole time. A
-/// diagnostic tool that reintroduces that hazard is a diagnostic tool that
-/// invents its own faults.
+/// the credentials" for a password that had been correct the whole time.
 /// </para>
 /// <para>
-/// Works only on the machine that wrote the database, with its key ring
-/// present — which is the same guarantee ADR-0015 describes, arrived at from
-/// the other side. If this cannot decrypt, neither can the service, and that
-/// is itself the answer to a question somebody was about to ask.
+/// One credential is still typed — the database's — and it unlocks all the
+/// others without them being typed at all. That is the trade, and it is a good
+/// one: the database password is one value an operator already has to hand,
+/// while the vCenter passwords are the ones that have to survive being correct.
+/// </para>
+/// <para>
+/// Works only on the machine that holds the key ring. If this cannot decrypt,
+/// neither can the service, and that is itself the answer to a question
+/// somebody was about to ask.
 /// </para>
 /// </remarks>
 internal static class StoredConnection
@@ -30,73 +38,126 @@ internal static class StoredConnection
 
     private const string Purpose = "EnterpriseObservatory.SourceConnection.Password.v1";
 
-    public static (string Url, string User, string Password, bool Insecure) Read(string databasePath)
+    public static (string Url, string User, string Password, bool Insecure) Read(string instanceId)
     {
-        var full = Path.GetFullPath(databasePath);
-        var keys = Path.Combine(Path.GetDirectoryName(full) ?? ".", "keys");
-
-        if (!File.Exists(full))
+        var options = new PostgresOptions
         {
-            throw new FileNotFoundException($"No database at {full}.");
+            Host = Environment.GetEnvironmentVariable("EO_PG_HOST") ?? "127.0.0.1",
+            Database = Environment.GetEnvironmentVariable("EO_PG_DATABASE") ?? "observatory",
+            Username = Environment.GetEnvironmentVariable("EO_PG_USER") ?? "observatory",
+            Password = Secret.From(Environment.GetEnvironmentVariable("EO_PG_PASSWORD")),
+            Schema = Environment.GetEnvironmentVariable("EO_PG_SCHEMA") ?? "public",
+        };
+
+        var problems = options.Validate();
+
+        if (problems.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "The database is not reachable with what was supplied: " +
+                string.Join(" ", problems) +
+                " Set EO_PG_PASSWORD, and EO_PG_HOST / EO_PG_DATABASE / EO_PG_USER if they " +
+                "differ from the defaults.");
         }
 
-        if (!Directory.Exists(keys))
+        using var database = new PostgresDatabase(options);
+
+        var store = new PostgresSourceConnectionStore(database, new KeyRingProtector());
+
+        var all = store.All;
+
+        var connection = string.IsNullOrWhiteSpace(instanceId)
+            ? (all.Count > 0 ? all[0] : null)
+            : store.Find(instanceId);
+
+        if (connection is null)
         {
-            throw new DirectoryNotFoundException(
-                $"No key ring beside the database at {keys}. Stored passwords cannot be read " +
-                "without it — which is the point of keeping them in separate backups.");
+            var known = all.Select(c => c.InstanceId).ToList();
+
+            throw new InvalidOperationException(known.Count == 0
+                ? "The database holds no connections."
+                : $"No connection called '{instanceId}'. Known: {string.Join(", ", known)}.");
         }
 
-        using var connection = new SqliteConnection(
-            new SqliteConnectionStringBuilder
-            {
-                DataSource = full,
-                Mode = SqliteOpenMode.ReadOnly,
-            }.ToString());
-
-        connection.Open();
-
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT instance_id, base_address, username, password_protected, accept_untrusted
-            FROM source_connection
-            ORDER BY instance_id
-            LIMIT 1;
-            """;
-
-        using var reader = command.ExecuteReader();
-
-        if (!reader.Read())
+        if (connection.PasswordUnreadable)
         {
-            throw new InvalidOperationException("The database holds no connections.");
+            throw new InvalidOperationException(
+                $"'{connection.InstanceId}' has a stored password that cannot be decrypted. The " +
+                "key material is missing or belongs to a different installation — which means " +
+                "the service cannot read it either.");
         }
 
-        var address = reader.GetString(1);
-        var user = reader.GetString(2);
-        var protectedPassword = reader.GetString(3);
-        var insecure = reader.GetInt64(4) != 0;
-
-        return (address, user, Unprotect(keys, protectedPassword), insecure);
+        return (
+            connection.BaseAddress.ToString(),
+            connection.Username,
+            connection.Password.Reveal(),
+            connection.AcceptUntrustedCertificate);
     }
 
-    private static string Unprotect(string keyRing, string protectedValue)
+    /// <summary>
+    /// The service's own key ring, configured the same way.
+    /// </summary>
+    /// <remarks>
+    /// Configured identically on purpose. A diagnostic tool that decrypted
+    /// differently from the service it diagnoses would be answering a different
+    /// question, and would say "the password is fine" about a value the service
+    /// cannot read.
+    /// </remarks>
+    private sealed class KeyRingProtector : ISecretProtector
     {
-        var services = new ServiceCollection();
+        private readonly IDataProtector _protector;
 
-        var builder = services.AddDataProtection()
-            .SetApplicationName(ApplicationName)
-            .PersistKeysToFileSystem(new DirectoryInfo(keyRing));
-
-        if (OperatingSystem.IsWindows())
+        public KeyRingProtector()
         {
-            builder.ProtectKeysWithDpapi(protectToLocalMachine: true);
+            var keys = Environment.GetEnvironmentVariable("EO_KEYRING")
+                ?? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "EnterpriseObservatory",
+                    "keys");
+
+            if (!Directory.Exists(keys))
+            {
+                throw new DirectoryNotFoundException(
+                    $"No key ring at {keys}. Stored passwords cannot be read without it — which " +
+                    "is the point of keeping it out of the database's backup. Set EO_KEYRING if " +
+                    "it lives somewhere else.");
+            }
+
+            var services = new ServiceCollection();
+
+            var builder = services.AddDataProtection()
+                .SetApplicationName(ApplicationName)
+                .PersistKeysToFileSystem(new DirectoryInfo(keys));
+
+            if (OperatingSystem.IsWindows())
+            {
+                builder.ProtectKeysWithDpapi(protectToLocalMachine: true);
+            }
+
+            _protector = services.BuildServiceProvider()
+                .GetRequiredService<IDataProtectionProvider>()
+                .CreateProtector(Purpose);
         }
 
-        using var provider = services.BuildServiceProvider();
+        public string Protect(Secret secret) =>
+            secret.IsEmpty ? string.Empty : _protector.Protect(secret.Reveal());
 
-        return provider
-            .GetRequiredService<IDataProtectionProvider>()
-            .CreateProtector(Purpose)
-            .Unprotect(protectedValue);
+        public Secret Unprotect(string protectedValue)
+        {
+            if (protectedValue.Length == 0)
+            {
+                return Secret.Empty;
+            }
+
+            try
+            {
+                return Secret.From(_protector.Unprotect(protectedValue));
+            }
+            catch (System.Security.Cryptography.CryptographicException ex)
+            {
+                throw new SecretUnprotectException(
+                    "A stored password could not be decrypted with this key ring.", ex);
+            }
+        }
     }
 }

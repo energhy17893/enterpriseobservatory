@@ -81,6 +81,18 @@ public class LayerBoundaryTests
             $"EnterpriseObservatory.Api references collectors: {string.Join(", ", vendors)}");
     }
 
+    /// <summary>Every persistence adapter, whichever engine it wraps.</summary>
+    /// <remarks>
+    /// Found by prefix rather than named, so the rule survives the engine
+    /// changing — it already has once, from SQLite to PostgreSQL (ADR-0016) —
+    /// and so that a second adapter cannot be added without the rule applying
+    /// to it. A boundary test that names one implementation stops being a
+    /// boundary the moment somebody adds another.
+    /// </remarks>
+    private static IReadOnlyList<Assembly> PersistenceAdapters =>
+        [.. SolutionAssemblies.Production.Where(a => SolutionAssemblies.Name(a)
+            .StartsWith("EnterpriseObservatory.Persistence.", StringComparison.Ordinal))];
+
     [Fact]
     public void Persistence_cannot_see_any_collector()
     {
@@ -88,36 +100,51 @@ public class LayerBoundaryTests
         // could reach a vendor's types would grow a vSphere-shaped table, and
         // the schema would then encode one vendor's model of the world — which
         // is the coupling the entity model in ADR-0003 exists to avoid.
-        var vendors = SolutionAssemblies.Layer("Persistence.Sqlite")
-            .GetReferencedAssemblies()
-            .Select(a => a.Name ?? string.Empty)
-            .Where(n => n.StartsWith("EnterpriseObservatory.Collectors.", StringComparison.Ordinal))
+        var offenders = PersistenceAdapters
+            .SelectMany(a => a.GetReferencedAssemblies()
+                .Select(r => r.Name ?? string.Empty)
+                .Where(n => n.StartsWith("EnterpriseObservatory.Collectors.", StringComparison.Ordinal))
+                .Select(n => $"{SolutionAssemblies.Name(a)} -> {n}"))
             .ToList();
 
         Assert.True(
-            vendors.Count == 0,
-            $"EnterpriseObservatory.Persistence.Sqlite references collectors: {string.Join(", ", vendors)}");
+            offenders.Count == 0,
+            $"Persistence references collectors: {string.Join(", ", offenders)}");
+    }
+
+    [Fact]
+    public void There_is_at_least_one_persistence_adapter_to_check()
+    {
+        // Otherwise the rule above passes by finding nothing, which is the way
+        // a boundary test quietly stops testing anything.
+        Assert.NotEmpty(PersistenceAdapters);
     }
 
     [Fact]
     public void Nothing_but_the_host_depends_on_a_particular_storage_engine()
     {
-        // The choice of SQLite is a deployment decision (ADR-0011). It stays
-        // one only while exactly one project knows it was made; the day the
-        // application or the API references it, replacing it stops being a
-        // configuration change and becomes a rewrite.
+        // The choice of engine is a deployment decision (ADR-0016, superseding
+        // ADR-0011). It stays one only while exactly one project knows it was
+        // made; the day the application or the API references an adapter,
+        // replacing it stops being a configuration change and becomes a
+        // rewrite.
+        //
+        // That promise was tested for real when SQLite became PostgreSQL:
+        // nothing in Domain, Application or Api changed.
+        var adapters = PersistenceAdapters.Select(SolutionAssemblies.Name).ToHashSet(StringComparer.Ordinal);
+
         var dependents = SolutionAssemblies.Production
-            .Where(a => SolutionAssemblies.Name(a) != "EnterpriseObservatory.Persistence.Sqlite")
+            .Where(a => !adapters.Contains(SolutionAssemblies.Name(a)))
             .Where(a => !SolutionAssemblies.Name(a).StartsWith(
                 "EnterpriseObservatory.Host.", StringComparison.Ordinal))
             .Where(a => a.GetReferencedAssemblies().Any(r =>
-                r.Name == "EnterpriseObservatory.Persistence.Sqlite"))
+                adapters.Contains(r.Name ?? string.Empty)))
             .Select(SolutionAssemblies.Name)
             .ToList();
 
         Assert.True(
             dependents.Count == 0,
-            $"These reference the storage engine directly: {string.Join(", ", dependents)}");
+            $"These reference a storage engine directly: {string.Join(", ", dependents)}");
     }
 
     // --- purity -----------------------------------------------------------

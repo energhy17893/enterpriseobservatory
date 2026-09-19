@@ -4,7 +4,6 @@ using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
-using EnterpriseObservatory.Persistence.Sqlite;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -16,31 +15,19 @@ namespace EnterpriseObservatory.Host.AllInOne.Tests;
 /// go wrong here is not the transition — the domain has those covered — but
 /// what happens when an operator acts while a collection cycle is running.
 /// </remarks>
-public class AlertOperationsTests : IDisposable
+public class AlertOperationsTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 19, 9, 0, 0, TimeSpan.Zero);
 
     private readonly TestClock _clock = new(T0);
 
-    private readonly ObservatoryDatabase _database = new(new SqliteStoreOptions
-    {
-        Path = string.Empty,
-        InMemory = true,
-    });
-
-    private readonly SqliteAlertStateStore _alerts;
+    private readonly InMemoryAlertStateStore _alerts;
     private readonly AlertOperations _operations;
 
     public AlertOperationsTests()
     {
-        _alerts = new SqliteAlertStateStore(_database);
+        _alerts = new InMemoryAlertStateStore();
         _operations = new AlertOperations(_alerts, _clock);
-    }
-
-    public void Dispose()
-    {
-        _database.Dispose();
-        GC.SuppressFinalize(this);
     }
 
     private static OperatorIdentity Ertugrul { get; } = OperatorIdentity.Verified("ertugrul");

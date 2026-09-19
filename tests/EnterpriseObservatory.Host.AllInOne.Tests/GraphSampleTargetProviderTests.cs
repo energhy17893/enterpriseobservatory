@@ -1,6 +1,5 @@
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Host.AllInOne.Collectors;
-using EnterpriseObservatory.Persistence.Sqlite;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -8,25 +7,13 @@ namespace EnterpriseObservatory.Host.AllInOne.Tests;
 /// The join between the two cadences: discovery every few minutes, sampling
 /// every few seconds against what discovery found.
 /// </summary>
-public class GraphSampleTargetProviderTests : IDisposable
+public class GraphSampleTargetProviderTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 19, 9, 0, 0, TimeSpan.Zero);
 
-    private readonly ObservatoryDatabase _database = new(new SqliteStoreOptions
-    {
-        Path = string.Empty,
-        InMemory = true,
-    });
+    private readonly InMemoryEntityGraphStore _store;
 
-    private readonly SqliteEntityGraphStore _store;
-
-    public GraphSampleTargetProviderTests() => _store = new SqliteEntityGraphStore(_database);
-
-    public void Dispose()
-    {
-        _database.Dispose();
-        GC.SuppressFinalize(this);
-    }
+    public GraphSampleTargetProviderTests() => _store = new InMemoryEntityGraphStore();
 
     private GraphSampleTargetProvider Provider(string instanceId = "vc-1") => new(_store, instanceId);
 

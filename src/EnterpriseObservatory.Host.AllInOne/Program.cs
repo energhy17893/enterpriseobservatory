@@ -13,8 +13,13 @@ using EnterpriseObservatory.Host.AllInOne.Configuration;
 using EnterpriseObservatory.Host.AllInOne.Notifications;
 using EnterpriseObservatory.Host.AllInOne.Security;
 using EnterpriseObservatory.Host.AllInOne.State;
-using EnterpriseObservatory.Persistence.Sqlite;
+using EnterpriseObservatory.Persistence.Postgres;
 using Microsoft.AspNetCore.DataProtection;
+
+// The framework has its own type called Secret, and it is not this one. Named
+// explicitly rather than resolved by using-order, because the two are close
+// enough in purpose that a silent bind to the wrong one would compile.
+using Secret = EnterpriseObservatory.Application.Security.Secret;
 
 // The composition root, and the only place in the product that knows a
 // concrete collector exists. Everything below it is wired through ports, which
@@ -30,7 +35,7 @@ var endpoints = builder.Configuration.GetSection("VCenters").Get<List<VsphereEnd
 // carrying on with one. See CredentialSourceGuard.
 CredentialSourceGuard.EnsureNotFromFiles(
     builder.Configuration,
-    endpoints.Select((_, i) => $"VCenters:{i}:Password"),
+    endpoints.Select((_, i) => $"VCenters:{i}:Password").Append("Database:Password"),
     builder.Environment.ContentRootPath);
 
 var problems = endpoints.SelectMany((e, i) => e.Validate(i)).ToList();
@@ -48,24 +53,40 @@ builder.Services.AddSingleton<IClock, SystemClock>();
 
 // State outlives the process. Losing it forgets every acknowledgement and
 // re-notifies every still-firing problem on restart, which is how a product
-// teaches people to ignore it. See ADR-0011.
-builder.Services.AddSingleton(new ObservatoryDatabase(BuildStoreOptions(builder.Configuration)));
-builder.Services.AddSingleton<IEntityGraphStore, SqliteEntityGraphStore>();
-builder.Services.AddSingleton<IAlertStateStore, SqliteAlertStateStore>();
-builder.Services.AddSingleton<ICollectorHealthStore, SqliteCollectorHealthStore>();
+// teaches people to ignore it.
+//
+// One database for state and measurements, where SQLite used two files. That
+// separation was about file mechanics — a churning metric history should not
+// be able to take alerting down with it — and a server has no shared file to
+// contend for. See ADR-0016.
+var database = BuildDatabaseOptions(builder.Configuration);
+var databaseProblems = database.Validate();
 
-// Measurements live in their own file. They are append-heavy and swept by
-// retention every few minutes, which churns a file over time; keeping alert
-// state out of that means a large metric history cannot take alerting down
-// with it. See ADR-0012.
-builder.Services.AddSingleton(new MetricsDatabase(BuildMetricsOptions(builder.Configuration)));
-builder.Services.AddSingleton<IObservationStore, SqliteObservationStore>();
+if (databaseProblems.Count > 0)
+{
+    // Refusing to start is the point rather than a harshness. A monitoring
+    // product that cannot store what it collects should stop and say so; one
+    // that carries on is blind and looks healthy, which principle 1 forbids.
+    throw new InvalidOperationException(
+        "PostgreSQL is required and is not usable:" + Environment.NewLine +
+        string.Join(Environment.NewLine, databaseProblems.Select(p => "  " + p)) +
+        Environment.NewLine +
+        "Configure it under Database: host, port, database, username, schema. The password " +
+        "must come from user secrets, an environment variable or a secret store — never from " +
+        "a settings file. See ADR-0010 and ADR-0016.");
+}
+
+builder.Services.AddSingleton(new PostgresDatabase(database));
+builder.Services.AddSingleton<IEntityGraphStore, PostgresEntityGraphStore>();
+builder.Services.AddSingleton<IAlertStateStore, PostgresAlertStateStore>();
+builder.Services.AddSingleton<ICollectorHealthStore, PostgresCollectorHealthStore>();
+builder.Services.AddSingleton<IObservationStore, PostgresObservationStore>();
 builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();
 builder.Services.AddSingleton<MonitoringCycle>();
 builder.Services.AddSingleton<AlertOperations>();
-builder.Services.AddSingleton<IMaintenanceWindowStore, SqliteMaintenanceWindowStore>();
+builder.Services.AddSingleton<IMaintenanceWindowStore, PostgresMaintenanceWindowStore>();
 builder.Services.AddSingleton<MaintenanceService>();
 builder.Services.AddSingleton<ReadModel>();
 
@@ -75,7 +96,7 @@ builder.Services.AddSingleton<ReadModel>();
 // share an origin precisely so this works: HttpOnly keeps a script that gets
 // into the page from reading it, and SameSite keeps another site from making
 // the browser send it. See ADR-0006 and ADR-0014.
-builder.Services.AddSingleton<IUserAccountStore, SqliteUserAccountStore>();
+builder.Services.AddSingleton<IUserAccountStore, PostgresUserAccountStore>();
 builder.Services.AddSingleton<AuthenticationService>();
 builder.Services.AddSingleton<AccountService>();
 
@@ -196,7 +217,7 @@ else
 }
 
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
-builder.Services.AddSingleton<ISourceConnectionStore, SqliteSourceConnectionStore>();
+builder.Services.AddSingleton<ISourceConnectionStore, PostgresSourceConnectionStore>();
 builder.Services.AddSingleton<VsphereConnectionProbe>();
 builder.Services.AddSingleton<IConnectionProbe>(p => p.GetRequiredService<VsphereConnectionProbe>());
 builder.Services.AddSingleton<ISourceCapabilityReader>(
@@ -285,35 +306,31 @@ await host.RunAsync();
 // difference between a product an operator installs in a maintenance window and
 // one that needs a project. ProgramData rather than the install directory,
 // because data that survives an upgrade must not sit where the upgrade writes.
-static SqliteStoreOptions BuildStoreOptions(IConfiguration configuration)
+static PostgresOptions BuildDatabaseOptions(IConfiguration configuration)
 {
-    var configured = configuration["Storage:Path"];
+    var section = configuration.GetSection("Database");
 
-    var path = string.IsNullOrWhiteSpace(configured)
-        ? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "EnterpriseObservatory",
-            "observatory.db")
-        : configured;
+    return new PostgresOptions
+    {
+        Host = Text(section["Host"], "127.0.0.1"),
+        Port = int.TryParse(section["Port"], out var port) ? port : 5432,
+        Database = Text(section["Database"], "observatory"),
+        Username = Text(section["Username"], "observatory"),
 
-    return new SqliteStoreOptions { Path = path };
-}
+        // Bound through the ordinary configuration system so user secrets, an
+        // environment variable and a key vault all work with no special
+        // support — and then checked by CredentialSourceGuard, because the
+        // previous product's leak was a password sitting in a settings file.
+        Password = Secret.From(section["Password"]),
 
-// Beside the state database by default, and separately configurable — the
-// measurement file is the one that grows, and an installation with a small
-// system disk needs to be able to put it somewhere else.
-static MetricsStoreOptions BuildMetricsOptions(IConfiguration configuration)
-{
-    var configured = configuration["Storage:MetricsPath"];
+        // Named so one server can hold a lab beside a production installation.
+        Schema = Text(section["Schema"], "public"),
 
-    var path = string.IsNullOrWhiteSpace(configured)
-        ? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "EnterpriseObservatory",
-            "metrics.db")
-        : configured;
+        RequireTls = bool.TryParse(section["RequireTls"], out var tls) && tls,
+    };
 
-    return new MetricsStoreOptions { Path = path };
+    static string Text(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback : value;
 }
 
 static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration)
@@ -366,13 +383,24 @@ static SourceConnection AsConnection(VsphereEndpointOptions endpoint) => new()
 // whoever writes the backup job.
 static string KeyRingPath(IConfiguration configuration)
 {
-    var database = configuration["Storage:Path"];
+    // Its own setting now. It used to live beside the database file, which was
+    // a convenient default while the database was a file; with a server there
+    // is no such place, and the key ring is local to the machine while the
+    // database may not be.
+    //
+    // ProgramData rather than the install directory, because material that
+    // must survive an upgrade cannot sit where the upgrade writes. And still
+    // not in the database's backup: ADR-0015 is explicit that a backup holding
+    // both loses the protection entirely.
+    var configured = configuration["Storage:KeyRingPath"];
 
-    var directory = string.IsNullOrWhiteSpace(database)
-        ? AppContext.BaseDirectory
-        : Path.GetDirectoryName(Path.GetFullPath(database)) ?? AppContext.BaseDirectory;
+    var keys = string.IsNullOrWhiteSpace(configured)
+        ? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "EnterpriseObservatory",
+            "keys")
+        : configured;
 
-    var keys = Path.Combine(directory, "keys");
     Directory.CreateDirectory(keys);
     return keys;
 }

@@ -1,6 +1,5 @@
 using EnterpriseObservatory.Api;
 using EnterpriseObservatory.Application.Security;
-using EnterpriseObservatory.Persistence.Sqlite;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -12,7 +11,7 @@ namespace EnterpriseObservatory.Host.AllInOne.Tests;
 /// administrator has to be repaired by editing the database, and whoever does
 /// that will be doing it during an incident.
 /// </remarks>
-public class AccountServiceTests : IDisposable
+public class AccountServiceTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 19, 9, 0, 0, TimeSpan.Zero);
     private const string Password = "correct horse battery staple";
@@ -20,25 +19,13 @@ public class AccountServiceTests : IDisposable
 
     private readonly TestClock _clock = new(T0);
 
-    private readonly ObservatoryDatabase _database = new(new SqliteStoreOptions
-    {
-        Path = string.Empty,
-        InMemory = true,
-    });
-
-    private readonly SqliteUserAccountStore _accounts;
+    private readonly InMemoryUserAccountStore _accounts;
     private readonly AccountService _service;
 
     public AccountServiceTests()
     {
-        _accounts = new SqliteUserAccountStore(_database);
+        _accounts = new InMemoryUserAccountStore();
         _service = new AccountService(_accounts, _clock);
-    }
-
-    public void Dispose()
-    {
-        _database.Dispose();
-        GC.SuppressFinalize(this);
     }
 
     // --- creating ---------------------------------------------------------
@@ -204,18 +191,6 @@ public class AccountServiceTests : IDisposable
         _service.ResetPassword("ertugrul", Secret.From(Replacement));
 
         Assert.True(authentication.SignIn("ertugrul", Secret.From(Replacement)).Succeeded);
-    }
-
-    // --- durability -------------------------------------------------------
-
-    [Fact]
-    public void Accounts_survive_a_restart()
-    {
-        _service.Create("ertugrul", Secret.From(Password), Role.Operator);
-
-        var afterRestart = new SqliteUserAccountStore(_database);
-
-        Assert.Equal(Role.Operator, afterRestart.Find("ertugrul")!.Role);
     }
 
     // --- a session against a changed account ------------------------------

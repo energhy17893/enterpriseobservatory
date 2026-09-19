@@ -4,12 +4,13 @@
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
 
     <!--
-      For reading a stored connection, so nobody retypes a password to
-      diagnose one. Referenced rather than adding Microsoft.Data.Sqlite here:
-      that package's transitive SQLitePCLRaw carries a known advisory, and the
-      pin that deals with it already lives in this project. One pin, one place.
+      For reading a stored connection, so nobody retypes a vCenter password
+      to diagnose one. Referencing the adapter rather than Npgsql directly
+      keeps one definition of how a connection is stored and decrypted — a
+      tool that read it its own way would drift from the service and then
+      disagree with it about whether a credential works.
     -->
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Persistence.Sqlite\EnterpriseObservatory.Persistence.Sqlite.csproj" />
+    <ProjectReference Include="..\..\src\EnterpriseObservatory.Persistence.Postgres\EnterpriseObservatory.Persistence.Postgres.csproj" />
   </ItemGroup>
 
   <ItemGroup>

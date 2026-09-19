@@ -3,7 +3,6 @@ using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 using EnterpriseObservatory.Host.AllInOne.State;
-using EnterpriseObservatory.Persistence.Sqlite;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -27,38 +26,24 @@ public class MonitoringCycleTests : IDisposable
     // A second implementation of these ports would be a second set of
     // semantics to keep in step, and the first thing to drift would be exactly
     // the subtleties these tests exist to pin down.
-    private readonly ObservatoryDatabase _database = new(new SqliteStoreOptions
-    {
-        Path = string.Empty,
-        InMemory = true,
-    });
-
-    private readonly MetricsDatabase _metrics = new(new MetricsStoreOptions
-    {
-        Path = string.Empty,
-        InMemory = true,
-    });
-
-    private readonly SqliteEntityGraphStore _graphs;
-    private readonly SqliteAlertStateStore _alerts;
-    private readonly SqliteCollectorHealthStore _health;
-    private readonly SqliteObservationStore _observations;
-    private readonly SqliteMaintenanceWindowStore _maintenance;
+    private readonly InMemoryEntityGraphStore _graphs;
+    private readonly InMemoryAlertStateStore _alerts;
+    private readonly InMemoryCollectorHealthStore _health;
+    private readonly InMemoryObservationStore _observations;
+    private readonly InMemoryMaintenanceWindowStore _maintenance;
     private readonly RecordingNotifier _notifier = new();
 
     public MonitoringCycleTests()
     {
-        _graphs = new SqliteEntityGraphStore(_database);
-        _alerts = new SqliteAlertStateStore(_database);
-        _health = new SqliteCollectorHealthStore(_database);
-        _observations = new SqliteObservationStore(_metrics);
-        _maintenance = new SqliteMaintenanceWindowStore(_database);
+        _graphs = new InMemoryEntityGraphStore();
+        _alerts = new InMemoryAlertStateStore();
+        _health = new InMemoryCollectorHealthStore();
+        _observations = new InMemoryObservationStore();
+        _maintenance = new InMemoryMaintenanceWindowStore();
     }
 
     public void Dispose()
     {
-        _database.Dispose();
-        _metrics.Dispose();
         GC.SuppressFinalize(this);
     }
 

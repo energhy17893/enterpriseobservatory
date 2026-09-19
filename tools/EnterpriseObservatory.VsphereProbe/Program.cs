@@ -46,12 +46,17 @@ string? user;
 string? password;
 bool insecure;
 
-if (storeIndex >= 0 && storeIndex + 1 < args.Length)
+if (storeIndex >= 0)
 {
     try
     {
+        var named = storeIndex + 1 < args.Length &&
+            !args[storeIndex + 1].StartsWith("--", StringComparison.Ordinal)
+                ? args[storeIndex + 1]
+                : string.Empty;
+
         (url, user, password, insecure) =
-            EnterpriseObservatory.VsphereProbe.StoredConnection.Read(args[storeIndex + 1]);
+            EnterpriseObservatory.VsphereProbe.StoredConnection.Read(named);
     }
 #pragma warning disable CA1031 // Justified: a probe reports, it does not throw.
     catch (Exception ex)
@@ -73,7 +78,7 @@ else
 if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(password))
 {
     Console.Error.WriteLine(
-        "Pass --from-store <observatory.db>, or set EO_VCENTER_URL, EO_VCENTER_USER and " +
+        "Pass --from-store [connection name], or set EO_VCENTER_URL, EO_VCENTER_USER and " +
         "EO_VCENTER_PASSWORD first.");
     return 2;
 }

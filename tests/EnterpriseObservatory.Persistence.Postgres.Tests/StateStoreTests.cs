@@ -121,6 +121,42 @@ public class StateStoreTests : IDisposable
         Assert.False(store.Any);
     }
 
+    [SkippableFact]
+    public void A_lockout_survives_a_restart()
+    {
+        RequireDatabase();
+
+        // Held only in memory, restarting the service would be the way past it.
+        // Moved here from the host suite when SQLite went: the claim is about
+        // what the database keeps, and a fake proving it would be proving it
+        // about itself.
+        var clock = new TestClock(T0);
+        var accounts = new PostgresUserAccountStore(_live.Database);
+        var authentication = new AuthenticationService(accounts, clock);
+
+        accounts.TryAdd(Account() with { Role = Role.Viewer });
+
+        for (var i = 0; i < LockoutPolicy.Default.MaxAttempts; i++)
+        {
+            authentication.SignIn("ertugrul", Secret.From("wrong password here"));
+        }
+
+        _live.Restart();
+
+        var afterRestart = new AuthenticationService(
+            new PostgresUserAccountStore(_live.Database), clock);
+
+        Assert.Equal(
+            SignInFailure.LockedOut,
+            afterRestart.SignIn("ertugrul", Secret.From("a long enough passphrase")).Failure);
+    }
+
+    /// <summary>A clock the test owns, so a lockout window is not wall-clock.</summary>
+    private sealed class TestClock(DateTimeOffset now) : IClock
+    {
+        public DateTimeOffset UtcNow { get; set; } = now;
+    }
+
     // --- collector health -------------------------------------------------
 
     private static CollectorHealth Health(

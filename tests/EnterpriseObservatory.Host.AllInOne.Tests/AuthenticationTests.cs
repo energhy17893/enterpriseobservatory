@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using EnterpriseObservatory.Application.Security;
-using EnterpriseObservatory.Persistence.Sqlite;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -12,32 +11,20 @@ namespace EnterpriseObservatory.Host.AllInOne.Tests;
 /// that a lockout persists, that a name is not revealed by timing — are
 /// properties of the whole path rather than of one function.
 /// </remarks>
-public class AuthenticationTests : IDisposable
+public class AuthenticationTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 19, 9, 0, 0, TimeSpan.Zero);
     private const string Password = "correct horse battery staple";
 
     private readonly TestClock _clock = new(T0);
 
-    private readonly ObservatoryDatabase _database = new(new SqliteStoreOptions
-    {
-        Path = string.Empty,
-        InMemory = true,
-    });
-
-    private readonly SqliteUserAccountStore _accounts;
+    private readonly InMemoryUserAccountStore _accounts;
     private readonly AuthenticationService _authentication;
 
     public AuthenticationTests()
     {
-        _accounts = new SqliteUserAccountStore(_database);
+        _accounts = new InMemoryUserAccountStore();
         _authentication = new AuthenticationService(_accounts, _clock);
-    }
-
-    public void Dispose()
-    {
-        _database.Dispose();
-        GC.SuppressFinalize(this);
     }
 
     // --- the first account ------------------------------------------------
@@ -202,24 +189,6 @@ public class AuthenticationTests : IDisposable
         _authentication.SignIn("ertugrul", Secret.From(Password));
 
         Assert.Equal(0, _accounts.Find("ertugrul")!.FailedAttempts);
-    }
-
-    [Fact]
-    public void A_lockout_survives_a_restart()
-    {
-        // Held only in memory, restarting the service would be the way past it.
-        Given("ertugrul", Role.Viewer);
-
-        for (var i = 0; i < LockoutPolicy.Default.MaxAttempts; i++)
-        {
-            _authentication.SignIn("ertugrul", Secret.From("wrong password here"));
-        }
-
-        var afterRestart = new AuthenticationService(new SqliteUserAccountStore(_database), _clock);
-
-        Assert.Equal(
-            SignInFailure.LockedOut,
-            afterRestart.SignIn("ertugrul", Secret.From(Password)).Failure);
     }
 
     // --- what is stored ---------------------------------------------------

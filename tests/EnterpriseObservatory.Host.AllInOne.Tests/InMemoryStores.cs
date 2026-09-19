@@ -1,0 +1,272 @@
+using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Monitoring;
+using EnterpriseObservatory.Application.Security;
+using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain.Alerts;
+
+namespace EnterpriseObservatory.Host.AllInOne.Tests;
+
+/// <summary>
+/// In-memory stores, for tests about composition rather than storage.
+/// </summary>
+/// <remarks>
+/// <para>
+/// These tests used a real SQLite store opened in memory, which was free while
+/// the engine was a file. PostgreSQL has no in-process mode, and making this
+/// suite require a database server would be the wrong trade: these are tests
+/// about what the product decides, not about how it writes it down.
+/// </para>
+/// <para>
+/// The split is deliberate and the other half matters. Every claim about
+/// durability — that an acknowledgement survives a cycle, that a lockout
+/// survives a restart, that a timestamp returns as it went in — lives in
+/// EnterpriseObservatory.Persistence.Postgres.Tests and runs against a real
+/// server. A fake proving durability would be proving it about itself.
+/// </para>
+/// </remarks>
+internal sealed class InMemoryUserAccountStore : IUserAccountStore
+{
+    private readonly Dictionary<string, UserAccount> _accounts = new(StringComparer.Ordinal);
+
+    public bool Any => _accounts.Count > 0;
+
+    public UserAccount? Find(string username) =>
+        _accounts.GetValueOrDefault(UserAccount.Normalize(username));
+
+    public IReadOnlyList<UserAccount> All() =>
+        [.. _accounts.Values.OrderBy(a => a.Username, StringComparer.Ordinal)];
+
+    public bool TryAdd(UserAccount account)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+
+        return _accounts.TryAdd(account.Username, account);
+    }
+
+    public void Update(UserAccount account)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+
+        if (_accounts.ContainsKey(account.Username))
+        {
+            _accounts[account.Username] = account;
+        }
+    }
+
+    public bool Remove(string username) => _accounts.Remove(UserAccount.Normalize(username));
+}
+
+internal sealed class InMemoryEntityGraphStore : IEntityGraphStore
+{
+    public EntityGraph Current { get; private set; } = new();
+
+    public void Replace(EntityGraph graph)
+    {
+        ArgumentNullException.ThrowIfNull(graph);
+
+        Current = graph;
+    }
+}
+
+/// <remarks>
+/// Reconciliation replaces one scope and leaves the others alone, because
+/// getting that wrong is what these tests are about: the metric cycle runs
+/// every thirty seconds and the inventory cycle every five minutes, and a fake
+/// that replaced everything would make a scope bug invisible here.
+/// </remarks>
+internal sealed class InMemoryAlertStateStore : IAlertStateStore
+{
+    private readonly Dictionary<string, List<AlertInstance>> _instances =
+        new(StringComparer.Ordinal);
+
+    private readonly Dictionary<string, List<FlapHistory>> _flaps = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<AlertInstance> All => [.. _instances.Values.SelectMany(s => s)];
+
+    public IReadOnlyList<AlertInstance> InstancesIn(string scope) =>
+        _instances.TryGetValue(scope, out var slice) ? [.. slice] : [];
+
+    public IReadOnlyList<FlapHistory> FlapHistoriesIn(string scope) =>
+        _flaps.TryGetValue(scope, out var slice) ? [.. slice] : [];
+
+    public AlertReconciliationResult Reconcile(
+        string scope,
+        Func<IReadOnlyList<AlertInstance>, IReadOnlyList<FlapHistory>, AlertReconciliationResult> reconcile)
+    {
+        ArgumentNullException.ThrowIfNull(reconcile);
+
+        var result = reconcile(InstancesIn(scope), FlapHistoriesIn(scope));
+
+        _instances[scope] = [.. result.Instances];
+        _flaps[scope] = [.. result.FlapHistories];
+
+        return result;
+    }
+
+    public AlertInstance? Mutate(AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+
+        foreach (var slice in _instances.Values)
+        {
+            var index = slice.FindIndex(i => i.Fingerprint == fingerprint);
+
+            if (index < 0)
+            {
+                continue;
+            }
+
+            var next = change(slice[index]);
+            slice[index] = next;
+
+            return next;
+        }
+
+        return null;
+    }
+
+    public IReadOnlyList<AlertInstance> MutateMany(
+        IReadOnlyList<AlertFingerprint> fingerprints, Func<AlertInstance, AlertInstance> change)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+
+        return [.. fingerprints.Select(f => Mutate(f, change)).OfType<AlertInstance>()];
+    }
+
+    public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+
+        if (!_instances.TryGetValue(scope, out var slice))
+        {
+            return;
+        }
+
+        var wanted = fingerprints.ToHashSet();
+
+        _instances[scope] =
+            [.. slice.Select(i => wanted.Contains(i.Fingerprint) ? AlertLifecycle.MarkNotified(i) : i)];
+    }
+}
+
+internal sealed class InMemoryMaintenanceWindowStore : IMaintenanceWindowStore
+{
+    private readonly List<MaintenanceWindow> _windows = [];
+
+    public IReadOnlyList<MaintenanceWindow> All() => [.. _windows];
+
+    public IReadOnlyList<MaintenanceWindow> ActiveAt(DateTimeOffset atUtc) =>
+        [.. _windows.Where(w => w.IsActiveAt(atUtc))];
+
+    public void Add(MaintenanceWindow window)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+
+        _windows.RemoveAll(w => w.Id == window.Id);
+        _windows.Add(window);
+    }
+
+    public bool Remove(string id) => _windows.RemoveAll(w => w.Id == id) > 0;
+
+    public int Forget(DateTimeOffset olderThanUtc) =>
+        _windows.RemoveAll(w => w.EndUtc < olderThanUtc);
+}
+
+internal sealed class InMemoryCollectorHealthStore : ICollectorHealthStore
+{
+    private readonly Dictionary<(string, CollectorRole), CollectorHealth> _health = [];
+
+    public IReadOnlyList<CollectorHealth> Current => [.. _health.Values];
+
+    /// <remarks>
+    /// Merged rather than replaced, like the real one: a cycle only reports on
+    /// the sources it ran, and the two cycles run on different schedules.
+    /// Replacing would erase the other one's findings — and a fake that did so
+    /// would hide exactly that bug from these tests.
+    /// </remarks>
+    public void Merge(IReadOnlyList<CollectorHealth> health)
+    {
+        ArgumentNullException.ThrowIfNull(health);
+
+        foreach (var entry in health)
+        {
+            _health[(entry.InstanceId, entry.Role)] = entry;
+        }
+    }
+}
+
+/// <summary>Measurements, kept only as long as the test runs.</summary>
+/// <remarks>
+/// Raw samples only. Folding and retention are the intricate part and they are
+/// tested against a real server, where the SQL that performs them can be wrong;
+/// a fake that re-implemented them here would be testing this file.
+/// </remarks>
+internal sealed class InMemoryObservationStore : IObservationStore
+{
+    private readonly Dictionary<SeriesKey, List<Observation>> _series = [];
+
+    public void Append(IReadOnlyList<Observation> observations)
+    {
+        ArgumentNullException.ThrowIfNull(observations);
+
+        foreach (var observation in observations)
+        {
+            var key = new SeriesKey(
+                observation.Entity, observation.Value.CounterName, observation.Value.Instance);
+
+            if (!_series.TryGetValue(key, out var samples))
+            {
+                _series[key] = samples = [];
+            }
+
+            samples.RemoveAll(s => s.SampledAtUtc == observation.SampledAtUtc);
+            samples.Add(observation);
+        }
+    }
+
+    public SeriesResult Query(SeriesQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        if (!_series.TryGetValue(query.Key, out var samples))
+        {
+            // Never recorded, which is not the same as recorded and empty.
+            return new SeriesResult
+            {
+                Key = query.Key,
+                Resolution = SeriesResolution.Raw,
+                Exists = false,
+            };
+        }
+
+        var points = samples
+            .Where(s => s.SampledAtUtc >= query.FromUtc && s.SampledAtUtc < query.ToUtc)
+            .OrderBy(s => s.SampledAtUtc)
+            .Select(s => new AggregatedSample
+            {
+                StartUtc = s.SampledAtUtc,
+                Min = s.Value.Raw,
+                Max = s.Value.Raw,
+                Sum = s.Value.Raw,
+                Count = 1,
+                Last = s.Value.Raw,
+            })
+            .ToList();
+
+        return new SeriesResult
+        {
+            Key = query.Key,
+            Resolution = SeriesResolution.Raw,
+            Points = points,
+            Unit = samples[^1].Value.Unit,
+            Rollup = samples[^1].Value.Rollup,
+            Exists = true,
+        };
+    }
+
+    public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) =>
+        [.. _series.Keys.Where(k => k.Entity == entity)];
+
+    public CompactionReport Compact(DateTimeOffset nowUtc, SeriesRetentionPolicy policy) => new();
+}
