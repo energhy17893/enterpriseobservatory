@@ -23,6 +23,22 @@ public sealed record MaintenanceWindow
     public required DateTimeOffset EndUtc { get; init; }
 
     /// <summary>
+    /// Who declared it.
+    /// </summary>
+    /// <remarks>
+    /// A window stops people being told about real failures. Afterwards, when
+    /// somebody asks why nobody was paged, "there was a window" is half an
+    /// answer; the other half is who decided there should be. Same reason every
+    /// alert transition carries an actor — see ADR-0013.
+    /// </remarks>
+    public string DeclaredBy { get; init; } = string.Empty;
+
+    public DateTimeOffset DeclaredAtUtc { get; init; }
+
+    /// <summary>Why the work is happening, in the operator's words.</summary>
+    public string Reason { get; init; } = string.Empty;
+
+    /// <summary>
     /// The entities this covers. Empty means the whole estate.
     /// </summary>
     /// <remarks>
@@ -33,6 +49,12 @@ public sealed record MaintenanceWindow
     public IReadOnlyList<EntityId> Entities { get; init; } = [];
 
     public bool IsActiveAt(DateTimeOffset atUtc) => atUtc >= StartUtc && atUtc < EndUtc;
+
+    /// <summary>Whether the window is over.</summary>
+    public bool HasEnded(DateTimeOffset atUtc) => atUtc >= EndUtc;
+
+    /// <summary>Whether it has not started yet.</summary>
+    public bool IsScheduled(DateTimeOffset atUtc) => atUtc < StartUtc;
 
     /// <summary>Whether this window applies to a given entity.</summary>
     public bool Covers(EntityId? entity)

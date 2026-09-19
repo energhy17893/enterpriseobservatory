@@ -43,6 +43,7 @@ public class MonitoringCycleTests : IDisposable
     private readonly SqliteAlertStateStore _alerts;
     private readonly SqliteCollectorHealthStore _health;
     private readonly SqliteObservationStore _observations;
+    private readonly SqliteMaintenanceWindowStore _maintenance;
     private readonly RecordingNotifier _notifier = new();
 
     public MonitoringCycleTests()
@@ -51,6 +52,7 @@ public class MonitoringCycleTests : IDisposable
         _alerts = new SqliteAlertStateStore(_database);
         _health = new SqliteCollectorHealthStore(_database);
         _observations = new SqliteObservationStore(_metrics);
+        _maintenance = new SqliteMaintenanceWindowStore(_database);
     }
 
     public void Dispose()
@@ -73,6 +75,7 @@ public class MonitoringCycleTests : IDisposable
         _health,
         notifier ?? _notifier,
         _observations,
+        _maintenance,
         _clock);
 
     // --- scoping ----------------------------------------------------------
@@ -319,6 +322,7 @@ public class MonitoringCycleTests : IDisposable
             _health,
             _notifier,
             new FailingObservationStore(),
+            _maintenance,
             _clock);
 
         var metrics = new FakeObservationSource("vc-1")

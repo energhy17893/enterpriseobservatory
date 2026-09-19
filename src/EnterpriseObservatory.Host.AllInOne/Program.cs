@@ -62,6 +62,8 @@ builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();
 builder.Services.AddSingleton<MonitoringCycle>();
 builder.Services.AddSingleton<AlertOperations>();
+builder.Services.AddSingleton<IMaintenanceWindowStore, SqliteMaintenanceWindowStore>();
+builder.Services.AddSingleton<MaintenanceService>();
 builder.Services.AddSingleton<ReadModel>();
 
 // --- who may do what -----------------------------------------------------
@@ -172,6 +174,7 @@ host.UseAuthorization();
 
 host.MapAuthenticationApi(setupToken);
 host.MapAccountsApi();
+host.MapMaintenanceApi();
 host.MapObservatoryApi();
 
 // The SPA's build output, when it has been built. Serving the interface from

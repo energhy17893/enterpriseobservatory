@@ -8,7 +8,14 @@ import type {
   SeriesOptionView,
   SeriesView,
 } from './types'
-import type { AccountView, AlertActionView, AuthStateView, Role } from './types'
+import type {
+  AccountView,
+  AlertActionView,
+  AuthStateView,
+  DeclareWindowCommand,
+  MaintenanceWindowView,
+  Role,
+} from './types'
 
 /**
  * A failed request, carrying enough to say something true about it.
@@ -146,6 +153,11 @@ export const api = {
   signOut: () => post<null>('/api/auth/signout', {}),
   bootstrap: (token: string, username: string, password: string) =>
     post<AuthStateView>('/api/auth/bootstrap', { token, username, password }),
+  maintenanceWindows: () => get<MaintenanceWindowView[]>('/api/maintenance'),
+  declareMaintenanceWindow: (command: DeclareWindowCommand) =>
+    post<MaintenanceWindowView>('/api/maintenance/declare', command),
+  endMaintenanceWindow: (id: string) =>
+    post<MaintenanceWindowView>('/api/maintenance/end', { id }),
   accounts: () => get<AccountView[]>('/api/accounts'),
   createAccount: (username: string, password: string, role: Role) =>
     post<AccountView>('/api/accounts/create', { username, password, role }),

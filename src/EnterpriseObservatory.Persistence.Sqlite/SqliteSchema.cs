@@ -170,6 +170,32 @@ internal static class SqliteSchema
             locked_until_utc   TEXT    NULL
         ) STRICT;
         """,
+
+        // --- 3: maintenance windows ---------------------------------------
+        """
+        CREATE TABLE maintenance_window (
+            id              TEXT NOT NULL PRIMARY KEY,
+            title           TEXT NOT NULL,
+            reason          TEXT NOT NULL,
+            start_utc       TEXT NOT NULL,
+            end_utc         TEXT NOT NULL,
+            declared_by     TEXT NOT NULL,
+            declared_at_utc TEXT NOT NULL
+        ) STRICT;
+
+        -- Retention sweeps by end time across every window.
+        CREATE INDEX ix_window_end ON maintenance_window (end_utc);
+
+        -- No rows means the window covers the whole estate, which is what a
+        -- datacentre power test actually is. Deliberately expressible and
+        -- deliberately blunt: everything goes quiet, including the failure the
+        -- test was meant to reveal.
+        CREATE TABLE maintenance_window_entity (
+            window_id TEXT NOT NULL REFERENCES maintenance_window (id) ON DELETE CASCADE,
+            entity_id TEXT NOT NULL,
+            PRIMARY KEY (window_id, entity_id)
+        ) STRICT;
+        """,
     ];
 
     /// <summary>The version a database is brought up to.</summary>

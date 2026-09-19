@@ -40,6 +40,7 @@ const GROUPS = [
     label: 'Configure',
     question: 'How do I set this up?',
     items: [
+      { to: '/maintenance', label: 'Maintenance' },
       { to: '/collectors', label: 'Collectors' },
       { to: '/accounts', label: 'Accounts' },
     ],

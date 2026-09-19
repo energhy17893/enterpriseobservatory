@@ -204,3 +204,26 @@ export interface AccountView {
   lastSignedInUtc: string | null
   lockedOut: boolean
 }
+
+/** Planned work. Suppresses notification, never observation. */
+export interface MaintenanceWindowView {
+  id: string
+  title: string
+  reason: string
+  startUtc: string
+  endUtc: string
+  declaredBy: string
+  declaredAtUtc: string
+  /** Empty means the whole estate. */
+  entities: string[]
+  active: boolean
+  scheduled: boolean
+}
+
+export interface DeclareWindowCommand {
+  title: string
+  reason: string
+  startUtc: string
+  endUtc: string
+  entities: string[]
+}

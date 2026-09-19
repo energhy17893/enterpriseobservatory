@@ -65,6 +65,7 @@ public sealed class MonitoringCycle(
     ICollectorHealthStore healthStore,
     IAlertNotifier notifier,
     IObservationStore observations,
+    IMaintenanceWindowStore maintenance,
     IClock clock)
 {
     private readonly InventoryCollectionPipeline _inventory =
@@ -87,6 +88,9 @@ public sealed class MonitoringCycle(
 
     private readonly IObservationStore _observationStore =
         observations ?? throw new ArgumentNullException(nameof(observations));
+
+    private readonly IMaintenanceWindowStore _maintenance =
+        maintenance ?? throw new ArgumentNullException(nameof(maintenance));
 
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
@@ -292,6 +296,12 @@ public sealed class MonitoringCycle(
                 FlapHistories = flaps,
                 Hysteresis = options.Hysteresis,
                 Flap = options.Flap,
+                // Read per cycle, not per process. A window declared while the
+                // service is running has to take effect on the next cycle, and
+                // one that has ended has to stop taking effect on the next one
+                // too — suppression is recomputed every time rather than
+                // stamped on once.
+                MaintenanceWindows = _maintenance.ActiveAt(now),
                 NowUtc = now,
             }));
 
