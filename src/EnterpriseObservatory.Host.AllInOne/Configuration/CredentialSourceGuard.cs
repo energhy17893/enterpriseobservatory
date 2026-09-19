@@ -29,18 +29,25 @@ namespace EnterpriseObservatory.Host.AllInOne.Configuration;
 public static class CredentialSourceGuard
 {
     /// <summary>
-    /// Throws if any of <paramref name="keys"/> was supplied by a file.
+    /// Throws if any of <paramref name="keys"/> came from a settings file that
+    /// travels with the application.
     /// </summary>
     /// <param name="configuration">The built configuration root.</param>
     /// <param name="keys">Fully qualified keys holding secrets.</param>
+    /// <param name="contentRoot">
+    /// The application's own directory. A file inside it is one that ends up in
+    /// source control, in a backup and in the installer.
+    /// </param>
     /// <exception cref="InvalidOperationException">
-    /// If a secret came from a settings file. The message names the key and the
+    /// If a secret came from such a file. The message names the key and the
     /// file, and never the value.
     /// </exception>
-    public static void EnsureNotFromFiles(IConfiguration configuration, IEnumerable<string> keys)
+    public static void EnsureNotFromFiles(
+        IConfiguration configuration, IEnumerable<string> keys, string contentRoot)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(keys);
+        ArgumentNullException.ThrowIfNull(contentRoot);
 
         if (configuration is not IConfigurationRoot root)
         {
@@ -51,9 +58,10 @@ public static class CredentialSourceGuard
         }
 
         var offences = keys
-            .Select(key => (Key: key, File: FileProviding(root, key)))
-            .Where(x => x.File is not null)
-            .Select(x => $"  {x.Key} was read from {x.File}")
+            .SelectMany(key => FilesSupplying(root, key).Select(file => (Key: key, File: file)))
+            .Where(x => TravelsWithTheApplication(x.File, contentRoot))
+            .Select(x => $"  {x.Key} is in {x.File}")
+            .Distinct(StringComparer.Ordinal)
             .ToList();
 
         if (offences.Count == 0)
@@ -62,7 +70,7 @@ public static class CredentialSourceGuard
         }
 
         throw new InvalidOperationException(
-            "A credential was read from a settings file:" + Environment.NewLine +
+            "A credential is sitting in a settings file:" + Environment.NewLine +
             string.Join(Environment.NewLine, offences) + Environment.NewLine +
             "Remove it from the file and supply it through user secrets, an environment " +
             "variable or a secret store. Then treat the value as compromised and rotate it: " +
@@ -70,31 +78,75 @@ public static class CredentialSourceGuard
     }
 
     /// <summary>
-    /// The file that supplied a key, or null if no file did.
+    /// Whether a file is one that ships with the application.
     /// </summary>
     /// <remarks>
-    /// Walked in reverse because later providers win in .NET configuration. The
-    /// question is which provider the bound value actually came from, not
-    /// whether a file happens to mention the key — a password left in
-    /// appsettings.json but overridden by an environment variable is still a
-    /// password on disk, but it is a different and lesser problem, and the
-    /// first provider to answer is the one that matters.
+    /// <para>
+    /// The risk is not that a credential lives in a file — a mounted secret and
+    /// the user secrets store are both files, and both are deliberate. The risk
+    /// is a file that <em>travels</em>: into source control, into a backup,
+    /// into the installer. That is exactly what happened before, and it is what
+    /// this refuses.
+    /// </para>
+    /// <para>
+    /// So the test is location, not format: anything named
+    /// <c>appsettings*.json</c>, and anything inside the application's own
+    /// directory. The user secrets store sits under the user's profile,
+    /// outside both — which is why ADR-0010 names it as one of the ways a
+    /// credential is meant to arrive.
+    /// </para>
     /// </remarks>
-    private static string? FileProviding(IConfigurationRoot root, string key)
+    private static bool TravelsWithTheApplication(string path, string contentRoot)
     {
-        foreach (var provider in root.Providers.Reverse())
-        {
-            if (!provider.TryGet(key, out var value) || string.IsNullOrEmpty(value))
-            {
-                continue;
-            }
+        var name = Path.GetFileName(path);
 
-            return provider is FileConfigurationProvider file
-                ? Describe(file)
-                : null;
+        if (name.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase) &&
+            name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
         }
 
-        return null;
+        if (contentRoot.Length == 0)
+        {
+            // Nothing to compare against. Refusing is the safe reading: it is
+            // better to stop than to wave through a file we cannot place.
+            return true;
+        }
+
+        var full = Path.GetFullPath(path);
+        var root = Path.GetFullPath(contentRoot);
+
+        return full.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Every file that holds a value for a key, not merely the winning one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every one, deliberately. The question this guard answers is what is
+    /// written on disk, not which value the application ended up using, and
+    /// being overridden by an environment variable does not un-write a file.
+    /// A password in appsettings.json is in source control and in the backups
+    /// whether or not anything reads it.
+    /// </para>
+    /// <para>
+    /// An earlier version reported only the provider that supplied the bound
+    /// value, which quietly waved through exactly the arrangement the previous
+    /// product leaked from.
+    /// </para>
+    /// </remarks>
+    private static IEnumerable<string> FilesSupplying(IConfigurationRoot root, string key)
+    {
+        foreach (var provider in root.Providers)
+        {
+            if (provider is FileConfigurationProvider file &&
+                provider.TryGet(key, out var value) &&
+                !string.IsNullOrEmpty(value))
+            {
+                yield return Describe(file);
+            }
+        }
     }
 
     /// <summary>
