@@ -380,6 +380,16 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         ],
     };
 
+    /// <summary>What is asked of one managed object type, for a test to check.</summary>
+    /// <remarks>
+    /// Exposed because a forgotten property path is not an error. vCenter
+    /// returns nothing for one it was never asked for, the reading is null
+    /// forever, and everything downstream carries on looking correct — so the
+    /// asking has to be assertable, not only the parsing.
+    /// </remarks>
+    public static IReadOnlyList<string> InventoryPropertiesFor(string managedObjectType) =>
+        InventoryProperties.TryGetValue(managedObjectType, out var paths) ? paths : [];
+
     public async Task<VsphereInventoryPayload> RetrieveInventoryAsync(CancellationToken cancellationToken)
     {
         var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
