@@ -88,6 +88,34 @@ public sealed class KeyRingDurabilityGuardTests : IDisposable
         Assert.Contains(scratch, KeyRingDurabilityGuard.Inspect(path).Reason, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void A_scratch_directory_that_is_not_named_after_one_is_still_found_through_the_environment()
+    {
+        // %TEMP% can be redirected anywhere by group policy, and a redirected
+        // one called C:\Scratch is emptied exactly as thoroughly for not
+        // advertising itself in its name. Without this second opinion the
+        // segment list is the only rule, and the segment list only knows the
+        // directories that were polite enough to be called Temp.
+        //
+        // TEMP rather than TMP deliberately: Windows resolves GetTempPath from
+        // TMP first, so moving TEMP cannot pull any other test's fixtures out
+        // from under it.
+        var scratch = Fixture(Path.Combine(Root(), $"Scratch-{Guid.NewGuid():n}"));
+        var path = Fixture(Path.Combine(scratch, "keys"));
+        var original = Environment.GetEnvironmentVariable("TEMP");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("TEMP", scratch);
+
+            Assert.Equal(KeyRingRisk.Losable, KeyRingDurabilityGuard.Inspect(path).Risk);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TEMP", original);
+        }
+    }
+
     // --- and the installations that must hear nothing ------------------------
 
     [Fact]
