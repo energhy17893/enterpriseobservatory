@@ -59,6 +59,33 @@ public readonly record struct CounterValue
     public required string Unit { get; init; }
 
     /// <summary>
+    /// Whether any non-zero reading is a fault rather than a level.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The distinction a threshold cannot express. CPU at 70% is a level and
+    /// the question is where to draw the line; a SCSI bus reset is not a level
+    /// at all — SCSI does not reset a bus because the array is busy, and there
+    /// is no reading of "two resets" that is acceptable while "three" is not.
+    /// One is a fault, and zero is a real answer rather than a truncated one.
+    /// </para>
+    /// <para>
+    /// Declared by the collector, because only it knows what its platform's
+    /// counters mean. That keeps the rule that acts on this vendor-neutral:
+    /// the application layer may not name a vim25 counter, and an iLO or
+    /// Redfish collector has error counters of its own that will arrive the
+    /// same way.
+    /// </para>
+    /// <para>
+    /// Not persisted. It is a property of the counter rather than of the
+    /// sample, it is consulted the moment the sample arrives, and storing it
+    /// per row would be a byte spent on every reading to say something already
+    /// true of the whole series.
+    /// </para>
+    /// </remarks>
+    public bool IsFaultCount { get; init; }
+
+    /// <summary>
     /// The device this sample is for, or empty when it covers all of them.
     /// </summary>
     /// <remarks>

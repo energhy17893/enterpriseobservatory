@@ -168,7 +168,16 @@ public sealed class MonitoringCycle(
         _healthStore.Merge(cycle.Health);
         StoreObservations(cycle.Observations);
 
-        var reconciliation = Reconcile(AlertScopes.Observation, cycle.CollectionAlerts, options, now);
+        // What the collectors could not read, and what the numbers themselves
+        // say. Both belong to this scope because both are decided by this
+        // cycle: reconciliation treats what it is given as the whole truth, so
+        // a rule evaluated here must have its alerts reconciled here or the
+        // next pass would resolve them.
+        var observed = cycle.CollectionAlerts
+            .Concat(Analysis.FaultCounters.Evaluate(cycle.Observations))
+            .ToList();
+
+        var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
 
         await NotifyAsync(AlertScopes.Observation, reconciliation, cancellationToken)
             .ConfigureAwait(false);

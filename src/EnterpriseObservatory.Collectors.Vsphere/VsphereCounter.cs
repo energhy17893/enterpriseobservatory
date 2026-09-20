@@ -246,6 +246,28 @@ public static class VsphereCounters
     /// answer there, and keeping the detail would be a tenfold cost for it.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Whether any non-zero reading of this counter is a fault.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both of these are SCSI transport errors reported per storage path. A
+    /// bus reset or an aborted command is not a level to threshold — the array
+    /// being busy does not cause either — so one is enough to be worth saying,
+    /// and a count of zero genuinely means it did not happen. That is the
+    /// opposite of the latency counters in the map's §5b, whose zeros are a
+    /// truncation and say nothing at all.
+    /// </para>
+    /// <para>
+    /// Declared here because only this collector knows what a vim25 counter
+    /// means; it travels to the rule on <c>CounterValue.IsFaultCount</c> so
+    /// that the rule never has to name a vSphere counter.
+    /// </para>
+    /// </remarks>
+    public static bool IsFaultCounter(string? counterKey) =>
+        counterKey is not null &&
+        PerStoragePath.Contains(counterKey, StringComparer.OrdinalIgnoreCase);
+
     public static bool KeepPerDevice(string? counterKey) =>
         counterKey is not null &&
         (counterKey.StartsWith("disk.", StringComparison.OrdinalIgnoreCase) ||

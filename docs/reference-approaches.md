@@ -200,13 +200,81 @@ tuhaflığımız değil, platformun şekli.
 
 ---
 
+## 5. Dinamik eşik — yöntem benimsenebilir, **depolamamız desteklemiyor**
+
+Referans net: sabit eşik iki yerde kırılıyor — **heterojenlik** (aynı %CPU
+farklı host'ta farklı şey demek) ve **döngüsellik** (haftalık/aylık desenler).
+Önerilen en iyi uygulama ikisini birden kullanmak: *sabit operasyonel eşikler +
+kaydedilmiş geçmiş taban çizgisi + minimum etki kapısı + soğuk başlangıç
+koruması + sürdürülen süre.*
+
+### Dynatrace'in somut yöntemi
+
+| | |
+|---|---|
+| Referans penceresi | Son **7 gün**, dakikalık ölçümler |
+| Taban çizgisi | Ölçümlerin **99. yüzdeliği** |
+| Dalgalanma | **Çeyrekler arası açıklık** (IQR: P75 − P25) |
+| Eşik | `taban + (n × dalgalanma)`, `n` hassasiyet ayarı |
+| Tetikleme | Kayan pencere: **5 dakikanın 3'ü** eşiği aşmalı |
+
+Bu **ML değil**, yüzdelik aritmetiği — yani ilke 1'i ihlal etmiyor: eşik
+operatöre gösterilebilir ("P99(7g) + 2×IQR = 4,2 ms"). Mimarinin §11'i ML'i
+reddediyor; bunu reddetmiyor.
+
+### Çarpışma
+
+**Yüzdelik hesaplayamıyoruz.** ADR-0012 bunu kabul edilmiş bedel olarak
+yazmış: kova başına beş sayı (min/max/sum/count/last) saklanıyor ve *"p95
+gecikme, saklanan beş sayıdan hesaplanamaz."*
+
+Yani referansın yöntemi, ham pencerenin (2 gün) dışında **uygulanamaz** —
+ve Dynatrace 7 gün kullanıyor, çünkü haftalık döngü ancak orada görünür.
+
+ADR-0012 bu anı öngörmüş: *"Yüzdelik gerektiğinde: eskiz tabanlı bir özet yeni
+bir ADR ile eklenir."* Tetik koşulundayız.
+
+### Üç yol, hiçbiri bedava
+
+| Yol | Ne verir | Maliyet | Sorun |
+|---|---|---|---|
+| **A. Sadece ham pencere** | Tam yüzdelik, şema değişmez | Sıfır | 2 gün, **haftalık döngüyü göremez** — ki sabit eşiğin başarısız olduğu yer tam orası |
+| **B. Kareler toplamı** (`sum_of_squares`) | Tam **σ**, her yeniden toplamada kesin | Kova satırına +8 bayt (**%5**) | σ, sağa çarpık gecikme dağılımında zayıf eşiktir; Dynatrace bu yüzden P99+IQR kullanıyor |
+| **C. Eskiz** (t-digest / DDSketch) | Sınırlı hatayla yüzdelik, birleştirilebilir | Kova başına yüzlerce bayt — kova depolamasını **2–4 kat** | Uygulama yükü; 13,6 GB → ~25-40 GB |
+
+**B'nin çekici yanı:** varyans `(sum, sum², count)` üçlüsünden **tam** olarak
+çıkar ve kovalar birleştiğinde üçü de toplanır — yani mevcut tasarımın "yeniden
+toplama kesindir" doktrinine birebir uyar. Altıncı sayı, taban çizgisini açan
+sayı olurdu.
+
+**B'nin sorunu dürüstçe:** gecikme dağılımları sağa çarpıktır ve σ, aykırı
+değerlerle şişer — yani tam da sivrilme olduğunda eşiği *yükseltir*.
+
+### Karar: **şimdilik hiçbiri**
+
+Ve sebebi önemli: **ilk kuralların hiçbiri eşik istemiyor.**
+
+- R1 (SIOC körlüğü) — olgu, eşik değil
+- R3 (yol hatası) — `busResets > 0`; SCSI, dizi meşgul diye bus reset atmaz
+- R4 (HA kapalı) — yapılandırma okuması
+- R2 (bir volume tek host'tan yavaş) — **eş karşılaştırması**, geçmiş değil:
+  "bu host'un bu volume için gecikmesi, diğer dokuz host'un medyanının 5 katı"
+  — aynı andaki akranlara bakar, taban çizgisine değil
+
+Yani dinamik eşik, ilk kuralları **engellemiyor**. Şema değişikliğini
+gerektiğinde, gerektiren kuralla birlikte yapmak; şimdi yapmak, henüz hangi
+şeklin lazım olduğunu bilmeden bir kademe eklemek olur — ADR-0017'de günlük
+kademe için verilen kararın aynısı.
+
+**Açık karar, tetiği belli:** geçmişe dayalı bir taban çizgisi isteyen ilk
+kural yazıldığında A/B/C arasında seçim yapılır ve yeni bir ADR'ye girer.
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:
 
 | Konu | Neden | Nereye bakılacak |
 |---|---|---|
-| Dinamik eşik / baseline | Sabit eşik gürültü üretir; vROps "Dynamic Threshold" kullanıyor | vROps DT, Dynatrace baselining |
 | Kapasite projeksiyonu yöntemi | "12 gün sonra dolar" nasıl hesaplanıyor, hangi güven aralığıyla | vROps Capacity Analytics |
 | Uygunluk kıstas içeriği | vSphere Security Configuration Guide / STIG hazır kıstaslar | Aria compliance packs |
 | Sorgu zamanı çözünürlük seçimi | Bizde yeni düzeltildi; Prometheus/Grafana'nın `step` modeli | Prometheus range query |
@@ -225,3 +293,5 @@ Bir sonraki adıma geçmeden önce bakılacaklar:
 - [Sunny Dua — Using data roll-ups for longer retention in vROps 6.6](https://sunnydua.com/2017/07/05/part-9-using-data-roll-ups-for-longer-retention-period-in-vrops-6-6/)
 - [Aria Operations — Defining Symptoms for Alerts](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-16/vmware-aria-operations-configuration-guide-8-16/configuring-alerts-and-actions/symptom-definitions/defining-symptoms-for-alerts.html)
 - [TOMsOps — Custom Compliance Management using vRealize Operations](https://thomas-kopton.de/vblog/?p=605)
+- [Dynatrace — Auto-adaptive thresholds for anomaly detection](https://docs.dynatrace.com/docs/discover-dynatrace/platform/davis-ai/anomaly-detection/concepts/auto-adaptive-threshold)
+- [LogicMonitor — Static thresholds vs. dynamic thresholds](https://www.logicmonitor.com/blog/static-thresholds-vs-dynamic-thresholds)

@@ -142,10 +142,16 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
             // writes after it silently undoes the acknowledgement.
             var result = reconcile(Read(scope), ReadFlaps(scope));
 
-            _instances[scope] = [.. result.Instances];
-            _flaps[scope] = [.. result.FlapHistories];
+            // Stamped with the scope they were reconciled into, because the
+            // real store does: PostgresAlertStateStore sets Scope on every
+            // instance it reads back, from the column it filed them under. A
+            // fake that left it empty is weaker than the contract in exactly
+            // the way the missing lock above was -- and this one hid until a
+            // test asked which evaluation owned an alert.
+            _instances[scope] = [.. result.Instances.Select(i => i with { Scope = scope })];
+            _flaps[scope] = [.. result.FlapHistories.Select(f => f with { Scope = scope })];
 
-            return result;
+            return result with { Instances = Read(scope), FlapHistories = ReadFlaps(scope) };
         }
     }
 

@@ -276,6 +276,7 @@ public static class PerfResponseParser
             Rollup = counter.Rollup,
             Interval = interval,
             Unit = VsphereUnitNormalizer.NormalizedUnit(counter.Unit),
+            IsFaultCount = VsphereCounters.IsFaultCounter(counter.Key),
             Instance = instance.Trim(),
         };
     }

@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
@@ -402,6 +403,109 @@ public class MonitoringCycleTests : IDisposable
             Entities = entities ?? [],
             Alerts = alerts ?? [],
         };
+
+    // --- rules on measurements --------------------------------------------
+
+    [Fact]
+    public async Task A_fault_counter_reading_becomes_an_alert_in_the_metric_scope()
+    {
+        // End to end through the real cycle, because on the live estate this
+        // rule has never fired: every one of 670,514 fault-counter readings is
+        // zero, which is the correct answer for a clean fabric and also
+        // exactly what a broken rule looks like. Passing unit tests and a
+        // quiet inbox are the two things this product has been burned by
+        // together.
+        var cycle = Cycle();
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Fault("storagePath.busResets.summation", 2, "vmhba1:C0:T3:L7")],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        var alert = Assert.Single(_alerts.All, a => a.Category == "Fault");
+
+        Assert.Equal(AlertScopes.Observation, alert.Scope);
+        Assert.Contains("vmhba1:C0:T3:L7", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_fault_that_stops_being_reported_is_resolved()
+    {
+        // Reconciliation treats each pass as the whole truth, so a transient
+        // fault opens and then closes. That is honest rather than unfortunate:
+        // a path that does it repeatedly is caught by flap detection, which
+        // exists because such a problem otherwise leaves no instance behind.
+        var cycle = Cycle();
+        var faulty = true;
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = faulty
+                    ? [Fault("storagePath.busResets.summation", 1, "vmhba0:C0:T0:L1")]
+                    : [],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.Contains(_alerts.All, a => a.Category == "Fault" && a.State != AlertLifecycleState.Resolved);
+
+        faulty = false;
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.DoesNotContain(
+            _alerts.All,
+            a => a.Category == "Fault" && a.State != AlertLifecycleState.Resolved);
+    }
+
+    [Fact]
+    public async Task A_clean_fabric_raises_nothing()
+    {
+        // The live case. Zero readings across every path, and the rule must
+        // stay silent -- silence that is correct rather than silence that is
+        // the rule failing to run, which is why the two tests above exist.
+        var cycle = Cycle();
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    Fault("storagePath.busResets.summation", 0, "vmhba0:C0:T0:L1"),
+                    Fault("storagePath.commandsAborted.summation", 0, "vmhba0:C0:T0:L1"),
+                ],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.DoesNotContain(_alerts.All, a => a.Category == "Fault");
+    }
+
+    private static Observation Fault(string counter, double value, string instance) => new()
+    {
+        Entity = new EntityId("vc-1:host-1"),
+        SampledAtUtc = new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero),
+        Source = "vc-1",
+        Value = new CounterValue
+        {
+            CounterName = counter,
+            Raw = value,
+            Rollup = RollupType.Summation,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "number",
+            Instance = instance,
+            IsFaultCount = true,
+        },
+    };
 
     private static ObservationBatch Batch(string source, DateTimeOffset now) => new()
     {
