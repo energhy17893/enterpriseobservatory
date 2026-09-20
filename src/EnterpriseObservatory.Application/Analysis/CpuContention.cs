@@ -477,6 +477,7 @@ public static class CpuContention
     private const string VictimTitle = "Waiting far more than its neighbours";
     private const string WidthTitle = "More vCPUs than the host can place";
     private const string LimitTitle = "Held back by its own CPU limit";
+    private const string UnreadableWidthTitle = "vCPU count could not be read";
 
     /// <summary>
     /// Every CPU verdict this batch of observations supports.
@@ -503,12 +504,39 @@ public static class CpuContention
         // to and hold no opinion about which of those entities matter; only
         // GuestsByHost decides that, and it decides it once. A reading for
         // something the graph does not place is simply never looked up.
-        var ready = PercentagesOf(observations, rules.ReadyCounter);
-        var costop = PercentagesOf(observations, rules.CoStopCounter);
-        var limited = PercentagesOf(observations, rules.MaxLimitedCounter);
+        // Divided by width before anything compares them. vSphere sums these
+        // across every vCPU, so an eight-way machine at a healthy 2% arrives
+        // as 16%. Left undivided, the sibling comparison below is a comparison
+        // of vCPU counts wearing a contention costume: the widest machine on a
+        // mixed host clears any multiple of the median for its shape alone.
+        var readyBeforeWidth = PercentagesOf(observations, rules.ReadyCounter);
+
+        var ready = PerVirtualCpu(readyBeforeWidth, graph);
+        var costop = PerVirtualCpu(PercentagesOf(observations, rules.CoStopCounter), graph);
+        var limited = PerVirtualCpu(PercentagesOf(observations, rules.MaxLimitedCounter), graph);
+
+        // Not divided: a host usage percentage is already a percentage of the
+        // whole host and has no per-vCPU meaning.
         var hostUsage = LevelsOf(observations, rules.HostUsageCounter);
 
+        // Machines the width divide dropped, and only for the one reason this
+        // finding claims. A reading also fails to survive when the graph has
+        // never heard of the entity at all, and that is a different fact with
+        // a different cause — reporting it as an unreadable vCPU count would
+        // send an operator to look at the sizing of a machine that does not
+        // exist. So: known to the graph, a virtual machine, and no width.
+        var unmeasurable = readyBeforeWidth.Keys
+            .Where(e => graph.Entities.TryGetValue(e, out var known) &&
+                        known.Kind == EntityKind.VirtualMachine &&
+                        known.Sizing?.VirtualCpuCount is not > 0)
+            .ToList();
+
         var alerts = new List<AlertDefinition>();
+
+        if (WidthIsKnowable(ready) && unmeasurable.Count > 0)
+        {
+            alerts.Add(WidthUnreadable(unmeasurable, readyBeforeWidth.Count));
+        }
 
         foreach (var (host, guests) in GuestsByHost(graph))
         {
@@ -889,6 +917,124 @@ public static class CpuContention
         }
 
         return values;
+    }
+
+    /// <summary>
+    /// Whether this estate has demonstrated that it can read a machine's width
+    /// at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The guard on the finding below, and it is deliberately a fact about the
+    /// data rather than a clock. <c>EntitySizing</c> is not persisted, so after
+    /// a restart every machine's width is unknown until the first inventory
+    /// round lands. Without a guard the product would name the entire estate on
+    /// every restart and then resolve itself minutes later — the flapping
+    /// ADR-0021 records as the thing that quietly erodes an operator's bulk
+    /// clears.
+    /// </para>
+    /// <para>
+    /// "At least one width was readable" separates the two cases exactly. In
+    /// the restart window none are, so this is false and nothing is raised. In
+    /// steady state nearly all are, so a machine that is still missing one is
+    /// genuinely anomalous and worth a sentence. No timer, no notion of process
+    /// start, nothing to tune — and one constant fingerprint, so the finding
+    /// cannot churn the way a proportion-shaped one would.
+    /// </para>
+    /// <para>
+    /// The cost, stated rather than discovered later: an estate where no width
+    /// is <em>ever</em> readable — an account refused
+    /// <c>config.hardware.numCPU</c>, or a permanently broken sizing path —
+    /// gets silence from this rule and silence about the silence. That is a
+    /// blind spot about a blind spot, and it is the one case this guard cannot
+    /// tell from a restart. Closing it properly means persisting sizing
+    /// (roadmap 3b) or reading the collector's own refused-property set, which
+    /// already knows the difference between "not read yet" and "not allowed".
+    /// </para>
+    /// </remarks>
+    private static bool WidthIsKnowable(Dictionary<EntityId, double> divided) =>
+        divided.Count > 0;
+
+    /// <summary>
+    /// Says which machines the rule could not judge, once, for the estate.
+    /// </summary>
+    /// <remarks>
+    /// One finding rather than one per machine. The operator's decision here is
+    /// singular — find out why sizing is unreadable — and twenty rows would ask
+    /// them to make it twenty times. The names are in the text so the finding
+    /// stays actionable without becoming a list of alerts.
+    /// </remarks>
+    private static AlertDefinition WidthUnreadable(
+        List<EntityId> unmeasurable, int measured)
+    {
+        var named = string.Join(", ", unmeasurable.Select(e => e.Value).Order());
+
+        return new AlertDefinition
+        {
+            // No entity and no count in the fingerprint. This is a fact about
+            // the estate, and a fingerprint carrying the membership would
+            // retire and re-raise the finding — throwing away the operator's
+            // clear — every time one more machine's sizing came or went.
+            Fingerprint = AlertFingerprint.Create(
+                Platform, UnreadableWidthTitle, Category, string.Empty, "cpu-width-unreadable"),
+            Severity = AlertSeverity.Warning,
+            Title = UnreadableWidthTitle,
+            Description =
+                $"CPU contention was not judged for {unmeasurable.Count} of {measured} " +
+                "measured machine(s), because their configured vCPU count could not be " +
+                "read. vSphere sums waiting time across every vCPU, so without the count " +
+                "the reading cannot be turned into a per-core figure, and assuming one " +
+                "processor would inflate it by exactly the machine's width. These " +
+                "machines are neither accused nor used as comparisons, so their silence " +
+                $"here is not evidence that they are healthy: {named}.",
+            Category = Category,
+            Source = Platform,
+            IsDerived = true,
+        };
+    }
+
+    /// <summary>
+    /// A summed-across-vCPUs percentage divided by the machine's width.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// vSphere accumulates ready, co-stop and max-limited across every vCPU of
+    /// a machine, so the raw percentage of interval is the sum of what each
+    /// core waited. Dividing by the count is what turns it back into "how much
+    /// of the time was a core of this machine waiting", which is the quantity
+    /// every gate and every comparison in this rule is written against.
+    /// </para>
+    /// <para>
+    /// A machine whose width could not be read is dropped rather than assumed
+    /// to be one processor, as <see cref="Entity.VirtualCpuCount"/> prescribes.
+    /// Assuming one is the worst available guess: it leaves the number inflated
+    /// by exactly the factor this method exists to remove, and it inflates it
+    /// most for the widest machines, which are the ones most likely to be
+    /// accused. Dropping the machine loses a verdict; assuming loses the truth.
+    /// </para>
+    /// <para>
+    /// A count of zero or less is treated the same way. It cannot happen on a
+    /// real machine, but a division would produce an infinity that compares
+    /// greater than every threshold in the policy and would name that machine
+    /// on every cycle.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<EntityId, double> PerVirtualCpu(
+        Dictionary<EntityId, double> values,
+        EntityGraph graph)
+    {
+        var divided = new Dictionary<EntityId, double>();
+
+        foreach (var (entity, value) in values)
+        {
+            if (graph.Entities.TryGetValue(entity, out var known) &&
+                known.Sizing?.VirtualCpuCount is > 0 and var width)
+            {
+                divided[entity] = value / width;
+            }
+        }
+
+        return divided;
     }
 
     /// <summary>A percentage counter, taken as it arrived.</summary>

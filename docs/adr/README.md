@@ -55,13 +55,14 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0013](0013-operator-actions-and-attribution.md) | Operatör eylemleri ve atıf | Kabul edildi (§2 yerini ADR-0014'e bıraktı) |
 | [0014](0014-local-accounts-and-cookie-sessions.md) | Yerel hesaplar ve çerez oturumları | Kabul edildi |
 | [0015](0015-connections-entered-in-the-product.md) | Bağlantılar üründen girilir, parola şifrelenmiş saklanır | Kabul edildi |
-| [0016](0016-external-infrastructure-dependencies.md) | Dış altyapı bağımlılıkları — PostgreSQL tek depolama motoru | Kabul edildi — §5 saklama gerekçesi → ADR-0022 |
-| [0017](0017-retention-windows-set-by-measurement.md) | Saklama pencereleri ölçümle yeniden belirlendi | Kabul edildi — alternatif C → ADR-0022 |
+| [0016](0016-external-infrastructure-dependencies.md) | Dış altyapı bağımlılıkları — PostgreSQL tek depolama motoru | Kabul edildi — §5 saklama gerekçesi → ADR-0023 |
+| [0017](0017-retention-windows-set-by-measurement.md) | Saklama pencereleri ölçümle yeniden belirlendi | Kabul edildi — alternatif C → ADR-0023 |
 | [0018](0018-health-derives-from-alerts-not-propagation.md) | Sağlık alarmlardan türer, kenarlardan yayılmaz | Kabul edildi |
 | [0019](0019-empty-series-rows-are-kept.md) | Boş seri satırları silinmez, birikmesine izin verilir | Kabul edildi |
 | [0020](0020-key-ring-durability-is-checked-at-startup.md) | Anahtar halkasının kaybolabilirliği açılışta denetlenir, servis durdurulmaz | Kabul edildi |
 | [0021](0021-blind-spot-stays-per-datastore.md) | Depolama gecikmesi kör noktası datastore başına raporlanır | Kabul edildi |
-| [0022](0022-postgres-dependency-rejustified.md) | PostgreSQL bağımlılığının gerekçesi yeniden kuruldu | Kabul edildi |
+| [0022](0022-postgres-tests-run-in-a-linux-job.md) | PostgreSQL testleri ayrı bir Linux işinde, tek kullanımlık parolayla çalışır | Kabul edildi |
+| [0023](0023-postgres-dependency-rejustified.md) | PostgreSQL bağımlılığının gerekçesi yeniden kuruldu | Kabul edildi |
 
 ## Şablon
 

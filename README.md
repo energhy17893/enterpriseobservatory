@@ -75,7 +75,8 @@ src/
   EnterpriseObservatory.Application/          use-case'ler, port arayüzleri
   EnterpriseObservatory.Collectors.Vsphere/   satıcı adaptörü
   EnterpriseObservatory.Api/                  BFF okuma yüzeyi (kütüphane)
-  EnterpriseObservatory.Persistence.Sqlite/   gömülü durum ve ölçüm deposu
+  EnterpriseObservatory.Persistence/          depo port sözleşmeleri
+  EnterpriseObservatory.Persistence.Postgres/ durum ve ölçüm deposu (PostgreSQL 18)
   EnterpriseObservatory.Host.AllInOne/        tek proses: toplama + web (MSI hedefi)
 web/                                          React + TypeScript SPA (Tailwind v4)
 tools/
@@ -84,7 +85,7 @@ tests/
   EnterpriseObservatory.Domain.Tests/         hızlı, I/O yok
   EnterpriseObservatory.Application.Tests/    use-case testleri
   EnterpriseObservatory.Api.Tests/            projeksiyon testleri
-  EnterpriseObservatory.Persistence.Sqlite.Tests/  yeniden başlatma ve aşağı örnekleme
+  EnterpriseObservatory.Persistence.Postgres.Tests/  yeniden başlatma ve aşağı örnekleme
   EnterpriseObservatory.Host.AllInOne.Tests/  bileşim testleri
   EnterpriseObservatory.Collectors.Vsphere.Tests/
   EnterpriseObservatory.Architecture.Tests/   katman sınırlarını CI'da zorlar

@@ -1,4 +1,4 @@
-# ADR-0022: PostgreSQL bağımlılığının gerekçesi yeniden kuruluyor
+# ADR-0023: PostgreSQL bağımlılığının gerekçesi yeniden kuruluyor
 
 - **Durum:** Kabul edildi
 - **Tarih:** 2026-09-21
@@ -130,7 +130,7 @@ kayda geçirilmesi gerekiyor:
 
 ### 1. ADR-0016 §5 artık bağımlılığı taşımıyor
 
-ADR-0016'nın durum satırına "§5 ADR-0022 ile geçersiz kılındı" eklenir.
+ADR-0016'nın durum satırına "§5 ADR-0023 ile geçersiz kılındı" eklenir.
 PostgreSQL bağımlılığının gerekçesi olarak **saklama süresi bir daha
 gösterilmez.** ADR-0017'den sonra ürünün saatlik ufku 90 gündür ve bu, bir
 dosyanın rahatça taşıyabileceği bir hacimdir — kesilen 7,3 GB tam olarak bunun

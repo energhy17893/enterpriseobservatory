@@ -5,8 +5,8 @@
 - **Karar verenler:** Ertuğrul Ünal
 - **İlgili:** ADR-0012 (saklama kademelerini **kısmen geçersiz kılar**),
   ADR-0016 (PostgreSQL bağımlılığı — bu ADR §5'in "saatlik katmanı uzun tutmak
-  yeterlidir" gerekçesini geçersizleştirir; kayıt ADR-0022'dedir),
-  ADR-0022 (alternatif C benimsendi; "kırk kat" düzeltildi), README ilke 1
+  yeterlidir" gerekçesini geçersizleştirir; kayıt ADR-0023'dedir),
+  ADR-0023 (alternatif C benimsendi; "kırk kat" düzeltildi), README ilke 1
 
 ## Bağlam
 
