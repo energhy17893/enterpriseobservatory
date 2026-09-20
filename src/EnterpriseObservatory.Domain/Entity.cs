@@ -223,4 +223,192 @@ public sealed record Entity
     /// </remarks>
     public HealthState EffectiveHealth =>
         ObservationState == ObservationState.Vanished ? HealthState.Unknown : Health;
+
+    /// <summary>
+    /// What this entity was configured with, when a collector could read it.
+    /// </summary>
+    /// <remarks>
+    /// Null when nothing was read — an entity kind that has no sizing, or one
+    /// whose configuration the account may not see. Never a zero standing in
+    /// for "we did not look".
+    /// </remarks>
+    public EntitySizing? Sizing { get; init; }
+
+    /// <summary>
+    /// The storage paths this entity reaches its devices by.
+    /// </summary>
+    /// <remarks>
+    /// Empty for everything that is not a host, and for a host whose path table
+    /// could not be read. See <see cref="StoragePath"/> for why it is here at
+    /// all rather than being derivable from the counters.
+    /// </remarks>
+    public IReadOnlyList<StoragePath> StoragePaths { get; init; } = [];
+}
+
+/// <summary>
+/// The sizes and limits an entity was configured with, as opposed to what it
+/// is using.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Not identity evidence, and deliberately not an <see cref="IdentityMark"/>.
+/// Marks are weighed by the resolver to decide whether two records are the
+/// same machine, and "4 vCPUs" is true of several thousand virtual machines in
+/// an ordinary estate. It is the same worthless evidence as the short hostname
+/// <c>10</c> derived from <c>10.5.1.76</c>, which this product has already been
+/// bitten by; adding it as a mark would not merely be untidy, it would make
+/// identity resolution worse.
+/// </para>
+/// <para>
+/// Not a series either. These change when somebody reconfigures a machine,
+/// perhaps twice a year, and storing a configuration fact at the metric rhythm
+/// would write thousands of identical rows a day to record something that did
+/// not happen.
+/// </para>
+/// <para>
+/// So: a property of the entity. It is read on the inventory rhythm and it is
+/// what a rule divides by — the whole reason it has to be reachable rather
+/// than merely collected.
+/// </para>
+/// </remarks>
+public sealed record EntitySizing
+{
+    /// <summary>
+    /// How many virtual processors the machine was given.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The missing half of CPU ready time.
+    /// <see cref="CounterValue.AsPercentageOfInterval"/> divides a summed
+    /// millisecond count by the interval it was accumulated over, which is
+    /// correct for a single processor and wrong by a factor of this number for
+    /// anything else: vSphere sums ready time across every vCPU, so an
+    /// eight-way machine at a genuinely healthy 2% reads as 16% and an
+    /// operator is sent to fix a machine that is fine.
+    /// </para>
+    /// <para>
+    /// Null when it could not be read. A rule must then decline to state a
+    /// ready percentage rather than assume one processor.
+    /// </para>
+    /// </remarks>
+    public int? VirtualCpuCount { get; init; }
+
+    /// <summary>Configured memory in megabytes, or null when unreadable.</summary>
+    public long? ConfiguredMemoryMb { get; init; }
+
+    /// <summary>
+    /// A configured CPU ceiling in MHz.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three states, and all three are needed. Null means the property was not
+    /// readable. <c>-1</c> is the platform's own word for "no limit" and is
+    /// kept as it arrived rather than folded into null, because "unlimited"
+    /// and "we could not look" lead to opposite conclusions. A positive value
+    /// is a real ceiling.
+    /// </para>
+    /// <para>
+    /// It matters because a throttled machine is indistinguishable from a
+    /// contended one from the guest's side: both wait, both look slow, and the
+    /// host is perfectly healthy in the first case. A contention rule without
+    /// this will confidently blame the wrong thing.
+    /// </para>
+    /// </remarks>
+    public long? CpuLimitMhz { get; init; }
+
+    /// <summary>A configured memory ceiling in megabytes. See <see cref="CpuLimitMhz"/>.</summary>
+    public long? MemoryLimitMb { get; init; }
+
+    /// <summary>Whether a real CPU ceiling is configured, as opposed to absent or unreadable.</summary>
+    public bool IsCpuLimited => CpuLimitMhz is > 0;
+
+    /// <summary>Whether a real memory ceiling is configured.</summary>
+    public bool IsMemoryLimited => MemoryLimitMb is > 0;
+}
+
+/// <summary>
+/// One route from a host to one storage device.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Two facts in one row, and the product needs both.
+/// </para>
+/// <para>
+/// The first is redundancy. A storage device is reached over several paths so
+/// that losing one costs nothing, which is exactly why losing one is silent:
+/// nothing degrades, no counter moves, and the estate stays that way until the
+/// second path dies and every machine on the volume stops at once. Counting
+/// paths and their states is the only way to see the first failure.
+/// </para>
+/// <para>
+/// The second is attribution. Path fault counters name the path by its runtime
+/// name — <c>vmhba0:C0:T0:L1</c> — which carries a bus, a target and a LUN
+/// number but no LUN <em>identity</em>. A datastore is known by its VMFS UUID
+/// and, through <see cref="IdentityMarkKind.StorageDeviceId"/>, by the NAA of
+/// the device it sits on. This row is what joins the two: runtime name here,
+/// NAA in <see cref="StorageDeviceId"/>, and the datastore carrying the same
+/// NAA as a mark. Without it a bus reset can be attributed to a host and an
+/// HBA but never to the datastore it took down.
+/// </para>
+/// </remarks>
+public sealed record StoragePath
+{
+    /// <summary>The runtime name, e.g. <c>vmhba0:C0:T0:L1</c>.</summary>
+    /// <remarks>
+    /// Unique within a host and not between hosts, which is why this is a
+    /// property of one entity rather than a mark that a resolver might match
+    /// two hosts on.
+    /// </remarks>
+    public required string Name { get; init; }
+
+    /// <summary>
+    /// The device this path leads to, as an NAA, or empty when unresolved.
+    /// </summary>
+    /// <remarks>
+    /// Empty rather than guessed. The path table names its device by an
+    /// internal key, and turning that into the NAA every other part of the
+    /// product speaks needs a second table; when that lookup fails the path is
+    /// still reported, because "this path is dead" is worth saying even when
+    /// nobody can say which LUN it led to.
+    /// </remarks>
+    public string StorageDeviceId { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The platform's own key for the device, when it has one.
+    /// </summary>
+    /// <remarks>
+    /// Carried because redundancy has to be countable even when
+    /// <see cref="StorageDeviceId"/> could not be resolved. Grouping paths by
+    /// an empty NAA would pile every unnamed device in the host into one heap
+    /// and report a single enormous set of paths where there are a dozen small
+    /// ones — and the case where the name is missing is not the case in which
+    /// to give up on counting.
+    /// </remarks>
+    public string DeviceKey { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The path's state, as the platform words it: active, standby, disabled,
+    /// dead or unknown. Empty when it was not reported.
+    /// </summary>
+    public string State { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The adapter this path leaves the host by, e.g. <c>vmhba0</c>.
+    /// </summary>
+    /// <remarks>
+    /// Carried because it is what somebody physically goes and looks at. Four
+    /// dead paths on one adapter is a cable or an SFP; four dead paths spread
+    /// across four adapters is the array.
+    /// </remarks>
+    public string Adapter { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Whether the platform reports this path as dead.
+    /// </summary>
+    /// <remarks>
+    /// Only <c>dead</c> is dead. A standby path in an ALUA configuration is
+    /// working and unused, and counting it as lost would raise a redundancy
+    /// alert on every correctly configured array in the estate.
+    /// </remarks>
+    public bool IsDead => string.Equals(State, "dead", StringComparison.OrdinalIgnoreCase);
 }

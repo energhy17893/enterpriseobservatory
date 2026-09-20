@@ -320,6 +320,15 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             // VMFS UUID to the NAA every storage path and disk device is
             // named by.
             "config.fileSystemVolume.mountInfo",
+
+            // The path table, and the second table that names its devices.
+            // multipathInfo says which routes reach which device and what
+            // state each is in; it names the device by an internal key, and
+            // scsiLun is read solely to turn that key into the NAA every other
+            // part of the product speaks. One without the other gives either
+            // path states nobody can attribute or names nothing points at.
+            "config.storageDevice.multipathInfo",
+            "config.storageDevice.scsiLun",
         ],
         ["VirtualMachine"] =
         [
@@ -330,6 +339,22 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             "config.instanceUuid",
             "datastore",
             "triggeredAlarmState",
+
+            // Sizing. numCPU is the divisor cpu.ready.summation needs and has
+            // never had, and the two allocation limits are what tell a
+            // throttled machine from a contended one — they look identical
+            // from inside the guest and lead to opposite fixes.
+            "config.hardware.numCPU",
+            "config.hardware.memoryMB",
+            "config.cpuAllocation.limit",
+            "config.memoryAllocation.limit",
+
+            // Snapshots: the tree for age, the file layout for size. Asked for
+            // as two sub-paths rather than as layoutEx whole, because the rest
+            // of that structure is per-file detail nothing here reads.
+            "snapshot",
+            "layoutEx.file",
+            "layoutEx.disk",
         ],
         ["ClusterComputeResource"] =
         [
@@ -346,9 +371,24 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             "summary.accessible",
             "summary.type",
             "summary.url",
+
+            // One more field on a call already being made. It is what says a
+            // datastore is going to fill, while fullness only says whether it
+            // has — see counter map §4.
+            "summary.uncommitted",
             "triggeredAlarmState",
         ],
     };
+
+    /// <summary>What is asked of one managed object type, for a test to check.</summary>
+    /// <remarks>
+    /// Exposed because a forgotten property path is not an error. vCenter
+    /// returns nothing for one it was never asked for, the reading is null
+    /// forever, and everything downstream carries on looking correct — so the
+    /// asking has to be assertable, not only the parsing.
+    /// </remarks>
+    public static IReadOnlyList<string> InventoryPropertiesFor(string managedObjectType) =>
+        InventoryProperties.TryGetValue(managedObjectType, out var paths) ? paths : [];
 
     public async Task<VsphereInventoryPayload> RetrieveInventoryAsync(CancellationToken cancellationToken)
     {
@@ -631,7 +671,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
     /// identifier on something that is not a LUN.
     /// </para>
     /// </remarks>
-    private static Dictionary<string, List<string>> ReadVolumeDevices(
+    public static Dictionary<string, List<string>> ReadVolumeDevices(
         IReadOnlyList<PropertyObject> objects)
     {
         var byVolume = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -677,7 +717,290 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         return byVolume;
     }
 
-    private static VsphereHost ToHost(PropertyObject o) => new()
+    /// <summary>
+    /// Reads a host's storage paths and the device each one leads to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The shape, from the published vim25 schema and <strong>not</strong>
+    /// measured against a live server:
+    /// <c>config.storageDevice.multipathInfo</c> is a <c>HostMultipathInfo</c>
+    /// whose <c>lun</c> children are each a
+    /// <c>HostMultipathInfoLogicalUnit</c> — an <c>id</c>, a <c>lun</c>
+    /// reference naming the device by its internal key, and a <c>path</c> per
+    /// route, each with a runtime <c>name</c>, an <c>adapter</c> and a
+    /// <c>pathState</c>.
+    /// </para>
+    /// <para>
+    /// The device key is not the NAA. It arrives as
+    /// <c>key-vim.host.ScsiDisk-0200...</c>, while every storage path counter,
+    /// disk device counter and datastore mark in this product speaks
+    /// <c>naa.6005...</c>. <c>config.storageDevice.scsiLun</c> is the only
+    /// table that holds both, so it is read alongside and used for nothing
+    /// else.
+    /// </para>
+    /// <para>
+    /// A path whose device cannot be resolved is still reported, with an empty
+    /// device. "This path is dead" is worth saying even when nobody can yet
+    /// say which LUN it led to, and dropping it would under-count redundancy
+    /// in exactly the case where something is already wrong.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<VsphereStoragePath> ReadStoragePaths(PropertyObject host)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        if (!host.Structures.TryGetValue("config.storageDevice.multipathInfo", out var multipath))
+        {
+            return [];
+        }
+
+        var canonicalByKey = ReadScsiLunNames(host);
+        var paths = new List<VsphereStoragePath>();
+
+        foreach (var lun in multipath.Where(n => string.Equals(n.Name, "lun", StringComparison.Ordinal)))
+        {
+            // The reference's value is the ScsiLun key. Falling back to the
+            // logical unit's own id keeps the paths grouped even when the
+            // reference is absent, which is the whole point of carrying a key
+            // that nothing else needs.
+            var deviceKey = lun.TextOf("lun") is { Length: > 0 } reference
+                ? reference
+                : lun.TextOf("id");
+
+            var device = canonicalByKey.TryGetValue(deviceKey, out var naa) ? naa : string.Empty;
+
+            foreach (var path in lun.All("path"))
+            {
+                var name = path.TextOf("name");
+                if (name.Length == 0)
+                {
+                    // Without a runtime name there is nothing a path counter
+                    // could ever be joined to, so the row would be unusable.
+                    continue;
+                }
+
+                paths.Add(new VsphereStoragePath
+                {
+                    Name = name,
+                    // pathState is the current field; state is its predecessor
+                    // and still the only one some versions populate. Taking
+                    // whichever answered beats reporting an empty state that
+                    // a redundancy rule would have to treat as unknown.
+                    State = path.TextOf("pathState") is { Length: > 0 } current
+                        ? current
+                        : path.TextOf("state"),
+                    Adapter = AdapterName(path.TextOf("adapter")),
+                    DeviceKey = deviceKey,
+                    StorageDeviceId = device,
+                });
+            }
+        }
+
+        return paths;
+    }
+
+    /// <summary>Maps each SCSI device's internal key to its canonical NAA.</summary>
+    private static Dictionary<string, string> ReadScsiLunNames(PropertyObject host)
+    {
+        var byKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!host.Structures.TryGetValue("config.storageDevice.scsiLun", out var luns))
+        {
+            return byKey;
+        }
+
+        foreach (var lun in luns)
+        {
+            var key = lun.TextOf("key");
+            var canonical = lun.TextOf("canonicalName");
+
+            if (key.Length > 0 && canonical.Length > 0)
+            {
+                byKey[key] = canonical;
+            }
+        }
+
+        return byKey;
+    }
+
+    /// <summary>
+    /// Recovers the adapter's own name from its reference.
+    /// </summary>
+    /// <remarks>
+    /// An adapter arrives as <c>key-vim.host.FibreChannelHba-vmhba2</c>, and
+    /// the part worth showing somebody is <c>vmhba2</c> — it is what is
+    /// printed on the card and what they will look for. Anything that does not
+    /// match that shape is passed through rather than trimmed on a guess.
+    /// </remarks>
+    private static string AdapterName(string reference)
+    {
+        const string Marker = "key-vim.host.";
+
+        if (!reference.StartsWith(Marker, StringComparison.Ordinal))
+        {
+            return reference;
+        }
+
+        var dash = reference.IndexOf('-', Marker.Length);
+        return dash >= 0 && dash + 1 < reference.Length ? reference[(dash + 1)..] : reference;
+    }
+
+    /// <summary>
+    /// Flattens a virtual machine's snapshot tree, oldest first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>snapshot</c> is a <c>VirtualMachineSnapshotInfo</c> whose
+    /// <c>rootSnapshotList</c> entries are <c>VirtualMachineSnapshotTree</c>
+    /// nodes, each with a <c>name</c>, a <c>createTime</c>, the snapshot's own
+    /// reference and a recursive <c>childSnapshotList</c>.
+    /// </para>
+    /// <para>
+    /// The recursion is genuinely renderable here. The property parser builds
+    /// a tree rather than a flat field map — it had to, for the volume/extent
+    /// nesting — and it keeps repeated children repeated, which is what a
+    /// branching snapshot chain is made of. So this walks it rather than
+    /// half-reading it.
+    /// </para>
+    /// <para>
+    /// Flattened on the way out, because what the failure mode needs is the
+    /// oldest creation time and the count. Depth is kept, since a chain thirty
+    /// deep is its own kind of problem, but the parent links are not: nothing
+    /// that could act on this needs to know which snapshot is whose child.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<VsphereSnapshot> ReadSnapshots(PropertyObject vm)
+    {
+        ArgumentNullException.ThrowIfNull(vm);
+
+        if (!vm.Structures.TryGetValue("snapshot", out var snapshot))
+        {
+            return [];
+        }
+
+        var found = new List<VsphereSnapshot>();
+
+        foreach (var root in snapshot.Where(n =>
+            string.Equals(n.Name, "rootSnapshotList", StringComparison.Ordinal)))
+        {
+            Walk(root, depth: 1, found);
+        }
+
+        // Oldest first, so "how old is the oldest" is the first element rather
+        // than a scan, and so an unreadable timestamp sorts last instead of
+        // masquerading as the oldest snapshot in the estate.
+        return [.. found.OrderBy(s => s.CreatedAtUtc ?? DateTimeOffset.MaxValue)];
+
+        static void Walk(PropertyNode node, int depth, List<VsphereSnapshot> into)
+        {
+            var moRef = node.TextOf("snapshot");
+
+            if (moRef.Length > 0)
+            {
+                into.Add(new VsphereSnapshot
+                {
+                    MoRef = moRef,
+                    Name = node.TextOf("name") is { Length: > 0 } name ? name : moRef,
+                    CreatedAtUtc = DateTimeOffset.TryParse(
+                        node.TextOf("createTime"), CultureInfo.InvariantCulture,
+                        DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                        out var created) ? created : null,
+                    Depth = depth,
+                });
+            }
+
+            foreach (var child in node.All("childSnapshotList"))
+            {
+                Walk(child, depth + 1, into);
+            }
+        }
+    }
+
+    /// <summary>
+    /// How much disk the snapshot chain occupies, or null when it cannot be said.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two contributions, and leaving either out understates it badly. The
+    /// obvious one is the snapshot's own files — the memory image and the
+    /// metadata, which <c>layoutEx.file</c> labels <c>snapshotData</c> and
+    /// <c>snapshotMemory</c>. The one that actually fills datastores is the
+    /// delta disks, and those are labelled <c>diskExtent</c> exactly like the
+    /// base disks they hang off; nothing in the file entry says which is
+    /// which.
+    /// </para>
+    /// <para>
+    /// <c>layoutEx.disk</c> is what separates them. Each disk carries a
+    /// <c>chain</c> whose first link is the base disk and whose every later
+    /// link is one snapshot level, so the delta files are precisely the file
+    /// keys in links two onwards. That is the whole reason it is requested; on
+    /// its own it is a list of integers.
+    /// </para>
+    /// <para>
+    /// Null when <c>layoutEx.file</c> was not readable. A machine whose layout
+    /// we could not read must not be reported as one carrying no snapshot at
+    /// all, which is the same zero-looks-like-a-measurement trap the counter
+    /// map calls this product's most dangerous number.
+    /// </para>
+    /// </remarks>
+    public static long? ReadSnapshotBytes(PropertyObject vm)
+    {
+        ArgumentNullException.ThrowIfNull(vm);
+
+        if (!vm.Structures.TryGetValue("layoutEx.file", out var files))
+        {
+            return null;
+        }
+
+        var sizeByKey = new Dictionary<string, long>(StringComparer.Ordinal);
+        var snapshotOwn = 0L;
+
+        foreach (var file in files)
+        {
+            var key = file.TextOf("key");
+            var size = long.TryParse(
+                file.TextOf("size"), NumberStyles.Integer, CultureInfo.InvariantCulture,
+                out var parsed) ? parsed : 0L;
+
+            if (key.Length > 0)
+            {
+                sizeByKey[key] = size;
+            }
+
+            if (file.TextOf("type") is "snapshotData" or "snapshotMemory")
+            {
+                snapshotOwn += size;
+            }
+        }
+
+        var deltas = 0L;
+
+        if (vm.Structures.TryGetValue("layoutEx.disk", out var disks))
+        {
+            foreach (var disk in disks)
+            {
+                // Skip(1): the first link is the base disk, which exists
+                // whether or not anybody ever took a snapshot. Counting it
+                // would report every virtual machine in the estate as carrying
+                // a snapshot the size of itself.
+                foreach (var link in disk.All("chain").Skip(1))
+                {
+                    foreach (var fileKey in link.All("fileKey"))
+                    {
+                        if (sizeByKey.TryGetValue(fileKey.Text, out var size))
+                        {
+                            deltas += size;
+                        }
+                    }
+                }
+            }
+        }
+
+        return snapshotOwn + deltas;
+    }
+
+    public static VsphereHost ToHost(PropertyObject o) => new()
     {
         MoRef = o.MoRef,
         Name = PropertyCollectorParser.ReadString(o.Values, "name") ?? o.MoRef,
@@ -694,9 +1017,10 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
                        parent.StartsWith("domain-c", StringComparison.OrdinalIgnoreCase)
             ? parent
             : null,
+        StoragePaths = ReadStoragePaths(o),
     };
 
-    private static VsphereVirtualMachine ToVirtualMachine(PropertyObject o) => new()
+    public static VsphereVirtualMachine ToVirtualMachine(PropertyObject o) => new()
     {
         MoRef = o.MoRef,
         Name = PropertyCollectorParser.ReadString(o.Values, "name") ?? o.MoRef,
@@ -706,9 +1030,31 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         HostMoRef = PropertyCollectorParser.ReadString(o.Values, "runtime.host"),
         DatastoreMoRefs = PropertyCollectorParser.SplitValues(
             PropertyCollectorParser.ReadString(o.Values, "datastore")),
+        VirtualCpuCount = ReadCount(o, "config.hardware.numCPU"),
+        ConfiguredMemoryMb = PropertyCollectorParser.ReadLong(o.Values, "config.hardware.memoryMB"),
+        // Not coerced. vCenter's -1 means "no limit" and is carried through as
+        // it arrived, because null here means "we could not read it" and the
+        // two send somebody to different places.
+        CpuLimitMhz = PropertyCollectorParser.ReadLong(o.Values, "config.cpuAllocation.limit"),
+        MemoryLimitMb = PropertyCollectorParser.ReadLong(o.Values, "config.memoryAllocation.limit"),
+        Snapshots = ReadSnapshots(o),
+        SnapshotBytes = ReadSnapshotBytes(o),
     };
 
-    private static VsphereCluster ToCluster(PropertyObject o) => new()
+    /// <summary>Reads a count that must fit in an int, or null.</summary>
+    /// <remarks>
+    /// Read through the long reader and then range-checked rather than parsed
+    /// as an int directly, so that a value which does not fit becomes null —
+    /// "we could not make sense of it" — instead of silently wrapping to a
+    /// small number a rule would then divide by.
+    /// </remarks>
+    private static int? ReadCount(PropertyObject o, string path) =>
+        PropertyCollectorParser.ReadLong(o.Values, path) is { } value &&
+        value is > 0 and <= int.MaxValue
+            ? (int)value
+            : null;
+
+    public static VsphereCluster ToCluster(PropertyObject o) => new()
     {
         MoRef = o.MoRef,
         Name = PropertyCollectorParser.ReadString(o.Values, "name") ?? o.MoRef,
@@ -718,13 +1064,14 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         DrsEnabled = PropertyCollectorParser.ReadBoolean(o.Values, "configuration.drsConfig.enabled"),
     };
 
-    private static VsphereDatastore ToDatastore(
+    public static VsphereDatastore ToDatastore(
         PropertyObject o, Dictionary<string, List<string>> volumeDevices) => new()
     {
         MoRef = o.MoRef,
         Name = PropertyCollectorParser.ReadString(o.Values, "name") ?? o.MoRef,
         CapacityBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.capacity"),
         FreeSpaceBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.freeSpace"),
+        UncommittedBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.uncommitted"),
         Url = PropertyCollectorParser.ReadString(o.Values, "summary.url"),
         StorageDevices = VsphereVolume.IdentifierFrom(
                 PropertyCollectorParser.ReadString(o.Values, "summary.url")) is { } volume &&
