@@ -1126,6 +1126,78 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
+    public async Task The_path_redundancy_rule_is_reached_by_the_inventory_cycle()
+    {
+        // The only rule evaluated on the inventory rhythm, so the wiring block
+        // the other six share does not cover it: dropping its call site would
+        // leave every unit test in StoragePathRedundancyTests green and the
+        // product permanently silent about a dead path. That is the exact
+        // failure four earlier rules shipped with.
+        //
+        // It also pins the rule to this cycle rather than the metric one. The
+        // path table is read on the inventory rhythm and reconciliation treats
+        // what it is given as the whole truth, so a rule evaluated in the
+        // wrong scope would have the faster cycle resolving its findings
+        // seconds after they were raised.
+        var cycle = Cycle();
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot(
+                "vc-1", _clock.UtcNow, entities: [HostMissingAPath()]),
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+
+        var result = await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Contains(result.Visible, a => a.Title == "Storage path redundancy lost");
+
+        // A guarded rule that throws still reports, so a green assertion above
+        // with this alert present would be proving the guard rather than the
+        // wire.
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
+
+    /// <summary>
+    /// A host reached over two paths, one of which the platform calls dead.
+    /// </summary>
+    /// <remarks>
+    /// The shape the collector produces: a runtime name per path, an adapter,
+    /// and the NAA that the second SCSI table resolved the device key into.
+    /// Nothing about this host's counters changes when the path dies, which is
+    /// the entire reason the rule exists.
+    /// </remarks>
+    private Entity HostMissingAPath() => new()
+    {
+        Id = new EntityId("vc-1:host-1"),
+        Kind = EntityKind.EsxiHost,
+        DisplayName = "esx01",
+        SourceInstanceId = "vc-1",
+        LastSeenUtc = _clock.UtcNow,
+        StoragePaths =
+        [
+            new StoragePath
+            {
+                Name = "vmhba0:C0:T0:L1",
+                State = "active",
+                Adapter = "vmhba0",
+                StorageDeviceId = "naa.600508b1001cb736",
+                DeviceKey = "key-vim.host.ScsiDisk-0200",
+            },
+            new StoragePath
+            {
+                Name = "vmhba1:C0:T0:L1",
+                State = "dead",
+                Adapter = "vmhba1",
+                StorageDeviceId = "naa.600508b1001cb736",
+                DeviceKey = "key-vim.host.ScsiDisk-0200",
+            },
+        ],
+    };
+
+    [Fact]
     public async Task The_shared_volume_rule_is_given_the_peer_policy_the_peer_rule_got()
     {
         // The two rules are mutually exclusive by recomputing each other's
