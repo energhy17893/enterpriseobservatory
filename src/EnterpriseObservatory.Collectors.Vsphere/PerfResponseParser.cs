@@ -141,7 +141,8 @@ public static class PerfResponseParser
     }
 
     /// <summary>
-    /// Collapses the per-device series of one counter into a single value.
+    /// Reduces one counter's series to a summary, keeping the devices where
+    /// they are worth keeping.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -167,8 +168,11 @@ public static class PerfResponseParser
     /// change between cycles without anything changing on screen.
     /// </para>
     /// <para>
-    /// Storing the per-device series instead would be better still and is not
-    /// what this does; see docs/collectors/vsphere-counter-map.md §2.
+    /// For storage, the devices are now kept <em>as well</em> rather than
+    /// instead: the summary answers whether this host's storage is slow, and
+    /// only the devices can say which one. See
+    /// <see cref="VsphereCounters.KeepPerDevice"/> for why that does not extend
+    /// to CPU, which reports per core.
     /// </para>
     /// </remarks>
     private static List<CounterValue> Aggregate(List<CounterValue> values)
@@ -190,6 +194,15 @@ public static class PerfResponseParser
                 // there is no entity for it to be about.
                 result.AddRange(group.Where(v => !v.IsAggregateInstance));
                 continue;
+            }
+
+            // The devices themselves, kept beside the summary rather than
+            // instead of it. Both are needed and they answer different
+            // questions: the summary says whether this host's storage is slow,
+            // and only the devices can say which one. See KeepPerDevice.
+            if (VsphereCounters.KeepPerDevice(group.Key))
+            {
+                result.AddRange(group.Where(v => !v.IsAggregateInstance));
             }
 
             var aggregate = group.FirstOrDefault(v => v.IsAggregateInstance);

@@ -178,6 +178,29 @@ public static class VsphereCounters
     public static bool InstanceNamesAnEntity(string? counterKey) =>
         counterKey?.StartsWith("datastore.", StringComparison.OrdinalIgnoreCase) == true;
 
+    /// <summary>
+    /// Whether each device's own series is worth keeping beside the summary.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Storage only, and deliberately. A live host reports the three disk
+    /// latency counters across 32 devices and supplies no aggregate of its
+    /// own, so the product computes one — the worst device, which is the right
+    /// summary for "is this host's storage slow" and structurally incapable of
+    /// answering "which LUN". The lower half of the diagnostic ladder is that
+    /// second question, and it cannot be asked of a number that has already
+    /// been collapsed.
+    /// </para>
+    /// <para>
+    /// Not applied to CPU, which reports per core: the same host offers 96
+    /// instances of <c>cpu.usage.average</c> beside a perfectly good aggregate,
+    /// and nobody diagnoses anything by reading core 57. The summary is the
+    /// answer there, and keeping the detail would be a tenfold cost for it.
+    /// </para>
+    /// </remarks>
+    public static bool KeepPerDevice(string? counterKey) =>
+        counterKey?.StartsWith("disk.", StringComparison.OrdinalIgnoreCase) == true;
+
     /// <summary>Counters for a virtual machine.</summary>
     /// <remarks>
     /// <c>cpu.ready.summation</c> is the only reliable indicator of CPU

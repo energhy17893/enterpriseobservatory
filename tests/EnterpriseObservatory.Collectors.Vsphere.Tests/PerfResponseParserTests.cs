@@ -179,11 +179,18 @@ public class PerfResponseParserTests
             </QueryPerfResponse>
             """;
 
-        var value = Assert.Single(Assert.Single(
-            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+        var values = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values;
 
-        Assert.Equal(7d, value.Raw);
-        Assert.True(value.IsAggregateInstance);
+        // vCenter's own aggregate, preferred over anything computed from the
+        // devices. The devices are kept beside it (see KeepPerDevice), so this
+        // asserts which value is the summary rather than that there is only one.
+        var summary = Assert.Single(values, v => v.IsAggregateInstance);
+
+        Assert.Equal(7d, summary.Raw);
+        Assert.Equal(
+            ["vmhba0", "vmhba1"],
+            values.Where(v => !v.IsAggregateInstance).Select(v => v.Instance).Order());
     }
 
     [Fact]
@@ -206,11 +213,19 @@ public class PerfResponseParserTests
             </QueryPerfResponse>
             """;
 
-        var value = Assert.Single(Assert.Single(
-            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+        var values = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values;
 
-        Assert.Equal(99d, value.Raw);
-        Assert.Equal(string.Empty, value.Instance);
+        var summary = Assert.Single(values, v => v.IsAggregateInstance);
+
+        Assert.Equal(99d, summary.Raw);
+        Assert.Equal(string.Empty, summary.Instance);
+
+        // And the devices survive alongside it, each still saying which it is.
+        // The summary answers "is this host's storage slow"; only these can
+        // answer "which LUN", and a collapsed number cannot be un-collapsed.
+        Assert.Equal(3d, values.Single(v => v.Instance == "naa.aaa").Raw);
+        Assert.Equal(99d, values.Single(v => v.Instance == "naa.bbb").Raw);
     }
 
     [Fact]
@@ -253,10 +268,14 @@ public class PerfResponseParserTests
             </QueryPerfResponse>
             """;
 
-        var value = Assert.Single(Assert.Single(
-            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+        var values = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values;
 
-        Assert.Equal(140d, value.Raw);
+        Assert.Equal(140d, Assert.Single(values, v => v.IsAggregateInstance).Raw);
+
+        // The sick path is now nameable, which is the point. Before this the
+        // product could say the host was slow and never which path to look at.
+        Assert.Equal(140d, values.Single(v => v.Instance == "vmhba2").Raw);
     }
 
     [Fact]
@@ -343,5 +362,90 @@ public class PerfResponseParserTests
 
         Assert.Empty(Assert.Single(
             PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+    }
+
+    // --- per-device detail ------------------------------------------------
+
+    [Fact]
+    public void Cpu_cores_are_summarised_and_not_kept_one_by_one()
+    {
+        // The other side of KeepPerDevice, and the reason it is not simply
+        // "keep every instance". A live host offers 96 instances of
+        // cpu.usage.average beside a perfectly good aggregate; nobody
+        // diagnoses anything by reading core 57, and keeping them would be a
+        // hundredfold cost for it. Counter 2 is cpu.usage.average.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>2</counterId><instance>0</instance></id><value>10</value></value>
+                <value><id><counterId>2</counterId><instance>1</instance></id><value>90</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var value = Assert.Single(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+
+        Assert.Equal(string.Empty, value.Instance);
+    }
+
+    [Fact]
+    public void Every_device_keeps_its_own_identity_so_the_slow_one_can_be_named()
+    {
+        // Thirty-two LUNs on a real host, and the question the ladder's lower
+        // half is made of: not "is storage slow" but "which device". A value
+        // that has already been collapsed cannot be un-collapsed later, so
+        // this is a decision about what is recorded, not about what is shown.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>180</counterId><instance>naa.aaa</instance></id><value>1</value></value>
+                <value><id><counterId>180</counterId><instance>naa.bbb</instance></id><value>2</value></value>
+                <value><id><counterId>180</counterId><instance>naa.ccc</instance></id><value>140</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var values = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values;
+
+        Assert.Equal(4, values.Count);
+        Assert.Equal(
+            ["naa.aaa", "naa.bbb", "naa.ccc"],
+            values.Where(v => !v.IsAggregateInstance).Select(v => v.Instance).Order());
+
+        // And the summary still says the host has a problem, so nothing that
+        // watched the host-level number stops working.
+        Assert.Equal(140d, Assert.Single(values, v => v.IsAggregateInstance).Raw);
+    }
+
+    [Fact]
+    public void A_device_series_keeps_the_unit_and_rollup_of_its_counter()
+    {
+        // They travel per value, and a device series that lost them would be
+        // a number with no stated meaning — the exact thing the domain's
+        // CounterValue exists to prevent.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>180</counterId><instance>naa.aaa</instance></id><value>5</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var device = Assert.Single(
+            Assert.Single(PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20)))
+                .Values,
+            v => v.Instance == "naa.aaa");
+
+        Assert.Equal("millisecond", device.Unit);
+        Assert.Equal(RollupType.Average, device.Rollup);
+        Assert.Equal(TimeSpan.FromSeconds(20), device.Interval);
     }
 }

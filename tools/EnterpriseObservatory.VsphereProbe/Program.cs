@@ -440,6 +440,56 @@ try
         Console.WriteLine("  A latency counter reading zero while the IOPS counters do not is not a");
         Console.WriteLine("  fast volume. Whole-millisecond counters truncate anything faster than");
         Console.WriteLine("  1ms to 0, and VMObservedLatency reports only while SIOC is active.");
+
+        // How much detail is being thrown away. The product collapses a host's
+        // per-device series into one value per counter, which answers "is this
+        // host's storage slow" and cannot answer "which LUN" or "which path" —
+        // the lower half of the diagnostic ladder. The numbers below are what
+        // that costs on a real host.
+        Section("Per-device detail available on one host");
+
+        // The counters the product actually collects on a host, and then the
+        // storage groups the diagnostic ladder needs next. Ordering by device
+        // count instead would fill the screen with sys.resource*, which has an
+        // instance per running world and answers nothing anybody asks.
+        foreach (var group in hostMetrics
+            .Where(m => VsphereCounters.Host.Contains(m.Counter.Key, StringComparer.OrdinalIgnoreCase) &&
+                        !m.Counter.Key.StartsWith("datastore.", StringComparison.Ordinal))
+            .GroupBy(m => m.Counter.Key, StringComparer.Ordinal)
+            .OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var devices = group.Count(m => m.Instance.Length > 0);
+            var hasAggregate = group.Any(m => m.Instance.Length == 0);
+            var sample = group.FirstOrDefault(m => m.Instance.Length > 0)?.Instance ?? string.Empty;
+
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  {group.Key,-40} {devices,4} devices  " +
+                $"{(hasAggregate ? "+ aggregate" : "no aggregate "),-13} " +
+                $"{(sample.Length > 0 ? "e.g. " + Show(sample, mask) : string.Empty)}"));
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  The product currently stores one value per counter here, collapsing the");
+        Console.WriteLine("  devices. That answers 'is this host's storage slow' and cannot answer");
+        Console.WriteLine("  'which LUN' or 'which path'.");
+        Console.WriteLine();
+
+        foreach (var prefix in new[] { "storagePath.", "disk." })
+        {
+            var inGroup = hostMetrics
+                .Where(m => m.Counter.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .ToList();
+
+            var counters = inGroup.Select(m => m.Counter.Key).Distinct(StringComparer.Ordinal).Count();
+            var devices = inGroup.Select(m => m.Instance)
+                .Where(i => i.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count();
+
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  {prefix,-14} {counters,3} counters x {devices,4} devices = {inGroup.Count,5} series available"));
+        }
     }
 
     Section("Sample read");

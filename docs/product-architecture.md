@@ -303,7 +303,7 @@ Gerekçe netleşmeden adaptör yazmak, yanlış problemi çözmek olur.
 | Zaman serisi + aşağı örnekleme | var |
 | Alarm yaşam döngüsü, atıf, bakım penceresi | var |
 | Topolojik olay gruplaması | var, **canlıda sınanmadı** (alarm çıkmadı) |
-| vSphere performans toplama | kısmen — cihaz başına seri **yok** |
+| vSphere performans toplama | var — cihaz başına seri dahil (20 Eylül 2026) |
 | Datastore gecikmesi | yok (host'tan toplanmalı) |
 | Datastore doluluk | yapılıyor |
 | Yapılandırma toplama | yok |
@@ -320,9 +320,18 @@ Gerekçe netleşmeden adaptör yazmak, yanlış problemi çözmek olur.
 
 Sıra, **her adımın bir sonrakini mümkün kılması** ilkesine göre kuruldu.
 
-**1. Cihaz başına seri** — Merdivenin alt yarısı buna bağlı. "Hangi LUN, hangi
-yol" sorusu bugün yapısal olarak cevaplanamıyor; tek değere çöken bir seri
-bunu söyleyemez. Diğer her şeyden önce gelir.
+**1. Cihaz başına seri** — ✅ *20 Eylül 2026'da yapıldı.* Merdivenin alt yarısı
+buna bağlıydı: tek değere çöken bir seri "hangi LUN" sorusunu yapısal olarak
+cevaplayamıyordu. Artık `disk.*` sayaçları hem özet (en kötü cihaz) hem de
+cihaz başına saklanıyor — canlıda host başına 32 cihaz, estate genelinde 43
+ayrı cihaz adı. CPU'ya uygulanmadı: aynı host 96 çekirdek instance'ı sunuyor
+ve kimse 57. çekirdeği okuyarak teşhis koymuyor. Datastore sayaçları ise ayrı
+bir durumdu — instance bir cihaz değil, başka bir **varlık**tı; onlar Datastore
+varlığına taşındı (§5b).
+
+**1b. Kalan basamak: `storagePath`** — Canlıda ölçüldü: 10 sayaç × 252 cihaz =
+1135 seri **mevcut** ve toplanmıyor. SFP/kablo/zoning teşhisi için merdivenin
+en alt basamağı bu. Bir sonraki doğal adım.
 
 **2. Yapılandırma ekseni** — Uygunluğun, değişim geçmişinin ve çapraz
 doğrulamanın önkoşulu. Satıcı eklemeden önce yapılmalı, yoksa her satıcı kendi
