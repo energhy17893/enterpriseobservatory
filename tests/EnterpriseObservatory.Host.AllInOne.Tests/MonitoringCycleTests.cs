@@ -1004,6 +1004,13 @@ public class MonitoringCycleTests : IDisposable
     /// <summary>Three guests, so one of them can be compared with its siblings.</summary>
     private static readonly string[] WaitingGuests = ["vc-1:vm-1", "vc-1:vm-2", "vc-1:vm-3"];
 
+    /// <summary>
+    /// A graph node. Virtual machines carry a width, because CpuContention
+    /// divides waiting time by it and declines to judge a machine whose width
+    /// it cannot read -- so a guest with no sizing reaches no verdict, and a
+    /// wiring test built from one would pass whether or not the rule is
+    /// called.
+    /// </summary>
     private static Entity Node(string id, EntityKind kind, string name) => new()
     {
         Id = new EntityId(id),
@@ -1011,6 +1018,9 @@ public class MonitoringCycleTests : IDisposable
         DisplayName = name,
         SourceInstanceId = "vc-1",
         LastSeenUtc = T0,
+        Sizing = kind == EntityKind.VirtualMachine
+            ? new EntitySizing { VirtualCpuCount = 1 }
+            : null,
     };
 
     /// <summary>One layer of one device's latency, as the host reports it.</summary>

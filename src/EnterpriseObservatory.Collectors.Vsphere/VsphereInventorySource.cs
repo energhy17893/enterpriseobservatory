@@ -726,13 +726,31 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
     /// Old enough that somebody has forgotten it.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A snapshot taken before a change is meant to live for hours. Three days
     /// is generous enough that a change window spanning a weekend does not
     /// raise it, and short enough to catch the thing while it is still small.
+    /// </para>
+    /// <para>
+    /// This number is ours. No vendor document states a snapshot age: the
+    /// Security Configuration Guide has no snapshot control at all, and
+    /// Performance Best Practices mentions snapshots twenty-two times without
+    /// ever giving a duration. The "72 hours" sometimes attributed to VMware
+    /// is that document's physical-memory burn-in test, which is about
+    /// hardware, not snapshots. Said plainly here so nobody later cites a
+    /// source that does not exist.
+    /// </para>
     /// </remarks>
     private static readonly TimeSpan StaleSnapshotWarning = TimeSpan.FromDays(3);
 
     /// <summary>Two weeks. By now nobody remembers taking it.</summary>
+    /// <remarks>
+    /// Borrowed rather than invented: fourteen days is the default of vCheck's
+    /// <c>60 VM/02 Snapshot Information</c> plugin (<c>$SnapshotAge = 14</c>),
+    /// which is the closest thing this field has to an agreed number. It is a
+    /// community project, not a vendor, and the product should say so wherever
+    /// it shows the threshold.
+    /// </remarks>
     private static readonly TimeSpan StaleSnapshotCritical = TimeSpan.FromDays(14);
 
     /// <summary>

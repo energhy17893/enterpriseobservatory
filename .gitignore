@@ -56,3 +56,6 @@ skills-lock.json
 # default is .worktrees/, the desktop harness puts them in .claude/worktrees/.
 .worktrees/
 .claude/worktrees/
+
+# mutasyon testi raporlari (Stryker kendi .gitignore da yaziyor, bu acik kural)
+StrykerOutput/
