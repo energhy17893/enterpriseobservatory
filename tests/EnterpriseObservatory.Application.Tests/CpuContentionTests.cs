@@ -209,6 +209,53 @@ public class CpuContentionTests
         Assert.Contains("vc-1:vm-9", finding.Description, StringComparison.Ordinal);
         Assert.Contains("not evidence that they are healthy", finding.Description,
             StringComparison.Ordinal);
+
+        // Derived, because nothing in vCenter raised it -- this product did.
+        // The UI badges it, and principle 1 leans on the distinction between
+        // what the platform said and what we concluded.
+        Assert.True(finding.IsDerived);
+    }
+
+    [Fact]
+    public void A_width_of_zero_is_unreadable_rather_than_a_machine_with_no_cores()
+    {
+        // A nonsense width divides into an infinity that compares greater
+        // than every threshold in the policy, so the machine would be named
+        // on every cycle forever. It is treated as unreadable instead, which
+        // is what it is.
+        var alerts = CpuContention.Evaluate(
+            [.. Quiet(1, 8), Wait("vc-1:vm-9", 90)],
+            Widths([.. Enumerable.Range(1, 8).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-9", (int?)0)]));
+
+        var finding = Assert.Single(alerts);
+
+        Assert.Null(finding.Entity);
+        Assert.Contains("vc-1:vm-9", finding.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_machines_are_named_in_a_stable_order()
+    {
+        // The fingerprint is constant, so the description is the only part
+        // that moves. Left unordered it would rewrite itself between cycles
+        // for no reason an operator could act on.
+        var alerts = CpuContention.Evaluate(
+            [.. Quiet(1, 8), Wait("vc-1:vm-9", 5)],
+            Widths([.. Enumerable.Range(1, 6).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-9", (int?)null), ("vc-1:vm-7", (int?)null),
+                    ("vc-1:vm-8", (int?)null)]));
+
+        var text = Assert.Single(alerts).Description;
+
+        Assert.True(
+            text.IndexOf("vc-1:vm-7", StringComparison.Ordinal) <
+            text.IndexOf("vc-1:vm-8", StringComparison.Ordinal),
+            "names should read in ascending order");
+        Assert.True(
+            text.IndexOf("vc-1:vm-8", StringComparison.Ordinal) <
+            text.IndexOf("vc-1:vm-9", StringComparison.Ordinal),
+            "names should read in ascending order");
     }
 
     [Fact]
