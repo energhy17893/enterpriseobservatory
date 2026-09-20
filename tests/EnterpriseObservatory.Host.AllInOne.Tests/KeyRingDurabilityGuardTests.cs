@@ -85,7 +85,14 @@ public sealed class KeyRingDurabilityGuardTests : IDisposable
         var scratch = Path.Combine(Root(), $"eo-{Guid.NewGuid():n}", "Temp");
         var path = Fixture(Path.Combine(scratch, "keys"));
 
-        Assert.Contains(scratch, KeyRingDurabilityGuard.Inspect(path).Reason, StringComparison.Ordinal);
+        var reason = KeyRingDurabilityGuard.Inspect(path).Reason;
+
+        Assert.Contains(scratch, reason, StringComparison.Ordinal);
+
+        // And the scratch directory, not the key ring inside it. "…\Temp\keys
+        // is a temporary directory" is false and points at the wrong thing to
+        // move; the directory that gets emptied is the one above.
+        Assert.DoesNotContain(path, reason, StringComparison.Ordinal);
     }
 
     [Fact]
