@@ -275,37 +275,44 @@ büyüğüydü. Saatlik saklama 90 güne indi; kararlı durum 20,9 → 13,6 GB.
 
 Ödenen bedel kayıtlı: **yıla yıl karşılaştırma bitti.** Mevsimsellik gerekirse
 cevap saatlik pencereyi uzatmak değil, **günlük dördüncü kademedir** — seri
-başına yılda 365 satır, 400 günlük saatlikten kırk kat ucuz. Bu hâlâ açık ve
-ADR-0017'de alternatif C olarak duruyor.
+başına yılda 365 satır, 400 günlük saatlikten **24 kat** ucuz (9 600 / 400).
+Bu bölüm ve ADR-0017 önceden "kırk kat" diyordu; çarpan bir gündeki saat
+sayısıdır ve 24'tür, düzeltme [ADR-0023](adr/0023-postgres-dependency-rejustified.md)'dedir.
+Ölçülen estate için maliyeti: beş yıllık günlük geçmiş ≈ **1,79 GB**
+(6 084 seri × 1 825 satır × 173,1 bayt), yani ADR-0017'nin kestiği 7,3 GB'ın
+dörtte birinden azı.
 
-Önceki ürün geçmişi **PostgreSQL'de kalıcı** tutuyordu; kalıcılık isteniyorsa
-yol budur, saatlik kademeyi şişirmek değil.
+### Kapanan karar: depolama motoru seçildi, adaptör yazıldı, gerekçe taşındı
 
-Mimari buna hazır: `IObservationStore` bir porttur ve somut depolama motorunu
-yalnızca `Host` görebilir — mimari testle zorlanır. Bir `Persistence.Postgres`
-adaptörü eklemek Domain, Application veya Api'de hiçbir değişiklik gerektirmez.
+Bu bölüm önceden *"PostgreSQL neden?"* diye soruyor ve *"gerekçe netleşmeden
+adaptör yazmak, yanlış problemi çözmek olur"* diyordu. İkisi de kapandı.
 
-Kararı veren iki soru var:
+**Motor seçildi.** [ADR-0016](adr/0016-external-infrastructure-dependencies.md)
+(20 Eylül 2026) PostgreSQL'i tek depolama motoru yaptı ve ADR-0011'i geçersiz
+kıldı; "ek appliance gerektirmez" bir kısıt olmaktan çıktı. **Adaptör yazıldı:**
+`src/EnterpriseObservatory.Persistence.Postgres/` — 11 dosya, 23 tablo, 7 store.
 
-**1. "Kalıcı" hangi çözünürlükte?** ADR-0012 her kovada min/max/sum/count/last
-tutuyor ve yeniden toplama **kayıpsız** — yani saatlikten günlüğe, günlükten
-aylığa indirgemek bu beş istatistiği bozmaz. Kalıcı *günlük* geçmiş on yılda bile
-birkaç milyon satırdır; SQLite için bile önemsiz. Kalıcı *ham* geçmiş ise bambaşka
-bir büyüklük ve ayrı bir motor ister.
+**Gerekçe ise bir kez daha değişti.** ADR-0016 hacmi başa koymuştu ("kalıcı
+ölçüm geçmişi"); ADR-0017 aynı gün saatlik kademeyi kesince o bacak düştü.
+[ADR-0023](adr/0023-postgres-dependency-rejustified.md) gerekçeyi **yazma
+yoluna** taşıdı: ikili `COPY`, `unnest` ile dizi bağlama, `FOR KEY SHARE` ve
+`FOR UPDATE SKIP LOCKED` — tahmin edilen hacim değil, çalışan kod. Kalıcı geçmiş
+vaadi boş bırakılmadı; günlük dördüncü kademeyle karşılanacak (ADR-0023 karar 3).
 
-> Bu ayrım, ADR-0012'de kayıtlı p95 borcunu öne çıkarıyor: yüzdelikler saklanan
-> beş sayıdan türetilemez. Uzun vadeli performans raporlamasında istenen ölçü
-> genellikle p95'tir, ve bugünkü kova yapısı onu **hiçbir çözünürlükte**
-> veremez. Kalıcı geçmiş kararı verilirken bu birlikte karara bağlanmalı.
+Mimari bunu ucuz kıldı ve iddiasını ikinci kez doğruladı: `IObservationStore`
+bir porttur, somut depolama motorunu yalnızca `Host` görür — mimari testle
+zorlanır — ve Postgres adaptörü Domain, Application veya Api'de hiçbir değişiklik
+gerektirmedi. Aynı ölçüm tersi yöne de geçerli: motoru bir gün değiştirmek
+adaptör ve testlerinin işidir, mimarinin değil.
 
-**2. PostgreSQL neden?** İki farklı gerekçe olabilir ve farklı işler doğururlar:
->
-> - **Hacim** — veri SQLite'a sığmıyordu. Cevap: Postgres adaptörü.
-> - **Erişim** — raporlama araçları, özel sorgular, mevcut DBA altyapısı.
->   Cevap: dışa aktarma veya salt-okunur bir sorgu yüzeyi. Depolama motorunu
->   değiştirmek bu ihtiyacı çözmez, sadece yerini değiştirir.
+**Açık kalan soru çözünürlük değil, istatistiktir.** ADR-0012 her kovada
+min/max/sum/count/last tutuyor ve yeniden toplama **kayıpsız** — saatlikten
+günlüğe, günlükten aylığa indirgemek bu beş istatistiği bozmaz. Ama:
 
-Gerekçe netleşmeden adaptör yazmak, yanlış problemi çözmek olur.
+> Yüzdelikler saklanan beş sayıdan türetilemez. Uzun vadeli performans
+> raporlamasında istenen ölçü genellikle p95'tir, ve bugünkü kova yapısı onu
+> **hiçbir çözünürlükte** veremez. Günlük kademe kararı verilirken bu birlikte
+> karara bağlanmalı.
 
 ---
 

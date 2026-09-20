@@ -1,11 +1,13 @@
 # ADR-0016: Ürünün dış altyapı bağımlılıkları olur
 
-- **Durum:** Kabul edildi
+- **Durum:** Kabul edildi — **§5'in saklama gerekçesi ADR-0023 ile geçersiz
+  kılındı** (saatlik kademe aynı gün ADR-0017 ile 400 → 90 güne indi; §1'in
+  "eşzamanlı okuma/yazma" bacağı, §2, §3 ve §4 aynen geçerli)
 - **Tarih:** 2026-09-20
 - **Karar verenler:** Ertuğrul Ünal
 - **İlgili:** ADR-0001 (§"ek appliance gerektirmeyen MSI" iddiasını değiştirir),
   ADR-0011 (**geçersiz kılar**), ADR-0012 (zaman serisi), ADR-0010 (kimlik
-  bilgileri), README ilke 1
+  bilgileri), ADR-0017 (saklama), ADR-0023 (§5 geçersiz), README ilke 1
 
 ## Bağlam
 
