@@ -126,6 +126,15 @@ Yanındaki ölçülmüş referans: [vSphere sayaç haritası](docs/collectors/vs
 Yeni bir sayaç eklenmeden önce buraya bakılır; sayacın adı, onu nereden
 isteyeceğinizi söylemez.
 
+Üçüncüsü, neyin **gerçekten kanıtlandığı**:
+
+> **[docs/live-verification.md](docs/live-verification.md)**
+
+Canlı bir estate'e karşı ne ölçüldü, hangi sayılarla, nasıl tekrar edilir — ve
+aynı dürüstlükle, neyin henüz doğrulanmadığı. Bu projede bulunan hataların çoğu
+testleri geçip canlıda sessizce yanlış olan koddaydı; yeşil test bir kanıt
+değildir.
+
 ## Mimari kararlar
 
 Her önemli karar `docs/adr/` altında numaralı bir kayıttır: bağlam, karar,
