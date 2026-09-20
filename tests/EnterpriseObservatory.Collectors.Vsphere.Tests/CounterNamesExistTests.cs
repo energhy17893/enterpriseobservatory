@@ -175,6 +175,57 @@ public class CounterNamesExistTests
             key => Assert.False(VsphereCounters.InstanceNamesAnEntity(key), key));
     }
 
+    public static TheoryData<string, bool> FaultClassification()
+    {
+        var data = new TheoryData<string, bool>();
+
+        foreach (var key in VsphereCounters.PerStoragePath)
+        {
+            data.Add(key, true);
+        }
+
+        // Levels, not faults: each of these is high or low, and a high one is
+        // a threshold question rather than an error that happened.
+        foreach (var key in new[]
+        {
+            "cpu.usage.average",
+            "cpu.ready.summation",
+            "disk.deviceLatency.average",
+            "datastore.totalReadLatency.average",
+            "mem.vmmemctl.average",
+        })
+        {
+            data.Add(key, false);
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(FaultClassification))]
+    public void A_counter_is_classified_as_a_fault_only_when_any_non_zero_reading_is_one(
+        string key, bool isFault)
+    {
+        // The classifier the whole fault path rests on, and it was reachable
+        // from no test at all. Both directions matter and they fail
+        // differently: a fault counter not marked makes a bus reset
+        // unreportable, indistinguishable from the 670,514 zeros a clean
+        // fabric produces; a level counter marked as a fault turns every
+        // busy host into a reported error and the signal is lost in it.
+        Assert.Equal(isFault, VsphereCounters.IsFaultCounter(key));
+    }
+
+    [Fact]
+    public void An_unknown_counter_is_not_a_fault_counter()
+    {
+        // Absence is not a fault. Defaulting the other way would make a
+        // counter nobody has classified yet report an error on its first
+        // non-zero reading.
+        Assert.False(VsphereCounters.IsFaultCounter("storagePath.totalReadLatency.average"));
+        Assert.False(VsphereCounters.IsFaultCounter(null));
+        Assert.False(VsphereCounters.IsFaultCounter(string.Empty));
+    }
+
     [Fact]
     public void A_counter_measured_on_one_entity_about_another_is_marked_as_such()
     {
