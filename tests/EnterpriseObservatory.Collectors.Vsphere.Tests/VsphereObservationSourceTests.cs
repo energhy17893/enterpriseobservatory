@@ -540,4 +540,141 @@ public class VsphereObservationSourceTests
         Assert.All(latency, o => Assert.Equal(new EntityId("ds-prod"), o.Entity));
         Assert.Equal(["esx01", "esx02"], latency.Select(o => o.Value.Instance).Order());
     }
+
+    // --- telling the operator what cannot be measured ---------------------
+
+    /// <summary>
+    /// A source whose samples the test dictates, so the SIOC condition can be
+    /// posed directly rather than assembled out of counter plumbing.
+    /// </summary>
+    private sealed class DictatedApi(params CounterValue[] values) : IVsphereApi
+    {
+        public string InstanceId => "vc-1";
+
+        public Task<IReadOnlyList<VsphereCounter>> GetCounterCatalogAsync(CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<VsphereCounter>>(
+            [
+                .. values.Select((v, i) => new VsphereCounter
+                {
+                    Id = i + 1,
+                    Group = v.CounterName.Split('.')[0],
+                    Name = v.CounterName.Split('.')[1],
+                    Rollup = v.Rollup,
+                    Unit = v.Unit,
+                    Level = 1,
+                }),
+            ]);
+
+        public Task<int?> GetMaxQueryMetricsAsync(CancellationToken ct) => Task.FromResult<int?>(256);
+
+        public Task<IReadOnlyList<string>> GetAvailableCounterKeysAsync(
+            string moRef, VsphereEntityType type, DateTimeOffset now, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<string>>([.. values.Select(v => v.CounterName)]);
+
+        public Task<IReadOnlyList<PerfEntitySamples>> QueryPerfAsync(
+            IReadOnlyList<string> moRefs, VsphereEntityType type,
+            IReadOnlyList<VsphereCounter> counters, DateTimeOffset now, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<PerfEntitySamples>>(
+                [.. moRefs.Select(m => new PerfEntitySamples { EntityMoRef = m, Values = values })]);
+    }
+
+    private static CounterValue Reading(string counter, double raw, string instance = "vol-a") => new()
+    {
+        CounterName = counter,
+        Raw = raw,
+        Rollup = RollupType.Average,
+        Interval = TimeSpan.FromSeconds(20),
+        Unit = "number",
+        Instance = instance,
+    };
+
+    private const string Sioc = "datastore.siocActiveTimePercentage.average";
+    private const string ReadIops = "datastore.numberReadAveraged.average";
+
+    /// <summary>
+    /// The unmeasurable-latency report, if this batch produced one.
+    /// </summary>
+    /// <remarks>
+    /// Matched on kind as well as target. The dictated catalogue below holds
+    /// only the counters a test names, so the source also — correctly —
+    /// reports every other wanted counter as absent, and one of those absences
+    /// is about this same counter. Two different findings about one counter is
+    /// the right behaviour; conflating them in a test is not.
+    /// </remarks>
+    private static IEnumerable<CollectionFailure> Unmeasurable(
+        IReadOnlyList<CollectionFailure> failures) =>
+        failures.Where(f =>
+            f.Kind == CollectionFailureKind.NotConfigured &&
+            f.Target == "datastore.datastoreVMObservedLatency.latest");
+
+    private static async Task<IReadOnlyList<CollectionFailure>> Failures(params CounterValue[] values)
+    {
+        var targets = new Targets("host-1");
+        targets.Volumes["vol-a"] = "ds-prod";
+        targets.Volumes["vol-b"] = "ds-test";
+
+        var batch = await new VsphereObservationSource(
+            new DictatedApi(values), targets, new FixedClock())
+            .ReadAsync(CancellationToken.None);
+
+        return batch.Failures;
+    }
+
+    [Fact]
+    public async Task Sioc_being_off_while_volumes_are_busy_is_reported_as_unmeasurable()
+    {
+        // The product saying what it cannot see. A latency chart of zeroes
+        // reads as a fast array; here it means nothing was measured, and an
+        // operator who is not told will eliminate storage on the strength of
+        // it.
+        var failures = await Failures(Reading(Sioc, 0), Reading(ReadIops, 400));
+
+        var failure = Assert.Single(Unmeasurable(failures));
+
+        Assert.Contains("not measured", failure.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Storage I/O Control", failure.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_idle_estate_is_not_told_to_enable_anything()
+    {
+        // SIOC reads zero on an idle datastore too. Advising somebody to turn
+        // on a feature for a volume nobody uses is how advice gets ignored.
+        var failures = await Failures(Reading(Sioc, 0), Reading(ReadIops, 0));
+
+        Assert.Empty(Unmeasurable(failures));
+    }
+
+    [Fact]
+    public async Task An_estate_with_sioc_running_is_left_alone()
+    {
+        var failures = await Failures(Reading(Sioc, 12), Reading(ReadIops, 400));
+
+        Assert.Empty(Unmeasurable(failures));
+    }
+
+    [Fact]
+    public async Task One_report_for_the_estate_rather_than_one_per_volume()
+    {
+        // Forty-one identical messages would be a wall, and the fix is a
+        // single decision about the platform rather than one per volume.
+        var failures = await Failures(
+            Reading(Sioc, 0, "vol-a"),
+            Reading(ReadIops, 400, "vol-a"),
+            Reading(Sioc, 0, "vol-b"),
+            Reading(ReadIops, 900, "vol-b"));
+
+        Assert.Single(Unmeasurable(failures));
+    }
+
+    [Fact]
+    public async Task A_vcenter_that_never_reported_sioc_at_all_is_not_second_guessed()
+    {
+        // The counter absent entirely is a different problem with its own
+        // report; claiming SIOC is off because nothing said otherwise would be
+        // inventing a finding out of a silence.
+        var failures = await Failures(Reading(ReadIops, 400));
+
+        Assert.Empty(Unmeasurable(failures));
+    }
 }

@@ -109,6 +109,8 @@ public sealed class VsphereObservationSource(
                 observations, failures, cancellationToken).ConfigureAwait(false);
         }
 
+        ReportUnmeasurableLatency(observations, failures);
+
         return new ObservationBatch
         {
             SourceInstanceId = InstanceId,
@@ -117,6 +119,100 @@ public sealed class VsphereObservationSource(
             Failures = failures,
         };
     }
+
+    /// <summary>
+    /// Says so when the platform's configuration makes a measurement impossible.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The product telling an operator about its own blindness, which is the
+    /// first thing it owes them. <c>datastore.datastoreVMObservedLatency</c> is
+    /// the one storage counter with sub-millisecond resolution — it is reported
+    /// in microseconds precisely for that — and it only reports while Storage
+    /// I/O Control is active. With SIOC off it reads zero forever, and the
+    /// millisecond counters beside it truncate anything faster than 1ms to zero
+    /// as well. An operator looking at a chart of zeroes concludes the array is
+    /// fast and moves on; the truth is that nothing was measured.
+    /// </para>
+    /// <para>
+    /// Reported as a collection failure rather than an alert because that is
+    /// what it is: NotConfigured means the platform can supply this and is not
+    /// set up to. It is also where it belongs — no graph, no history and no
+    /// second object are involved, and only this collector knows that one
+    /// vSphere feature gates one vSphere counter.
+    /// </para>
+    /// <para>
+    /// Gated on there being I/O. SIOC reads zero on an idle datastore too, and
+    /// telling somebody to enable a feature on a volume nobody uses is the kind
+    /// of advice that teaches people to ignore advice.
+    /// </para>
+    /// <para>
+    /// One failure for the estate rather than one per volume. Forty-one
+    /// identical messages would be a wall, and the fix is a single decision
+    /// about the platform rather than forty-one decisions about volumes.
+    /// </para>
+    /// </remarks>
+    private static void ReportUnmeasurableLatency(
+        List<Observation> observations,
+        List<CollectionFailure> failures)
+    {
+        var busyVolumes = new HashSet<string>(StringComparer.Ordinal);
+        var siocActive = false;
+        var sawSioc = false;
+
+        foreach (var observation in observations)
+        {
+            var value = observation.Value;
+
+            if (string.Equals(value.CounterName, SiocCounter, StringComparison.OrdinalIgnoreCase))
+            {
+                sawSioc = true;
+                siocActive |= value.Raw > 0;
+            }
+            else if (IopsCounters.Contains(value.CounterName, StringComparer.OrdinalIgnoreCase) &&
+                     value.Raw > 0)
+            {
+                // Counted by entity, not by instance. These observations have
+                // already been re-attributed: the datastore is the entity and
+                // the instance has become the host that measured it, so
+                // counting instances would count hosts. Found by a surviving
+                // mutation — the test could not tell one report per estate
+                // from one per volume, because with a single host both were
+                // one.
+                busyVolumes.Add(observation.Entity.Value);
+            }
+        }
+
+        // Nothing to say when the counter was never collected — that is a
+        // different problem with its own report — or when it is working, or
+        // when nothing is doing any I/O to be blind about.
+        if (!sawSioc || siocActive || busyVolumes.Count == 0)
+        {
+            return;
+        }
+
+        failures.Add(new CollectionFailure
+        {
+            Kind = CollectionFailureKind.NotConfigured,
+            Target = "datastore.datastoreVMObservedLatency.latest",
+            Detail =
+                "Storage I/O Control is inactive everywhere on this vCenter, so storage latency " +
+                $"cannot be measured below one millisecond — including on {busyVolumes.Count} " +
+                "datastore(s) currently serving I/O. The millisecond counters truncate anything " +
+                "faster to zero, and the microsecond counter that exists for this reports only " +
+                "while SIOC is active. A latency chart reading zero here means 'not measured', " +
+                "not 'fast'. Enable Storage I/O Control on the datastores that matter to get " +
+                "sub-millisecond visibility.",
+        });
+    }
+
+    private const string SiocCounter = "datastore.siocActiveTimePercentage.average";
+
+    private static readonly string[] IopsCounters =
+    [
+        "datastore.numberReadAveraged.average",
+        "datastore.numberWriteAveraged.average",
+    ];
 
     private async Task ReadTypeAsync(
         VsphereEntityType entityType,
