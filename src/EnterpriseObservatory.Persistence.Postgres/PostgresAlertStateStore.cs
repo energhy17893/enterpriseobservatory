@@ -226,8 +226,16 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
             }
         });
 
-        _instances[scope] = [.. result.Instances];
-        _flaps[scope] = [.. result.FlapHistories];
+        // Stamped with the scope they were filed under, for the same reason
+        // WriteInstance binds @scope rather than the instance's own: the caller
+        // decides where this belongs, and the rows have just been written that
+        // way. LoadInstances reads that column back into Scope, so a cache that
+        // kept the reconciler's copy unchanged answered one thing while the
+        // process was up and another after a restart — the live copy and the
+        // durable one disagreeing about a field, which is the one thing a
+        // write-through cache exists not to do.
+        _instances[scope] = [.. result.Instances.Select(i => i with { Scope = scope })];
+        _flaps[scope] = [.. result.FlapHistories.Select(f => f with { Scope = scope })];
     }
 
     public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints)

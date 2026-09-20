@@ -58,11 +58,12 @@ public class MonitoringCycleTests : IDisposable
         IAlertNotifier? notifier = null,
         IObservationStore? observations = null,
         ICollectorHealthStore? health = null,
-        IEntityGraphStore? graphs = null) => new(
+        IEntityGraphStore? graphs = null,
+        IAlertStateStore? alerts = null) => new(
         new InventoryCollectionPipeline(_clock),
         new ObservationCollectionPipeline(_clock),
         graphs ?? _graphs,
-        _alerts,
+        alerts ?? _alerts,
         health ?? _health,
         notifier ?? _notifier,
         observations ?? _observations,
@@ -553,6 +554,74 @@ public class MonitoringCycleTests : IDisposable
         Assert.Contains("vc-1", result.SilentSources);
     }
 
+    // --- the two cycles at the same moment ---------------------------------
+
+    [Fact]
+    public async Task Collector_health_survives_both_cycles_reading_and_merging_at_once()
+    {
+        // The two cycles are independent tasks on different schedules, and each
+        // one reads Current and then calls Merge. Nothing in the suite had ever
+        // run them at the same moment, so an unguarded dictionary here looked
+        // fine for as long as nobody looked.
+        //
+        // The throw is the outcome to hope for. The quiet one is a read that
+        // comes back short: a source missing from the list is a source
+        // SourceRunner has never seen, so the circuit breaker is handed a fresh
+        // CollectorHealth with no failures and starts again from zero against a
+        // vCenter that has been refusing us since this morning. An account that
+        // was merely rate-limited is then locked out by the monitoring product,
+        // which is the failure this product is least allowed to cause.
+        var store = new InMemoryCollectorHealthStore();
+        var reading = true;
+
+        var readers = Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
+        {
+            while (Volatile.Read(ref reading))
+            {
+                // Enumerated, not just counted: the resize happens under the
+                // enumerator, which is where an unguarded read falls over.
+                foreach (var entry in store.Current)
+                {
+                    Assert.NotEmpty(entry.InstanceId);
+                }
+            }
+        })).ToList();
+
+        var writers = Enumerable.Range(0, 2).Select(cycle => Task.Run(() =>
+        {
+            for (var i = 0; i < 2_000; i++)
+            {
+                store.Merge([Unreachable($"vc-{cycle}-{i}")]);
+            }
+        })).ToList();
+
+        await Task.WhenAll(writers);
+        Volatile.Write(ref reading, false);
+        await Task.WhenAll(readers);
+
+        // Every merge landed, which the lock also has to leave true: a guard
+        // that dropped writes would pass the paragraph above and fail the
+        // product in the same way a short read does.
+        Assert.Equal(4_000, store.Current.Count);
+    }
+
+    /// <summary>One collector that is failing, as the runner would report it.</summary>
+    /// <remarks>
+    /// Failures and a backoff rather than a healthy record, because the field
+    /// this test is protecting is <c>ConsecutiveFailures</c>: a read that misses
+    /// this entry is a read that resets it.
+    /// </remarks>
+    private static CollectorHealth Unreachable(string instanceId) => new()
+    {
+        InstanceId = instanceId,
+        Role = CollectorRole.Observation,
+        Health = HealthState.Critical,
+        ConsecutiveFailures = 47,
+        IsBackingOff = true,
+        LastFailureDetail = "Cannot complete login due to an incorrect user name or password.",
+        LastFailureKind = CollectionFailureKind.AuthenticationRejected,
+    };
+
     // --- helpers ----------------------------------------------------------
 
     private CollectorHealth HealthFor(CollectorRole role) =>
@@ -597,6 +666,95 @@ public class MonitoringCycleTests : IDisposable
 
         Assert.Equal(AlertScopes.Observation, alert.Scope);
         Assert.Contains("vmhba1:C0:T3:L7", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_rule_raises_its_alert_into_the_metric_scope_before_any_store_touches_it()
+    {
+        // The test above reads the scope back out of the store, and a store is
+        // allowed to stamp what it files -- both of them do, so it would read
+        // correctly even if the cycle handed the alert over with no scope at
+        // all. It did. Every fault-counter and peer-outlier alert went into the
+        // live cache unscoped, and the database row beside it carried
+        // "observation" because the store wrote its own argument into the
+        // column; the same alert therefore answered differently before and
+        // after a restart. So this assertion is taken from the reconciliation
+        // result itself, which no store has touched: it is what the worker
+        // returns and what the notifier is handed, and the only place the
+        // cycle's own stamping can be seen. Unstamp the rules in
+        // RunObservationsAsync and the test above still passes; this one does
+        // not.
+        var watcher = new ScopeWatchingAlertStateStore(_alerts);
+        var cycle = Cycle(alerts: watcher);
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Fault("storagePath.busResets.summation", 2, "vmhba1:C0:T3:L7")],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        var reconciled = Assert.Single(watcher.Reconciled, a => a.Category == "Fault");
+
+        Assert.Equal(AlertScopes.Observation, reconciled.Scope);
+    }
+
+    [Fact]
+    public async Task A_write_the_inventory_cycle_could_not_make_is_owned_by_the_inventory_scope()
+    {
+        // The rules are not the only unscoped source. Guarded produces its
+        // "State could not be saved" definition with no scope either, and the
+        // inventory cycle is where two of them are raised -- so the same drift
+        // lives on this side, and nothing pointed at it: every other alert this
+        // cycle reconciles was stamped by the pipeline on the way in, which is
+        // what made the gap invisible. An operator reading which evaluation
+        // owns a failed write would be told one thing by the running process
+        // and another by the same process after a restart.
+        var watcher = new ScopeWatchingAlertStateStore(_alerts);
+        var cycle = Cycle(health: new FailingCollectorHealthStore(), alerts: watcher);
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow, entities: [Host("vc-1:host-1", _clock.UtcNow)]),
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        var reconciled = Assert.Single(
+            watcher.Reconciled, a => a.Title == "State could not be saved");
+
+        Assert.Equal(AlertScopes.Inventory, reconciled.Scope);
+    }
+
+    [Fact]
+    public void A_store_files_an_alert_under_the_scope_it_was_asked_for_whatever_the_alert_says()
+    {
+        // The other half, and the half that makes a restart agree with itself.
+        // PostgresAlertStateStore writes @scope into the column rather than the
+        // instance's own, and reads that column back into Scope when it loads
+        // -- so its cache has to be stamped the same way or the live copy and
+        // the durable one disagree about a field for as long as the process
+        // stays up. This pins the fake to that behaviour, which is the only
+        // place it can be pinned without a database: the Postgres suite skips
+        // without a server, and its own test supplies a scoped instance, so the
+        // unstamped case has never been exercised there.
+        var definition = HardwareFault("vc-1") with { Scope = string.Empty };
+
+        _alerts.Reconcile(AlertScopes.Inventory, (stored, flaps) => AlertReconciler.Reconcile(
+            new AlertReconciliationRequest
+            {
+                Observed = [definition],
+                Stored = stored,
+                FlapHistories = flaps,
+                NowUtc = _clock.UtcNow,
+            }));
+
+        var filed = Assert.Single(_alerts.InstancesIn(AlertScopes.Inventory));
+
+        Assert.Equal(AlertScopes.Inventory, filed.Scope);
     }
 
     [Fact]
@@ -826,6 +984,50 @@ public class MonitoringCycleTests : IDisposable
         Category = "Hardware",
         Source = source,
     };
+}
+
+/// <summary>
+/// The real fake, with a note taken of what reconciliation produced.
+/// </summary>
+/// <remarks>
+/// A decorator rather than a second implementation: everything is passed
+/// through to <see cref="InMemoryAlertStateStore"/>, so the cycle under test
+/// behaves exactly as it does everywhere else in this file. What it records is
+/// the result as the reconciler produced it — before the store filed it, and so
+/// before any stamping a store does on the way in.
+/// </remarks>
+internal sealed class ScopeWatchingAlertStateStore(InMemoryAlertStateStore inner) : IAlertStateStore
+{
+    private readonly List<AlertInstance> _reconciled = [];
+
+    public IReadOnlyList<AlertInstance> Reconciled => _reconciled;
+
+    public IReadOnlyList<AlertInstance> All => inner.All;
+
+    public IReadOnlyList<AlertInstance> InstancesIn(string scope) => inner.InstancesIn(scope);
+
+    public IReadOnlyList<FlapHistory> FlapHistoriesIn(string scope) => inner.FlapHistoriesIn(scope);
+
+    public AlertReconciliationResult Reconcile(
+        string scope,
+        Func<IReadOnlyList<AlertInstance>, IReadOnlyList<FlapHistory>, AlertReconciliationResult> reconcile)
+    {
+        var result = inner.Reconcile(scope, reconcile);
+
+        _reconciled.AddRange(result.Instances);
+
+        return result;
+    }
+
+    public AlertInstance? Mutate(AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change) =>
+        inner.Mutate(fingerprint, change);
+
+    public IReadOnlyList<AlertInstance> MutateMany(
+        IReadOnlyList<AlertFingerprint> fingerprints, Func<AlertInstance, AlertInstance> change) =>
+        inner.MutateMany(fingerprints, change);
+
+    public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints) =>
+        inner.MarkNotified(scope, fingerprints);
 }
 
 /// <summary>A sample store whose failure can end, as a real one's does.</summary>

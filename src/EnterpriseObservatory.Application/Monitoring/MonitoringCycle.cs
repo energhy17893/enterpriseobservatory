@@ -143,11 +143,14 @@ public sealed class MonitoringCycle(
         var graphFailure = Guarded(
             "entity-graph", "the topology", () => _graphStore.Replace(graph));
 
-        var observed = cycle.Snapshots.SelectMany(s => s.Alerts)
-            .Concat(cycle.CollectionAlerts)
-            .Concat(healthFailure)
-            .Concat(graphFailure)
-            .ToList();
+        var observed = InScope(
+            AlertScopes.Inventory,
+            [
+                .. cycle.Snapshots.SelectMany(s => s.Alerts),
+                .. cycle.CollectionAlerts,
+                .. healthFailure,
+                .. graphFailure,
+            ]);
 
         var reconciliation = Reconcile(AlertScopes.Inventory, observed, options, now);
 
@@ -200,15 +203,18 @@ public sealed class MonitoringCycle(
         // else. Collection sources and storage have always been isolated this
         // way; rules were the one part of the cycle that could still take the
         // whole thing down with them.
-        var observed = cycle.CollectionAlerts
-            .Concat(healthFailure)
-            .Concat(Analysis.GuardedRule.Run(
-                Analysis.FaultCounters.RuleId,
-                () => Analysis.FaultCounters.Evaluate(cycle.Observations)))
-            .Concat(Analysis.GuardedRule.Run(
-                Analysis.PeerOutliers.RuleId,
-                () => Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers)))
-            .ToList();
+        var observed = InScope(
+            AlertScopes.Observation,
+            [
+                .. cycle.CollectionAlerts,
+                .. healthFailure,
+                .. Analysis.GuardedRule.Run(
+                    Analysis.FaultCounters.RuleId,
+                    () => Analysis.FaultCounters.Evaluate(cycle.Observations)),
+                .. Analysis.GuardedRule.Run(
+                    Analysis.PeerOutliers.RuleId,
+                    () => Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers)),
+            ]);
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
 
@@ -429,6 +435,35 @@ public sealed class MonitoringCycle(
     /// </remarks>
     private IReadOnlyList<AlertInstance> VisibleInbox() =>
         [.. _alertStore.All.Where(i => i.IsVisible)];
+
+    /// <summary>
+    /// Stamps everything this pass observed with the evaluation that owns it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The pipelines stamp what the collectors report, so that a new collector
+    /// cannot get it wrong. Nothing stamped what this method adds to them. The
+    /// analysis rules and <see cref="Guarded"/> both produce definitions with
+    /// no scope, and <c>AlertLifecycle</c> copies whatever it is given — so
+    /// every fault-counter, peer-outlier and failed-write alert sat in the live
+    /// cache with an empty scope while the database row beside it carried the
+    /// real one, written from the store's own argument. The same alert answered
+    /// "" before a restart and "observation" after one: a field whose value
+    /// depends on how long the process has been up, which is the hardest kind
+    /// of wrong to see, because every individual screen looks right.
+    /// </para>
+    /// <para>
+    /// Applied to the whole list rather than to the rules alone, so that the
+    /// next thing concatenated in here is stamped by being here at all. It is
+    /// idempotent over what the pipelines already stamped, and it is this
+    /// cycle's scope by construction — the same value passed to
+    /// <see cref="Reconcile"/> on the next line, which is the one that decides
+    /// where the result is filed.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<AlertDefinition> InScope(
+        string scope, IReadOnlyList<AlertDefinition> observed) =>
+        [.. observed.Select(a => a with { Scope = scope })];
 
     /// <summary>
     /// Advances alert state for one scope.
