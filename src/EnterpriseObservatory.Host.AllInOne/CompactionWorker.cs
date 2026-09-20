@@ -125,8 +125,7 @@ public sealed class CompactionWorker(
                 _logger,
                 report.BucketsWritten,
                 report.SamplesDeleted,
-                report.BucketsDeleted,
-                report.SeriesForgotten);
+                report.BucketsDeleted);
         }
 
         // Reconciled every pass, not only the failing ones. Reconciliation

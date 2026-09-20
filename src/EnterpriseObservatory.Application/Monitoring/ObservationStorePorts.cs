@@ -125,9 +125,14 @@ public sealed record CompactionReport
 
     public int BucketsDeleted { get; init; }
 
-    /// <summary>Series with no data left at any resolution, and so removed.</summary>
-    public int SeriesForgotten { get; init; }
+    // There was a SeriesForgotten count here, for a sweep step that deleted
+    // series rows with nothing left. The step is gone (see the note in
+    // PostgresObservationStore.Compact and ADR-0019) and the field went with
+    // it rather than staying as a zero. A number the product reports every
+    // pass, about a thing the product no longer does, is a small lie it tells
+    // about itself — and the operator reading "0 series forgotten" would have
+    // no way to tell it apart from "nothing was eligible this time".
 
     public bool DidSomething =>
-        BucketsWritten > 0 || SamplesDeleted > 0 || BucketsDeleted > 0 || SeriesForgotten > 0;
+        BucketsWritten > 0 || SamplesDeleted > 0 || BucketsDeleted > 0;
 }

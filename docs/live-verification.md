@@ -210,9 +210,15 @@ toplam seri satırı:        8 620
 
 Bırakılan 2 536 seri **silinmedi**. Yazılmayı durdurdular ama topladıkları
 geçmiş gerçek ölçümdü ve duruyor: ham pencere 2 gün, kovalar 30 ve **90** gün
-sonra retention ile temizlenecek, ardından `A_series_with_nothing_left_is_forgotten`
-seri satırını da kaldıracak. Yani `series` tablosu 8 620'den 6 084'e **90 gün
-içinde** inecek, bugün değil. (ADR-0017 öncesi bu 400 gündü.)
+sonra retention ile temizlenecek. (ADR-0017 öncesi bu 400 gündü.)
+
+Ölçüm sırasında bu paragraf, ölçümlerin gitmesinden sonra seri satırlarının da
+kaldırılacağını söylüyordu. **Artık kaldırılmıyor:** o süpürme adımı
+ADR-0019 ile kaldırıldı. Yani `series` tablosu 8 620'de **kalıcı olarak**
+duracak — 2 536 boş satır, satır başına ~300 bayt disk ve ~370 bayt bellek,
+toplam **≈ 1,7 MB**, bir kere ve temelli. Tek bir yapılandırma değişikliğinin
+bıraktığı bu miktar, yıllık makine değişiminin bıraktığından (yılda ~600-1 200
+satır) büyüktür; ikisi de 150-170 MB'lık çalışma kümesinin yanında görünmez.
 
 Bu doğru davranış: toplamayı bıraktık diye toplanmış ölçümü silmek, veriyi yok
 etmek olurdu. Ama projeksiyon tablosu **yeni yazım hızı** içindir; disk birkaç
@@ -427,8 +433,8 @@ Dürüstlük gereği: aşağıdakiler **çalışıyor diye bilinmiyor.**
 - **Retention silmeleri canlıda.** Silme yolu *test edilmemiş değil*: gerçek bir
   PostgreSQL'e karşı üç entegrasyon testi var (`Raw_samples_are_folded_before_
   they_are_deleted`, `Everything_past_its_retention_goes`,
-  `A_series_with_nothing_left_is_forgotten`) ve saat ileri sarılarak 2 gün /
-  30 gün / 90 gün sınırlarının üçünü de geçiyor. Doğrulanmamış olan, **canlı
+  `A_series_keeps_its_row_after_its_last_measurement_has_aged_out`) ve saat
+  ileri sarılarak 2 gün / 30 gün / 90 gün sınırlarının üçünü de geçiyor. Doğrulanmamış olan, **canlı
   estate'te tetiklenmesi** — veri henüz o kadar eski değil, dolayısıyla
   gerçek hacimde silmenin ne kadar sürdüğü ve dosyayı nasıl etkilediği
   bilinmiyor.

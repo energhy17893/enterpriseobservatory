@@ -17,8 +17,8 @@ namespace EnterpriseObservatory.Persistence.Postgres.Tests;
 /// </para>
 /// <para>
 /// What none of this proves is that the <c>FOR KEY SHARE</c> statement really
-/// takes the lock, or that <c>SKIP LOCKED</c> really skips. Those are the
-/// server's behaviour and only a server can answer for them.
+/// takes the lock. That is the server's behaviour and only a server can answer
+/// for it.
 /// </para>
 /// </remarks>
 public class SeriesBindingTests
@@ -213,17 +213,21 @@ public class SeriesLifetimeTests : IDisposable
         // on the foreign key, PostgresDatabase.Write never committed, and every
         // entity's samples for that cycle went with it.
         var writer = new PostgresObservationStore(_live.Database);
-        var sweeper = new PostgresObservationStore(_live.Database);
 
         var retired = EntityId.For("vc-1", "retired-vm");
         var rest = EntityId.For("vc-1", "the-rest-of-the-estate");
 
         writer.Append([Sample(retired, T0, 1)]);
 
-        // Past every retention, so the samples go and the now-empty series row
-        // goes with them. The sweeper forgets the id; the writer does not.
-        sweeper.Compact(T0.AddDays(500), new SeriesRetentionPolicy());
-        Assert.Empty(sweeper.SeriesFor(retired));
+        // The row goes behind the writer's back, which is the only thing that
+        // matters here. Compaction used to be what did it; it no longer deletes
+        // series rows at all (ADR-0019), and the guard still has to hold —
+        // restoring a database dump, an operator pruning by hand and any sweep
+        // a later release adds all leave the cache naming a row that is gone.
+        // So the deletion is made directly rather than borrowed from a caller
+        // that might stop doing it again.
+        Delete(retired);
+        Assert.Empty(new PostgresObservationStore(_live.Database).SeriesFor(retired));
 
         var later = T0.AddDays(500);
         writer.Append([Sample(retired, later, 2), Sample(rest, later, 3)]);
@@ -232,24 +236,12 @@ public class SeriesLifetimeTests : IDisposable
         Assert.Single(Read(writer, rest, later, later.AddMinutes(1)).Points);
     }
 
-    [SkippableFact]
-    public void A_sweep_still_forgets_a_series_that_nobody_is_writing_to()
+    /// <summary>Removes one entity's series rows, as something outside this store would.</summary>
+    private void Delete(EntityId entity) => _live.Database.Write(connection =>
     {
-        Skip.If(LiveDatabase.SkipReason is not null, LiveDatabase.SkipReason);
-
-        // The other direction, and the one a careless fix breaks: claiming
-        // candidates with SKIP LOCKED before deleting them is only safe if the
-        // unlocked ones are still deleted. Skip everything and the series table
-        // grows forever, which is the problem the sweep exists to solve.
-        var store = new PostgresObservationStore(_live.Database);
-        var entity = EntityId.For("vc-1", "quiet");
-
-        store.Append([Sample(entity, T0, 1)]);
-        Assert.Single(store.SeriesFor(entity));
-
-        var report = store.Compact(T0.AddDays(500), new SeriesRetentionPolicy());
-
-        Assert.Empty(store.SeriesFor(entity));
-        Assert.True(report.SeriesForgotten >= 1);
-    }
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM series WHERE entity_id = @entity;";
+        command.Parameters.AddWithValue("entity", entity.Value);
+        command.ExecuteNonQuery();
+    });
 }

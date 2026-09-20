@@ -226,30 +226,37 @@ public class CompactionTests : IDisposable
         AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0, 1, 2, 3);
 
         // Beyond even the hourly retention.
-        var report = store.Compact(T0.AddDays(500), new SeriesRetentionPolicy());
+        store.Compact(T0.AddDays(500), new SeriesRetentionPolicy());
 
         Assert.Empty(Read(store, entity, T0, T0.AddDays(1), SeriesResolution.FiveMinutes).Points);
         Assert.Empty(Read(store, entity, T0, T0.AddDays(1), SeriesResolution.OneHour).Points);
-        Assert.True(report.SeriesForgotten >= 1);
     }
 
     [SkippableFact]
-    public void A_series_with_nothing_left_is_forgotten()
+    public void A_series_keeps_its_row_after_its_last_measurement_has_aged_out()
     {
         RequireDatabase();
 
-        // The dictionary is loaded into memory at startup. Left to grow it
-        // would hold every counter of every virtual machine that has ever
-        // existed.
+        // The sweep used to delete this row, and deleting it is what put a
+        // foreign key race on the ingest path: sample.series_id cascades, so a
+        // delete that won the race against an appending cycle took that cycle's
+        // samples — for every entity, not just this one — and said nothing.
+        // Restore it and this test is the thing that notices.
+        //
+        // What is given up instead is stated rather than hidden: the row now
+        // survives forever, at about 300 bytes of disk and 370 of memory. On
+        // the measured estate that is roughly 1 MB a year of decommissioned
+        // machines. ADR-0019 says where it stops being affordable.
         var store = Store();
-        var entity = Subject("forgotten");
+        var entity = Subject("outlives-its-data");
 
         AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0, 1);
         Assert.Single(store.SeriesFor(entity));
 
         store.Compact(T0.AddDays(500), new SeriesRetentionPolicy());
 
-        Assert.Empty(store.SeriesFor(entity));
+        Assert.Empty(Read(store, entity, T0, T0.AddDays(1), SeriesResolution.OneHour).Points);
+        Assert.Single(store.SeriesFor(entity));
     }
 
     [SkippableFact]
