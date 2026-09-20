@@ -41,6 +41,48 @@ internal static partial class HostLog
                   "issues a new one.")]
     public static partial void SetupTokenIssued(ILogger logger, string token);
 
+    /// <summary>The key ring is somewhere that gets deleted.</summary>
+    /// <remarks>
+    /// <para>
+    /// 1005 and 1006 rather than a shared id, and they are two messages rather
+    /// than one for the same reason 1004 was moved off 1013: an operator filters
+    /// on these. "The keys are in a directory Windows empties" is a maintenance
+    /// task with a deadline. "The keys were emptied" is an incident whose only
+    /// remedy is re-typing passwords. One id for both means a pipeline cannot
+    /// page on the second without paging on the first for ever.
+    /// </para>
+    /// <para>
+    /// Critical, and only at startup. Critical because losing this key ring
+    /// loses every stored vCenter password with no restore path; once, because
+    /// repeating it every cycle is how principle 4 says a product trains people
+    /// to filter it out. The path and a count, never a key.
+    /// </para>
+    /// </remarks>
+    [LoggerMessage(
+        EventId = 1005,
+        Level = LogLevel.Critical,
+        Message = "The Data Protection key ring is in a losable location: {Path} — {Reason}. " +
+                  "It holds the only copy of the key that decrypts every vCenter password " +
+                  "entered in the product, and deleting it makes all of them permanently " +
+                  "unrecoverable. The keys are readable right now, so this is still fixable: " +
+                  "set Storage:KeyRingPath to a durable directory, move the {KeyCount} key " +
+                  "file(s) there, restart, and back that directory up separately from the " +
+                  "database. See ADR-0015 and ADR-0020.")]
+    public static partial void KeyRingInLosableLocation(
+        ILogger logger, string path, string reason, int keyCount);
+
+    /// <summary>The key ring was deleted, and the passwords went with it.</summary>
+    [LoggerMessage(
+        EventId = 1006,
+        Level = LogLevel.Critical,
+        Message = "The Data Protection key ring at {Path} holds no keys, but {Connections} " +
+                  "connection(s) entered in the product are stored encrypted. Those passwords " +
+                  "were encrypted with a key that is no longer here and cannot be recovered — " +
+                  "not from a backup of the database, which never held the key. Each affected " +
+                  "vCenter will report as unreachable until an administrator opens Connections " +
+                  "and re-enters its password. See ADR-0015 and ADR-0020.")]
+    public static partial void KeyRingLostItsKeys(ILogger logger, string path, int connections);
+
     [LoggerMessage(
         EventId = 1010,
         Level = LogLevel.Information,

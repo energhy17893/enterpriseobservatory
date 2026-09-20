@@ -1,4 +1,4 @@
-using EnterpriseObservatory.Application.Alerts;
+﻿using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -161,6 +161,32 @@ public sealed record MonitoringOptions
     /// <summary>How far one vantage point may disagree with its peers.</summary>
     public Analysis.PeerOutlierPolicy PeerOutliers { get; init; } =
         Analysis.PeerOutlierPolicy.Default;
+
+    /// <summary>When a machine is waiting for CPU, and whose fault that is.</summary>
+    public Analysis.CpuContentionPolicy CpuContention { get; init; } =
+        Analysis.CpuContentionPolicy.Default;
+
+    /// <summary>Which layer of the storage stack a device's latency sits in.</summary>
+    public Analysis.StorageLayerPolicy StorageLayers { get; init; } =
+        Analysis.StorageLayerPolicy.Default;
+
+    /// <summary>
+    /// When every host mounting a volume sees it as slow — the other half of
+    /// <see cref="PeerOutliers"/>.
+    /// </summary>
+    /// <remarks>
+    /// Its <c>Peers</c> must stay the same policy <see cref="PeerOutliers"/>
+    /// gets, and the cycle passes it so. The two rules are mutually exclusive
+    /// by recomputing each other's test from one set of numbers; if the two
+    /// copies drift apart a band opens where both fire, or neither does, and
+    /// nothing says so.
+    /// </remarks>
+    public Analysis.SharedVolumePolicy SharedVolumes { get; init; } =
+        Analysis.SharedVolumePolicy.Default;
+
+    /// <summary>When this estate's storage latency cannot be measured at all.</summary>
+    public Analysis.StorageLatencyBlindSpotPolicy StorageLatencyBlindSpot { get; init; } =
+        Analysis.StorageLatencyBlindSpotPolicy.Default;
 
     public FlapPolicy Flap { get; init; } = FlapPolicy.Default;
 
