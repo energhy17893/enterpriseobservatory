@@ -32,8 +32,113 @@ jobs:
       - name: Build
         run: dotnet build --no-restore -c Release
 
+      # This job reports the PostgreSQL tests as skipped and that is expected:
+      # there is no server here and a Windows runner cannot have one as a
+      # service container. They are proved in the postgres-tests job below,
+      # which fails if they skip. Bkz. ADR-0022.
       - name: Test
         run: dotnet test --no-build -c Release --verbosity normal
+
+  postgres-tests:
+    name: Persistence (PostgreSQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer sürüm türetmesi için tüm geçmiş gerekir
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Generated here, used for minutes, destroyed with the runner. This is
+      # deliberately not a repository secret: a secret implies a value worth
+      # protecting and worth reusing, and this guards a container on this
+      # runner's own loopback that nothing else can reach.
+      - name: Generate a throwaway database password
+        run: |
+          password="$(openssl rand -hex 32)"
+          echo "::add-mask::$password"
+          echo "EO_TEST_PG_PASSWORD=$password" >> "$GITHUB_ENV"
+
+      # Started in a step rather than as a `services:` container, which is the
+      # idiomatic shape. A service's environment is fixed before any step runs,
+      # so its password would have to be a literal in this file or a secret,
+      # and the password must be neither. Bkz. ADR-0022.
+      - name: Start PostgreSQL
+        run: |
+          docker run --detach --name eo-postgres \
+            --env POSTGRES_USER=observatory \
+            --env POSTGRES_PASSWORD="$EO_TEST_PG_PASSWORD" \
+            --env POSTGRES_DB=observatory \
+            --publish 127.0.0.1:5432:5432 \
+            postgres:18
+
+      - name: Wait for PostgreSQL to accept connections
+        run: |
+          for _ in $(seq 1 60); do
+            if docker exec eo-postgres pg_isready --username=observatory --dbname=observatory --quiet; then
+              echo "Ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::PostgreSQL did not accept connections within 60s."
+          docker logs eo-postgres
+          exit 1
+
+      - name: Restore
+        run: dotnet restore tests/EnterpriseObservatory.Persistence.Postgres.Tests
+
+      - name: Build
+        run: dotnet build tests/EnterpriseObservatory.Persistence.Postgres.Tests --no-restore -c Release
+
+      - name: Test
+        env:
+          EO_TEST_PG_HOST: 127.0.0.1
+          EO_TEST_PG_PORT: '5432'
+          EO_TEST_PG_DATABASE: observatory
+          EO_TEST_PG_USER: observatory
+        run: |
+          dotnet test tests/EnterpriseObservatory.Persistence.Postgres.Tests \
+            --no-build -c Release --verbosity normal \
+            --logger 'trx;LogFileName=postgres.trx' \
+            --results-directory "$RUNNER_TEMP/testresults"
+
+      # The point of this job is that these tests ran. A green run in which
+      # they all skipped is the exact thing this job exists to end, and it
+      # would look identical from the outside, so assert it rather than trust
+      # it: if the environment wiring above ever breaks, fail loudly.
+      - name: Assert the live tests actually ran
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/testresults/postgres.trx" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+
+          ns = {'t': 'http://microsoft.com/schemas/VisualStudio/TeamTest/2010'}
+          counters = ET.parse(sys.argv[1]).getroot().find('.//t:Counters', ns)
+          if counters is None:
+              sys.exit('::error::No counters in the trx; the test run produced nothing.')
+
+          total = int(counters.get('total', 0))
+          executed = int(counters.get('executed', 0))
+          skipped = total - executed
+
+          print(f'total={total} executed={executed} skipped={skipped}')
+
+          if skipped:
+              sys.exit(
+                  f'::error::{skipped} of {total} tests skipped. This job exists '
+                  'because these tests run nowhere else, so a skip here is a '
+                  'failure: check that the database is reachable and that '
+                  'EO_TEST_PG_PASSWORD reached the test process.')
+          if total == 0:
+              sys.exit('::error::No tests ran at all.')
+          PY
+
+      - name: Stop PostgreSQL
+        if: always()
+        run: docker rm --force eo-postgres
 
   web:
     name: Web interface

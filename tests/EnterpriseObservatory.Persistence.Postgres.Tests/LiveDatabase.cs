@@ -27,10 +27,16 @@ namespace EnterpriseObservatory.Persistence.Postgres.Tests;
 /// </para>
 /// <code>
 /// $env:EO_TEST_PG_HOST     = "127.0.0.1"   # optional, defaults to loopback
+/// $env:EO_TEST_PG_PORT     = "5432"        # optional
 /// $env:EO_TEST_PG_DATABASE = "observatory" # optional
 /// $env:EO_TEST_PG_USER     = "observatory" # optional
 /// $env:EO_TEST_PG_PASSWORD = "..."         # required, or the tests skip
 /// </code>
+/// <para>
+/// The port is configurable because a developer machine may already have a
+/// server on 5432 that these tests must not touch. Without it the only way to
+/// run the suite locally is against whatever happens to own the default port.
+/// </para>
 /// <para>
 /// Absent configuration skips rather than fails. A machine without a database
 /// should be able to run the rest of the suite, and a skipped test that says
@@ -51,6 +57,11 @@ public sealed class LiveDatabase : IDisposable
     public static PostgresOptions Options(string schema) => new()
     {
         Host = Environment.GetEnvironmentVariable("EO_TEST_PG_HOST") ?? "127.0.0.1",
+        Port = int.TryParse(
+            Environment.GetEnvironmentVariable("EO_TEST_PG_PORT"),
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var port) ? port : 5432,
         Database = Environment.GetEnvironmentVariable("EO_TEST_PG_DATABASE") ?? "observatory",
         Username = Environment.GetEnvironmentVariable("EO_TEST_PG_USER") ?? "observatory",
         Password = Secret.From(Environment.GetEnvironmentVariable("EO_TEST_PG_PASSWORD")),
@@ -85,6 +96,7 @@ public sealed class LiveDatabase : IDisposable
             new NpgsqlConnectionStringBuilder
             {
                 Host = cleanup.Host,
+                Port = cleanup.Port,
                 Database = cleanup.Database,
                 Username = cleanup.Username,
                 Password = cleanup.Password.Reveal(),
