@@ -22,6 +22,7 @@ public class CpuContentionTests
     private const string Ready = "cpu.ready.summation";
     private const string CoStop = "cpu.costop.summation";
     private const string Usage = "cpu.usage.average";
+    private const string MaxLimited = "cpu.maxlimited.summation";
 
     /// <summary>
     /// A ready or co-stop reading, given as the percentage it should convert
@@ -207,6 +208,66 @@ public class CpuContentionTests
 
         Assert.Single(alerts);
         Assert.Equal(new EntityId(Host), alerts[0].Entity);
+    }
+
+    // ---------------------------------------------------------------
+    // The limit verdict, and the false positive it exists to close.
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public void A_machine_held_back_by_its_own_cpu_limit_is_never_counted_among_a_hosts_victims()
+    {
+        // The defect this verdict was added to close, and the load-bearing
+        // test of the whole file. A VM throttled by a configured limit shows
+        // the same ready time as one starved by its host, so before the limit
+        // counter arrived the rule called it a victim and blamed the host.
+        //
+        // The consequence is concrete and it is the worst kind this product
+        // can produce: an operator is told the host is short of CPU, drains or
+        // buys a host, finds it was fine, and learns to distrust the alert --
+        // while the VM's real problem, a limit somebody set years ago and
+        // forgot, stays invisible in every number on the screen.
+        //
+        // Two halves, and both matter. The host at 92% has exactly two
+        // machines waiting and both are limited, so there is no corroboration
+        // left for a host verdict and it must not fire; and neither machine
+        // may be filed against the host either.
+        var alerts = CpuContention.Evaluate(
+            [
+                HostBusy(92),
+                .. Quiet(),
+                Wait("vc-1:vm-9", 30),
+                Wait("vc-1:vm-9", 20, MaxLimited),
+                Wait("vc-1:vm-10", 25),
+                Wait("vc-1:vm-10", 18, MaxLimited),
+            ],
+            Estate(Guests(10)));
+
+        Assert.DoesNotContain(alerts, a => a.Entity == new EntityId(Host));
+        Assert.DoesNotContain(alerts, a => a.Title == "Waiting far more than its neighbours");
+
+        // And it is replaced rather than merely silenced: a confident wrong
+        // answer swapped for silence would still leave the forgotten limit
+        // invisible, which is half the defect.
+        Assert.Equal(2, alerts.Count(a => a.Title == "Held back by its own CPU limit"));
+    }
+
+    [Fact]
+    public void A_limited_machine_is_told_about_its_limit_rather_than_about_its_neighbours()
+    {
+        // The other console. On an unsaturated host this machine used to be
+        // named a noisy-neighbour victim, which sends its owner to check
+        // shares and vCPU counts and to argue with the platform team about
+        // placement -- for a machine whose answer is one checkbox on its own
+        // configuration. Nobody else in this market says this sentence.
+        var alerts = CpuContention.Evaluate(
+            [.. Quiet(1), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-9", 20, MaxLimited)],
+            Estate(Guests(9)));
+
+        var alert = Assert.Single(alerts);
+
+        Assert.Equal(new EntityId("vc-1:vm-9"), alert.Entity);
+        Assert.Equal("Held back by its own CPU limit", alert.Title);
     }
 
     // ---------------------------------------------------------------
