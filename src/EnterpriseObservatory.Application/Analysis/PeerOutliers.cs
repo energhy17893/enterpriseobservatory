@@ -1,4 +1,4 @@
-using EnterpriseObservatory.Domain;
+﻿using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Analysis;
@@ -80,6 +80,9 @@ public sealed record PeerOutlierPolicy
 public static class PeerOutliers
 {
     public const string Category = "Storage path";
+    /// <summary>Names this rule in a failure alert. Stable across releases.</summary>
+    public const string RuleId = "peer-outliers";
+
 
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Observation> observations,

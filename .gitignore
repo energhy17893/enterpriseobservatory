@@ -46,3 +46,13 @@ coverage*.json
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Agent skill tooling (npx skills) — not part of the product
+.agents/
+.claude/skills/
+skills-lock.json
+
+# Isolated worktrees for parallel agent builds. Both spellings: the CLI
+# default is .worktrees/, the desktop harness puts them in .claude/worktrees/.
+.worktrees/
+.claude/worktrees/

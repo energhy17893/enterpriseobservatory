@@ -1,4 +1,4 @@
-using EnterpriseObservatory.Application.Alerts;
+﻿using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -173,9 +173,17 @@ public sealed class MonitoringCycle(
         // cycle: reconciliation treats what it is given as the whole truth, so
         // a rule evaluated here must have its alerts reconciled here or the
         // next pass would resolve them.
+        // Each rule is guarded, so a bug in one costs that rule and nothing
+        // else. Collection sources and storage have always been isolated this
+        // way; rules were the one part of the cycle that could still take the
+        // whole thing down with them.
         var observed = cycle.CollectionAlerts
-            .Concat(Analysis.FaultCounters.Evaluate(cycle.Observations))
-            .Concat(Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers))
+            .Concat(Analysis.GuardedRule.Run(
+                Analysis.FaultCounters.RuleId,
+                () => Analysis.FaultCounters.Evaluate(cycle.Observations)))
+            .Concat(Analysis.GuardedRule.Run(
+                Analysis.PeerOutliers.RuleId,
+                () => Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers)))
             .ToList();
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
