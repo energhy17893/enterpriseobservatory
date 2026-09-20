@@ -52,5 +52,7 @@ Desktop.ini
 .claude/skills/
 skills-lock.json
 
-# Isolated worktrees for parallel agent builds
+# Isolated worktrees for parallel agent builds. Both spellings: the CLI
+# default is .worktrees/, the desktop harness puts them in .claude/worktrees/.
 .worktrees/
+.claude/worktrees/
