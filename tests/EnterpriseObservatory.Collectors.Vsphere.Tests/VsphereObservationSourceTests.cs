@@ -657,6 +657,47 @@ public class VsphereObservationSourceTests
     }
 
     [Fact]
+    public async Task A_reattributed_series_says_that_its_instance_is_a_vantage_point()
+    {
+        // The flag the peer comparison is built on, set in exactly one place
+        // in the product and until now fabricated by hand in every test that
+        // read it. Without it "slow from one host only" — the rung of the
+        // ladder the whole storage chain was built for — never fires again on
+        // a real estate, because the rule sees no series it is allowed to
+        // compare and a broken rule looks exactly like a healthy fabric.
+        var (api, targets) = HostWithVolumes();
+
+        var batch = await Source(api, targets).ReadAsync(CancellationToken.None);
+
+        var latency = DatastoreLatency(batch).ToList();
+
+        Assert.Equal(2, latency.Count);
+        Assert.All(latency, o =>
+            Assert.True(o.Value.InstanceIsVantagePoint, o.Entity.Value));
+    }
+
+    [Fact]
+    public async Task A_host_counter_that_was_not_reattributed_is_not_a_vantage_point()
+    {
+        // The other direction, and the one that kills a flag set everywhere.
+        // A host's own LUNs and paths are devices belonging to it, not places
+        // it was observed from; marking them comparable would have the rule
+        // compare thirty-two LUNs of one host against each other and call the
+        // slowest of them a per-host storage problem.
+        var (api, targets) = HostWithVolumes();
+
+        var batch = await Source(api, targets).ReadAsync(CancellationToken.None);
+
+        var hostCounters = batch.Observations
+            .Where(o => o.Entity == new EntityId("host-1"))
+            .ToList();
+
+        Assert.NotEmpty(hostCounters);
+        Assert.All(hostCounters, o =>
+            Assert.False(o.Value.InstanceIsVantagePoint, o.Value.CounterName));
+    }
+
+    [Fact]
     public async Task A_volume_that_is_not_inventoried_is_dropped_rather_than_guessed_at()
     {
         // A datastore mounted on a host but not collected, or added since the

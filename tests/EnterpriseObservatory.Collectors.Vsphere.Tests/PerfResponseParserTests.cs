@@ -41,6 +41,24 @@ public class PerfResponseParserTests
                 <statsType>absolute</statsType>
                 <level>2</level>
               </returnval>
+              <returnval>
+                <key>250</key>
+                <nameInfo><label>Storage I/O Control datastore latency</label><key>datastoreVMObservedLatency</key></nameInfo>
+                <groupInfo><label>Datastore</label><key>datastore</key></groupInfo>
+                <unitInfo><label>Microsecond</label><key>microsecond</key></unitInfo>
+                <rollupType>latest</rollupType>
+                <statsType>absolute</statsType>
+                <level>1</level>
+              </returnval>
+              <returnval>
+                <key>400</key>
+                <nameInfo><label>Bus resets</label><key>busResets</key></nameInfo>
+                <groupInfo><label>Storage path</label><key>storagePath</key></groupInfo>
+                <unitInfo><label>Number</label><key>number</key></unitInfo>
+                <rollupType>summation</rollupType>
+                <statsType>delta</statsType>
+                <level>2</level>
+              </returnval>
             </QueryPerfCounterResponse>
           </soapenv:Body>
         </soapenv:Envelope>
@@ -56,10 +74,12 @@ public class PerfResponseParserTests
     {
         var counters = PerfResponseParser.ParseCounters(CounterResponse);
 
-        Assert.Equal(3, counters.Count);
+        Assert.Equal(5, counters.Count);
         Assert.Contains(counters, c => c.Key == "cpu.usage.average");
         Assert.Contains(counters, c => c.Key == "cpu.ready.summation");
         Assert.Contains(counters, c => c.Key == "disk.deviceLatency.average");
+        Assert.Contains(counters, c => c.Key == "datastore.datastoreVMObservedLatency.latest");
+        Assert.Contains(counters, c => c.Key == "storagePath.busResets.summation");
     }
 
     [Fact]
@@ -362,6 +382,163 @@ public class PerfResponseParserTests
 
         Assert.Empty(Assert.Single(
             PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+    }
+
+    // --- units, as stored rather than as sent -----------------------------
+
+    [Fact]
+    public void A_percentage_is_rescaled_between_the_wire_and_the_value()
+    {
+        // vSphere reports percentages in hundredths: a host at 26.69% comes
+        // back as 2669. The normaliser is tested on its own, but nothing held
+        // the parser to calling it, and the parser is the only place it is
+        // called. Unconverted, every CPU threshold in the product trips on the
+        // first cycle and every host in the estate is reported at 2669%.
+        //
+        // Asserted through ParseSamples rather than through the normaliser,
+        // because the gap was never in the arithmetic.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>2</counterId><instance></instance></id><value>2669</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var value = Assert.Single(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+
+        Assert.Equal(26.69d, value.Raw, precision: 6);
+
+        // And the unit still says percent, because that is now true of the
+        // number. A value and a unit that disagree is the defect one step on.
+        Assert.Equal("percent", value.Unit);
+    }
+
+    [Fact]
+    public void A_microsecond_latency_arrives_in_milliseconds_with_a_unit_that_says_so()
+    {
+        // datastore.datastoreVMObservedLatency.latest is in microseconds,
+        // three lines in the catalogue from the millisecond counters it exists
+        // to be compared against. Comparing VM-observed latency with device
+        // latency is how the product separates a queue problem from an array
+        // problem, and a comparison wrong by a thousand answers confidently
+        // and incorrectly.
+        //
+        // The unit matters as much as the number: PeerOutliers.IsDuration
+        // matches "millisecond" alone, so a value left labelled "microsecond"
+        // is silently dropped from peer comparison — the rule stops firing on
+        // the counter it was built for and nothing reports an error.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>250</counterId><instance>vol-aaa</instance></id><value>3000</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var value = Assert.Single(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+
+        Assert.Equal(3d, value.Raw, precision: 6);
+        Assert.Equal("millisecond", value.Unit);
+    }
+
+    [Fact]
+    public void A_unit_the_normaliser_does_not_know_is_carried_through_untouched()
+    {
+        // The other half of the same decision, and the one that stops the
+        // mutation "rescale everything" from passing. Counter 180 is already
+        // in milliseconds; dividing it by a hundred would report a 140 ms LUN
+        // as 1.4 ms and the worst device on the estate would look idle.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>180</counterId><instance></instance></id><value>140</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var value = Assert.Single(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+
+        Assert.Equal(140d, value.Raw);
+        Assert.Equal("millisecond", value.Unit);
+    }
+
+    // --- faults, which are not thresholds ---------------------------------
+
+    [Fact]
+    public void A_storage_path_fault_reaches_the_rule_marked_as_a_fault()
+    {
+        // Every one of 670,514 fault-counter readings on the live estate is
+        // zero, which is the correct answer for a clean fabric and exactly
+        // what a broken rule looks like. Nothing else distinguishes them: the
+        // flag is the only thing that tells the rule these zeros mean "it did
+        // not happen" rather than "nobody looked", so a bus reset that goes
+        // unmarked is a silent SCSI error indistinguishable from a healthy SAN.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>400</counterId><instance>vmhba0:C0:T3:L0</instance></id><value>2</value></value>
+                <value><id><counterId>2</counterId><instance></instance></id><value>2669</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var values = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values;
+
+        // Paths are kept one by one and summarised beside each other, so both
+        // the path's own series and the host summary have to carry the flag.
+        var resets = values
+            .Where(v => v.CounterName == "storagePath.busResets.summation")
+            .ToList();
+
+        Assert.NotEmpty(resets);
+        Assert.All(resets, v => Assert.True(v.IsFaultCount, v.Instance));
+        Assert.Equal(2d, Assert.Single(resets, v => v.Instance == "vmhba0:C0:T3:L0").Raw);
+
+        // And a level counter beside it is not a fault. A flag set everywhere
+        // would make every CPU reading above zero an error to report, which is
+        // the same failure in the opposite direction.
+        Assert.False(Assert.Single(values, v => v.CounterName == "cpu.usage.average").IsFaultCount);
+    }
+
+    [Fact]
+    public void A_fault_count_of_zero_is_still_marked_as_a_fault_counter()
+    {
+        // The classification is about the counter, not about the reading. A
+        // clean path reports zero on every cycle, and it is that zero — marked
+        // — that lets the product say the fabric was checked and found clean
+        // rather than say nothing at all.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>400</counterId><instance>vmhba0:C0:T3:L0</instance></id><value>0</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var values = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values;
+
+        Assert.NotEmpty(values);
+        Assert.All(values, v =>
+        {
+            Assert.Equal(0d, v.Raw);
+            Assert.True(v.IsFaultCount, v.Instance);
+        });
     }
 
     // --- per-device detail ------------------------------------------------
