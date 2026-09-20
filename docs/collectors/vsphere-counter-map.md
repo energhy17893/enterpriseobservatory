@@ -275,14 +275,77 @@ Alınan kararlar:
 - `datastore.siocActiveTimePercentage.average` **kasıtlı olarak toplanıyor**.
   Performans sayısı değil; diğer ikisinin anlamlı olup olmadığının kanıtı. Bu
   kanıt kimsenin hafızasında değil, veritabanında durmalı.
-- **Açık borç:** en iyi uygulama motoru yazıldığında ilk kurallardan biri şu
-  olmalı — *"SIOC kapalı ve gecikme sayaçları sürekli 0 iken, bu estate'in
-  depolama gecikmesi 1 ms altında ölçülemiyor; SIOC'u etkinleştirin."* Ürünün
-  kendi körlüğünü söylemesi, kullanıcının tarif ettiği best-practice
-  kontrollerinin tam örneğidir.
 - `--from-store ... --mask` ile çalıştırılan probe artık bu tabloyu
   **"Sub-millisecond visibility"** başlığı altında kendiliğinden basıyor, yani
   yeni bir estate'te ilk gün sorulabilir.
+
+### Borç ölçüldü ve kapatıldı — 20 Eylül 2026
+
+Yukarıda "açık borç" olarak kaydedilen madde — *"SIOC kapalı ve gecikme
+sayaçları sürekli 0 iken bu estate'in depolama gecikmesi ölçülemiyor"* — artık
+hem ölçülmüş hem de bir kurala dönüşmüş durumda.
+
+**Ölçüm.** 20 Eylül 2026, `VsphereProbe --from-store`:
+
+| Sayaç | Okuma | Sıfırdan büyük | Maks |
+|---|---|---|---|
+| `datastore.totalReadLatency.average` | 302 | **0** | 0 ms |
+| `datastore.totalWriteLatency.average` | 302 | **0** | 0 ms |
+| `datastore.siocActiveTimePercentage.average` | 302 | **0** | %0 |
+| `datastore.datastoreVMObservedLatency.latest` | 302 | **0** | 0 ms |
+| `disk.deviceLatency.average` | 33 | **0** | 0 ms |
+| `disk.kernelLatency.average` | 33 | **0** | 0 ms |
+| `disk.queueLatency.average` | 33 | **0** | 0 ms |
+
+Aynı pencerede volume'ler **boşta değildi**:
+`datastore.numberReadAveraged` 302 okumanın 24'ünde,
+`numberWriteAveraged` 76'sında sıfırdan büyük okudu; tepe değerleri 1638 ve 260
+işlem. **Yük var, gecikme sıfır okuyor.** Probe'un kendi cümlesi: *"IOPS
+sayaçları sıfır değilken sıfır okuyan bir gecikme sayacı, hızlı bir volume
+değildir."*
+
+> **Örneklem uyarısı — `disk.*` satırları.** Üstteki `datastore.*` rakamları
+> 178 180 okumalık taramadan gelir (yukarıdaki uzun pencere düzeltmesine bakın).
+> `disk.*` üçlüsünün 33 okuması ise **tek bir host'tan, tek bir andan**. Yani
+> *gösterge* niteliğinde, tarama değil. Bu üçlü her alıntılandığında bu cümle
+> de alıntılanmalı — kısa bir pencereden mutlak bir cümle kurmak, bu bölümün
+> zaten bir kez düştüğü hatadır.
+
+**Borç `disk.*` üçlüsüne de uzanıyor.** §5f/`StorageLayerSplit`'in eşiği bugüne
+kadar "ödünç alınmış" olarak işaretliydi: `datastore.*` üzerinde ölçülen
+milisaniye kesilmesinin `disk.*` üzerinde de geçerli *olacağı* varsayılıyordu.
+Yukarıdaki 33 okuma bu varsayımla tutarlı — ama tek host, tek an olduğu için
+onu kanıtlamaz. `StorageLayerSplit.MinimumMilliseconds` üzerindeki "ödünç"
+notu bu yüzden yerinde kalıyor.
+
+**Kural yazıldı.** `Analysis/StorageLatencyBlindSpot.cs`. Söylediği şey
+*"depolama yavaş"* değil — ürün bunu bilmiyor ve ima etmemeli — **"bu
+datastore'da depolama gecikmesi ölçülemiyor"**. Üç kapısı var ve hiçbiri
+diğerini gerektirmiyor: volume yük taşıyor (boştaki bir volume'ün sıfırı
+dürüsttür), tüm gecikme sayaçları platformun çözünürlüğünün altında okuyor
+(okumuyorsa zaten diğer üç depolama kuralı konuşur) ve SIOC aktif değil.
+Alarm SIOC'un *kapalı* olduğunu iddia etmiyor: etkin ama sıkışık olmayan SIOC
+da sıfır aktif süre yazar, dolayısıyla alarm sayacın söylediğini bildirip
+operatörden kontrol etmesini istiyor. Yaptığı asıl iddia her iki durumda da
+geçerli, çünkü boştaki bir SIOC da `datastoreVMObservedLatency` üretmez.
+
+Kural `GuardedRule`'un kategorisini, severity'sini (Warning) ve `platform`
+atıfını alıyor, `PeerOutliers`'ınkini değil: estate'in bozuk olduğunu
+bilmiyoruz, yalnızca bir kısmına bakmayı bıraktığımızı biliyoruz.
+
+**Datastore başına bir alarm**, estate genelinde tek alarm değil — SIOC
+datastore başına açılır, yani düzeltme de datastore başına. Tek bir estate
+alarmı, ilerleme çubuğuna dönerdi: sekiz volume düzeltilir, alarm kıpırdamaz.
+vROps'tan çıkarılan *"oranı dört alarm yerine tek alarmda alan olarak ifade
+et"* dersi ise korunuyor — oran her alarmın metninde taşınıyor: 41'de 1
+"bu volume'e bak" der, 41'de 41 "dur ve politika olarak ayarla" der.
+
+**Kuralın kasıtlı sessizlikleri:** `disk.*` üçlüsü hakkında hiçbir şey
+söylemiyor (SIOC bir datastore özelliği, cihaz gecikmesine faydası yok —
+düzeltmesi olmayan bir alarm, 4. ilkenin yasakladığı gürültüdür); yükü
+ölçülmemiş bir volume hakkında hiçbir şey söylemiyor (bakmamak, bakıp bir şey
+bulamamakla aynı şey değil); ve hiçbir koşulda depolamanın yavaş olduğunu
+söylemiyor.
 
 ---
 
