@@ -68,6 +68,13 @@ public sealed class PostgresObservationStore : IObservationStore
     /// pinned inside the appending transaction before it is used. See
     /// <see cref="BindSeries"/>.
     /// </para>
+    /// <para>
+    /// It only grows. Nothing removes an entry, because nothing removes a
+    /// series row: a counter that stops being collected keeps its row and its
+    /// place here forever. What that costs, and the estate shape where it would
+    /// stop being affordable, is worked out in the note in <see cref="Compact"/>
+    /// and recorded in ADR-0019.
+    /// </para>
     /// </remarks>
     private readonly ConcurrentDictionary<SeriesKey, long> _seriesIds = new();
 
@@ -448,8 +455,7 @@ public sealed class PostgresObservationStore : IObservationStore
             () => Fold(nowUtc, policy, SeriesResolution.OneHour),
             () => DeleteAgedSamples(nowUtc, policy),
             () => DeleteAgedBuckets(nowUtc, policy, SeriesResolution.FiveMinutes) +
-                  DeleteAgedBuckets(nowUtc, policy, SeriesResolution.OneHour),
-            ForgetEmptySeries);
+                  DeleteAgedBuckets(nowUtc, policy, SeriesResolution.OneHour));
     }
 
     /// <summary>
@@ -665,108 +671,50 @@ public sealed class PostgresObservationStore : IObservationStore
             return command.ExecuteNonQuery();
         });
 
-    /// <summary>
-    /// Removes series with nothing left at any resolution.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Otherwise the dictionary grows forever with every counter of every
-    /// virtual machine that has ever existed, and it is loaded into memory at
-    /// startup.
-    /// </para>
-    /// <para>
-    /// Claims its candidates with <c>SKIP LOCKED</c> before deleting any of
-    /// them, which is the half of the fix that lives on this side. A series an
-    /// append is currently writing to is locked by that append, and a series
-    /// being written to is by definition not empty — so skipping it is not a
-    /// concession, it is the more correct answer. Without this the delete would
-    /// instead queue behind the append's lock and then remove the row anyway,
-    /// and <c>sample.series_id</c> cascades: the samples that had just been
-    /// written would go with it. That failure is worse than the one it
-    /// replaces, because it is silent.
-    /// </para>
-    /// <para>
-    /// The emptiness test is repeated in the delete rather than trusted from
-    /// the claim. The claim's locking read sees rows as of its own statement,
-    /// and re-stating the condition costs an index probe on rows already
-    /// locked.
-    /// </para>
-    /// <para>
-    /// Whether this method should exist at all is a fair question and is left
-    /// open deliberately. A series row is six short columns; the storage it
-    /// reclaims is nothing next to the samples that had to disappear before it
-    /// became eligible. What it actually buys is a smaller in-memory dictionary
-    /// at startup, and that could be had by loading lazily instead. Deleting
-    /// rows on a timer to save nothing is what put a foreign key race on the
-    /// ingest path in the first place. Not removed here, because what to do
-    /// with the counters of a machine that no longer exists is a product
-    /// decision rather than this class's to take.
-    /// </para>
-    /// </remarks>
-    private int ForgetEmptySeries()
-    {
-        var removed = _database.Write(connection =>
-        {
-            var keys = new List<SeriesKey>();
-            var candidates = new List<long>();
-
-            using (var claim = connection.CreateCommand())
-            {
-                claim.CommandText = """
-                    SELECT id FROM series
-                    WHERE NOT EXISTS (SELECT 1 FROM sample WHERE sample.series_id = series.id)
-                      AND NOT EXISTS (SELECT 1 FROM bucket WHERE bucket.series_id = series.id)
-                    FOR UPDATE SKIP LOCKED;
-                    """;
-
-                using var claimed = claim.ExecuteReader();
-
-                while (claimed.Read())
-                {
-                    candidates.Add(claimed.GetInt64(0));
-                }
-            }
-
-            if (candidates.Count == 0)
-            {
-                return keys;
-            }
-
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                DELETE FROM series
-                WHERE id = ANY(@ids)
-                  AND NOT EXISTS (SELECT 1 FROM sample WHERE sample.series_id = series.id)
-                  AND NOT EXISTS (SELECT 1 FROM bucket WHERE bucket.series_id = series.id)
-                RETURNING entity_id, counter, instance;
-                """;
-
-            command.Parameters.Add(new NpgsqlParameter("ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint)
-            {
-                Value = candidates.ToArray(),
-            });
-
-            using var reader = command.ExecuteReader();
-
-            while (reader.Read())
-            {
-                keys.Add(new SeriesKey(
-                    new EntityId(reader.GetString(0)), reader.GetString(1), reader.GetString(2)));
-            }
-
-            return keys;
-        });
-
-        // Housekeeping now rather than correctness. A hint left behind for a
-        // series that has gone is detected and replaced by the next append, so
-        // this no longer has to win a race it was never in a position to win.
-        foreach (var key in removed)
-        {
-            _seriesIds.TryRemove(key, out _);
-        }
-
-        return removed.Count;
-    }
+    // There is deliberately no step here that deletes series rows left with no
+    // samples and no buckets. There used to be one. It was removed, and this
+    // note is what should stop it being helpfully restored.
+    //
+    // It reclaimed nothing. A series row is six short columns: about 300 bytes
+    // on disk once both indexes are counted, about 370 bytes in the startup
+    // dictionary. Everything expensive about that series -- the samples and the
+    // buckets -- had already been deleted by the two steps above, which is what
+    // made the row eligible in the first place.
+    //
+    // What it actually bought was a smaller in-memory dictionary at startup,
+    // and loading that lazily buys the same thing without putting a timed
+    // DELETE across the ingest path.
+    //
+    // That DELETE was expensive in a way the code did not show: sample.series_id
+    // CASCADES. A delete landing while a metric cycle is appending does not
+    // merely contend -- if it wins, the samples just written go with the row,
+    // silently. FOR UPDATE SKIP LOCKED on the sweep side and in-transaction id
+    // binding on the append side made it safe (the binding stays: it guards
+    // more than this), but the honest reading is that a sweep reclaiming
+    // nothing should never have been sharing locks with the hot path. Deleting
+    // rows to save nothing is what put a foreign key race on ingest.
+    //
+    // The consequence, stated so nobody has to rediscover it: empty series rows
+    // now accumulate forever. On the measured estate (ADR-0017: 200 entities,
+    // 6,084 live series, so about 30 series per entity) there are two sources.
+    //
+    //   Counters stopped by configuration. Dropping the storagePath pair on
+    //   20 September left 2,536 orphan rows in one afternoon -- ~1.7 MB of disk
+    //   and memory together, once and forever. This is the larger source, and
+    //   it is bounded by the counter catalogue rather than by time.
+    //
+    //   Decommissioned entities. At 10-20% replacement a year, 600 to 1,200
+    //   rows a year: under 1 MB a year, roughly 5 MB after a decade.
+    //
+    // Against a host whose working set is already 150-170 MB, that is beneath
+    // notice, and it is why this is a reasonable thing to stop doing.
+    //
+    // Where it is NOT beneath notice, and the signal to re-open ADR-0019: an
+    // estate whose entities are recreated rather than kept. Two hundred
+    // non-persistent VDI desktops rebuilt nightly are 6,000 new series a day --
+    // 2.2 million rows and some 800 MB of dictionary within a year, all of it
+    // loaded before the service answers its first request. The answer then is
+    // lazy loading or a bounded cache, not this DELETE back on the ingest path.
 
     // --- internals --------------------------------------------------------
 
@@ -1054,19 +1002,22 @@ public static class CompactionSequence
     /// </param>
     /// <param name="deleteAgedSamples">Enforces raw retention.</param>
     /// <param name="deleteAgedBuckets">Enforces bucket retention, at every resolution.</param>
-    /// <param name="forgetEmptySeries">Removes series with nothing left anywhere.</param>
+    /// <remarks>
+    /// Four steps, and there is no fifth. A step that deleted series rows with
+    /// nothing left used to run last. It reclaimed nothing and shared locks
+    /// with the ingest path in order to do it, so it is gone; see the note in
+    /// <c>PostgresObservationStore.Compact</c> and ADR-0019.
+    /// </remarks>
     public static CompactionReport Run(
         Func<int> foldFiveMinutes,
         Func<int> foldOneHour,
         Func<int> deleteAgedSamples,
-        Func<int> deleteAgedBuckets,
-        Func<int> forgetEmptySeries)
+        Func<int> deleteAgedBuckets)
     {
         ArgumentNullException.ThrowIfNull(foldFiveMinutes);
         ArgumentNullException.ThrowIfNull(foldOneHour);
         ArgumentNullException.ThrowIfNull(deleteAgedSamples);
         ArgumentNullException.ThrowIfNull(deleteAgedBuckets);
-        ArgumentNullException.ThrowIfNull(forgetEmptySeries);
 
         // Both folds, before anything is deleted. Nothing is caught here on
         // purpose: a throw leaves this method with the deletes unreached, which
@@ -1081,7 +1032,6 @@ public static class CompactionSequence
             BucketsWritten = written,
             SamplesDeleted = samplesDeleted,
             BucketsDeleted = bucketsDeleted,
-            SeriesForgotten = forgetEmptySeries(),
         };
     }
 }
