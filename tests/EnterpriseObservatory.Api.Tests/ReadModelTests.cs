@@ -20,7 +20,8 @@ public class ReadModelTests
     private readonly StubHealthStore _collectors = new();
     private readonly StubObservationStore _observations = new();
 
-    private ReadModel Model() => new(_graphs, _alerts, _collectors, _observations, new StubClock(T0));
+    private ReadModel Model() =>
+        new(_graphs, _alerts, _collectors, _observations, MonitoringOptions.Default, new StubClock(T0));
 
     // --- overview ---------------------------------------------------------
 
@@ -507,6 +508,49 @@ public class ReadModelTests
             throw new NotSupportedException("The read model never writes.");
     }
 
+    // --- resolution selection ---------------------------------------------
+
+    [Fact]
+    public void A_recent_window_is_answered_from_the_finest_tier()
+    {
+        // The ordinary case, unchanged: an hour wide and an hour old, well
+        // inside the two-day raw window.
+        Model().Series("vc-1:host-1", "cpu.usage.average", null, T0.AddHours(-1), T0, 720);
+
+        Assert.Equal(SeriesResolution.Raw, _observations.LastQuery!.Resolution);
+    }
+
+    [Fact]
+    public void A_narrow_window_in_the_past_is_answered_from_a_tier_that_still_has_it()
+    {
+        // The defect this closes. Resolution used to be chosen from the width
+        // of the range alone, so an hour-wide window picked Raw whether it was
+        // this hour or one from a fortnight ago -- and raw is kept two days.
+        // The five-minute bucket was sitting there for another twenty-eight,
+        // unreachable, and the screen said "Nothing was recorded in this
+        // window", which its own code comment calls a collector problem.
+        var tenDaysAgo = T0.AddDays(-10);
+
+        Model().Series(
+            "vc-1:host-1", "cpu.usage.average", null, tenDaysAgo, tenDaysAgo.AddHours(1), 720);
+
+        Assert.Equal(SeriesResolution.FiveMinutes, _observations.LastQuery!.Resolution);
+    }
+
+    [Fact]
+    public void A_window_older_than_anything_kept_still_answers_in_the_coarsest_tier()
+    {
+        // Beyond every window. It comes back empty, which is true, and it
+        // comes back with a resolution named rather than as an exception --
+        // the caller gets the shape of answer it always gets and the emptiness
+        // is data.
+        var longAgo = T0.AddDays(-200);
+
+        Model().Series("vc-1:host-1", "cpu.usage.average", null, longAgo, longAgo.AddHours(1), 720);
+
+        Assert.Equal(SeriesResolution.OneHour, _observations.LastQuery!.Resolution);
+    }
+
     /// <summary>
     /// Measurements are covered by the persistence tests against the real
     /// store; the read model only passes them through.
@@ -517,8 +561,20 @@ public class ReadModelTests
 
         public void Append(IReadOnlyList<Observation> observations) => Appended.AddRange(observations);
 
-        public SeriesResult Query(SeriesQuery query) =>
-            new() { Key = query.Key, Resolution = SeriesResolution.Raw, Exists = false };
+        /// <summary>The last query it was handed, so the caller's choice is checkable.</summary>
+        public SeriesQuery? LastQuery { get; private set; }
+
+        public SeriesResult Query(SeriesQuery query)
+        {
+            LastQuery = query;
+
+            return new SeriesResult
+            {
+                Key = query.Key,
+                Resolution = query.Resolution ?? SeriesResolution.Raw,
+                Exists = false,
+            };
+        }
 
         public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
 

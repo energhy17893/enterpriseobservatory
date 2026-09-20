@@ -99,4 +99,75 @@ public class SeriesRetentionPolicyTests
         Assert.Equal(9_600d, stretched);
         Assert.True(stretched > fiveMinute && stretched > raw);
     }
+
+    // --- reaching the data that is actually there -------------------------
+
+    [Theory]
+    // An hour wide, an hour old: raw is fine enough and still has it.
+    [InlineData(1, 1, SeriesResolution.Raw)]
+    // An hour wide, ten days old: raw is fine enough and no longer has it, so
+    // the five-minute tier answers. This is the case that used to come back
+    // empty while the data sat in the database.
+    [InlineData(1, 24 * 10, SeriesResolution.FiveMinutes)]
+    // Thirty days wide: too wide for anything but hourly, whatever its age.
+    [InlineData(24 * 30, 24 * 30, SeriesResolution.OneHour)]
+    // An hour wide, forty days old: past five-minute retention too.
+    [InlineData(1, 24 * 40, SeriesResolution.OneHour)]
+    public void A_window_is_answered_from_a_tier_that_is_both_fine_enough_and_still_kept(
+        int rangeHours, int ageHours, SeriesResolution expected)
+    {
+        Assert.Equal(
+            expected,
+            SeriesRetentionPolicy.Default.RetainedResolutionFor(
+                TimeSpan.FromHours(rangeHours), 720, TimeSpan.FromHours(ageHours)));
+    }
+
+    [Fact]
+    public void Both_conditions_are_required_not_either()
+    {
+        var policy = SeriesRetentionPolicy.Default;
+
+        // Fine enough but not kept: raw would answer an hour-wide window, and
+        // ten days ago it has none.
+        Assert.NotEqual(
+            SeriesResolution.Raw,
+            policy.RetainedResolutionFor(TimeSpan.FromHours(1), 720, TimeSpan.FromDays(10)));
+
+        // Kept but not fine enough: the five-minute tier still holds ten-day-old
+        // data, but a thirty-day window would need 8,640 points against a
+        // budget of 720.
+        Assert.NotEqual(
+            SeriesResolution.FiveMinutes,
+            policy.RetainedResolutionFor(TimeSpan.FromDays(30), 720, TimeSpan.FromDays(10)));
+    }
+
+    [Fact]
+    public void A_window_older_than_every_tier_gets_the_coarsest_rather_than_an_error()
+    {
+        // It will come back empty, and that is the truth. Returning the
+        // coarsest tier keeps the answer the same shape as every other answer,
+        // so emptiness is data the caller can read rather than an exception it
+        // has to catch.
+        Assert.Equal(
+            SeriesResolution.OneHour,
+            SeriesRetentionPolicy.Default.RetainedResolutionFor(
+                TimeSpan.FromHours(1), 720, TimeSpan.FromDays(500)));
+    }
+
+    [Fact]
+    public void A_stretched_window_makes_an_older_range_reachable_again()
+    {
+        // The rule reads the policy rather than constants, so an installation
+        // that buys back a longer window gets the reach that comes with it.
+        var generous = SeriesRetentionPolicy.Default with { FiveMinutes = TimeSpan.FromDays(60) };
+
+        Assert.Equal(
+            SeriesResolution.FiveMinutes,
+            generous.RetainedResolutionFor(TimeSpan.FromHours(1), 720, TimeSpan.FromDays(40)));
+
+        Assert.Equal(
+            SeriesResolution.OneHour,
+            SeriesRetentionPolicy.Default.RetainedResolutionFor(
+                TimeSpan.FromHours(1), 720, TimeSpan.FromDays(40)));
+    }
 }

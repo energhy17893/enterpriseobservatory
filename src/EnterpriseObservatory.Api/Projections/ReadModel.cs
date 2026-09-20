@@ -28,6 +28,7 @@ public sealed class ReadModel(
     IAlertStateStore alerts,
     ICollectorHealthStore collectors,
     IObservationStore observations,
+    MonitoringOptions options,
     IClock clock)
 {
     private readonly IEntityGraphStore _graphs = graphs ?? throw new ArgumentNullException(nameof(graphs));
@@ -38,6 +39,20 @@ public sealed class ReadModel(
 
     private readonly IObservationStore _observations =
         observations ?? throw new ArgumentNullException(nameof(observations));
+
+    /// <summary>
+    /// Held for its retention windows, which decide what a window can be
+    /// answered from.
+    /// </summary>
+    /// <remarks>
+    /// Chosen here rather than in the store because picking a resolution needs
+    /// two things the store deliberately does not hold: the retention policy —
+    /// which <c>Compact</c> receives per call, so the store is stateless about
+    /// it — and a clock, to know how far back the window reaches. Both are
+    /// already here.
+    /// </remarks>
+    private readonly MonitoringOptions _options =
+        options ?? throw new ArgumentNullException(nameof(options));
 
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
@@ -332,12 +347,24 @@ public sealed class ReadModel(
         var to = toUtc ?? _clock.UtcNow;
         var from = fromUtc ?? to.AddHours(-1);
 
+        var budget = Math.Clamp(maxPoints, 1, 2_000);
+
+        // Named explicitly rather than left to the store's width-only rule.
+        // That rule picks the finest tier the budget allows and never asks
+        // whether the tier still reaches back that far, so an hour-wide window
+        // from last week chose raw, raw had been compacted away, and the answer
+        // came back as an existing series with no points — which reads on
+        // screen as a collector problem.
+        var resolution = _options.Retention.RetainedResolutionFor(
+            to - from, budget, _clock.UtcNow - from);
+
         var result = _observations.Query(new SeriesQuery
         {
             Key = new SeriesKey(new EntityId(entityId), counter, instance ?? string.Empty),
             FromUtc = from,
             ToUtc = to,
-            MaxPoints = Math.Clamp(maxPoints, 1, 2_000),
+            MaxPoints = budget,
+            Resolution = resolution,
         });
 
         return new SeriesView

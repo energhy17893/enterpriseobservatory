@@ -275,6 +275,47 @@ public class CompactionTests : IDisposable
     }
 
     [SkippableFact]
+    public void The_store_answers_the_resolution_it_is_told_and_does_not_pick_a_retained_one()
+    {
+        RequireDatabase();
+
+        // The boundary, stated rather than assumed. The store's own rule picks
+        // a resolution from the WIDTH of the range alone: an hour-wide window
+        // chooses Raw whether it is this hour or one from a fortnight ago.
+        // Raw is kept two days, so for a window older than that the answer
+        // exists in the five-minute tier and this query cannot reach it.
+        //
+        // That is not fixed here on purpose. Choosing a tier that is still
+        // retained needs the retention policy — which Compact receives per
+        // call, so this store is deliberately stateless about it — and a clock
+        // to know how far back the window reaches. ReadModel holds both and
+        // names the resolution; see RetainedResolutionFor.
+        var store = Store();
+        var entity = Subject("told");
+
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0, 10, 20, 30);
+
+        // Ten days on: raw is long gone, the five-minute bucket is well inside
+        // its window.
+        store.Compact(T0.AddDays(10), new SeriesRetentionPolicy());
+
+        var unnamed = store.Query(new SeriesQuery
+        {
+            Key = new SeriesKey(entity, "cpu.usage.average", string.Empty),
+            FromUtc = T0,
+            ToUtc = T0.AddHours(1),
+            MaxPoints = 720,
+        });
+
+        Assert.Equal(SeriesResolution.Raw, unnamed.Resolution);
+        Assert.True(unnamed.Exists);
+        Assert.Empty(unnamed.Points);
+
+        // Named, it answers — which is what the caller now does.
+        Assert.NotEmpty(Read(store, entity, T0, T0.AddHours(1), SeriesResolution.FiveMinutes).Points);
+    }
+
+    [SkippableFact]
     public void A_watermark_stops_the_second_pass_redoing_the_first()
     {
         RequireDatabase();

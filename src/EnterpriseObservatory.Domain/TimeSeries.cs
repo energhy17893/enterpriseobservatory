@@ -228,4 +228,59 @@ public sealed record SeriesRetentionPolicy
 
         return SeriesResolution.OneHour;
     }
+
+    /// <summary>
+    /// The finest resolution that answers a range and is still <em>kept</em>.
+    /// </summary>
+    /// <param name="range">How wide the window is.</param>
+    /// <param name="maxPoints">How many points the caller can use.</param>
+    /// <param name="ageOfOldestPoint">
+    /// How long ago the start of the window was. A window is only answerable
+    /// from a tier whose retention still reaches back that far.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ResolutionFor(TimeSpan, int)"/> chooses from the window's
+    /// <em>width</em> alone, so an hour-wide window picks Raw whether it is
+    /// this hour or one from a fortnight ago. Raw is kept two days and
+    /// five-minute data thirty, so for twenty-eight of those thirty days the
+    /// answer is in the database and the question cannot reach it. The caller
+    /// gets an existing series with no points, which the interface renders as
+    /// "Nothing was recorded in this window" — a sentence its own comment says
+    /// is usually a collector problem. It is not.
+    /// </para>
+    /// <para>
+    /// Changing resolution is already a first-class, visible act: the chosen
+    /// one travels back on <see cref="SeriesResult.Resolution"/> and the chart
+    /// prints it. So answering a stale window from a coarser tier is not a
+    /// quiet substitution, as long as it is reported — which is what makes
+    /// this fixable here rather than needing a new concept.
+    /// </para>
+    /// </remarks>
+    public SeriesResolution RetainedResolutionFor(
+        TimeSpan range, int maxPoints, TimeSpan ageOfOldestPoint)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoints);
+
+        foreach (var resolution in (ReadOnlySpan<SeriesResolution>)
+            [SeriesResolution.Raw, SeriesResolution.FiveMinutes, SeriesResolution.OneHour])
+        {
+            // Both conditions, not either. A tier has to be fine enough to
+            // answer within the caller's point budget and still be kept long
+            // enough to reach the start of the window; one without the other
+            // is how the question and the answer stopped meeting.
+            if (range <= SeriesResolutions.Width(resolution) * maxPoints &&
+                ageOfOldestPoint <= For(resolution))
+            {
+                return resolution;
+            }
+        }
+
+        // Nothing reaches. The coarsest tier is returned rather than a null or
+        // a throw, so the caller gets the same shape of answer it always gets
+        // and the emptiness is data rather than an exception — the window is
+        // genuinely older than anything retained, and saying so with an empty
+        // result at a stated resolution is the honest version of that.
+        return SeriesResolution.OneHour;
+    }
 }
