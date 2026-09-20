@@ -624,6 +624,49 @@ Bu yüzden kural, bastırdığı her makineye **kendi hükmünü veriyor**: bast
 ile adı konan küme birebir aynı. Sessizlik, yanlış cevabın kabul edilebilir
 ikamesi değil.
 
+### Eşik: `MaxLimitedPercent = 1` — ve neden "sıfırdan büyük" değil
+
+Yayımlanmış hiçbir sayı yok. vROps'un CPU ready uyarısı **hiç yok**;
+Dynatrace `guestCpuLimitReached`'in yapısını yayımlıyor, **seviyesini
+yayımlamıyor**. Dolayısıyla sayı, sayacın *ne olduğundan* türetildi.
+
+Cazip cevap "sıfırdan büyük her okuma"ydı, çünkü sayacın sıfırı yapısaldır.
+Yanlış olmasının sebebi şu: kural, limitin **tanımlı** olup olmadığına karar
+vermiyor; limitin **ölçülen beklemeyi açıklayıp açıklamadığına** karar veriyor.
+20 saniyelik pencerede 1 ms ısıran bir tavan, duvar saatinin üçte birini
+kaybeden bir makinenin beklemesini açıklamaz.
+
+> Bu ayrım bir *yanlış pozitifi*, bir *yanlış negatifle* takas etme riskidir:
+> gerçekten çekirdeksiz kalmış bir estate'in, VM'lerinin tepe noktalarını
+> kırpan limitler taşıdığı için susması. Kuralın verebileceği **en değerli
+> hükümde** yanlış negatif, iki taraftan kötü olanıdır.
+
+Yüzde 1 = 200 ms; tek bir zamanlama olayı olamaz. `CoStopPercent`'in 3'ünden
+düşük olması tutarsızlık değil, argümanın kendisi: co-stop sağlıklı geniş bir
+makinede **normal işleyişte de** birikir, bu sayaç ise tavan ısırmadıkça
+**hiç** birikmez — yani geçmesi gereken "olağan bant"ı yok.
+
+### Mutasyon testi (20 Eylül 2026)
+
+Dokuz mutasyon, dokuzu da öldü. Bu bölümdeki her sayı ve her küme işlemi
+değiştirilebilir bir sayıdır, yani bir testin savunması gerekir:
+
+| # | Mutasyon | Sonuç |
+|---|---|---|
+| 1 | `MaxLimitedPercent` → `0,0001` (taban yok) | Öldü (2 test) |
+| 2 | `MaxLimitedPercent` → `1000` (bastırma hiç çalışmaz) | Öldü (4 test) |
+| 3 | Limitli makineler host kurban sayımına geri kondu | Öldü (2 test) |
+| 4 | Limitli makineler yine komşu-kurbanı ilan edilebilir | Öldü (3 test) |
+| 5 | Limit hükmü kaldırıldı (bastırma → sessizlik) | Öldü (4 test) |
+| 6 | Limitli makineler kardeş medyanından çıkarıldı | Öldü (2 test) |
+| 7 | Sayaç adı politika yerine koda gömüldü | Öldü (1 test) |
+| 8 | Limit hükmü beklemeyen makinede de açılıyor | Öldü (1 test) |
+| 9 | Eksik limit okuması "ısıran limit" sayıldı | Öldü (10+ test) |
+
+5 numara özellikle önemli: bastırmayı bırakıp hükmü kaldırmak **derlenir ve
+sessizce çalışır**. Onu öldüren test, sessizliğin yanlış cevabın ikamesi
+olmadığını söyleyen testtir.
+
 ---
 
 ## 5g. Bu bölüm **ölçülmedi** — §6.4'ün ihlali, bilerek
