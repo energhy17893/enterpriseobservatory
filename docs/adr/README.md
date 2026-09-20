@@ -59,6 +59,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0017](0017-retention-windows-set-by-measurement.md) | Saklama pencereleri ölçümle yeniden belirlendi | Kabul edildi |
 | [0018](0018-health-derives-from-alerts-not-propagation.md) | Sağlık alarmlardan türer, kenarlardan yayılmaz | Kabul edildi |
 | [0019](0019-empty-series-rows-are-kept.md) | Boş seri satırları silinmez, birikmesine izin verilir | Kabul edildi |
+| [0020](0020-key-ring-durability-is-checked-at-startup.md) | Anahtar halkasının kaybolabilirliği açılışta denetlenir, servis durdurulmaz | Kabul edildi |
 
 ## Şablon
 
