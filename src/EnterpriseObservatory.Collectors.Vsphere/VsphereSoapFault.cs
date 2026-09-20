@@ -84,7 +84,34 @@ public sealed record VsphereSoapFault
     /// exact value and nothing else — falling back to a documented default is
     /// correct, and failing the whole cycle over it would not be.
     /// </remarks>
-    public bool IsSurvivable => Kind is VsphereFaultKind.InvalidName or VsphereFaultKind.NoPermission;
+    public bool IsSurvivable => VsphereFaults.IsSurvivable(Kind);
+}
+
+/// <summary>Judgements about a fault kind, independent of how it arrived.</summary>
+/// <remarks>
+/// Here rather than on <see cref="VsphereSoapFault"/> because the same
+/// judgement is needed about a <see cref="VsphereApiException"/>, which is a
+/// different type carrying the same kind. It was written out twice — once
+/// named and once as an inline catch filter — and two spellings of one rule
+/// are two chances for it to drift, with the drift showing up as a cycle that
+/// fails over something it used to survive.
+/// </remarks>
+public static class VsphereFaults
+{
+    /// <summary>
+    /// Whether the caller can reasonably carry on without what it asked for.
+    /// </summary>
+    /// <remarks>
+    /// Both cases were seen against a live server while reading
+    /// <c>maxQueryMetrics</c>: a read-only account may not be granted
+    /// Global.Settings, and the option itself does not exist until somebody
+    /// sets it, which vCenter reports as an invalid name. Either costs the
+    /// exact value and nothing else — the batch sizer falls back to a
+    /// documented default — and failing a whole collection cycle over an
+    /// optional reading would be the worse answer.
+    /// </remarks>
+    public static bool IsSurvivable(VsphereFaultKind kind) =>
+        kind is VsphereFaultKind.InvalidName or VsphereFaultKind.NoPermission;
 }
 
 /// <summary>Reads SOAP faults out of a vCenter response.</summary>

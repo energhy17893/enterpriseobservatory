@@ -148,15 +148,11 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
                 ? parsed
                 : null;
         }
-        catch (VsphereApiException ex) when (
-            ex.Kind is VsphereFaultKind.NoPermission or VsphereFaultKind.InvalidName)
+        catch (VsphereApiException ex) when (VsphereFaults.IsSurvivable(ex.Kind))
         {
-            // Two survivable cases, both seen against a live server. A read-only
-            // account may not be granted Global.Settings; and the option itself
-            // is absent until someone sets it, which vCenter reports as an
-            // invalid name. Either costs us the exact limit and nothing else —
-            // the batch sizer falls back to the documented default. Failing the
-            // whole cycle over an optional reading would be worse.
+            // Which cases survive, and why, is VsphereFaults.IsSurvivable.
+            // This used to spell the same rule out inline beside the named one
+            // that nothing called.
             return null;
         }
         catch (System.Xml.XmlException)

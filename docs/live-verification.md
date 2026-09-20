@@ -234,6 +234,51 @@ satırıydı ve düzeltildi.
 
 **Karar gerekiyor:** birleştirme fonksiyonu ne olmalı?
 
+### Tanımlanmış, test edilmiş, çağrılmamış
+
+Cluster sağlığı bulgusundan sonra aynı desen sistematik olarak arandı:
+**src'de yalnızca tanımında geçen ama testlerde kullanılan üyeler.** Beş aday
+çıktı, hepsi elle doğrulandı:
+
+| Üye | Ne yapar | Durum |
+|---|---|---|
+| `RelationshipRules.PropagatesHealth` | Sağlık hangi kenarda yayılır | Çağıranı yok → cluster'lar Unknown (yukarıda) |
+| `CounterValue.AsPercentageOfInterval` | `cpu.ready` ms → % | **Çağıranı yok** |
+| `RelationshipRules.MayContainCycles` | `ConnectedTo` döngüye izin verir | Çağıranı yok — henüz `ConnectedTo` kenarı da yok |
+| `RelationshipRules.IsSymmetric` | `SameAs`/`ConnectedTo` çift yönlü | Çağıranı yok — aynı sebep |
+| `VsphereSoapFault.IsSurvivable` | Hangi hata hayatta kalınabilir | **Kural iki yerde yazılmıştı** — düzeltildi |
+
+Son ikisi hakkında:
+
+**`IsSurvivable` düzeltildi.** Aynı kural bir kez `VsphereSoapFault` üzerinde
+adlandırılmış, bir kez de `VsphereClient` içinde `catch ... when` filtresi
+olarak elle yazılmıştı. İki farklı tip üzerinde olduğu için birbirini
+çağıramıyorlardı. Artık `VsphereFaults.IsSurvivable(kind)` tek tanım ve ikisi
+de onu kullanıyor. Bir kuralın iki yazılışı, sürüklenmesi için iki şanstır.
+
+**`AsPercentageOfInterval` bilerek bağlanmadı.** `cpu.ready.summation`, bir
+VM'in CPU çekişmesini gösteren tek güvenilir sayaç ve **toplam milisaniye**
+olarak saklanıyor. Kendi belgesi "toplandığı aralığa bölünmeden anlamsız"
+diyor; dönüşüm yazılmış, 7 testi var, hiçbir yerden çağrılmıyor.
+
+Bugün ekranda `cpu.ready.summation · 522 · millisecond · as sampled` görünüyor.
+Bu **yanlış değil** — birim yazıyor, "as sampled" yazıyor. Ama:
+
+- Sektördeki eşik **yüzde** cinsinden ifade edilir (>%5 sorun, >%10 ciddi).
+  522 ms'yi operatör kafadan çeviremez.
+- 20 saniyelik aralıkta 522 ms = %2,6; 300 saniyelik aralıkta aynı sayı
+  %0,17. **Farklı aralıklardaki iki VM'i ham milisaniyeyle karşılaştırmak
+  geçersizdir.** Bugün her şey 20 sn olduğu için ısırmıyor.
+
+Bağlanmadı çünkü bu bir **sunum kararı**: yüzde mi gösterilsin, ikisi birden
+mi, yoksa ham değer kalıp eşik motoru mu çevirsin? Üçü de savunulabilir.
+**Karar gerekiyor.**
+
+`MayContainCycles` ve `IsSymmetric` ileriye dönük: `ConnectedTo` kenarı üreten
+bir toplayıcı (SAN switch) henüz yok. Yine de bugün hiçbir döngü doğrulaması
+çalışmıyor — o toplayıcı geldiğinde bu iki kuralın bağlanması gerektiği not
+edilmeli.
+
 ### psql üzerinden ölçüm bu makinede yanıltıcı
 
 Sunucuda 0.24 ms'de biten sorgu psql duvar saatinde 6–53 saniye görünüyor.
