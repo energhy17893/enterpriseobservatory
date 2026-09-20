@@ -198,27 +198,18 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
             // writes after it silently undoes the acknowledgement.
             var result = reconcile(Read(scope), ReadFlaps(scope));
 
-            // Stamped with the scope they were reconciled into, because the
-            // real store does: PostgresAlertStateStore sets Scope on every
-            // instance it reads back, from the column it filed them under. A
-            // fake that left it empty is weaker than the contract in exactly
-            // the way the missing lock above was -- and this one hid until a
-            // test asked which evaluation owned an alert.
-            // Stamped into the cache and nowhere else, because that is exactly
-            // what PostgresAlertStateStore.Store does: the rows are written
-            // from the scope it was asked for, and its cache is stamped to
-            // match what a restart would read back.
-            //
-            // This fake used to stamp the returned result as well, and that was
-            // the mirror image of the missing lock above -- a fake STRONGER
-            // than the contract. It made a cycle that handed in unscoped alerts
-            // look correct here while the real store kept them unscoped until a
-            // restart, and a test asserting the scope passed by testing this
-            // file. A fake that is stronger hides the product's bug; a fake
-            // that is weaker invents one. Neither may differ from the real
-            // store at all.
-            _instances[scope] = [.. result.Instances.Select(i => i with { Scope = scope })];
-            _flaps[scope] = [.. result.FlapHistories.Select(f => f with { Scope = scope })];
+            // Filed exactly as it was decided, which is what
+            // PostgresAlertStateStore.Store now does too. Both stores used to
+            // stamp Scope here from the argument, and this fake once stamped
+            // the returned result as well -- a fake STRONGER than the contract,
+            // which made a cycle that handed in unscoped alerts look correct
+            // here while the real store kept them unscoped until a restart. A
+            // fake that is stronger hides the product's bug; a fake that is
+            // weaker invents one. Neither may differ from the real store at
+            // all -- and the surest way to keep two stores in step about a
+            // field is for neither of them to have anything to say about it.
+            _instances[scope] = [.. result.Instances];
+            _flaps[scope] = [.. result.FlapHistories];
 
             return result;
         }
