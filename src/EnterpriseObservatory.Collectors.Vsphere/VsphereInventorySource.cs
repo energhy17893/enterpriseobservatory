@@ -200,9 +200,13 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                     null => HealthState.Unknown,
                 },
                 LastSeenUtc = now,
-                Marks = VolumeIdentifier(datastore.Url) is { } volume
-                    ? [IdentityMark.Create(IdentityMarkKind.VolumeIdentifier, volume, InstanceId)]
-                    : [],
+                // Two vocabularies, both kept. The volume identifier is what
+                // performance counters name this datastore by; the storage
+                // device is what its paths and disk devices are named by. One
+                // without the other leaves "this datastore is slow" and "this
+                // path has errors" as two facts about the same LUN that cannot
+                // be put together.
+                Marks = Marks(datastore),
             });
 
             relationships.Add(Edge(id(datastore.MoRef), id("vcenter"), RelationshipKind.ManagedBy, now));
@@ -381,6 +385,29 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
 
         return $"{description}{raised}{acknowledged} Raised by vCenter, not by this product — " +
                "clear it there.";
+    }
+
+    /// <summary>What a datastore can be recognised by.</summary>
+    /// <remarks>
+    /// A spanned VMFS volume occupies several devices and each is reported, so
+    /// a path error on any of them can be tied back here. Reporting only the
+    /// first would lose exactly the extent that explains an outage.
+    /// </remarks>
+    private List<IdentityMark> Marks(VsphereDatastore datastore)
+    {
+        var marks = new List<IdentityMark>();
+
+        if (VolumeIdentifier(datastore.Url) is { } volume)
+        {
+            marks.Add(IdentityMark.Create(IdentityMarkKind.VolumeIdentifier, volume, InstanceId));
+        }
+
+        foreach (var device in datastore.StorageDevices)
+        {
+            marks.Add(IdentityMark.Create(IdentityMarkKind.StorageDeviceId, device, InstanceId));
+        }
+
+        return marks;
     }
 
     /// <summary>

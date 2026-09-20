@@ -25,18 +25,20 @@ public sealed record PropertyObject
     /// Kept apart from <see cref="Values"/> because a structure cannot be
     /// rendered as one string without deciding which field matters, and that
     /// decision belongs to the caller who knows what it asked for. Each entry
-    /// is one element of the array, as field name to text.
+    /// is one element of the array.
     /// </para>
     /// <para>
-    /// Managed object references keep their type: a field's value is the
-    /// reference and <c>field@type</c> is the type attribute beside it. An
-    /// alarm state names the object it is about in exactly this way, and losing
-    /// the type would leave <c>host-3615</c> with nothing to say what it is.
+    /// A tree rather than a flat field map, because vCenter's are not flat. A
+    /// host's mounted volumes arrive as <c>HostFileSystemMountInfo</c>, whose
+    /// <c>volume</c> is itself a structure with an <c>extent</c> array inside
+    /// it — and that nesting is the whole content, since it is what says which
+    /// LUN a datastore sits on. A one-level reader gave back the concatenated
+    /// text of the subtree, which is the same class of quiet lie as the
+    /// flattener it replaced.
     /// </para>
     /// </remarks>
-    public IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string>>> Structures
-    { get; init; } = new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string>>>(
-        StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, IReadOnlyList<PropertyNode>> Structures { get; init; } =
+        new Dictionary<string, IReadOnlyList<PropertyNode>>(StringComparer.Ordinal);
 
     /// <summary>Properties that were requested but could not be read.</summary>
     /// <remarks>
@@ -45,6 +47,58 @@ public sealed record PropertyObject
     /// that were read as empty: not permitted and empty are different facts.
     /// </remarks>
     public IReadOnlyList<PropertyReadFailure> Missing { get; init; } = [];
+}
+
+/// <summary>
+/// One node of a structured property value.
+/// </summary>
+/// <remarks>
+/// Deliberately small: a name, the text if it has any, the declared type if
+/// vCenter gave one, and the children. That is enough to read every structure
+/// this collector needs and little enough that it cannot drift into being a
+/// second XML library.
+/// </remarks>
+public sealed record PropertyNode
+{
+    public required string Name { get; init; }
+
+    /// <summary>
+    /// The node's own text, for a leaf.
+    /// </summary>
+    /// <remarks>
+    /// Empty for a node with children rather than their concatenated text.
+    /// Concatenating is how a structure comes back looking like a value, which
+    /// is exactly the failure this type exists to end.
+    /// </remarks>
+    public string Text { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The <c>xsi:type</c> or <c>type</c> attribute, when there was one.
+    /// </summary>
+    /// <remarks>
+    /// Carries two different things that both matter: the concrete subtype of
+    /// a polymorphic field — a mounted volume is a <c>HostVmfsVolume</c> or an
+    /// <c>HostNasVolume</c> and they are not interchangeable — and the managed
+    /// object type of a reference, without which <c>host-3615</c> cannot say
+    /// what it is.
+    /// </remarks>
+    public string Type { get; init; } = string.Empty;
+
+    public IReadOnlyList<PropertyNode> Children { get; init; } = [];
+
+    /// <summary>The first child with this name, or null.</summary>
+    public PropertyNode? Child(string name) =>
+        Children.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.Ordinal));
+
+    /// <summary>Every child with this name, in document order.</summary>
+    public IEnumerable<PropertyNode> All(string name) =>
+        Children.Where(c => string.Equals(c.Name, name, StringComparison.Ordinal));
+
+    /// <summary>The text of the first child with this name, or empty.</summary>
+    public string TextOf(string name) => Child(name)?.Text ?? string.Empty;
+
+    /// <summary>The declared type of the first child with this name, or empty.</summary>
+    public string TypeOf(string name) => Child(name)?.Type ?? string.Empty;
 }
 
 /// <summary>A property that could not be read, and why.</summary>
@@ -110,9 +164,8 @@ public static class PropertyCollectorParser
             }
 
             var values = new Dictionary<string, string>(StringComparer.Ordinal);
-            var structures =
-                new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string>>>(
-                    StringComparer.Ordinal);
+            var structures = new Dictionary<string, IReadOnlyList<PropertyNode>>(
+                StringComparer.Ordinal);
 
             foreach (var propSet in Elements(objectContent, "propSet"))
             {
@@ -183,25 +236,30 @@ public static class PropertyCollectorParser
     private static bool IsStructureArray(XElement value) =>
         value.Elements().Any(child => child.Elements().Any());
 
-    private static IReadOnlyDictionary<string, string> ReadStructure(XElement element)
+    /// <summary>Reads one element and everything under it.</summary>
+    /// <remarks>
+    /// Repeated children are kept as repeated children rather than collapsed
+    /// to the first. A VMFS volume may span several extents, and a reader that
+    /// kept only one would report a datastore as living on a single LUN while
+    /// quietly losing the others — which for a spanned volume is the half of
+    /// the truth that explains the outage.
+    /// </remarks>
+    private static PropertyNode ReadStructure(XElement element)
     {
-        var fields = new Dictionary<string, string>(StringComparer.Ordinal);
+        var children = element.Elements().Select(ReadStructure).ToList();
 
-        foreach (var field in element.Elements())
+        return new PropertyNode
         {
-            // Last one wins is wrong for a repeated field, but no structure
-            // this reads has one; first wins keeps it predictable if that
-            // changes, rather than silently depending on document order.
-            fields.TryAdd(field.Name.LocalName, field.Value.Trim());
-
-            if (field.Attribute("type")?.Value is { Length: > 0 } type)
-            {
-                fields.TryAdd($"{field.Name.LocalName}@type", type);
-            }
-        }
-
-        return fields;
+            Name = element.Name.LocalName,
+            Text = children.Count == 0 ? element.Value.Trim() : string.Empty,
+            Type = element.Attribute("type")?.Value
+                ?? element.Attribute(XName.Get("type", XmlSchemaInstance))?.Value
+                ?? string.Empty,
+            Children = children,
+        };
     }
+
+    private const string XmlSchemaInstance = "http://www.w3.org/2001/XMLSchema-instance";
 
     /// <summary>Splits a value produced by <see cref="Flatten"/>.</summary>
     public static IReadOnlyList<string> SplitValues(string? value) =>

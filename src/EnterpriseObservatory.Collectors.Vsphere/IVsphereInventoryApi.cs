@@ -228,4 +228,24 @@ public sealed record VsphereDatastore
     /// datastore the number is about.
     /// </remarks>
     public string? Url { get; init; }
+
+    /// <summary>
+    /// The storage devices this datastore's volume occupies, as NAA names.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Empty for anything that is not block storage, and for a datastore whose
+    /// hosts could not be read. More than one for a spanned VMFS volume, which
+    /// is why this is a list: keeping only the first would report a datastore
+    /// as living on one LUN and quietly lose the others, and for a spanned
+    /// volume the lost half is the half that explains the outage.
+    /// </para>
+    /// <para>
+    /// This is the link that was missing. A datastore is named by a VMFS UUID
+    /// and every storage path and disk device by an NAA, so without it
+    /// "this datastore is slow" and "this path has errors" are two facts about
+    /// the same LUN that cannot be put together.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> StorageDevices { get; init; } = [];
 }

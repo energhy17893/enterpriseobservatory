@@ -621,4 +621,83 @@ public class VsphereInventorySourceTests
 
     private static Entity Ds(InventorySnapshot snapshot, string name) =>
         snapshot.Entities.Single(e => e.Kind == EntityKind.Datastore && e.DisplayName == name);
+
+    // --- storage identity -------------------------------------------------
+
+    [Fact]
+    public async Task A_datastore_carries_both_the_volume_and_the_devices_it_sits_on()
+    {
+        // Two vocabularies that do not overlap. vSphere names a datastore by
+        // its VMFS UUID and names every storage path and disk device by an
+        // NAA, so holding only one leaves "this datastore is slow" and "this
+        // path has errors" as two facts about the same LUN that cannot be put
+        // together.
+        var snapshot = await Read(Payload(datastores:
+        [
+            new VsphereDatastore
+            {
+                MoRef = "ds-1",
+                Name = "PRODVOL1",
+                Accessible = true,
+                Url = "ds:///vmfs/volumes/608bd301-3f719074-6962-f40343e85d10/",
+                StorageDevices = ["naa.600508b1001cb736"],
+            },
+        ]));
+
+        var marks = Ds(snapshot, "PRODVOL1").Marks;
+
+        Assert.Contains(marks, m =>
+            m.Kind == IdentityMarkKind.VolumeIdentifier &&
+            m.Value == "608bd301-3f719074-6962-f40343e85d10");
+
+        Assert.Contains(marks, m =>
+            m.Kind == IdentityMarkKind.StorageDeviceId && m.Value == "naa.600508b1001cb736");
+    }
+
+    [Fact]
+    public async Task A_spanned_datastore_reports_every_device()
+    {
+        // One extent per device, and a path error on any of them has to be
+        // tie-able back here.
+        var snapshot = await Read(Payload(datastores:
+        [
+            new VsphereDatastore
+            {
+                MoRef = "ds-1",
+                Name = "SPANNED",
+                Accessible = true,
+                Url = "ds:///vmfs/volumes/aaaa/",
+                StorageDevices = ["naa.111", "naa.222"],
+            },
+        ]));
+
+        Assert.Equal(
+            ["naa.111", "naa.222"],
+            Ds(snapshot, "SPANNED").Marks
+                .Where(m => m.Kind == IdentityMarkKind.StorageDeviceId)
+                .Select(m => m.Value)
+                .Order());
+    }
+
+    [Fact]
+    public async Task A_datastore_with_no_device_reported_still_carries_its_volume()
+    {
+        // NFS has no storage device in this sense, and neither has a datastore
+        // whose hosts could not be read. Either way the volume identity — the
+        // one performance counters use — must survive, or the datastore stops
+        // being measurable as well as unlocatable.
+        var snapshot = await Read(Payload(datastores:
+        [
+            new VsphereDatastore
+            {
+                MoRef = "ds-1", Name = "NFSVOL", Accessible = true,
+                Url = "ds:///vmfs/volumes/bbbb/",
+            },
+        ]));
+
+        var marks = Ds(snapshot, "NFSVOL").Marks;
+
+        Assert.Contains(marks, m => m.Kind == IdentityMarkKind.VolumeIdentifier);
+        Assert.DoesNotContain(marks, m => m.Kind == IdentityMarkKind.StorageDeviceId);
+    }
 }

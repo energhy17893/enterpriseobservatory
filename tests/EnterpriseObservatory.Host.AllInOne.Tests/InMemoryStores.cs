@@ -77,18 +77,57 @@ internal sealed class InMemoryEntityGraphStore : IEntityGraphStore
 /// </remarks>
 internal sealed class InMemoryAlertStateStore : IAlertStateStore
 {
+    /// <summary>
+    /// The same guarantee the real store makes, for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// PostgresAlertStateStore holds a lock across each operation so that a
+    /// reconciliation's read-decide-store cannot be interleaved with an
+    /// operator's bulk acknowledgement. This fake did not, and the effect was
+    /// a test that failed roughly once in thirty: twenty alerts left in mixed
+    /// states because half an acknowledgement was overwritten by a cycle that
+    /// had already read the old list.
+    /// </para>
+    /// <para>
+    /// That is worth fixing here rather than relaxing the assertion. A fake
+    /// weaker than the contract turns a genuine race into background noise,
+    /// and the next real one gets dismissed as "that flaky test again".
+    /// </para>
+    /// </remarks>
+    private readonly Lock _gate = new();
+
     private readonly Dictionary<string, List<AlertInstance>> _instances =
         new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, List<FlapHistory>> _flaps = new(StringComparer.Ordinal);
 
-    public IReadOnlyList<AlertInstance> All => [.. _instances.Values.SelectMany(s => s)];
+    public IReadOnlyList<AlertInstance> All
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _instances.Values.SelectMany(s => s)];
+            }
+        }
+    }
 
-    public IReadOnlyList<AlertInstance> InstancesIn(string scope) =>
-        _instances.TryGetValue(scope, out var slice) ? [.. slice] : [];
+    public IReadOnlyList<AlertInstance> InstancesIn(string scope)
+    {
+        lock (_gate)
+        {
+            return Read(scope);
+        }
+    }
 
-    public IReadOnlyList<FlapHistory> FlapHistoriesIn(string scope) =>
-        _flaps.TryGetValue(scope, out var slice) ? [.. slice] : [];
+    public IReadOnlyList<FlapHistory> FlapHistoriesIn(string scope)
+    {
+        lock (_gate)
+        {
+            return ReadFlaps(scope);
+        }
+    }
 
     public AlertReconciliationResult Reconcile(
         string scope,
@@ -96,18 +135,73 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
     {
         ArgumentNullException.ThrowIfNull(reconcile);
 
-        var result = reconcile(InstancesIn(scope), FlapHistoriesIn(scope));
+        lock (_gate)
+        {
+            // Read, decide and store under one lock. Splitting them is the
+            // whole defect: a cycle that reads before an acknowledgement and
+            // writes after it silently undoes the acknowledgement.
+            var result = reconcile(Read(scope), ReadFlaps(scope));
 
-        _instances[scope] = [.. result.Instances];
-        _flaps[scope] = [.. result.FlapHistories];
+            _instances[scope] = [.. result.Instances];
+            _flaps[scope] = [.. result.FlapHistories];
 
-        return result;
+            return result;
+        }
     }
 
     public AlertInstance? Mutate(AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change)
     {
         ArgumentNullException.ThrowIfNull(change);
 
+        lock (_gate)
+        {
+            return MutateLocked(fingerprint, change);
+        }
+    }
+
+    public IReadOnlyList<AlertInstance> MutateMany(
+        IReadOnlyList<AlertFingerprint> fingerprints, Func<AlertInstance, AlertInstance> change)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+        ArgumentNullException.ThrowIfNull(change);
+
+        // One lock for the whole batch, which is why MutateMany exists at all
+        // rather than a loop over Mutate: a cycle landing between two of them
+        // leaves the operator with twenty alerts of which eleven are
+        // acknowledged and nothing on screen to say which, or why.
+        lock (_gate)
+        {
+            return [.. fingerprints.Select(f => MutateLocked(f, change)).OfType<AlertInstance>()];
+        }
+    }
+
+    public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+
+        lock (_gate)
+        {
+            if (!_instances.TryGetValue(scope, out var slice))
+            {
+                return;
+            }
+
+            var wanted = fingerprints.ToHashSet();
+
+            _instances[scope] =
+                [.. slice.Select(i => wanted.Contains(i.Fingerprint) ? AlertLifecycle.MarkNotified(i) : i)];
+        }
+    }
+
+    private List<AlertInstance> Read(string scope) =>
+        _instances.TryGetValue(scope, out var slice) ? [.. slice] : [];
+
+    private List<FlapHistory> ReadFlaps(string scope) =>
+        _flaps.TryGetValue(scope, out var slice) ? [.. slice] : [];
+
+    private AlertInstance? MutateLocked(
+        AlertFingerprint fingerprint, Func<AlertInstance, AlertInstance> change)
+    {
         foreach (var slice in _instances.Values)
         {
             var index = slice.FindIndex(i => i.Fingerprint == fingerprint);
@@ -124,29 +218,6 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
         }
 
         return null;
-    }
-
-    public IReadOnlyList<AlertInstance> MutateMany(
-        IReadOnlyList<AlertFingerprint> fingerprints, Func<AlertInstance, AlertInstance> change)
-    {
-        ArgumentNullException.ThrowIfNull(fingerprints);
-
-        return [.. fingerprints.Select(f => Mutate(f, change)).OfType<AlertInstance>()];
-    }
-
-    public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints)
-    {
-        ArgumentNullException.ThrowIfNull(fingerprints);
-
-        if (!_instances.TryGetValue(scope, out var slice))
-        {
-            return;
-        }
-
-        var wanted = fingerprints.ToHashSet();
-
-        _instances[scope] =
-            [.. slice.Select(i => wanted.Contains(i.Fingerprint) ? AlertLifecycle.MarkNotified(i) : i)];
     }
 }
 

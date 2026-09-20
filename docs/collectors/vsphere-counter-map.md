@@ -303,18 +303,58 @@ Datastore ──> host'tan gecikme          ✓  (§5b, 302 host-volume çifti)
 LUN NAA ──> disk.deviceLatency          ✓  (43 cihaz instance'ı)
 LUN NAA ──> storagePath (WWPN çiftleri) ✓  (42 LUN'ün 41'i disk cihazlarıyla eşleşiyor)
 
-Datastore VMFS UUID ──> LUN NAA         ✗  EKSİK
+Datastore VMFS UUID ──> LUN NAA         ✓  KAPATILDI (aynı gün)
 ```
 
-Datastore'un `summary.url`'inden gelen kimlik bir **VMFS UUID**'dir; yolun ve
-disk cihazının kimliği ise **NAA**'dır. 41 datastore işaretinin hiçbiri NAA
-biçiminde değil. Zincirin kopuk halkası tam olarak burası.
+### Kopuk halka nasıl kapatıldı
 
-**Kapatmanın yolu belli:** host envanterinde `config.storageDevice` /
-VMFS extent bilgisi okunmalı — `HostVmfsVolume.extent[].diskName` bir VMFS
-volume'ünün hangi NAA üzerinde durduğunu söyler. Bu okunduğunda "SQL Server
-yavaş → hangi datastore → hangi LUN → hangi yol → hangi SFP" zinciri uçtan uca
-sorgulanabilir hale gelir. **Bir sonraki adım budur.**
+Datastore'un `summary.url`'inden gelen kimlik bir **VMFS UUID**'dir; yolun ve
+disk cihazının kimliği ise **NAA**'dır. İki sözlük hiç kesişmiyordu.
+
+Host envanterine `config.fileSystemVolume.mountInfo` eklendi. Tel üzerindeki
+şekli tahmin edilmedi, döküldü — ve tahmin yanlış çıkardı:
+
+```xml
+<HostFileSystemMountInfo>
+  <mountInfo>                        <!-- iç eleman: path, accessMode -->
+    <path>/vmfs/volumes/608bd301-...</path>
+  </mountInfo>
+  <volume xsi:type="HostVmfsVolume"> <!-- KARDEŞ eleman: asıl içerik -->
+    <type>VMFS</type>
+    <uuid>608bd301-3f719074-6962-f40343e85d10</uuid>
+    <extent>
+      <diskName>naa.600508b1001cb7368fc569b9146949ad</diskName>
+    </extent>
+  </volume>
+</HostFileSystemMountInfo>
+```
+
+`volume`, `mountInfo`'nun **içinde değil yanında**. Özellik adının ima ettiği
+yapı bu değil ve bunu bulmak bir yanlış denemeye mal oldu.
+
+Bu okuma, ayrıştırıcıda **iç içe yapı** desteği gerektirdi. `triggeredAlarmState`
+için yazılan tek seviyeli okuyucu, `volume` alt ağacının birleştirilmiş metnini
+geri veriyordu — yerini aldığı düzleştiricinin yaptığı sessiz yalanın aynısı.
+Artık `PropertyNode` ağacı var: ad, metin, tip, çocuklar.
+
+Sonuç canlıda: **41/41 datastore hem `VolumeIdentifier` hem `StorageDeviceId`
+işareti taşıyor.** Zincir uçtan uca sorgulanabilir:
+
+| Datastore | Üzerindeki VM | Datastore serisi | LUN cihaz serisi | Yol serisi | Ayrı initiator WWPN |
+|---|---|---|---|---|---|
+| PRODVOL10 | 14 | 60 | 1 | 80 | 20 |
+| PRODVOL3 | 13 | 60 | 1 | 80 | 20 |
+| PRODVOL8 | 12 | 60 | 1 | 80 | 20 |
+
+Yani "SQL Server yavaş → hangi datastore → hangi LUN → 10 host × 2 HBA = 20
+yoldan hangisi" sorusu artık tek bir SQL sorgusuyla cevaplanabiliyor. Ürünün
+imzası olan teşhis merdiveninin **veri temeli tamamlandı**; kalan iş bu veriyi
+okuyan analiz katmanı.
+
+**Not:** Yayılmış (spanned) VMFS volume'lerde birden fazla `extent` olabilir ve
+hepsi işaretleniyor. Sadece ilkini almak, bir datastore'u tek LUN üzerinde
+gösterip diğerlerini sessizce kaybetmek olurdu — ve yayılmış bir volume'de
+kaybolan yarı, çoğu zaman kesintiyi açıklayan yarıdır.
 
 ### Sıfırın iki türü
 

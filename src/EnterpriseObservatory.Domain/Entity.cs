@@ -160,6 +160,20 @@ public enum IdentityMarkKind
     /// by, which is how the storage layer will attach to this one later.
     /// </remarks>
     VolumeIdentifier = 7,
+
+    /// <summary>
+    /// The storage device a volume sits on — a LUN's NAA identifier.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="VolumeIdentifier"/> and the distinction is the
+    /// point. A VMFS volume has its own UUID and lives on one or more LUNs,
+    /// each with an NAA of its own, and the two vocabularies do not overlap:
+    /// vSphere names a datastore by the first and its storage paths and disk
+    /// devices by the second. Holding both is what joins "this datastore is
+    /// slow" to "this path has errors", and it is the same identifier a
+    /// storage array will present the LUN under.
+    /// </remarks>
+    StorageDeviceId = 8,
 }
 
 /// <summary>

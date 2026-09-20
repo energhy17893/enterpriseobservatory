@@ -317,6 +317,13 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             "hardware.systemInfo.uuid",
             "parent",
             "triggeredAlarmState",
+
+            // Read on the host because that is where it lives, and used to
+            // describe the datastores. It says which storage device each
+            // mounted volume occupies — the one link that joins a datastore's
+            // VMFS UUID to the NAA every storage path and disk device is
+            // named by.
+            "config.fileSystemVolume.mountInfo",
         ],
         ["VirtualMachine"] =
         [
@@ -372,13 +379,21 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             var alarms = await ReadTriggeredAlarmsAsync(
                 content, objects, failures, cancellationToken).ConfigureAwait(false);
 
+            // Built once from every host, because a shared volume is mounted on
+            // many and any one of them can say which device it sits on.
+            var volumeDevices = ReadVolumeDevices(objects);
+
             return new VsphereInventoryPayload
             {
                 VCenterName = string.IsNullOrWhiteSpace(content.Name) ? InstanceId : content.Name,
                 Hosts = [.. objects.Where(o => o.Type == "HostSystem").Select(ToHost)],
                 VirtualMachines = [.. objects.Where(o => o.Type == "VirtualMachine").Select(ToVirtualMachine)],
                 Clusters = [.. objects.Where(o => o.Type == "ClusterComputeResource").Select(ToCluster)],
-                Datastores = [.. objects.Where(o => o.Type == "Datastore").Select(ToDatastore)],
+                Datastores =
+                [
+                    .. objects.Where(o => o.Type == "Datastore")
+                        .Select(o => ToDatastore(o, volumeDevices)),
+                ],
                 TriggeredAlarms = alarms,
                 Failures = failures,
                 PagesRetrieved = pages,
@@ -501,9 +516,9 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             .Where(o => o.Structures.ContainsKey("triggeredAlarmState"))
             .SelectMany(o => o.Structures["triggeredAlarmState"]))
         {
-            var key = Field(state, "key");
-            var entity = Field(state, "entity");
-            var alarm = Field(state, "alarm");
+            var key = state.TextOf("key");
+            var entity = state.TextOf("entity");
+            var alarm = state.TextOf("alarm");
 
             // Without these three there is nothing to report, nothing to
             // attribute it to and no way to tell one triggering from another.
@@ -516,17 +531,17 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             {
                 Key = key,
                 EntityMoRef = entity,
-                EntityType = Field(state, "entity@type"),
+                EntityType = state.TypeOf("entity"),
                 AlarmMoRef = alarm,
-                OverallStatus = Field(state, "overallStatus") is { Length: > 0 } status
+                OverallStatus = state.TextOf("overallStatus") is { Length: > 0 } status
                     ? status
                     : null,
                 TriggeredAtUtc = DateTimeOffset.TryParse(
-                    Field(state, "time"), CultureInfo.InvariantCulture,
+                    state.TextOf("time"), CultureInfo.InvariantCulture,
                     DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
                     out var at) ? at : null,
-                Acknowledged = bool.TryParse(Field(state, "acknowledged"), out var ack) && ack,
-                AcknowledgedByUser = Field(state, "acknowledgedByUser") is { Length: > 0 } who
+                Acknowledged = bool.TryParse(state.TextOf("acknowledged"), out var ack) && ack,
+                AcknowledgedByUser = state.TextOf("acknowledgedByUser") is { Length: > 0 } who
                     ? who
                     : null,
             });
@@ -596,8 +611,75 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         return resolved;
     }
 
-    private static string Field(IReadOnlyDictionary<string, string> fields, string name) =>
-        fields.TryGetValue(name, out var value) ? value : string.Empty;
+    /// <summary>
+    /// Maps each mounted volume to the storage devices it occupies.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The shape, measured against a live vCenter rather than read from the
+    /// schema: <c>config.fileSystemVolume.mountInfo</c> is an array of
+    /// <c>HostFileSystemMountInfo</c>, each with a <c>mountInfo</c> child — path
+    /// and access mode — and a sibling <c>volume</c> that carries the real
+    /// content. For VMFS the volume has a <c>uuid</c> and one <c>extent</c> per
+    /// storage device, each with a <c>diskName</c> like
+    /// <c>naa.600508b1001cb736...</c>.
+    /// </para>
+    /// <para>
+    /// Read from every host and merged. The same volume is mounted on every
+    /// host that can see it, so one unreadable host costs nothing as long as
+    /// another answered — and on a shared SAN they nearly always do.
+    /// </para>
+    /// <para>
+    /// Non-VMFS volumes are skipped rather than guessed at. An NFS mount has no
+    /// storage device in this sense, and inventing one would put a LUN
+    /// identifier on something that is not a LUN.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<string, List<string>> ReadVolumeDevices(
+        IReadOnlyList<PropertyObject> objects)
+    {
+        var byVolume = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in objects
+            .Where(o => o.Type == "HostSystem")
+            .Where(o => o.Structures.ContainsKey("config.fileSystemVolume.mountInfo"))
+            .SelectMany(o => o.Structures["config.fileSystemVolume.mountInfo"]))
+        {
+            if (entry.Child("volume") is not { } volume)
+            {
+                continue;
+            }
+
+            var uuid = volume.TextOf("uuid");
+            if (uuid.Length == 0)
+            {
+                continue;
+            }
+
+            var devices = volume.All("extent")
+                .Select(e => e.TextOf("diskName"))
+                .Where(d => d.Length > 0)
+                .ToList();
+
+            if (devices.Count == 0)
+            {
+                continue;
+            }
+
+            if (!byVolume.TryGetValue(uuid, out var known))
+            {
+                byVolume[uuid] = known = [];
+            }
+
+            foreach (var device in devices.Where(d =>
+                !known.Contains(d, StringComparer.OrdinalIgnoreCase)))
+            {
+                known.Add(device);
+            }
+        }
+
+        return byVolume;
+    }
 
     private static VsphereHost ToHost(PropertyObject o) => new()
     {
@@ -640,13 +722,19 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         DrsEnabled = PropertyCollectorParser.ReadBoolean(o.Values, "configuration.drsConfig.enabled"),
     };
 
-    private static VsphereDatastore ToDatastore(PropertyObject o) => new()
+    private static VsphereDatastore ToDatastore(
+        PropertyObject o, Dictionary<string, List<string>> volumeDevices) => new()
     {
         MoRef = o.MoRef,
         Name = PropertyCollectorParser.ReadString(o.Values, "name") ?? o.MoRef,
         CapacityBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.capacity"),
         FreeSpaceBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.freeSpace"),
         Url = PropertyCollectorParser.ReadString(o.Values, "summary.url"),
+        StorageDevices = VsphereInventorySource.VolumeIdentifier(
+                PropertyCollectorParser.ReadString(o.Values, "summary.url")) is { } volume &&
+            volumeDevices.TryGetValue(volume, out var devices)
+                ? devices
+                : [],
         Accessible = PropertyCollectorParser.ReadBoolean(o.Values, "summary.accessible"),
         Type = PropertyCollectorParser.ReadString(o.Values, "summary.type"),
     };

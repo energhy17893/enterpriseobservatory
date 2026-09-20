@@ -219,11 +219,11 @@ public class PropertyCollectorParserTests
 
         var alarm = Assert.Single(host.Structures["triggeredAlarmState"]);
 
-        Assert.Equal("115.3615", alarm["key"]);
-        Assert.Equal("host-3615", alarm["entity"]);
-        Assert.Equal("alarm-115", alarm["alarm"]);
-        Assert.Equal("red", alarm["overallStatus"]);
-        Assert.Equal("false", alarm["acknowledged"]);
+        Assert.Equal("115.3615", alarm.TextOf("key"));
+        Assert.Equal("host-3615", alarm.TextOf("entity"));
+        Assert.Equal("alarm-115", alarm.TextOf("alarm"));
+        Assert.Equal("red", alarm.TextOf("overallStatus"));
+        Assert.Equal("false", alarm.TextOf("acknowledged"));
     }
 
     [Fact]
@@ -233,8 +233,8 @@ public class PropertyCollectorParserTests
         // the one thing that decides which entity the alert belongs to.
         var host = Assert.Single(PropertyCollectorParser.ParsePage(TriggeredAlarm).Objects);
 
-        Assert.Equal("HostSystem", host.Structures["triggeredAlarmState"][0]["entity@type"]);
-        Assert.Equal("Alarm", host.Structures["triggeredAlarmState"][0]["alarm@type"]);
+        Assert.Equal("HostSystem", host.Structures["triggeredAlarmState"][0].TypeOf("entity"));
+        Assert.Equal("Alarm", host.Structures["triggeredAlarmState"][0].TypeOf("alarm"));
     }
 
     [Fact]
@@ -425,5 +425,125 @@ public class VsphereSoapFaultReaderTests
 
         Assert.Equal(VsphereFaultKind.Other, fault!.Kind);
         Assert.Equal("unexpected", fault.Message);
+    }
+
+    // --- nested structures ------------------------------------------------
+
+    /// <summary>
+    /// Copied from a live vCenter. The nesting is the content: mountInfo is the
+    /// inner element and volume is its sibling, which is not what the property
+    /// name suggests and cost a wrong guess to find out.
+    /// </summary>
+    private const string MountedVolumes = """
+        <RetrievePropertiesExResponse xmlns="urn:vim25">
+          <returnval>
+            <objects>
+              <obj type="HostSystem">host-1</obj>
+              <propSet>
+                <name>config.fileSystemVolume.mountInfo</name>
+                <val xsi:type="ArrayOfHostFileSystemMountInfo" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+                  <HostFileSystemMountInfo xsi:type="HostFileSystemMountInfo">
+                    <mountInfo>
+                      <path>/vmfs/volumes/608bd301-3f719074-6962-f40343e85d10</path>
+                      <accessMode>readWrite</accessMode>
+                      <mounted>true</mounted>
+                      <accessible>true</accessible>
+                    </mountInfo>
+                    <volume xsi:type="HostVmfsVolume">
+                      <type>VMFS</type>
+                      <name>HOST6_Local_DS1</name>
+                      <uuid>608bd301-3f719074-6962-f40343e85d10</uuid>
+                      <extent>
+                        <diskName>naa.600508b1001cb7368fc569b9146949ad</diskName>
+                        <partition>8</partition>
+                      </extent>
+                      <ssd>true</ssd>
+                      <local>true</local>
+                    </volume>
+                  </HostFileSystemMountInfo>
+                  <HostFileSystemMountInfo xsi:type="HostFileSystemMountInfo">
+                    <mountInfo>
+                      <path>/vmfs/volumes/aaaa</path>
+                    </mountInfo>
+                    <volume xsi:type="HostVmfsVolume">
+                      <type>VMFS</type>
+                      <name>SPANNED</name>
+                      <uuid>aaaa</uuid>
+                      <extent><diskName>naa.111</diskName><partition>1</partition></extent>
+                      <extent><diskName>naa.222</diskName><partition>1</partition></extent>
+                    </volume>
+                  </HostFileSystemMountInfo>
+                </val>
+              </propSet>
+            </objects>
+          </returnval>
+        </RetrievePropertiesExResponse>
+        """;
+
+    private static IReadOnlyList<PropertyNode> Mounts() =>
+        Assert.Single(PropertyCollectorParser.ParsePage(MountedVolumes).Objects)
+            .Structures["config.fileSystemVolume.mountInfo"];
+
+    [Fact]
+    public void A_structure_inside_a_structure_is_read_rather_than_flattened()
+    {
+        // The link that joins a datastore to the LUN it sits on. A one-level
+        // reader gave back the concatenated text of the whole volume subtree,
+        // which is a string that looks like data and is not.
+        var volume = Assert.Single(Mounts().Take(1)).Child("volume");
+
+        Assert.NotNull(volume);
+        Assert.Equal("VMFS", volume.TextOf("type"));
+        Assert.Equal("608bd301-3f719074-6962-f40343e85d10", volume.TextOf("uuid"));
+        Assert.Equal(
+            "naa.600508b1001cb7368fc569b9146949ad",
+            volume.Child("extent")!.TextOf("diskName"));
+    }
+
+    [Fact]
+    public void A_node_with_children_has_no_text_of_its_own()
+    {
+        // Rather than the concatenation of everything beneath it. That
+        // concatenation is how a structure comes back looking like a value.
+        var volume = Mounts()[0].Child("volume")!;
+
+        Assert.Equal(string.Empty, volume.Text);
+        Assert.NotEmpty(volume.Children);
+    }
+
+    [Fact]
+    public void A_spanned_volume_keeps_every_extent()
+    {
+        // A VMFS volume may span several devices. Keeping only the first would
+        // report the datastore as living on one LUN and quietly lose the
+        // others — and for a spanned volume the lost half is the half that
+        // explains the outage.
+        var volume = Mounts()[1].Child("volume")!;
+
+        Assert.Equal(
+            ["naa.111", "naa.222"],
+            volume.All("extent").Select(e => e.TextOf("diskName")));
+    }
+
+    [Fact]
+    public void The_concrete_subtype_survives()
+    {
+        // HostVmfsVolume and HostNasVolume are not interchangeable: only one
+        // of them has a storage device, and treating an NFS mount as a LUN
+        // would put a block identifier on something that is not a block
+        // device.
+        Assert.Equal("HostVmfsVolume", Mounts()[0].TypeOf("volume"));
+    }
+
+    [Fact]
+    public void A_field_that_is_not_there_reads_as_empty_rather_than_throwing()
+    {
+        // A probe or a differently configured host will be missing fields, and
+        // a reader that threw would turn a partial answer into no answer.
+        var volume = Mounts()[1].Child("volume")!;
+
+        Assert.Equal(string.Empty, volume.TextOf("ssd"));
+        Assert.Null(volume.Child("nowhere"));
+        Assert.Empty(volume.All("nowhere"));
     }
 }
