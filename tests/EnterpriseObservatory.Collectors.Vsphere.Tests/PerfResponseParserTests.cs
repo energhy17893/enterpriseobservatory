@@ -448,4 +448,95 @@ public class PerfResponseParserTests
         Assert.Equal(RollupType.Average, device.Rollup);
         Assert.Equal(TimeSpan.FromSeconds(20), device.Interval);
     }
+
+    // --- readings that cannot exist ---------------------------------------
+
+    [Fact]
+    public void A_negative_reading_is_no_reading_rather_than_a_value()
+    {
+        // Measured on a live vCenter: exactly -1 comes back for between 0.15%
+        // and 0.52% of every counter this product collects. Whatever it means
+        // in vim25 -- which is not documented anywhere this could check -- it
+        // is not a number of milliseconds. Stored as one it dragged host
+        // averages below zero.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>180</counterId><instance></instance></id><value>-1</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        Assert.Empty(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+    }
+
+    [Fact]
+    public void A_gap_is_left_rather_than_a_fabricated_zero()
+    {
+        // Zero is a measurement and this is the absence of one. The product
+        // already models that -- a gap stays a gap, never zero-filled -- and a
+        // gap on a chart is visible in a way an invented zero is not.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>180</counterId><instance>naa.aaa</instance></id><value>-1</value></value>
+                <value><id><counterId>180</counterId><instance>naa.bbb</instance></id><value>4</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var values = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values;
+
+        // The healthy device survives; the absent one is absent rather than 0,
+        // which would otherwise become the minimum of every bucket it folds
+        // into and the floor of every chart it appears on.
+        Assert.DoesNotContain(values, v => v.Instance == "naa.aaa");
+        Assert.Equal(4d, Assert.Single(values, v => v.Instance == "naa.bbb").Raw);
+    }
+
+    [Fact]
+    public void Garbage_far_outside_the_counter_s_range_is_dropped_too()
+    {
+        // A live vCenter returned -1.8446744073709553e+18 for
+        // disk.kernelLatency. One of those in a series scales the chart axis
+        // so that every real value sits on a single flat line.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>180</counterId><instance></instance></id><value>-1.8446744073709553e+18</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        Assert.Empty(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values);
+    }
+
+    [Fact]
+    public void Zero_is_still_a_reading()
+    {
+        // The line is at negative, not at falsy. A summation of zero means the
+        // thing did not happen, which is the property the storage-path fault
+        // rule depends on entirely.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>180</counterId><instance></instance></id><value>0</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        Assert.Equal(0d, Assert.Single(Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values).Raw);
+    }
 }

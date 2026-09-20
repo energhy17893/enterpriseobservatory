@@ -261,6 +261,31 @@ public static class PerfResponseParser
             return null;
         }
 
+        // A reading that cannot exist is not a reading. None of the counters
+        // this product collects — latency, IOPS, percentages, memory, counts —
+        // can be negative, and yet a live vCenter returns exactly -1 for
+        // between 0.15% and 0.52% of every one of them, plus at least one
+        // value of -1.8e18 that is garbage under any reading.
+        //
+        // What -1 means in vim25 is not documented anywhere this was able to
+        // check, and it is not needed: whatever it means, it is not a number
+        // of milliseconds. Stored as one it dragged host averages below zero,
+        // and a single -1.8e18 in disk.kernelLatency would scale that chart's
+        // axis so that every real value sat on one flat line.
+        //
+        // Dropped rather than clamped to zero, because zero is a measurement
+        // and this is the absence of one. The product already models that: a
+        // gap stays a gap, never zero-filled, and a gap on a chart is visible
+        // in a way a fabricated zero is not.
+        //
+        // Revisit if a collector ever reports something genuinely signed — a
+        // temperature from a BMC would be the obvious one — at which point
+        // this belongs with the counter's metadata rather than here.
+        if (points[^1] < 0)
+        {
+            return null;
+        }
+
         return new CounterValue
         {
             CounterName = counter.Key,

@@ -288,6 +288,45 @@ Buna karşılık `storagePath.busResets` / `commandsAborted` sıfırları **bilg
 7 608 örnekte tek bir bus reset yok. Fark sayacın türünde — kesilen bir ortalama
 hiçbir şey söylemez, toplanan bir sayaç "hiç olmadı" der.
 
+### Ölçüm olmayan sayılar saklanıyordu — düzeltildi
+
+R2 yazılırken host başına ortalama gecikmeler **negatif** çıktı. Gecikme
+negatif olamaz.
+
+Canlı veriye bakıldığında, topladığımız **her sayaçta** `-1` bulundu:
+
+| Sayaç ailesi | Negatif oran |
+|---|---|
+| `virtualDisk.total{Read,Write}Latency` | %0,52 |
+| `cpu.ready` / `cpu.costop` | %0,33 |
+| `datastore.*` | %0,22 |
+| `disk.*` | %0,15 |
+
+Ayrıca `disk.kernelLatency` içinde **−1,8446744073709553e+18** (≈ −2⁶⁴/10) —
+hangi yorumla bakılırsa bakılsın çöp bir değer.
+
+`-1`'in vim25'te ne anlama geldiği **ulaşılabilen belgelerde yazmıyor**, ve
+gerekmiyor: ne anlama gelirse gelsin, bir milisaniye sayısı değil. Şu ikisi
+bunu doğruluyor — yüzde sayaçlarında `-0.01` (yani `-1` ÷ 100) ve mikrosaniye
+sayacında `-0.001` (yani `-1` ÷ 1000) görülüyor; yani ham değer tam olarak
+`-1` idi ve bizim normalleştirmemizden geçmiş.
+
+**Zararı:** host ortalamalarını sıfırın altına çekiyordu; tek bir −1,8e18
+değeri `disk.kernelLatency` grafiğinin eksenini öyle ölçekler ki gerçek
+değerlerin hepsi tek bir düz çizgiye oturur.
+
+**Düzeltme:** negatif okuma **düşürülüyor**, sıfıra kırpılmıyor. Sıfır bir
+ölçümdür; bu ise ölçümün yokluğudur — ve ürün bunu zaten modelliyor: *boşluk
+boşluk kalır, asla sıfırla doldurulmaz.* Grafikte boşluk görünür, uydurulmuş
+bir sıfır görünmez.
+
+Canlı doğrulama: yeniden başlatmadan sonraki **30 420 örnekte 0 negatif**.
+Eski 8 021 tanesi geçmiş olarak duruyor; retention temizleyecek.
+
+*Not:* bir gün BMC sıcaklığı gibi **gerçekten işaretli** bir sayaç toplanırsa
+bu kural sayacın meta verisine taşınmalı; bugün topladığımız hiçbir sayaç
+(gecikme, IOPS, yüzde, bellek, sayım) negatif olamaz.
+
 ### Yol sayaçları iki farklı sözlük kullanıyor
 
 Hata sayaçları `vmhba0:C0:T0:L1`, gecikme sayaçları
