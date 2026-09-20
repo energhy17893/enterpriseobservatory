@@ -29,6 +29,47 @@ namespace EnterpriseObservatory.Host.AllInOne.Configuration;
 public static class CredentialSourceGuard
 {
     /// <summary>
+    /// Every configuration key that must never come from a settings file.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Here rather than at the call site, and the move was the point. While
+    /// this list was written out in <c>Program.cs</c>, dropping the database
+    /// password from it was one deleted <c>.Append(...)</c> — a change that
+    /// reads as tidying — and nothing could have failed, because this class's
+    /// tests supply their own list and so stayed green while the thing they
+    /// guard was no longer guarded. The same shape as a rule that is tested
+    /// thoroughly and then never called.
+    /// </para>
+    /// <para>
+    /// With the list in here the call site cannot get it wrong. Un-guarding
+    /// the database password now means deleting the whole call, which is a
+    /// line a reviewer sees.
+    /// </para>
+    /// </remarks>
+    public static IEnumerable<string> CredentialKeys(int vCenterCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(vCenterCount);
+
+        return Enumerable
+            .Range(0, vCenterCount)
+            .Select(i => $"VCenters:{i}:Password")
+            .Append("Database:Password");
+    }
+
+    /// <summary>
+    /// Throws if any credential came from a settings file that travels with
+    /// the application.
+    /// </summary>
+    /// <remarks>
+    /// The overload to call. It decides for itself which keys hold secrets, so
+    /// a caller cannot leave one out.
+    /// </remarks>
+    public static void EnsureNotFromFiles(
+        IConfiguration configuration, int vCenterCount, string contentRoot) =>
+        EnsureNotFromFiles(configuration, CredentialKeys(vCenterCount), contentRoot);
+
+    /// <summary>
     /// Throws if any of <paramref name="keys"/> came from a settings file that
     /// travels with the application.
     /// </summary>

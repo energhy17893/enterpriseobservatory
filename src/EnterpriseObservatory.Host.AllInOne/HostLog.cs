@@ -99,14 +99,26 @@ internal static partial class HostLog
 
     /// <summary>A connection exists but is not being read, and why.</summary>
     /// <remarks>
+    /// <para>
     /// Said out loud because the alternative is silence that looks like health.
     /// A connection sitting in the list with nothing coming from it produces no
     /// alert — there is no collector to fail — so without this line the screen
     /// shows a vCenter and the estate shows nothing, with nothing anywhere to
     /// connect the two.
+    /// </para>
+    /// <para>
+    /// 1004 rather than 1013, which it shared with <see cref="CycleFailed"/>.
+    /// Those two are exactly the pair an operator filters on when the product
+    /// goes quiet, and one id for both means a log pipeline cannot separate
+    /// "the cycle is throwing" from "this vCenter is not being polled" — two
+    /// different faults needing two different fixes. This one moved because
+    /// 1004 puts it beside the other startup lines about a configured
+    /// connection, which is where it belongs; 1013 sits in the block about
+    /// running cycles.
+    /// </para>
     /// </remarks>
     [LoggerMessage(
-        EventId = 1013,
+        EventId = 1004,
         Level = LogLevel.Warning,
         Message = "Connection {InstanceId} is not being polled: {Reason}.")]
     public static partial void ConnectionNotPolled(ILogger logger, string instanceId, string reason);

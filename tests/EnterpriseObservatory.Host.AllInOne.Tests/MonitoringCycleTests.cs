@@ -54,14 +54,18 @@ public class MonitoringCycleTests : IDisposable
         Collection = CollectionPolicy.Default with { MaxRetries = 0 },
     };
 
-    private MonitoringCycle Cycle(IAlertNotifier? notifier = null) => new(
+    private MonitoringCycle Cycle(
+        IAlertNotifier? notifier = null,
+        IObservationStore? observations = null,
+        ICollectorHealthStore? health = null,
+        IEntityGraphStore? graphs = null) => new(
         new InventoryCollectionPipeline(_clock),
         new ObservationCollectionPipeline(_clock),
-        _graphs,
+        graphs ?? _graphs,
         _alerts,
-        _health,
+        health ?? _health,
         notifier ?? _notifier,
-        _observations,
+        observations ?? _observations,
         _maintenance,
         _clock);
 
@@ -326,6 +330,167 @@ public class MonitoringCycleTests : IDisposable
         // has to be visible in the product.
         Assert.NotNull(result.StorageFailure);
         Assert.Single(result.Observations);
+    }
+
+    [Fact]
+    public async Task A_storage_failure_that_clears_stops_being_reported()
+    {
+        // Postgres restarts once at 02:00 and one append throws. Left uncleared,
+        // that message rides every later result until the service is restarted
+        // and the worker warns every thirty seconds that samples could not be
+        // recorded -- while they are being recorded perfectly. The cost is not
+        // the noise. It is that the operator is trained to ignore the one
+        // message that means the history really does have a hole, so the night
+        // the disk actually fills nobody looks.
+        var store = new FlakyObservationStore { Fails = true };
+        var cycle = Cycle(observations: store);
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Reading("cpu.usage.average", 1, _clock.UtcNow)],
+            },
+        };
+
+        var failed = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.NotNull(failed.StorageFailure);
+
+        store.Fails = false;
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var recovered = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Null(recovered.StorageFailure);
+    }
+
+    [Fact]
+    public async Task A_cycle_with_nothing_to_store_does_not_claim_the_samples_are_kept()
+    {
+        // The other half of the same decision, and it has to go the other way.
+        // An empty batch never reaches the store, so nothing is learned about
+        // whether the store works; clearing on the way past would announce that
+        // the samples are being kept on the strength of an attempt never made.
+        // A vCenter that goes silent after a failed write would then close the
+        // report of that write, and the gap left at 02:00 would have nothing
+        // anywhere in the product still pointing at it.
+        var store = new FlakyObservationStore { Fails = true };
+        var cycle = Cycle(observations: store);
+        var sampling = true;
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = sampling
+                    ? [Reading("cpu.usage.average", 1, _clock.UtcNow)]
+                    : [],
+            },
+        };
+
+        var failed = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.NotNull(failed.StorageFailure);
+
+        // Reachable, and with nothing to say. The store is never touched.
+        sampling = false;
+        store.Fails = false;
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var quiet = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Equal(failed.StorageFailure, quiet.StorageFailure);
+    }
+
+    // --- the cycle's own store writes -------------------------------------
+
+    [Fact]
+    public async Task A_health_write_that_fails_does_not_cost_the_cycle_its_samples()
+    {
+        // The pool is exhausted, or a statement times out, while the collectors'
+        // health is being merged. Every source has already answered and the
+        // samples are in memory -- and unguarded, the pass dies there, before
+        // the one piece of code written to keep those samples is reached. What
+        // the estate gets is a thirty-second hole in every chart and a log line
+        // on a server nobody is reading at the time.
+        var cycle = Cycle(health: new FailingCollectorHealthStore());
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Reading("cpu.usage.average", 42.5, _clock.UtcNow)],
+            },
+        };
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Single(result.Observations);
+
+        // Null rather than merely present: the append ran and succeeded, so the
+        // sample is on disk and not only in the result.
+        Assert.Null(result.StorageFailure);
+
+        // And the operator is told, because a collector whose health stopped
+        // being written is a circuit breaker that stops counting -- a source
+        // broken for a day would be polled every thirty seconds forever.
+        Assert.Contains(_alerts.All, a => a.Title == "State could not be saved");
+    }
+
+    [Fact]
+    public async Task A_topology_write_that_fails_does_not_silence_the_collection_alerts()
+    {
+        // The worse one, and it is an ordering accident: the graph is written
+        // before reconciliation. A throw there took the whole inventory pass
+        // with it, so a failure to persist topology also suppressed that
+        // cycle's collection alerts -- the product went quiet about a vCenter
+        // it could not reach because a different subsystem could not write.
+        // Quiet is exactly what "everything is fine" looks like.
+        var cycle = Cycle(graphs: new FailingEntityGraphStore());
+        var inventory = new FakeInventorySource("vc-1"); // throws
+
+        // Twice: both of these are Warnings, and hysteresis confirms a warning
+        // on its second consecutive observation.
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+
+        var result = await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Contains(result.Visible, a => a.Title == "Collector unreachable (inventory)");
+
+        // In the product rather than only in a log, for the reason ADR-0005
+        // gives: the topology on screen is now older than the estate, and
+        // nothing else on the screen says so.
+        Assert.Contains(result.Visible, a => a.Title == "State could not be saved");
+    }
+
+    [Fact]
+    public async Task The_two_cycles_report_their_own_write_failures_separately()
+    {
+        // Both cycles merge collector health, into one alert store, on
+        // different clocks. One fingerprint for both would put two rows
+        // carrying the same identity in one inbox -- and acknowledging either
+        // would land on whichever the store reached first, so the button would
+        // appear to work and an identical alert would stay open beside it.
+        var cycle = Cycle(health: new FailingCollectorHealthStore());
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow),
+        };
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow),
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        var failures = _alerts.All.Where(a => a.Title == "State could not be saved").ToList();
+
+        Assert.Equal(2, failures.Count);
+        Assert.Equal(2, failures.Select(a => a.Fingerprint).Distinct().Count());
     }
 
     // --- provenance -------------------------------------------------------
@@ -661,4 +826,57 @@ public class MonitoringCycleTests : IDisposable
         Category = "Hardware",
         Source = source,
     };
+}
+
+/// <summary>A sample store whose failure can end, as a real one's does.</summary>
+/// <remarks>
+/// FailingObservationStore fails forever, which is enough to prove the cycle
+/// survives a failure and cannot prove anything about what happens afterwards.
+/// The defect these cover lives entirely on the far side of the recovery: a
+/// database restarts, one write is lost, and the product keeps reporting that
+/// loss long after writing works again.
+/// </remarks>
+internal sealed class FlakyObservationStore : IObservationStore
+{
+    private readonly InMemoryObservationStore _kept = new();
+
+    public bool Fails { get; set; }
+
+    public void Append(IReadOnlyList<Observation> observations)
+    {
+        if (Fails)
+        {
+            throw new IOException("the connection was reset by the server");
+        }
+
+        _kept.Append(observations);
+    }
+
+    public SeriesResult Query(SeriesQuery query) => _kept.Query(query);
+
+    public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => _kept.SeriesFor(entity);
+
+    public CompactionReport Compact(DateTimeOffset nowUtc, SeriesRetentionPolicy policy) =>
+        _kept.Compact(nowUtc, policy);
+}
+
+/// <remarks>
+/// Throws the way a busy database does — not at the read, which would look
+/// like an unreachable collector, but at the write, once every source has
+/// already answered and this cycle's work is sitting in memory.
+/// </remarks>
+internal sealed class FailingCollectorHealthStore : ICollectorHealthStore
+{
+    public IReadOnlyList<CollectorHealth> Current => [];
+
+    public void Merge(IReadOnlyList<CollectorHealth> health) =>
+        throw new TimeoutException("the connection pool is exhausted");
+}
+
+internal sealed class FailingEntityGraphStore : IEntityGraphStore
+{
+    public EntityGraph Current => new();
+
+    public void Replace(EntityGraph graph) =>
+        throw new TimeoutException("canceling statement due to statement timeout");
 }

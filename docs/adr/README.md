@@ -43,7 +43,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0001](0001-modular-monolith-with-deployment-agnostic-core.md) | Deployment-agnostik çekirdekli modüler monolit | Kabul edildi |
 | [0002](0002-adr-and-commit-discipline.md) | ADR ve commit disiplini, dil seçimi | Kabul edildi |
 | [0003](0003-topology-first-entity-model.md) | Topoloji-önce varlık modeli | Kabul edildi |
-| [0004](0004-relationship-taxonomy-and-entity-lifecycle.md) | İlişki taksonomisi ve varlık yaşam döngüsü | Kabul edildi |
+| [0004](0004-relationship-taxonomy-and-entity-lifecycle.md) | İlişki taksonomisi ve varlık yaşam döngüsü | Kabul edildi — §2 sağlık yayılımı sütunu → ADR-0018 |
 | [0005](0005-collector-contract-and-collection-discipline.md) | Collector sözleşmesi ve toplama disiplini | Kabul edildi |
 | [0006](0006-web-stack-react-spa.md) | Web arayüzü React + TypeScript SPA | Kabul edildi |
 | [0007](0007-information-architecture-and-alert-centralization.md) | Bilgi mimarisi ve alarm merkezileştirme | Kabul edildi |
@@ -57,6 +57,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0015](0015-connections-entered-in-the-product.md) | Bağlantılar üründen girilir, parola şifrelenmiş saklanır | Kabul edildi |
 | [0016](0016-external-infrastructure-dependencies.md) | Dış altyapı bağımlılıkları — PostgreSQL tek depolama motoru | Kabul edildi |
 | [0017](0017-retention-windows-set-by-measurement.md) | Saklama pencereleri ölçümle yeniden belirlendi | Kabul edildi |
+| [0018](0018-health-derives-from-alerts-not-propagation.md) | Sağlık alarmlardan türer, kenarlardan yayılmaz | Kabul edildi |
 
 ## Şablon
 

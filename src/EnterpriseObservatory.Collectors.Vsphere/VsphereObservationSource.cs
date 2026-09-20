@@ -50,6 +50,17 @@ public interface IVsphereSampleTargetProvider
 /// never returning a number whose meaning we cannot vouch for.
 /// </para>
 /// <para>
+/// Entity types fail one at a time. A read walks hosts, then virtual machines,
+/// then datastores, and a fault on one of them is reported as a
+/// <c>CollectionFailure</c> against that type rather than thrown — partial
+/// success being a first-class outcome here, per ADR-0005. It used to escape,
+/// and the common deployment where a monitoring account may read hosts and VMs
+/// but not datastore counters therefore collected the host and VM samples and
+/// then discarded them, every cycle, reporting the entire vCenter as
+/// unreachable. See <see cref="EndsTheSession"/> for the two faults that are
+/// still allowed out, and why.
+/// </para>
+/// <para>
 /// See docs/collectors/vsphere-metric-contract.md.
 /// </para>
 /// </remarks>
@@ -104,9 +115,17 @@ public sealed class VsphereObservationSource(
 
         foreach (var (entityType, moRefs) in _targets.Current.ByType())
         {
-            await ReadTypeAsync(
-                entityType, moRefs, byKey, maxQueryMetrics, now,
-                observations, failures, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await ReadTypeAsync(
+                    entityType, moRefs, byKey, maxQueryMetrics, now,
+                    observations, failures, cancellationToken).ConfigureAwait(false);
+            }
+            catch (VsphereApiException ex) when (!EndsTheSession(ex.Kind))
+            {
+                // One type, not the vCenter. See CouldNotRead.
+                failures.Add(CouldNotRead(entityType, ex));
+            }
         }
 
         ReportUnmeasurableLatency(observations, failures);
@@ -117,6 +136,94 @@ public sealed class VsphereObservationSource(
             ReadAtUtc = now,
             Observations = observations,
             Failures = failures,
+        };
+    }
+
+    /// <summary>
+    /// Whether a fault ends the conversation rather than just this question.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The line the per-type guard is drawn on, and the only judgement in it.
+    /// A vCenter that answers with a vim25 fault has, by answering, proved the
+    /// connection and the session are alive — so the next entity type is worth
+    /// asking about, and the fault describes what was asked for rather than who
+    /// is asking. The two exceptions are the faults that are about the asking
+    /// itself: a rejected login and an expired session. Neither improves by
+    /// moving on to datastores, and both need the whole read started again on a
+    /// fresh connection, which only <c>SourceRunner</c> can do.
+    /// </para>
+    /// <para>
+    /// Letting those two escape is also what keeps the one-strike rule working.
+    /// <c>CollectionFailures.IsWorthRetrying</c> says a rejected login must not
+    /// be asked again, and the runner holds the source off after a single such
+    /// failure — vSphere SSO locks an account at a handful. Demoted to a
+    /// <c>CollectionFailure</c> the runner would never see it, would count the
+    /// read a success, and would present the operator three fresh rejected
+    /// logins every cycle under a heading that says it does not do that.
+    /// </para>
+    /// <para>
+    /// Note that <c>IsWorthRetrying</c> cannot itself be the split. It answers
+    /// "can asking again help", which is orthogonal: <c>NoPermission</c> is not
+    /// worth retrying and must be demoted — it is the whole defect — while a
+    /// generic runtime fault is worth retrying and must be demoted too. The
+    /// vocabulary is still reused, in the other direction: what the demoted
+    /// fault becomes is <c>ICollectionFault.Kind</c>, unchanged.
+    /// </para>
+    /// <para>
+    /// Anything that is not a <see cref="VsphereApiException"/> at all —
+    /// a dead socket, a mid-read timeout, a cancelled cycle — escapes as
+    /// before, and deliberately. Those arrive without a fault body, which means
+    /// the server never answered, which means there is nothing to say about one
+    /// entity type in particular. Guessing that the session survived would have
+    /// the product report "datastore metrics unavailable" while the truth is
+    /// that the vCenter is gone.
+    /// </para>
+    /// </remarks>
+    private static bool EndsTheSession(VsphereFaultKind kind) =>
+        kind is VsphereFaultKind.InvalidLogin or VsphereFaultKind.NotAuthenticated;
+
+    /// <summary>
+    /// Records one entity type as unread, so the rest of the cycle survives.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The kind is the exception's own <c>ICollectionFault.Kind</c> rather than
+    /// a new one invented here: <c>NoPermission</c> is already
+    /// <c>AuthorizationDenied</c> and everything else is already
+    /// <c>ProtocolError</c>, and a second spelling of that mapping is a second
+    /// chance for it to drift.
+    /// </para>
+    /// <para>
+    /// The target is the entity type, because that is the unit the failure
+    /// actually has. Naming a counter would be narrower than the truth — none
+    /// of them were read — and naming the vCenter would be wider than it, since
+    /// the other types were read normally and their samples are in this batch.
+    /// </para>
+    /// <para>
+    /// Nothing is substituted for what is missing. The series gets a gap, and a
+    /// gap is the honest shape of this: a zero would look like a measurement.
+    /// </para>
+    /// </remarks>
+    private static CollectionFailure CouldNotRead(
+        VsphereEntityType entityType, VsphereApiException error)
+    {
+        var advice = error.Kind == VsphereFaultKind.NoPermission
+            ? $" The account is authenticated but not permitted to read {entityType} " +
+              "performance data. That is a permission granted on those objects, not " +
+              "something a retry can change."
+            : string.Empty;
+
+        return new CollectionFailure
+        {
+            Kind = ((ICollectionFault)error).Kind,
+            Target = entityType.ToString(),
+            Detail =
+                $"Reading {entityType} performance data from this vCenter failed with " +
+                $"{error.Kind}, so nothing of that kind was measured this cycle: " +
+                $"{error.Message}{advice} The other entity types in the same read were " +
+                "unaffected and their samples are in this batch. No value is substituted " +
+                "for the missing ones.",
         };
     }
 

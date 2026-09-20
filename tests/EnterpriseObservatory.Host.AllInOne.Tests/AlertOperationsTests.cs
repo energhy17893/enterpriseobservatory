@@ -335,6 +335,35 @@ public class AlertOperationsTests
             $"The batch was left in mixed states: {string.Join(", ", states)}.");
     }
 
+    [Fact]
+    public void A_bulk_acknowledgement_that_fails_part_way_leaves_nothing_acknowledged()
+    {
+        // The real store does the whole batch in one transaction, so a
+        // statement that fails or a connection that drops before the commit
+        // leaves the database untouched -- and the cache must not be ahead of
+        // it. This fake has no transaction, so the same guarantee has to be
+        // built: decide the whole batch, then apply it.
+        //
+        // Worth pinning here and not only against PostgreSQL, because those
+        // tests skip on any machine without a server and this one is what the
+        // cycle and operator tests actually run against. A fake that half
+        // applies a batch the real store would refuse wholesale is the
+        // drift that hid the missing lock and the missing Scope stamp.
+        var fingerprints = Given20();
+        var reached = 0;
+
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            _alerts.MutateMany(
+                fingerprints,
+                instance => reached++ < 9
+                    ? AlertLifecycle.Acknowledge(instance, "ertugrul", T0)
+                    : throw new InvalidOperationException("the connection dropped"));
+        });
+
+        Assert.All(_alerts.All, a => Assert.Equal(AlertLifecycleState.Open, a.State));
+    }
+
     private List<AlertFingerprint> Given20()
     {
         var alerts = Enumerable.Range(0, 20).Select(i => Alert($"a{i}")).ToArray();

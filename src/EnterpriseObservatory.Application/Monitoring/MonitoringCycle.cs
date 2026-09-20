@@ -109,7 +109,14 @@ public sealed class MonitoringCycle(
             .RunAsync(sources, _healthStore.Current, options.Collection, cancellationToken)
             .ConfigureAwait(false);
 
-        _healthStore.Merge(cycle.Health);
+        // Guarded per write, and named per cycle: the two cycles merge health
+        // on different clocks and must be able to fail without resolving each
+        // other's alert, for the reason SourceRunner keeps the collector's role
+        // in its fingerprint.
+        var healthFailure = Guarded(
+            "collector-health:inventory",
+            "the collectors' health",
+            () => _healthStore.Merge(cycle.Health));
 
         // Only sources that actually returned a snapshot may cause their own
         // entities to be treated as vanished. A source we could not reach has
@@ -128,10 +135,18 @@ public sealed class MonitoringCycle(
 
         graph = graph with { Relationships = [.. graph.Relationships, .. ResolveIdentity(graph, now)] };
 
-        _graphStore.Replace(graph);
+        // The order is what made this one dangerous. The graph is written
+        // before reconciliation, so a throw here took the cycle's collection
+        // alerts with it -- "Collector unreachable" included. The product went
+        // quiet about vCenters it could not reach because a different subsystem
+        // could not write, which is the failure this cycle exists to report.
+        var graphFailure = Guarded(
+            "entity-graph", "the topology", () => _graphStore.Replace(graph));
 
         var observed = cycle.Snapshots.SelectMany(s => s.Alerts)
             .Concat(cycle.CollectionAlerts)
+            .Concat(healthFailure)
+            .Concat(graphFailure)
             .ToList();
 
         var reconciliation = Reconcile(AlertScopes.Inventory, observed, options, now);
@@ -165,7 +180,15 @@ public sealed class MonitoringCycle(
             .RunAsync(sources, _healthStore.Current, options.Collection, cancellationToken)
             .ConfigureAwait(false);
 
-        _healthStore.Merge(cycle.Health);
+        // Every source has already been read and the samples are in memory. A
+        // pool exhaustion or a statement timeout in here used to end the pass
+        // before StoreObservations -- the one piece of code written to keep
+        // those samples -- was ever reached.
+        var healthFailure = Guarded(
+            "collector-health:metrics",
+            "the collectors' health",
+            () => _healthStore.Merge(cycle.Health));
+
         StoreObservations(cycle.Observations);
 
         // What the collectors could not read, and what the numbers themselves
@@ -178,6 +201,7 @@ public sealed class MonitoringCycle(
         // way; rules were the one part of the cycle that could still take the
         // whole thing down with them.
         var observed = cycle.CollectionAlerts
+            .Concat(healthFailure)
             .Concat(Analysis.GuardedRule.Run(
                 Analysis.FaultCounters.RuleId,
                 () => Analysis.FaultCounters.Evaluate(cycle.Observations)))
@@ -257,12 +281,29 @@ public sealed class MonitoringCycle(
     {
         if (observations.Count == 0)
         {
+            // Deliberately neither set nor cleared. Nothing was written, so
+            // nothing new is known about whether writing works, and clearing
+            // here would report "we are keeping your samples" on the strength
+            // of an attempt never made -- the same fabrication as a zero that
+            // was never measured. The cost of holding it is that a cycle with
+            // nothing to store repeats the last real failure; that is bounded
+            // by the first cycle that has a sample, and a cycle with no samples
+            // at all already says so through SilentSources.
             return;
         }
 
         try
         {
             _observationStore.Append(observations);
+
+            // Cleared, not left behind. One restart of the database at 02:00
+            // otherwise put that message on every result until the service was
+            // restarted: the worker warned every thirty seconds that samples
+            // could not be recorded while they were being recorded perfectly.
+            // A fabricated failure is the mirror of a fabricated zero and worse
+            // in one respect -- it teaches an operator to ignore the one
+            // message that means the history really does have a hole.
+            _lastStorageFailure = null;
         }
 #pragma warning disable CA1031 // Justified: see the remarks above.
         catch (Exception ex)
@@ -276,9 +317,106 @@ public sealed class MonitoringCycle(
     /// <remarks>
     /// Reported on the cycle result rather than only logged, so that "we are
     /// collecting but not keeping" is visible in the product rather than in a
-    /// file on the server. See ADR-0005.
+    /// file on the server. See ADR-0005. It describes the last attempt and
+    /// nothing else: the next attempt that succeeds clears it, and a cycle with
+    /// nothing to write leaves it alone.
     /// </remarks>
     private string? _lastStorageFailure;
+
+    /// <summary>
+    /// Performs one of this cycle's store writes so that its failure costs only
+    /// that write.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Collection sources have had this from the beginning
+    /// (<c>SourceRunner</c>), the sample write has had it
+    /// (<see cref="StoreObservations"/>), and analysis rules were given it in
+    /// <c>GuardedRule</c>. The cycle's own writes had nothing. A statement
+    /// timeout inside <c>Merge</c> ended the observation pass with every source
+    /// already read and the samples sitting in memory, before the one piece of
+    /// code written to protect them ran; nothing reached the product and one
+    /// line reached a log file on the server.
+    /// </para>
+    /// <para>
+    /// The failure becomes an alert rather than another field on the result,
+    /// unlike <see cref="MonitoringCycleResult.StorageFailure"/>. That field
+    /// earns its place because it describes this cycle's samples, which the
+    /// result carries beside it. These describe state that outlives the cycle,
+    /// and an operator is the only one who can act on them -- so they go where
+    /// ADR-0005 puts "we are not recording": into the product. Being an
+    /// ordinary alert also means each one is reconciled in its own scope and
+    /// resolves by itself on the first cycle the write survives, so no part of
+    /// this has to remember to clear anything.
+    /// </para>
+    /// <para>
+    /// Not every write is guarded, and that is the point rather than an
+    /// oversight. <see cref="Reconcile"/> and the marking in
+    /// <see cref="NotifyAsync"/> are left to throw: a cycle whose
+    /// reconciliation failed has decided nothing, and carrying on would mean
+    /// inventing an empty result, which reads as "nothing is wrong" -- an
+    /// all-clear nobody measured, and the one thing worse than a failed cycle.
+    /// There is nowhere to put an alert about it either, the store that would
+    /// hold it being the store that just failed.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<AlertDefinition> Guarded(
+        string writeId, string what, Action write)
+    {
+        try
+        {
+            write();
+
+            return [];
+        }
+        catch (OperationCanceledException)
+        {
+            // The cycle is shutting down, not the store misbehaving. An alert
+            // that fires on every restart is one nobody reads.
+            throw;
+        }
+#pragma warning disable CA1031 // Justified: see the remarks above. A write
+        // crosses a network to a database and may throw anything, and the one
+        // outcome that must not happen is this cycle's measurements going
+        // unreported because a different subsystem could not be written to.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            return [WriteFailed(writeId, what, ex)];
+        }
+    }
+
+    /// <summary>
+    /// Says that one write did not land, and what that leaves stale.
+    /// </summary>
+    /// <param name="writeId">
+    /// Stable across releases and distinct per write: it is part of the
+    /// fingerprint, so two writes failing must be two alerts or fixing one
+    /// would resolve the other's while it was still broken.
+    /// </param>
+    private static AlertDefinition WriteFailed(string writeId, string what, Exception error) =>
+        new()
+        {
+            Fingerprint = AlertFingerprint.Create(
+                "platform", WriteFailedTitle, WriteFailedCategory, writeId, "store-write-failed"),
+
+            // Warning, for the reason an unreachable collector is one: nothing
+            // says the estate is broken, only that part of what we measured was
+            // not written down.
+            Severity = AlertSeverity.Warning,
+            Title = WriteFailedTitle,
+            Description =
+                $"Writing {what} threw {error.GetType().Name} and was skipped: {error.Message} " +
+                "The rest of this cycle ran normally, but what is stored is now older than what " +
+                "was measured, and every later cycle reasons from the stored copy.",
+            Category = WriteFailedCategory,
+            Source = "platform",
+            IsDerived = true,
+        };
+
+    private const string WriteFailedTitle = "State could not be saved";
+
+    private const string WriteFailedCategory = "Configuration";
 
     /// <summary>
     /// What an operator should see right now, across every scope.

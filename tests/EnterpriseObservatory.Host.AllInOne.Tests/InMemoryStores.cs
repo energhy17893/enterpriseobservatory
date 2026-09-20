@@ -27,34 +27,90 @@ namespace EnterpriseObservatory.Host.AllInOne.Tests;
 /// </remarks>
 internal sealed class InMemoryUserAccountStore : IUserAccountStore
 {
+    /// <summary>
+    /// The same guarantee the real store makes, for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// PostgresUserAccountStore holds the row with <c>FOR UPDATE</c> from the
+    /// read to the commit, so that a burst of sign-in attempts increments the
+    /// failure counter once each rather than once between them. A fake without
+    /// an equivalent would let the lockout tests pass while the lockout was
+    /// defeatable by posting the guesses at the same moment, which is the one
+    /// thing the lockout is for.
+    /// </remarks>
+    private readonly Lock _gate = new();
+
     private readonly Dictionary<string, UserAccount> _accounts = new(StringComparer.Ordinal);
 
-    public bool Any => _accounts.Count > 0;
+    public bool Any
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _accounts.Count > 0;
+            }
+        }
+    }
 
-    public UserAccount? Find(string username) =>
-        _accounts.GetValueOrDefault(UserAccount.Normalize(username));
+    public UserAccount? Find(string username)
+    {
+        lock (_gate)
+        {
+            return _accounts.GetValueOrDefault(UserAccount.Normalize(username));
+        }
+    }
 
-    public IReadOnlyList<UserAccount> All() =>
-        [.. _accounts.Values.OrderBy(a => a.Username, StringComparer.Ordinal)];
+    public IReadOnlyList<UserAccount> All()
+    {
+        lock (_gate)
+        {
+            return [.. _accounts.Values.OrderBy(a => a.Username, StringComparer.Ordinal)];
+        }
+    }
 
     public bool TryAdd(UserAccount account)
     {
         ArgumentNullException.ThrowIfNull(account);
 
-        return _accounts.TryAdd(account.Username, account);
-    }
-
-    public void Update(UserAccount account)
-    {
-        ArgumentNullException.ThrowIfNull(account);
-
-        if (_accounts.ContainsKey(account.Username))
+        lock (_gate)
         {
-            _accounts[account.Username] = account;
+            return _accounts.TryAdd(account.Username, account);
         }
     }
 
-    public bool Remove(string username) => _accounts.Remove(UserAccount.Normalize(username));
+    public UserAccount? Mutate(string username, Func<UserAccount, UserAccount> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+
+        lock (_gate)
+        {
+            // Applied to the account as stored, never to a copy the caller
+            // brought with it.
+            if (!_accounts.TryGetValue(UserAccount.Normalize(username), out var stored))
+            {
+                return null;
+            }
+
+            var next = change(stored) with
+            {
+                Username = stored.Username,
+                CreatedUtc = stored.CreatedUtc,
+            };
+
+            _accounts[stored.Username] = next;
+
+            return next;
+        }
+    }
+
+    public bool Remove(string username)
+    {
+        lock (_gate)
+        {
+            return _accounts.Remove(UserAccount.Normalize(username));
+        }
+    }
 }
 
 internal sealed class InMemoryEntityGraphStore : IEntityGraphStore
@@ -177,7 +233,39 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
         // acknowledged and nothing on screen to say which, or why.
         lock (_gate)
         {
-            return [.. fingerprints.Select(f => MutateLocked(f, change)).OfType<AlertInstance>()];
+            // Decided in full before any of it is applied, because the real
+            // store does the whole batch in one transaction and so cannot
+            // leave part of it behind. This fake used to apply each alert as
+            // it reached it, so a change that threw on the twelfth left eleven
+            // acknowledged -- weaker than the contract in exactly the way the
+            // missing lock and the missing Scope stamp above were, and in
+            // exactly the place the tests exist to watch.
+            var pending = new List<(List<AlertInstance> Slice, int Index, AlertInstance Next)>(
+                fingerprints.Count);
+
+            foreach (var fingerprint in fingerprints)
+            {
+                foreach (var slice in _instances.Values)
+                {
+                    var index = slice.FindIndex(i => i.Fingerprint == fingerprint);
+
+                    if (index < 0)
+                    {
+                        continue;
+                    }
+
+                    pending.Add((slice, index, change(slice[index])));
+
+                    break;
+                }
+            }
+
+            foreach (var (slice, index, next) in pending)
+            {
+                slice[index] = next;
+            }
+
+            return [.. pending.Select(p => p.Next)];
         }
     }
 

@@ -1,4 +1,4 @@
-using EnterpriseObservatory.Host.AllInOne.Configuration;
+﻿using EnterpriseObservatory.Host.AllInOne.Configuration;
 using Microsoft.Extensions.Configuration;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
@@ -179,6 +179,40 @@ public class CredentialSourceGuardTests : IDisposable
         }
 
         GC.SuppressFinalize(this);
+    }
+
+    // --- which keys are guarded ------------------------------------------
+
+    [Fact]
+    public void The_database_password_is_one_of_the_keys_that_must_not_come_from_a_file()
+    {
+        // The guard is only worth what its key list covers, and this entry is
+        // the one the previous product leaked. While the list was written at
+        // the call site in Program.cs, losing it was one deleted .Append(...)
+        // and every test here stayed green -- because they all supply their
+        // own list, and so could not notice that the real one had changed.
+        Assert.Contains("Database:Password", CredentialSourceGuard.CredentialKeys(2));
+    }
+
+    [Fact]
+    public void Every_configured_vCenter_gets_its_own_guarded_password_key()
+    {
+        // Off-by-one here is silent: the last vCenter's password would be
+        // readable from appsettings.json with nothing to say so.
+        var keys = CredentialSourceGuard.CredentialKeys(3).ToList();
+
+        Assert.Contains("VCenters:0:Password", keys);
+        Assert.Contains("VCenters:2:Password", keys);
+        Assert.Equal(4, keys.Count);
+    }
+
+    [Fact]
+    public void An_installation_with_no_vCenter_yet_still_guards_the_database()
+    {
+        // First start, before any connection is added. The database password
+        // exists from the beginning, so the guard must too -- and this is the
+        // moment somebody is most tempted to paste one into a settings file.
+        Assert.Equal(["Database:Password"], CredentialSourceGuard.CredentialKeys(0));
     }
 
     private IConfiguration FileWith(string json) =>
