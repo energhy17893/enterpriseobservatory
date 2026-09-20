@@ -73,15 +73,30 @@ public sealed class GraphSampleTargetProvider(IEntityGraphStore store, string in
         return _store.Current.Entities.ContainsKey(id) ? id : null;
     }
 
+    /// <summary>The volume index, and the graph it was built from.</summary>
+    /// <remarks>
+    /// Invalidated by reference rather than by a timer or a subscription. The
+    /// inventory cycle replaces the graph wholesale — that is what
+    /// <see cref="IEntityGraphStore.Replace"/> means — so a different instance
+    /// is an exact signal that the index is stale, with no way for the two to
+    /// disagree. A datastore added this afternoon is therefore indexed on the
+    /// first metric cycle after the inventory cycle that found it.
+    /// </remarks>
+    private EntityGraph? _indexed;
+
+    private Dictionary<string, EntityId> _volumes = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Finds the datastore a volume identifier belongs to.
     /// </summary>
     /// <remarks>
-    /// Built per call from the current graph rather than cached. The lookup is
-    /// over a few dozen datastores and runs once per metric cycle, while a
-    /// cache would have to be invalidated by the inventory cycle — and the
-    /// failure it would produce is a datastore added this afternoon whose
-    /// latency silently lands nowhere.
+    /// Indexed rather than scanned. This is called once per datastore
+    /// measurement, not once per cycle: on the estate this was written against
+    /// that is six counters across forty-one datastores seen from ten hosts,
+    /// so roughly two and a half thousand calls every thirty seconds, each of
+    /// which was walking two hundred entities and their marks. The comment
+    /// that used to sit here said "once per metric cycle" and was simply
+    /// wrong about its own caller.
     /// </remarks>
     public EntityId? ResolveVolume(string volumeIdentifier)
     {
@@ -90,7 +105,28 @@ public sealed class GraphSampleTargetProvider(IEntityGraphStore store, string in
             return null;
         }
 
-        foreach (var entity in _store.Current.Entities.Values)
+        var graph = _store.Current;
+
+        if (!ReferenceEquals(graph, _indexed))
+        {
+            _volumes = BuildVolumeIndex(graph);
+            _indexed = graph;
+        }
+
+        return _volumes.TryGetValue(volumeIdentifier, out var datastore) ? datastore : null;
+    }
+
+    /// <remarks>
+    /// First mark wins where two datastores claim one volume, which should not
+    /// happen and is not worth failing a whole cycle over — but it is worth
+    /// not silently picking a different one each time the dictionary is
+    /// rebuilt, which is what last-wins would do.
+    /// </remarks>
+    private Dictionary<string, EntityId> BuildVolumeIndex(EntityGraph graph)
+    {
+        var index = new Dictionary<string, EntityId>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entity in graph.Entities.Values)
         {
             if (entity.Kind != EntityKind.Datastore ||
                 !string.Equals(entity.SourceInstanceId, _instanceId, StringComparison.Ordinal))
@@ -100,15 +136,14 @@ public sealed class GraphSampleTargetProvider(IEntityGraphStore store, string in
 
             foreach (var mark in entity.Marks)
             {
-                if (mark.Kind == IdentityMarkKind.VolumeIdentifier &&
-                    string.Equals(mark.Value, volumeIdentifier, StringComparison.OrdinalIgnoreCase))
+                if (mark.Kind == IdentityMarkKind.VolumeIdentifier)
                 {
-                    return entity.Id;
+                    index.TryAdd(mark.Value, entity.Id);
                 }
             }
         }
 
-        return null;
+        return index;
     }
 
     public string? DisplayNameOf(string moRef) =>
