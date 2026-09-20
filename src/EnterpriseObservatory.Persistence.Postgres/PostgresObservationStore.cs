@@ -276,25 +276,14 @@ public sealed class PostgresObservationStore : IObservationStore
     {
         ArgumentNullException.ThrowIfNull(policy);
 
-        // Folding before deleting, in that order and in one pass. The other
-        // order deletes a sample before it has been summarised, and the loss is
-        // silent and permanent.
-        var written =
-            Fold(nowUtc, policy, SeriesResolution.FiveMinutes) +
-            Fold(nowUtc, policy, SeriesResolution.OneHour);
-
-        var samplesDeleted = DeleteAgedSamples(nowUtc, policy);
-        var bucketsDeleted =
-            DeleteAgedBuckets(nowUtc, policy, SeriesResolution.FiveMinutes) +
-            DeleteAgedBuckets(nowUtc, policy, SeriesResolution.OneHour);
-
-        return new CompactionReport
-        {
-            BucketsWritten = written,
-            SamplesDeleted = samplesDeleted,
-            BucketsDeleted = bucketsDeleted,
-            SeriesForgotten = ForgetEmptySeries(),
-        };
+        // The order is not this method's to choose. See CompactionSequence.
+        return CompactionSequence.Run(
+            () => Fold(nowUtc, policy, SeriesResolution.FiveMinutes),
+            () => Fold(nowUtc, policy, SeriesResolution.OneHour),
+            () => DeleteAgedSamples(nowUtc, policy),
+            () => DeleteAgedBuckets(nowUtc, policy, SeriesResolution.FiveMinutes) +
+                  DeleteAgedBuckets(nowUtc, policy, SeriesResolution.OneHour),
+            ForgetEmptySeries);
     }
 
     /// <summary>
@@ -697,5 +686,85 @@ public sealed class PostgresObservationStore : IObservationStore
         }
 
         return points;
+    }
+}
+
+/// <summary>
+/// The order of one compaction sweep, separated from the SQL that carries it out.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Its own type for one reason: the ordering is the part that can be silently
+/// and permanently wrong, and as five statements inside a method it could only
+/// be checked against a live server. Here it can be checked with delegates, so
+/// the guarantee holds on a machine with no database — which is where somebody
+/// refactoring this will be.
+/// </para>
+/// <para>
+/// The guarantee is that a fold always precedes a delete, and that a fold which
+/// throws is never followed by the deletes that depend on it. It is stated as a
+/// guarantee rather than left as an accident of statement order because the
+/// obvious improvement — isolating each step so that one failure does not stop
+/// the others — would break it, and would look like a robustness fix while
+/// doing so.
+/// </para>
+/// <para>
+/// What that improvement would cost: the hourly tier folds from the five-minute
+/// buckets rather than from raw samples, so the five-minute rows are the
+/// hourly fold's source data. Let the deletes run after a fold that failed and
+/// the source is gone before the summary exists. Worse, each fold advances its
+/// own watermark once it has run, so the next pass starts after the window it
+/// never managed to fold: the hole is not retried, and nothing anywhere records
+/// that it is there. Thanos documents this same hazard in as many words —
+/// retention shorter than the age at which the next downsampling pass runs
+/// deletes data before it can be downsampled.
+/// </para>
+/// <para>
+/// So a failed sweep costs a pass, not data. The cost of that choice is that a
+/// sweep which keeps failing never deletes anything at all, and the disk fills;
+/// that is a loud failure rather than a silent one only because the worker
+/// reports it. See <c>GuardedCompaction</c>.
+/// </para>
+/// </remarks>
+public static class CompactionSequence
+{
+    /// <summary>Runs one sweep in the only order that is safe.</summary>
+    /// <param name="foldFiveMinutes">Builds five-minute buckets from raw samples.</param>
+    /// <param name="foldOneHour">
+    /// Builds hourly buckets from the five-minute ones. Runs before any delete
+    /// even though it reads what the previous step just wrote, because its
+    /// source rows are what <paramref name="deleteAgedBuckets"/> removes.
+    /// </param>
+    /// <param name="deleteAgedSamples">Enforces raw retention.</param>
+    /// <param name="deleteAgedBuckets">Enforces bucket retention, at every resolution.</param>
+    /// <param name="forgetEmptySeries">Removes series with nothing left anywhere.</param>
+    public static CompactionReport Run(
+        Func<int> foldFiveMinutes,
+        Func<int> foldOneHour,
+        Func<int> deleteAgedSamples,
+        Func<int> deleteAgedBuckets,
+        Func<int> forgetEmptySeries)
+    {
+        ArgumentNullException.ThrowIfNull(foldFiveMinutes);
+        ArgumentNullException.ThrowIfNull(foldOneHour);
+        ArgumentNullException.ThrowIfNull(deleteAgedSamples);
+        ArgumentNullException.ThrowIfNull(deleteAgedBuckets);
+        ArgumentNullException.ThrowIfNull(forgetEmptySeries);
+
+        // Both folds, before anything is deleted. Nothing is caught here on
+        // purpose: a throw leaves this method with the deletes unreached, which
+        // is the whole guarantee. See the remarks.
+        var written = foldFiveMinutes() + foldOneHour();
+
+        var samplesDeleted = deleteAgedSamples();
+        var bucketsDeleted = deleteAgedBuckets();
+
+        return new CompactionReport
+        {
+            BucketsWritten = written,
+            SamplesDeleted = samplesDeleted,
+            BucketsDeleted = bucketsDeleted,
+            SeriesForgotten = forgetEmptySeries(),
+        };
     }
 }
