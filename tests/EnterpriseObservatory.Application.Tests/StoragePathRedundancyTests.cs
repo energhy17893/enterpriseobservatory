@@ -103,12 +103,31 @@ public class StoragePathRedundancyTests
         // Four dead paths on one adapter is a cable or an SFP; four spread
         // across four adapters is the array. The adapter is the thing somebody
         // physically walks up to, so a description without it names no fix.
+        //
+        // The adapter deliberately does not appear in the runtime name here.
+        // A path is normally called vmhba1:C0:T0:L1 and its adapter is
+        // vmhba1, so an assertion using a realistic pair passes on the path
+        // name alone and proves nothing about the adapter at all — which is
+        // exactly what this test did until a mutation survived it.
         var alert = Assert.Single(Evaluate(HostWith(
             Path("active"),
-            Path("dead", name: "vmhba3:C0:T0:L1", adapter: "vmhba3"))));
+            Path("dead", name: "vmhba1:C0:T0:L1", adapter: "vmhba7"))));
 
-        Assert.Contains("vmhba3", alert.Description, StringComparison.Ordinal);
+        Assert.Contains("vmhba7", alert.Description, StringComparison.Ordinal);
+        Assert.Contains("vmhba1:C0:T0:L1", alert.Description, StringComparison.Ordinal);
         Assert.Contains(Naa, alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_adapter_the_platform_did_not_name_is_said_to_be_unreported()
+    {
+        // Rather than an empty gap in the sentence, which reads as though the
+        // product knows the adapter and chose not to say.
+        var alert = Assert.Single(Evaluate(HostWith(
+            Path("active"),
+            Path("dead", name: "vmhba1:C0:T0:L1", adapter: ""))));
+
+        Assert.Contains("not reported", alert.Description, StringComparison.Ordinal);
     }
 
     // --- the more severe fact ---------------------------------------------
