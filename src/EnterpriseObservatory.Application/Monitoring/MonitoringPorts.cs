@@ -188,6 +188,17 @@ public sealed record MonitoringOptions
     public Analysis.StorageLatencyBlindSpotPolicy StorageLatencyBlindSpot { get; init; } =
         Analysis.StorageLatencyBlindSpotPolicy.Default;
 
+    /// <summary>
+    /// Which of a storage path's reported states mean it is gone.
+    /// </summary>
+    /// <remarks>
+    /// The one policy here that carries no number at all. It describes a
+    /// vendor's vocabulary rather than a threshold, so a collector wording its
+    /// path states differently is configured in rather than compiled in.
+    /// </remarks>
+    public Analysis.StoragePathRedundancyPolicy StoragePathRedundancy { get; init; } =
+        Analysis.StoragePathRedundancyPolicy.Default;
+
     public FlapPolicy Flap { get; init; } = FlapPolicy.Default;
 
     public EntityRetentionPolicy EntityRetention { get; init; } = EntityRetentionPolicy.Default;

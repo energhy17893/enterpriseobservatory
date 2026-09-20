@@ -149,6 +149,24 @@ public sealed class MonitoringCycle(
             .. cycle.CollectionAlerts,
             .. healthFailure,
             .. graphFailure,
+
+            // The one rule that belongs to this cycle rather than the metric
+            // one, and the scope is the argument. It judges the path table,
+            // which is read on the inventory rhythm and changes on it; running
+            // it beside the counters would have the faster cycle re-deciding a
+            // fact nothing had re-read, and — because reconciliation treats
+            // what it is given as the whole truth — each cycle resolving the
+            // other's findings.
+            //
+            // Guarded like every other rule: a bug in counting paths must cost
+            // the path count and not this cycle's "Collector unreachable".
+            // Given the graph as this cycle merged it rather than the store's
+            // copy, so that a failed write leaves the rule reasoning about
+            // what was actually just read.
+            .. Analysis.GuardedRule.Run(
+                Analysis.StoragePathRedundancy.RuleId,
+                () => Analysis.StoragePathRedundancy.Evaluate(
+                    [.. graph.Active], options.StoragePathRedundancy)),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Inventory, observed, options, now);
