@@ -153,10 +153,24 @@ Dürüstlük gereği: aşağıdakiler **çalışıyor diye bilinmiyor.**
 - **Uzun süreli çalışma.** En uzun kesintisiz koşu birkaç saat. Bellek büyümesi,
   bağlantı havuzu davranışı, 2 günlük ham pencerenin gerçekte ne kadar yer
   kapladığı ölçülmedi.
-- **Retention silmeleri.** Kova yazma doğrulandı; *silme* (2 gün / 30 gün / 400
-  gün sınırları) canlıda hiç tetiklenmedi — veri o kadar eski değil.
-- **Şema göçü.** Kurulum boş bir veritabanında başladı. Sürüm yükseltme yolu
-  denenmedi; göç aracı da yok (ADR-0016'da kabul edilmiş borç).
+- **Retention silmeleri canlıda.** Silme yolu *test edilmemiş değil*: gerçek bir
+  PostgreSQL'e karşı üç entegrasyon testi var (`Raw_samples_are_folded_before_
+  they_are_deleted`, `Everything_past_its_retention_goes`,
+  `A_series_with_nothing_left_is_forgotten`) ve saat ileri sarılarak 2 gün /
+  30 gün / 400 gün sınırlarının üçünü de geçiyor. Doğrulanmamış olan, **canlı
+  estate'te tetiklenmesi** — veri henüz o kadar eski değil, dolayısıyla
+  gerçek hacimde silmenin ne kadar sürdüğü ve dosyayı nasıl etkilediği
+  bilinmiyor.
+- **Şema göçü canlı bir yükseltmede.** Mekanizma artık gerçek bir PostgreSQL'e
+  karşı test ediliyor (`SchemaTests`, 5 test): boş veritabanı sürüm 2'ye
+  ulaşıyor ve 19+ tablo oluşuyor; zaten güncel bir kurulumu açmak hiçbir şeyi
+  değiştirmiyor ve veriyi koruyor; **daha yeni bir build'in yazdığı veritabanı
+  reddediliyor** (eski binary'nin yeni şemaya yazması, çökmeden ve yavaşça
+  bozan türden bir hatadır); yarıda kalan bir göç PostgreSQL'in işlemsel
+  DDL'i sayesinde arkasında hiçbir şey bırakmıyor; `schema_version` tek satır
+  tutuyor. Doğrulanmamış olan, **gerçek veri üzerinde gerçek bir sürüm
+  yükseltmesi** — bugün yalnızca iki göç var ve ikisi de boş veritabanında
+  çalıştı. Göç aracı hâlâ yok (ADR-0016'da kabul edilmiş borç).
 - **İkinci bir vCenter.** Kimlik katlama (ADR-0003) tek kaynakla sınanıyor;
   `relationship_evidence` bu yüzden 0 satır.
 - **Yetkisi kısıtlı hesap.** Bağlantı `gentel@vsphere.local` ile kuruldu.
