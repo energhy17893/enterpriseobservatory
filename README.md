@@ -105,8 +105,10 @@ Persistence ─────────┘
 
 `Api` hiçbir collector'ı göremez: görebilseydi önce bir vSphere ucu, sonra bir
 iLO ucu büyür ve arayüz yeniden satıcı şeklinde parçalanırdı. Aynı şekilde
-`Host` dışında hiçbir proje somut depolama motorunu göremez — SQLite seçimi bir
-dağıtım kararı olarak kaldığı sürece değiştirilebilir. İkisi de birer test.
+`Host` dışında hiçbir proje somut depolama motorunu göremez — depolama motoru
+bir dağıtım kararı olarak kaldığı sürece değiştirilebilir. İkisi de birer test.
+Motor bugün PostgreSQL'dir (ADR-0016); bu kural sayesinde seçim Domain,
+Application veya Api'de tek satır değiştirmeden yapıldı.
 
 `Domain` hiçbir projeye referans veremez. Bu kural bir konvansiyon değil, kırmızıya
 düşen bir testtir.
