@@ -191,6 +191,107 @@ public class AuthenticationTests
         Assert.Equal(0, _accounts.Find("ertugrul")!.FailedAttempts);
     }
 
+    [Fact]
+    public void Five_simultaneous_wrong_passwords_lock_the_account_just_as_five_sequential_ones_do()
+    {
+        // The traffic the lockout exists to stop is the traffic that arrives
+        // all at once, and that is precisely the shape it used to miss. Read
+        // the counter, decide from the copy, write the answer back: five
+        // attempts posted together all read nought and all store one, so the
+        // account never locks, the burst repeats for as long as the attacker
+        // likes, and the product goes on telling its operators that it locks
+        // accounts out after five.
+        Given("ertugrul", Role.Viewer);
+
+        var attempts = LockoutPolicy.Default.MaxAttempts;
+
+        // Real threads and a barrier rather than the thread pool: the whole
+        // claim is that the attempts overlap, and a pool free to run them one
+        // after another would prove nothing while looking like it had.
+        using var together = new Barrier(attempts);
+        var guessers = new Thread[attempts];
+
+        for (var i = 0; i < attempts; i++)
+        {
+            guessers[i] = new Thread(() =>
+            {
+                together.SignalAndWait();
+                _authentication.SignIn("ertugrul", Secret.From("wrong password here"));
+            });
+
+            guessers[i].Start();
+        }
+
+        foreach (var guesser in guessers)
+        {
+            guesser.Join();
+        }
+
+        Assert.Equal(attempts, _accounts.Find("ertugrul")!.FailedAttempts);
+
+        var next = _authentication.SignIn("ertugrul", Secret.From(Password));
+
+        Assert.Equal(SignInFailure.LockedOut, next.Failure);
+        Assert.Equal(T0 + LockoutPolicy.Default.Duration, next.LockedUntilUtc);
+    }
+
+    [Fact]
+    public void A_sign_in_does_not_restore_a_password_an_administrator_has_just_replaced()
+    {
+        // A success writes the whole account, and built from the copy it read
+        // it puts every field back as it stood then — the verifier included.
+        // An administrator resetting a password because it has leaked, while
+        // that account happens to be signing in, would find the leaked one
+        // working again afterwards and nothing anywhere saying why.
+        const string Replacement = "an entirely different passphrase";
+
+        Given("ertugrul", Role.Viewer);
+
+        var interfering = new InterferingAccountStore(_accounts);
+        var authentication = new AuthenticationService(interfering, _clock);
+        var administration = new AccountService(_accounts, _clock);
+
+        interfering.AfterTheNextRead(
+            () => administration.ResetPassword("ertugrul", Secret.From(Replacement)));
+
+        authentication.SignIn("ertugrul", Secret.From(Password));
+
+        var stored = _accounts.Find("ertugrul")!.Password;
+
+        Assert.True(stored.Verify(Secret.From(Replacement)));
+        Assert.False(stored.Verify(Secret.From(Password)));
+    }
+
+    [Fact]
+    public void Changing_a_role_does_not_end_a_lockout_that_began_while_the_change_was_in_flight()
+    {
+        // The other half of the same defect, and the quieter half. A role
+        // change writes the whole account too, so a lockout that started after
+        // it read the row is written back as "not locked" — an administrator
+        // making an unrelated change hands the attacker the account back, and
+        // the audit trail shows a role change.
+        Given("ertugrul", Role.Viewer);
+
+        var interfering = new InterferingAccountStore(_accounts);
+        var administration = new AccountService(interfering, _clock);
+
+        interfering.AfterTheNextRead(() =>
+        {
+            for (var i = 0; i < LockoutPolicy.Default.MaxAttempts; i++)
+            {
+                _authentication.SignIn("ertugrul", Secret.From("wrong password here"));
+            }
+        });
+
+        administration.ChangeRole("ertugrul", Role.Operator);
+
+        var account = _accounts.Find("ertugrul")!;
+
+        Assert.Equal(Role.Operator, account.Role);
+        Assert.True(account.IsLockedAt(T0));
+        Assert.Equal(LockoutPolicy.Default.MaxAttempts, account.FailedAttempts);
+    }
+
     // --- what is stored ---------------------------------------------------
 
     [Fact]
@@ -248,6 +349,46 @@ public class AuthenticationTests
     }
 
     // --- fixtures ---------------------------------------------------------
+
+    /// <summary>
+    /// A store that lets a test land somebody else's change in the gap between
+    /// a caller's read and its write.
+    /// </summary>
+    /// <remarks>
+    /// That gap is where the whole defect lived, and it is not reachable by
+    /// running two threads and hoping. Scheduled rather than raced, so a test
+    /// about it either passes or fails rather than doing so one time in thirty.
+    /// </remarks>
+    private sealed class InterferingAccountStore(IUserAccountStore inner) : IUserAccountStore
+    {
+        private Action? _pending;
+
+        public void AfterTheNextRead(Action interfere) => _pending = interfere;
+
+        public UserAccount? Find(string username)
+        {
+            var found = inner.Find(username);
+
+            // Taken before it runs, so that interference which itself reads
+            // through this store does not set itself off again.
+            var interfere = _pending;
+            _pending = null;
+            interfere?.Invoke();
+
+            return found;
+        }
+
+        public bool Any => inner.Any;
+
+        public IReadOnlyList<UserAccount> All() => inner.All();
+
+        public bool TryAdd(UserAccount account) => inner.TryAdd(account);
+
+        public UserAccount? Mutate(string username, Func<UserAccount, UserAccount> change) =>
+            inner.Mutate(username, change);
+
+        public bool Remove(string username) => inner.Remove(username);
+    }
 
     private void Given(string username, Role role) =>
         _accounts.TryAdd(new UserAccount
