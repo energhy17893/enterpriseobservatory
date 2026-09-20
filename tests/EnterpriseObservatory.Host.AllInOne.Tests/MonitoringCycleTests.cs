@@ -671,19 +671,18 @@ public class MonitoringCycleTests : IDisposable
     [Fact]
     public async Task A_rule_raises_its_alert_into_the_metric_scope_before_any_store_touches_it()
     {
-        // The test above reads the scope back out of the store, and a store is
-        // allowed to stamp what it files -- both of them do, so it would read
-        // correctly even if the cycle handed the alert over with no scope at
-        // all. It did. Every fault-counter and peer-outlier alert went into the
-        // live cache unscoped, and the database row beside it carried
-        // "observation" because the store wrote its own argument into the
-        // column; the same alert therefore answered differently before and
-        // after a restart. So this assertion is taken from the reconciliation
-        // result itself, which no store has touched: it is what the worker
-        // returns and what the notifier is handed, and the only place the
-        // cycle's own stamping can be seen. Unstamp the rules in
-        // RunObservationsAsync and the test above still passes; this one does
-        // not.
+        // The test above reads the scope back out of the store, and for as
+        // long as the stores stamped what they filed it would have read
+        // correctly even if the cycle had handed the alert over with no scope
+        // at all -- which it did, for every fault-counter and peer-outlier
+        // alert, while the database row beside it carried "observation" from
+        // the store's own argument. The stores no longer stamp, so that hole
+        // is closed at the source; this assertion is kept anyway because it is
+        // taken from the reconciliation result itself, before any store has
+        // seen it. That is what the worker returns and what the notifier is
+        // handed, so an alert that is only scoped once it has been stored
+        // would still be dispatched unscoped -- and a notification routed by
+        // scope would go to the wrong place while every screen looked right.
         var watcher = new ScopeWatchingAlertStateStore(_alerts);
         var cycle = Cycle(alerts: watcher);
 
@@ -730,22 +729,57 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
-    public void A_store_files_an_alert_under_the_scope_it_was_asked_for_whatever_the_alert_says()
+    public void A_store_files_an_alert_exactly_as_the_reconciler_decided_it()
     {
         // The other half, and the half that makes a restart agree with itself.
-        // PostgresAlertStateStore writes @scope into the column rather than the
-        // instance's own, and reads that column back into Scope when it loads
-        // -- so its cache has to be stamped the same way or the live copy and
-        // the durable one disagree about a field for as long as the process
-        // stays up. This pins the fake to that behaviour, which is the only
-        // place it can be pinned without a database: the Postgres suite skips
-        // without a server, and its own test supplies a scoped instance, so the
-        // unstamped case has never been exercised there.
+        // Both stores used to re-stamp Scope from their own argument, which is
+        // why the cycle could hand over unscoped alerts for months without
+        // anyone noticing: the answer was corrected on the way past. Neither
+        // does now, and this pins that -- a store handed an instance with the
+        // wrong scope must file the wrong scope, loudly, rather than quietly
+        // making the layer above it look right. If this starts failing because
+        // a store has begun stamping again, every test that asserts a scope
+        // becomes a test of the store rather than of the cycle, and the drift
+        // this design removed can come back invisibly.
+        var wrong = new AlertInstance
+        {
+            Fingerprint = AlertFingerprint.Create("vc-1", "Filed by hand", "Hardware", "esx-01"),
+            Severity = AlertSeverity.Critical,
+            State = AlertLifecycleState.Open,
+            Title = "Filed by hand",
+            ConsecutiveHits = 1,
+            IsConfirmed = true,
+            ClearedByOperator = false,
+            PendingNotification = AlertNotificationKind.None,
+            FirstSeenUtc = _clock.UtcNow,
+            LastSeenUtc = _clock.UtcNow,
+            Scope = AlertScopes.Observation,
+        };
+
+        _alerts.Reconcile(
+            AlertScopes.Inventory,
+            (_, _) => new AlertReconciliationResult { Instances = [wrong] });
+
+        var filed = Assert.Single(_alerts.InstancesIn(AlertScopes.Inventory));
+
+        Assert.Equal(AlertScopes.Observation, filed.Scope);
+    }
+
+    [Fact]
+    public void A_cycle_that_stamps_nothing_still_produces_scoped_alerts()
+    {
+        // The reconciler is the only stamp left, so this is the assertion the
+        // whole design rests on: an alert whose definition names no scope, run
+        // through a store that no longer corrects anything, still comes out
+        // owned by the evaluation that reconciled it. Remove the stamp from
+        // AlertReconciler and this fails -- which is the property that makes a
+        // third store, or a fourth caller, unable to get the field wrong.
         var definition = HardwareFault("vc-1") with { Scope = string.Empty };
 
         _alerts.Reconcile(AlertScopes.Inventory, (stored, flaps) => AlertReconciler.Reconcile(
             new AlertReconciliationRequest
             {
+                Scope = AlertScopes.Inventory,
                 Observed = [definition],
                 Stored = stored,
                 FlapHistories = flaps,

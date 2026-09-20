@@ -324,6 +324,38 @@ public class GraphAndAlertTests : IDisposable
     }
 
     [SkippableFact]
+    public void The_live_copy_of_an_alert_and_the_copy_after_a_restart_agree_about_its_scope()
+    {
+        RequireDatabase();
+
+        // This store used to stamp Scope onto its cache from the argument it
+        // was called with, because the reconciler returned instances carrying
+        // whatever the definition happened to say -- often nothing -- while
+        // WriteInstance bound the argument into the column. The stamp is gone:
+        // the reconciler stamps its result, and the store files what it is
+        // given. What must not change is the thing the stamp was covering for,
+        // which is this: the running process and a restarted one have to give
+        // the same answer. If they diverge, an operator is told which
+        // evaluation owns an alert by a field whose value depends on how long
+        // the service has been up, and nothing on any screen looks wrong.
+        var store = new PostgresAlertStateStore(_live.Database);
+
+        store.Reconcile("Inventory", (_, _) => new AlertReconciliationResult
+        {
+            Instances = [Alert()],
+        });
+
+        var live = Assert.Single(store.InstancesIn("Inventory"));
+
+        _live.Restart();
+
+        var recovered = Assert.Single(new PostgresAlertStateStore(_live.Database).InstancesIn("Inventory"));
+
+        Assert.Equal("Inventory", live.Scope);
+        Assert.Equal(live.Scope, recovered.Scope);
+    }
+
+    [SkippableFact]
     public void Flap_history_survives_a_restart()
     {
         RequireDatabase();

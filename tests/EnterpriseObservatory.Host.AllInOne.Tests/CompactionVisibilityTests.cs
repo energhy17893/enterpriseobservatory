@@ -224,6 +224,7 @@ public class CompactionVisibilityTests
         harness.Alerts.Reconcile(AlertScopes.Observation, (stored, flaps) =>
             AlertReconciler.Reconcile(new AlertReconciliationRequest
             {
+                Scope = AlertScopes.Observation,
                 Observed = [elsewhere],
                 Stored = stored,
                 FlapHistories = flaps,
