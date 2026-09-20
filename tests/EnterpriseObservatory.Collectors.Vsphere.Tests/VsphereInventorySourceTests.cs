@@ -854,6 +854,7 @@ public class VsphereInventorySourceTests
                         State = "dead",
                         Adapter = "vmhba1",
                         StorageDeviceId = "naa.600508b1001cb736",
+                        DeviceKey = "key-vim.host.ScsiDisk-0200",
                     },
                 ],
             },
@@ -864,6 +865,11 @@ public class VsphereInventorySourceTests
         Assert.Equal(2, host.StoragePaths.Count);
         Assert.Single(host.StoragePaths, p => p.IsDead);
         Assert.All(host.StoragePaths, p => Assert.Equal("naa.600508b1001cb736", p.StorageDeviceId));
+
+        // The platform's key travels too, so paths can still be grouped per
+        // device when the NAA lookup failed. Grouping on an empty name would
+        // pile every unnamed device into one heap.
+        Assert.Single(host.StoragePaths, p => p.DeviceKey == "key-vim.host.ScsiDisk-0200");
     }
 
     [Fact]
@@ -1007,11 +1013,14 @@ public class VsphereInventorySourceTests
     {
         // A chain that gains a link is the same problem getting worse. An
         // inbox that gained a row every time somebody took another snapshot
-        // would be teaching people to ignore the whole category.
+        // would be teaching people to ignore the whole category. Depth is said
+        // as well as count because they are different problems: four snapshots
+        // side by side is somebody being careful, four deep is four delta
+        // disks every read has to walk.
         var snapshot = await Read(Payload(vms: [WithSnapshot(T0.AddDays(-30), count: 4)]));
 
         var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Snapshot left behind");
-        Assert.Contains("4 snapshots", alert.Description, StringComparison.Ordinal);
+        Assert.Contains("4 snapshots 4 deep", alert.Description, StringComparison.Ordinal);
     }
 
     [Fact]

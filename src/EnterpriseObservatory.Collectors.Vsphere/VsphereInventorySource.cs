@@ -602,6 +602,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
     {
         Name = path.Name,
         StorageDeviceId = path.StorageDeviceId,
+        DeviceKey = path.DeviceKey,
         State = path.State,
         Adapter = path.Adapter,
     };
@@ -698,11 +699,17 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             // as a measurement rather than as the absence of one.
             : "an unmeasured amount";
 
+        // Depth is named separately from the count because they answer
+        // different questions. Four snapshots side by side off one parent is
+        // somebody being careful; a chain four deep is four delta disks that
+        // every read has to walk, and it is slow as well as large.
+        var deepest = vm.Snapshots.Max(s => s.Depth);
+
         var count = vm.Snapshots.Count == 1
             ? "one snapshot"
             : string.Create(
                 CultureInfo.InvariantCulture,
-                $"{vm.Snapshots.Count} snapshots, the oldest '{oldest.Name}',");
+                $"{vm.Snapshots.Count} snapshots {deepest} deep, the oldest '{oldest.Name}',");
 
         var consequence = willFill
             ? " It is already larger than the free space on a datastore it lives on, so " +

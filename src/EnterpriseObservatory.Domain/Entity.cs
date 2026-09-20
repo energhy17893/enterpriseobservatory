@@ -374,6 +374,19 @@ public sealed record StoragePath
     public string StorageDeviceId { get; init; } = string.Empty;
 
     /// <summary>
+    /// The platform's own key for the device, when it has one.
+    /// </summary>
+    /// <remarks>
+    /// Carried because redundancy has to be countable even when
+    /// <see cref="StorageDeviceId"/> could not be resolved. Grouping paths by
+    /// an empty NAA would pile every unnamed device in the host into one heap
+    /// and report a single enormous set of paths where there are a dozen small
+    /// ones — and the case where the name is missing is not the case in which
+    /// to give up on counting.
+    /// </remarks>
+    public string DeviceKey { get; init; } = string.Empty;
+
+    /// <summary>
     /// The path's state, as the platform words it: active, standby, disabled,
     /// dead or unknown. Empty when it was not reported.
     /// </summary>
