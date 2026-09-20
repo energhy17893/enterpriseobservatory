@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-net/master/src/Stryker.Core/Stryker.Core/Schemas/stryker-config.json",
+  "stryker-config": {
+    "project": "EnterpriseObservatory.Application.csproj",
+    "test-projects": [
+      "../../tests/EnterpriseObservatory.Application.Tests/EnterpriseObservatory.Application.Tests.csproj"
+    ],
+    "mutate": [
+      "**/Analysis/*.cs",
+      "!**/Analysis/GuardedRule.cs"
+    ],
+    "reporters": ["progress", "html", "json"],
+    "concurrency": 8,
+    "thresholds": { "high": 95, "low": 90, "break": 0 }
+  }
+}
