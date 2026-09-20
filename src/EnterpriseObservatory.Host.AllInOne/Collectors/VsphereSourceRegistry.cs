@@ -75,17 +75,72 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// </remarks>
     private readonly Dictionary<string, UnusableSource> _unusable = new(StringComparer.Ordinal);
 
+    /// <summary>Which loop is asking for sources.</summary>
+    /// <remarks>
+    /// The registry has two readers on two cadences — five minutes and thirty
+    /// seconds — and they are the only thing that can be holding a client.
+    /// Knowing which one is asking is what turns "a refresh happened" into the
+    /// far stronger "that loop finished the cycle it was in".
+    /// </remarks>
+    private enum Reader
+    {
+        Inventory,
+        Observations,
+    }
+
+    /// <summary>A client that is no longer handed out, and who still might hold it.</summary>
+    /// <param name="Http">The client to dispose once nobody can be reading through it.</param>
+    /// <param name="AfterInventoryPass">The inventory loop's pass count when it was retired.</param>
+    /// <param name="AfterObservationPass">The observation loop's pass count when it was retired.</param>
+    private sealed record Retired(
+        HttpClient Http,
+        long AfterInventoryPass,
+        long AfterObservationPass);
+
     /// <summary>
-    /// Clients replaced or removed by the previous refresh.
+    /// Clients replaced or removed, waiting for both loops to let go.
     /// </summary>
     /// <remarks>
-    /// Disposed one refresh late, deliberately. A cycle that is running right
-    /// now is holding the source it was handed, and disposing its client out
-    /// from under it would abort a read that was going fine. A refresh happens
-    /// once per cycle and the source timeout is shorter than a cycle, so by the
-    /// next refresh nothing is still using these.
+    /// <para>
+    /// This used to be disposed one refresh late, on the reasoning that a
+    /// refresh happens once per cycle and a source times out well inside one.
+    /// That reasoning is false, and the way it is false is the defect: there
+    /// are two loops, <see cref="Inventory"/> and <see cref="Observations"/>,
+    /// refreshing five minutes and thirty seconds apart. Refresh N+1 from
+    /// either one disposed what refresh N from the <em>other</em> retired. A
+    /// password edited during a long inventory pass over a large estate had
+    /// the observation loop dispose that pass's client two ticks later, mid
+    /// read — an <see cref="ObjectDisposedException"/> counted as a source
+    /// failure, ConsecutiveFailures climbing, and a "Collector unreachable"
+    /// alert raised against a vCenter that was answering fine. A fabricated
+    /// fault, in a product whose one claim is that it does not lie about what
+    /// it can see.
+    /// </para>
+    /// <para>
+    /// So retirement is counted per loop instead of per refresh, and the count
+    /// rests on something structural rather than on a timing estimate: each
+    /// loop is serial, so a loop asking for sources <em>proves</em> the cycle
+    /// it was in has ended, and with it every read through what it was holding.
+    /// A client is disposable once each loop has asked at least once since it
+    /// was retired. A loop that had never asked at the moment of retirement —
+    /// pass zero — was never handed the client and imposes no wait, which is
+    /// what keeps a host or a test that drives only one cadence from
+    /// accumulating clients forever.
+    /// </para>
+    /// <para>
+    /// Waiting is not leaking. The wait is bounded by the slower loop's
+    /// interval, <see cref="Dispose"/> drains whatever is still queued at
+    /// shutdown, and nothing here is conditional on time — an
+    /// <see cref="HttpClient"/> kept indefinitely is a socket pool and a
+    /// logged-in vSphere session kept indefinitely, and vCenter counts
+    /// sessions.
+    /// </para>
     /// </remarks>
-    private readonly List<HttpClient> _retired = [];
+    private readonly List<Retired> _retired = [];
+
+    /// <summary>How many times each loop has asked for its sources.</summary>
+    private long _inventoryPasses;
+    private long _observationPasses;
 
     public VsphereSourceRegistry(
         SourceConnectionCatalogue catalogue,
@@ -103,7 +158,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     {
         get
         {
-            var (collectors, unusable) = Refresh();
+            var (collectors, unusable) = Refresh(Reader.Inventory);
 
             return [.. collectors.Select(b => b.Inventory), .. unusable];
         }
@@ -113,22 +168,28 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     {
         get
         {
-            var (collectors, unusable) = Refresh();
+            var (collectors, unusable) = Refresh(Reader.Observations);
 
             return [.. collectors.Select(b => b.Observation), .. unusable];
         }
     }
 
-    private (List<Built> Collectors, List<UnusableSource> Unusable) Refresh()
+    private (List<Built> Collectors, List<UnusableSource> Unusable) Refresh(Reader reader)
     {
         lock (_gate)
         {
-            foreach (var old in _retired)
+            // Counted before anything is disposed, so that this loop's own
+            // arrival is what releases the clients it was holding last pass.
+            if (reader == Reader.Inventory)
             {
-                old.Dispose();
+                _inventoryPasses++;
+            }
+            else
+            {
+                _observationPasses++;
             }
 
-            _retired.Clear();
+            DisposeWhatNobodyCanStillBeReading();
 
             var wanted = new List<SourceConnection>();
             var unusable = new List<UnusableSource>();
@@ -154,7 +215,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
 
             foreach (var gone in _built.Keys.Where(name => !names.Contains(name)).ToList())
             {
-                _retired.Add(_built[gone].Http);
+                Retire(_built[gone].Http);
                 _built.Remove(gone);
             }
 
@@ -174,7 +235,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
                         continue;
                     }
 
-                    _retired.Add(existing.Http);
+                    Retire(existing.Http);
                 }
 
                 _built[connection.InstanceId] = Build(connection, shape);
@@ -183,6 +244,51 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             return ([.. _built.Values], unusable);
         }
     }
+
+    /// <summary>Stops handing a client out, and records who might still hold it.</summary>
+    /// <remarks>
+    /// Both loops have been handed every client that was ever built, so both
+    /// have to move on before it can be closed. The pass numbers taken here are
+    /// what "move on" is measured against.
+    /// </remarks>
+    private void Retire(HttpClient http) =>
+        _retired.Add(new Retired(http, _inventoryPasses, _observationPasses));
+
+    /// <summary>
+    /// Closes every retired client both loops have moved past.
+    /// </summary>
+    /// <remarks>
+    /// A loop asking for its sources has, by the fact of asking, finished the
+    /// cycle it was in: the loops are serial. So a loop whose pass count has
+    /// risen since a client was retired cannot still be reading through it. A
+    /// loop still on the pass it was on — the long inventory sweep in the
+    /// middle of which somebody corrected a password — can, and is the case
+    /// the old one-refresh-late rule got wrong.
+    /// </remarks>
+    private void DisposeWhatNobodyCanStillBeReading()
+    {
+        for (var i = _retired.Count - 1; i >= 0; i--)
+        {
+            var retired = _retired[i];
+
+            if (HasMovedOn(_inventoryPasses, retired.AfterInventoryPass) &&
+                HasMovedOn(_observationPasses, retired.AfterObservationPass))
+            {
+                retired.Http.Dispose();
+                _retired.RemoveAt(i);
+            }
+        }
+    }
+
+    /// <summary>Whether a loop can no longer be holding what was retired at <paramref name="at"/>.</summary>
+    /// <remarks>
+    /// Pass zero is a loop that had never asked for sources when the client was
+    /// retired, so it was never handed one and never will be — the client is
+    /// out of <c>_built</c> before it could be. Without that, anything driving
+    /// only one of the two cadences would queue a client per change and never
+    /// close any of them.
+    /// </remarks>
+    private static bool HasMovedOn(long passes, long at) => at == 0 || passes > at;
 
     /// <summary>Drops the stand-ins for connections that are no longer unusable.</summary>
     /// <remarks>
@@ -362,7 +468,10 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     {
         lock (_gate)
         {
-            foreach (var client in _retired.Concat(_built.Values.Select(b => b.Http)))
+            // Shutdown is the one moment with no next pass to wait for, so
+            // everything still queued goes now: a stranded client is a socket
+            // pool and a vSphere session the estate keeps counting.
+            foreach (var client in _retired.Select(r => r.Http).Concat(_built.Values.Select(b => b.Http)))
             {
                 client.Dispose();
             }
