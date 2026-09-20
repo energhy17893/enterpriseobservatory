@@ -121,43 +121,55 @@ Acknowledge / Silence / Clear ile göründü.
 
 ### Kararlı durum projeksiyonu
 
-Yapılandırılmış retention ile (2 gün ham / 30 gün 5-dakika / 400 gün saatlik):
+Yapılandırılmış retention ile (2 gün ham / 30 gün 5-dakika / **90 gün** saatlik):
 
 | Katman | Seri başına satır | Toplam satır | Boyut |
 |---|---|---|---|
-| Ham | 5 760 | 35,0 M | 3,0 GB |
-| 5 dakika | 8 640 | 52,6 M | 8,5 GB |
-| Saatlik | 9 600 | 58,4 M | 9,4 GB |
-| **Toplam** | | | **≈ 20,9 GB** |
+| Ham (2 gün) | 5 760 | 35,0 M | 3,0 GB |
+| 5 dakika (30 gün) | 8 640 | 52,6 M | 8,5 GB |
+| Saatlik (90 gün) | 2 160 | 13,1 M | 2,1 GB |
+| **Toplam** | | | **≈ 13,6 GB** |
 
 **Bu 200 varlıklı bir estate için.** ADR-0012'nin örnek ortamı daha büyük
 (30 host, 800 VM).
 
-> Bu tablo **6 084 seri** içindir. İlk ölçüm 8 620 seri ve ≈ 29,6 GB idi;
-> `storagePath` gecikme çifti bırakılınca 2 536 seri ve 8,7 GB düştü. Karar ve
-> gerekçesi aşağıda.
+> Bu tablo **6 084 seri** ve **90 günlük saatlik saklama** içindir. İki karar
+> art arda alındı: `storagePath` gecikme çifti bırakıldı (8 620 → 6 084 seri,
+> 29,6 → 20,9 GB), ardından saatlik saklama 400 → 90 güne indi (20,9 → 13,6 GB,
+> [ADR-0017](adr/0017-retention-windows-set-by-measurement.md)). Toplam düşüş
+> **%54**.
 
 ### Çürütülen varsayım
 
 ADR-0012 şöyle diyor: *"Depolama maliyeti her adımda kabaca on kat düşüyor, bu
 yüzden uzun kuyruk neredeyse bedava."*
 
-**Birim zaman için doğru, yapılandırılmış retention için değil.** 10 kat
+**Birim zaman için doğruydu, yapılandırılmış retention için değil.** 10 kat
 azalma, 15 kat ve 200 kat daha uzun saklama süresiyle fazlasıyla telafi
-ediliyor:
+ediliyordu:
 
 ```
 Ham         2 880/gün ×   2 gün =  5 760 satır/seri
 5 dakika      288/gün ×  30 gün =  8 640 satır/seri   ← ham'dan FAZLA
-Saatlik        24/gün × 400 gün =  9 600 satır/seri   ← daha da fazla
+Saatlik        24/gün × 400 gün =  9 600 satır/seri   ← en büyüğü
 ```
 
-Yani her katman, kendinden öncekinden **daha çok** satır tutuyor. Uzun kuyruk
-bedava değil; en pahalı kısım o.
+Her katman kendinden öncekinden **daha çok** satır tutuyordu; "diskin neredeyse
+tamamı ham penceresi" ifadesi tam tersine dönmüştü.
 
-Bu bir hata değil — yapılandırma tam olarak amaçlandığı gibi çalışıyor. Ama
-gerekçe sayılarla uyuşmuyor ve bu, sayılar ölçülene kadar görülemezdi.
-ADR'ler düzenlenmez; bu bulgu yeni bir ADR'yi hak ediyor.
+**Bu ölçüm bir karara yol açtı.** Saatlik kademe 90 güne indirildi
+([ADR-0017](adr/0017-retention-windows-set-by-measurement.md)) ve aritmetik
+ilk kez iddiayı destekliyor:
+
+```
+Ham         2 880/gün ×   2 gün =  5 760 satır/seri
+5 dakika      288/gün ×  30 gün =  8 640 satır/seri   ← artık en büyüğü
+Saatlik        24/gün ×  90 gün =  2 160 satır/seri   ← artık en küçüğü
+```
+
+Bedeli: **yıla yıl karşılaştırma bitti.** ADR-0012 400 günü tam olarak bunun
+için seçmişti. Mevsimsellik ("her Aralık toplu iş ikiye katlanıyor") artık
+ürünün verisinden görülemez; ADR-0017 bunu ve geri alma yollarını kaydediyor.
 
 ### Verilen karar: yol gecikmesi bırakıldı
 
@@ -197,18 +209,21 @@ toplam seri satırı:        8 620
 ```
 
 Bırakılan 2 536 seri **silinmedi**. Yazılmayı durdurdular ama topladıkları
-geçmiş gerçek ölçümdü ve duruyor: ham pencere 2 gün, kovalar 30 ve 400 gün
+geçmiş gerçek ölçümdü ve duruyor: ham pencere 2 gün, kovalar 30 ve **90** gün
 sonra retention ile temizlenecek, ardından `A_series_with_nothing_left_is_forgotten`
-seri satırını da kaldıracak. Yani `series` tablosu 8 620'den 6 084'e **400 gün
-içinde** inecek, bugün değil.
+seri satırını da kaldıracak. Yani `series` tablosu 8 620'den 6 084'e **90 gün
+içinde** inecek, bugün değil. (ADR-0017 öncesi bu 400 gündü.)
 
 Bu doğru davranış: toplamayı bıraktık diye toplanmış ölçümü silmek, veriyi yok
 etmek olurdu. Ama projeksiyon tablosu **yeni yazım hızı** içindir; disk birkaç
 gün boyunca eski geçmişi de taşıyacak.
 
-**Hâlâ açık:** saatlik retention gerçekten 400 gün mü olmalı? 90 güne
-indirilse 13,6 GB, 180 güne indirilse 15,7 GB. Bir yıllık kapasite eğilimi
-istiyorsan 400 doğru; olay incelemesi için 2 günlük ham pencere zaten yeterli.
+**Karar verildi:** saatlik saklama 90 gün. 13,6 GB. Ayrıntı ve kaybedilen
+yıla yıl karşılaştırma için
+[ADR-0017](adr/0017-retention-windows-set-by-measurement.md).
+
+Sıradaki kısılacak yer artık saatlik değil: **beş dakikalık kademe** en büyüğü
+(8 640 satır/seri, 8,5 GB). 13,6 GB bile fazla gelirse orası bakılacak yerdir.
 
 ---
 
@@ -335,7 +350,7 @@ Dürüstlük gereği: aşağıdakiler **çalışıyor diye bilinmiyor.**
   PostgreSQL'e karşı üç entegrasyon testi var (`Raw_samples_are_folded_before_
   they_are_deleted`, `Everything_past_its_retention_goes`,
   `A_series_with_nothing_left_is_forgotten`) ve saat ileri sarılarak 2 gün /
-  30 gün / 400 gün sınırlarının üçünü de geçiyor. Doğrulanmamış olan, **canlı
+  30 gün / 90 gün sınırlarının üçünü de geçiyor. Doğrulanmamış olan, **canlı
   estate'te tetiklenmesi** — veri henüz o kadar eski değil, dolayısıyla
   gerçek hacimde silmenin ne kadar sürdüğü ve dosyayı nasıl etkilediği
   bilinmiyor.

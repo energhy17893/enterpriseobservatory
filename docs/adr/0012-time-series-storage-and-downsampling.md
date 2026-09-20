@@ -1,6 +1,8 @@
 # ADR-0012: Zaman serisi depolama ve aşağı örnekleme
 
-- **Durum:** Kabul edildi
+- **Durum:** Kabul edildi — **saklama süreleri ADR-0017 ile güncellendi**
+  (saatlik kademe 400 → 90 gün; üç kademeli tasarım, katlama sırası ve beş
+  sayılı kova aynen geçerli)
 - **Tarih:** 2026-09-19
 - **Karar verenler:** Ertuğrul Ünal
 - **İlgili:** ADR-0001 (dağıtım kısıtı), ADR-0005 (collector sözleşmesi),

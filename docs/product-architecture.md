@@ -232,8 +232,9 @@ diğeriyle karıştırmak ürüne zarar verir.
 - "Bu LUN'un gecikmesi üç haftadır tırmanıyor"
 - "Bu host'un bellek baskısı her salı artıyor"
 
-400 günlük saatlik saklama bunun için fazlasıyla yeterli. İlke 1'e uyar: sayı
-gösterilir, yöntem yazılıdır, operatör kendi doğrulayabilir.
+90 günlük saatlik saklama bunun için yeterli: üçü de en fazla haftalık desen
+ya da birkaç haftalık eğim istiyor, ve 90 gün on iki salı demek. İlke 1'e uyar:
+sayı gösterilir, yöntem yazılıdır, operatör kendi doğrulayabilir.
 
 ### Şimdilik yapılmayacak: anomali/ML
 
@@ -254,18 +255,31 @@ ADR-0012'deki saklama politikası teşhis derinliğini doğrudan belirler:
 |---|---|---|
 | Ham (~30s) | **2 gün** | Dünkü olayın saniye seviyesinde incelenmesi |
 | 5 dakika | **30 gün** | Haftalık desen, komşu karşılaştırması |
-| Saatlik | **400 gün** | Eğilim çıkarımı, kapasite planlama |
+| Saatlik | **90 gün** | Eğilim çıkarımı, kapasite planlama |
 
 **Kabul edilen sınır:** üç hafta önceki bir olay artık 5 dakikalık çözünürlükte
 incelenebilir. Kısa süreli bir gecikme sıçraması o çözünürlükte görünmez.
 Olay sonrası derin inceleme isteniyorsa ham saklama uzatılmalı — bu bir
 yapılandırma kararıdır, mimari değişiklik değil.
 
-### Açık karar: kalıcı geçmiş
+### Kapanan karar: saklama süresi artık bilinçli
 
-Önceki ürün geçmişi **PostgreSQL'de kalıcı** tutuyordu. Bu belgedeki 400 günlük
-sınır, SQLite seçiminin (ADR-0011) yan etkisi olarak oluştu; bilinçli bir ürün
-kararı olarak değil. İkisi aynı şey değil ve karar yeniden verilmeli.
+Bu bölüm "400 günlük sınır SQLite seçiminin (ADR-0011) yan etkisiydi, bilinçli
+bir ürün kararı değildi; karar yeniden verilmeli" diyordu.
+
+**20 Eylül 2026'da yeniden verildi** ([ADR-0017](adr/0017-retention-windows-set-by-measurement.md)).
+Bu kez ölçümle: satır başına bayt sayıldı, kademe başına satır hesaplandı, ve
+ADR-0012'nin "uzun kuyruk neredeyse bedava" gerekçesinin yapılandırılmış
+saklama süreleriyle **yürümediği** görüldü — saatlik kademe üç kademenin en
+büyüğüydü. Saatlik saklama 90 güne indi; kararlı durum 20,9 → 13,6 GB.
+
+Ödenen bedel kayıtlı: **yıla yıl karşılaştırma bitti.** Mevsimsellik gerekirse
+cevap saatlik pencereyi uzatmak değil, **günlük dördüncü kademedir** — seri
+başına yılda 365 satır, 400 günlük saatlikten kırk kat ucuz. Bu hâlâ açık ve
+ADR-0017'de alternatif C olarak duruyor.
+
+Önceki ürün geçmişi **PostgreSQL'de kalıcı** tutuyordu; kalıcılık isteniyorsa
+yol budur, saatlik kademeyi şişirmek değil.
 
 Mimari buna hazır: `IObservationStore` bir porttur ve somut depolama motorunu
 yalnızca `Host` görebilir — mimari testle zorlanır. Bir `Persistence.Postgres`

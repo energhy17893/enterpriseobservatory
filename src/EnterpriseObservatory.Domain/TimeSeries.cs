@@ -139,16 +139,33 @@ public static class SeriesResolutions
 /// <summary>How long each resolution is kept.</summary>
 /// <remarks>
 /// <para>
-/// The defaults follow what the reference platforms settled on, for the same
-/// reasons. Two days of raw covers "what exactly happened at 03:14" while the
-/// incident is still being investigated. A month of five-minute data covers
-/// "did this start when we patched". Thirteen months of hourly data covers
-/// capacity planning and a year-on-year comparison, which is the shortest
-/// window in which "we need more hosts" is an argument rather than a feeling.
+/// Two days of raw covers "what exactly happened at 03:14" while the incident
+/// is still being investigated. A month of five-minute data covers "did this
+/// start when we patched". Ninety days of hourly data covers capacity
+/// planning: enough of a base to project a trend and say "we need more hosts"
+/// as an argument rather than a feeling.
 /// </para>
 /// <para>
-/// Storage cost falls by roughly ten times at each step, so the long tail is
-/// nearly free; almost all of the disk is the raw window.
+/// The hourly window was 400 days, chosen so that this December could be
+/// compared with last December. That comparison is no longer possible and the
+/// trade was made deliberately — see ADR-0017, which also records why the
+/// original arithmetic was wrong.
+/// </para>
+/// <para>
+/// The cost does <em>not</em> fall tenfold per step, whatever the tenfold drop
+/// in sample rate suggests. Over the configured windows each tier holds more
+/// rows than the one before it, because the coarser tier is kept fifteen and
+/// (formerly two hundred) times longer:
+/// </para>
+/// <code>
+/// raw       2880/day x   2 days = 5,760 rows per series
+/// 5-minute   288/day x  30 days = 8,640 rows per series
+/// hourly      24/day x  90 days = 2,160 rows per series
+/// </code>
+/// <para>
+/// At 400 days the hourly tier was 9,600 rows per series and the largest of
+/// the three. At 90 it is the smallest, and the long tail is genuinely cheap
+/// for the first time rather than by assertion.
 /// </para>
 /// </remarks>
 public sealed record SeriesRetentionPolicy
@@ -157,7 +174,8 @@ public sealed record SeriesRetentionPolicy
 
     public TimeSpan FiveMinutes { get; init; } = TimeSpan.FromDays(30);
 
-    public TimeSpan OneHour { get; init; } = TimeSpan.FromDays(400);
+    /// <summary>Ninety days. See the remarks on this type, and ADR-0017.</summary>
+    public TimeSpan OneHour { get; init; } = TimeSpan.FromDays(90);
 
     public static SeriesRetentionPolicy Default { get; } = new();
 

@@ -19,7 +19,7 @@ motoru tarif ediyor ama şeklini tarif etmiyor. Veri artık mevcut olduğuna gö
 - 8 620 seri, 30 saniyede bir, kayıpsız
 - Depolama kimlik zinciri uçtan uca yürünebiliyor: VM → datastore → LUN → yol
 - Cihaz ve yol başına ayrı seriler — "hangi LUN", "hangi yol" sorulabiliyor
-- Sıkıştırma aritmetik olarak doğrulanmış, 400 günlük saatlik geçmiş mümkün
+- Sıkıştırma aritmetik olarak doğrulanmış, 90 günlük saatlik geçmiş (ADR-0017)
 
 Yani merdivenin **basamakları** var. Eksik olan, basamakları **çıkan** şey.
 
@@ -93,7 +93,7 @@ public sealed record AnalysisContext
 
 `ISeriesReader`, `IObservationStore`'un tamamı değil kasıtlı olarak: bir kural
 yazmamalı, silmemeli, sıkıştırmamalı. Okuma bile sınırlı olmalı — aksi halde
-bir kural 8 620 serinin 400 günlük geçmişini isteyebilir ve bunu fark etmeyiz.
+bir kural 6 084 serinin 90 günlük geçmişini isteyebilir ve bunu fark etmeyiz.
 
 **Açık soru (senin kararın):** okuma bütçesi nasıl sınırlanmalı? Öneri: kural
 başına seri sayısı ve aralık genişliği üst sınırı, aşıldığında kural
@@ -194,8 +194,8 @@ Bu belgenin kapsamı dışında ama aynı anda bekleyen iki karar daha:
    cluster'lar kalıcı olarak `Unknown`. On host'tan biri kritikken cluster ne
    olmalı — kritik mi, düşmüş mü, yoksa HA görevini yaparken hiçbir şey mi?
    (Bkz. [canlı doğrulama](../live-verification.md).)
-7. **Saklama ve disk.** Kararlı durumda ≈ 30 GB; bunun 17 GB'ı `storagePath`.
-   Kabul mü, saklama kısalt mı, yoksa yol gecikmesini bırak mı?
+7. ~~**Saklama ve disk.**~~ **Karar verildi.** Yol gecikmesi bırakıldı ve
+   saatlik saklama 90 güne indi: 29,6 → 13,6 GB (ADR-0017).
 
 ## 9. Yapılmaması önerilen ilk adım
 
