@@ -35,7 +35,7 @@ var endpoints = builder.Configuration.GetSection("VCenters").Get<List<VsphereEnd
 // carrying on with one. See CredentialSourceGuard.
 CredentialSourceGuard.EnsureNotFromFiles(
     builder.Configuration,
-    endpoints.Select((_, i) => $"VCenters:{i}:Password").Append("Database:Password"),
+    endpoints.Count,
     builder.Environment.ContentRootPath);
 
 var problems = endpoints.SelectMany((e, i) => e.Validate(i)).ToList();
