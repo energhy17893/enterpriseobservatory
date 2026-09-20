@@ -49,9 +49,22 @@ Mimari §6 bunu söylüyor ve modellenmesi gerekiyor. Fark pratik:
 Süresiz kabul yasak: unutulmuş istisna, denetimde en pahalı bulgudur. Bu,
 bakım penceresi disiplininin (ADR-0013) uygunluğa taşınmış hâli.
 
-**Öneri:** `Finding`, `AlertInstance`'dan ayrı bir kayıt; kendi tablosu, kendi
-yaşam döngüsü. Ortak olan `AlertFingerprint` benzeri kararlı bir kimlik ve
-`OperatorIdentity` ile denetim izi.
+~~**Öneri:** `Finding`, `AlertInstance`'dan ayrı bir kayıt; kendi tablosu, kendi
+yaşam döngüsü.~~
+
+> **Bu öneri geri çekildi** — bkz.
+> [referans yaklaşımlar §3](../reference-approaches.md). vROps uygunluğu ayrı
+> bir nesne olarak değil, alarmın bir **alt türü** olarak modelliyor. Ve daha
+> önemlisi: bu önerinin asıl gerekçesi "süreli kabul" idi, ve ürün bunu zaten
+> yapıyor — adı **Silence**. Sahip olduğumuz bir kavramı yeniden icat
+> ediyordum.
+>
+> Yerine önerilen: uygunluk bulguları **alarm olarak** üretilsin, `Category`
+> ile ayrılsın, arayüzde ayrı sekmede gösterilsin — tek yaşam döngüsü, tek
+> tablo, tek denetim izi. Ve vROps'tan **symptom/alert ayrımı** benimsensin:
+> bir alarm birden çok symptom'un bileşimi olabilmeli, ki çapraz metrik
+> kuralları ("kuyruk derinliği 64 **ve** bekleyen IO 200") doğal şeklini
+> bulsun.
 
 ## 4. Nerede durur
 
@@ -189,11 +202,14 @@ Bunlar benim değil, senin kararların:
 
 Bu belgenin kapsamı dışında ama aynı anda bekleyen iki karar daha:
 
-6. **Sağlık yayılımı birleştirme fonksiyonu.** ADR-0004 yönü karara bağladı,
-   birleştirmeyi bağlamadı; `PropagatesHealth`'in üretimde çağıranı yok ve
-   cluster'lar kalıcı olarak `Unknown`. On host'tan biri kritikken cluster ne
-   olmalı — kritik mi, düşmüş mü, yoksa HA görevini yaparken hiçbir şey mi?
-   (Bkz. [canlı doğrulama](../live-verification.md).)
+6. ~~**Sağlık yayılımı birleştirme fonksiyonu.**~~ **Referans cevapladı.**
+   vROps yaymıyor: sağlık, o nesneye karşı açılmış en şiddetli alarmdan türer
+   ve bir host %100 sağlıklıyken üstündeki her VM %25 olabilir. Dynatrace
+   yayıyor ama onun varlıkları tek bir sistemin katmanları; bizimkiler
+   bağımsız arıza alanları. Bir cluster, host'larının toplamı değil — bir
+   host'un düşmesini **soğurmak için** var. Bkz.
+   [referans yaklaşımlar §1](../reference-approaches.md); ADR-0004'ün Aria
+   öncülü de orada düzeltiliyor.
 7. ~~**Saklama ve disk.**~~ **Karar verildi.** Yol gecikmesi bırakıldı ve
    saatlik saklama 90 güne indi: 29,6 → 13,6 GB (ADR-0017).
 

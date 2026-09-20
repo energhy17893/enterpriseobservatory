@@ -139,6 +139,15 @@ Henüz karar verilmemiş olanlar `docs/proposals/` altında: kod yazılmadan ön
 tartışılacak somut öneriler. Şu an açık olan:
 [analiz ve uygunluk katmanı](docs/proposals/analysis-layer.md).
 
+Dördüncüsü, **başkalarının zaten çözdüğü**:
+
+> **[docs/reference-approaches.md](docs/reference-approaches.md)**
+
+vROps/Aria, Dynatrace ve Prometheus'un aynı problemlere verdiği cevaplar —
+neyi benimsediğimiz, neyi reddettiğimiz ve neden. Sıra şudur: **önce referans
+(bilinen nedir), sonra ölçüm (burada ne doğru), sonra öneri.** İkisi çelişirse
+ölçüm kazanır ve çelişki canlı doğrulamaya yazılır.
+
 ## Mimari kararlar
 
 Her önemli karar `docs/adr/` altında numaralı bir kayıttır: bağlam, karar,
