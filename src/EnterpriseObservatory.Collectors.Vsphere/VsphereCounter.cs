@@ -425,6 +425,36 @@ public static class VsphereCounters
     [
         "cpu.ready.summation",
         "cpu.costop.summation",
+
+        // The counter that turns a confident wrong answer into a different and
+        // more useful one. cpu.ready above cannot say WHY a machine was ready
+        // to run and did not: a VM held under its own configured CPU limit
+        // accrues the same waiting as one starved by a busy host, so the
+        // contention rule called the limited machine a victim and sent an
+        // operator to look at a host that was fine. Dynatrace separates the two
+        // with guestCpuLimitReached; this is the cheap half of it.
+        //
+        // A summation in milliseconds like the two above it, and the same
+        // interval, so it needs no new machinery in the rule — it converts to a
+        // percentage of the window exactly as ready and co-stop do. What makes
+        // it decisive is that it is zero by construction on a machine with no
+        // limit set: vSphere only accumulates here when a configured ceiling
+        // actually held the vCPU back. So a non-zero reading is not a level to
+        // interpret, it is the presence of a limit that is biting right now.
+        //
+        // Not a fault, and worth stating rather than leaving to be rediscovered
+        // (see IsFaultCounter): a CPU limit is a configuration somebody chose,
+        // and on a test or licence-bound VM it is chosen on purpose and bites
+        // every cycle. Non-zero is an explanation, not an error. And not kept
+        // per device — see KeepPerDevice; vSphere reports this per vCPU too,
+        // and a per-vCPU series is not a small virtual machine.
+        //
+        // Safe here as a plain literal: unlike PerDatastore and
+        // PerStoragePath, nothing splices this list into another, so the
+        // source-order hazard those two carry does not apply. Adding it as a
+        // spliced list ABOVE Host would be the thing to get wrong.
+        "cpu.maxlimited.summation",
+
         "mem.vmmemctl.average",
 
         // The counter that stops the ballooning alert being wrong, and the

@@ -198,6 +198,17 @@ public class CounterNamesExistTests
         {
             "cpu.usage.average",
             "cpu.ready.summation",
+
+            // A summation whose zeros are real, and still not a fault -- the
+            // same shape as the dropped-packet counters and for a sharper
+            // reason. A CPU limit is a configuration somebody chose. On a VM
+            // deliberately capped for licensing or for a test rig it bites
+            // every cycle, for ever, entirely as intended. Non-zero here is an
+            // explanation of waiting, not an error that occurred, and marking
+            // it would open a standing alert on every correctly configured
+            // machine in the estate.
+            "cpu.maxlimited.summation",
+
             "disk.deviceLatency.average",
             "datastore.totalReadLatency.average",
             "mem.vmmemctl.average",
@@ -466,6 +477,31 @@ public class CounterNamesExistTests
     }
 
     [Fact]
+    public void The_cpu_limit_counter_is_asked_of_the_machine_and_summarised_rather_than_kept_per_vcpu()
+    {
+        // cpu.ready alone cannot say why a machine was ready to run and did
+        // not, so the contention rule blamed the host for waiting a configured
+        // limit had caused -- an operator sent to a host that turns out fine,
+        // while the forgotten limit stays invisible. This counter is the only
+        // cheap way to tell the two apart, and it only accumulates when a
+        // ceiling actually held a vCPU back.
+        Assert.Contains("cpu.maxlimited.summation", VsphereCounters.VirtualMachine);
+        Assert.Equal(RollupType.Summation, RollupOf("cpu.maxlimited.summation"));
+
+        // A limit is a property of the machine, so it is never asked of a
+        // host. Asking there would collect a number with nothing to attribute
+        // it to.
+        Assert.DoesNotContain("cpu.maxlimited.summation", VsphereCounters.Host);
+
+        // Summarised, like every other cpu counter and for the reason
+        // KeepPerDevice gives: vSphere reports this per vCPU as well, and a
+        // per-vCPU series is not a small virtual machine. Keeping them would
+        // let the rule compare one guest's busiest core against another guest.
+        Assert.False(VsphereCounters.KeepPerDevice("cpu.maxlimited.summation"));
+        Assert.False(VsphereCounters.InstanceNamesAnEntity("cpu.maxlimited.summation"));
+    }
+
+    [Fact]
     public void Every_counter_no_catalogue_in_this_repository_can_check_is_listed_rather_than_assumed()
     {
         // The honest half of the guard above. The fixture covers datastore,
@@ -492,6 +528,20 @@ public class CounterNamesExistTests
         Assert.Equal(
             [
                 "cpu.costop.summation",
+
+                // Added 2026-09-20 with the CPU limit verdict, and it lands
+                // here rather than under the theory above for the same reason
+                // as the rest of this list: the fixture holds no cpu group, so
+                // its name and its statistics level came from vendor
+                // documentation and have not been put to a live server. That
+                // matters more for this counter than for most. The rule now
+                // SUPPRESSES a host verdict on the strength of it, so a name
+                // that is wrong does not merely lose a signal -- it silently
+                // restores the false positive it was added to close, and the
+                // product looks healthy while doing it. See the counter map
+                // §5h.
+                "cpu.maxlimited.summation",
+
                 "cpu.ready.summation",
                 "cpu.usage.average",
                 "disk.busResets.summation",

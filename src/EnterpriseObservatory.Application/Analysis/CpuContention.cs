@@ -204,6 +204,64 @@ public sealed record CpuContentionPolicy
     /// </remarks>
     public double CoStopReadyCeilingPercent { get; init; } = 10d;
 
+    /// <summary>
+    /// The limited percentage above which a VM's own ceiling is the answer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One percent of the sample interval — two hundred milliseconds of a
+    /// twenty-second window — spent ready to run and held back by the machine's
+    /// own configured CPU limit rather than by a shortage of cores.
+    /// </para>
+    /// <para>
+    /// There was no number to copy, and less to work from than anywhere else in
+    /// this file. vROps has no CPU ready alert at all and publishes no
+    /// thresholds; Dynatrace publishes the <em>structure</em> of
+    /// <c>guestCpuLimitReached</c> — the same two signals as saturation plus a
+    /// term that separates them — and not one level in it. So the question was
+    /// argued from what the counter is rather than from what anybody ships.
+    /// </para>
+    /// <para>
+    /// Not "non-zero at all", which was the tempting answer and is wrong for a
+    /// reason worth writing down. The counter's zero is structural: vSphere
+    /// accumulates here only when a ceiling actually held a vCPU back, so any
+    /// positive reading does prove a limit exists and is active. But that is
+    /// not the question being asked. The rule is not deciding whether a limit is
+    /// <em>configured</em>; it is deciding whether a limit <em>explains the
+    /// waiting that was measured</em>, and a limit that bites for one
+    /// millisecond in a twenty-second cycle explains none of a machine losing a
+    /// third of its wall clock. Suppressing the host verdict on that would trade
+    /// this rule's false positive for a false negative — an estate genuinely
+    /// short of CPU going quiet because its VMs happen to carry limits that
+    /// clip the occasional spike — and a false negative in the most valuable
+    /// verdict the rule can reach is the worse of the two trades.
+    /// </para>
+    /// <para>
+    /// One percent rather than <see cref="CoStopPercent"/>'s three, and the gap
+    /// is the argument rather than an inconsistency. Co-stop accrues on a
+    /// healthy wide machine during ordinary scheduling, so three percent is
+    /// where it stops being ordinary. This counter accrues under no
+    /// circumstances except a ceiling binding, so it has no ordinary band to
+    /// clear — it only has to clear the width of a single scheduling event, and
+    /// two hundred milliseconds cannot be one event. Set an order of magnitude
+    /// below <see cref="ReadyPercent"/> on purpose: a limit does not have to
+    /// explain <em>all</em> of a machine's waiting to make "the host is short of
+    /// CPU" the wrong sentence about it, because it is already the wrong
+    /// console.
+    /// </para>
+    /// <para>
+    /// The same number does both jobs — it suppresses the host and neighbour
+    /// verdicts and it fires the limit verdict — and that is deliberate rather
+    /// than economical. Two gates would open a band between them in which a
+    /// machine is too limited to be called a victim and not limited enough to be
+    /// told about its limit, and it would vanish from the product entirely.
+    /// Replacing a confident wrong answer with silence leaves the forgotten
+    /// limit exactly as invisible as it was, which is half of the defect this
+    /// verdict exists to close.
+    /// </para>
+    /// </remarks>
+    public double MaxLimitedPercent { get; init; } = 1d;
+
     /// <summary>The counter carrying a VM's CPU ready time.</summary>
     /// <remarks>
     /// Policy rather than a constant so that a collector for another platform
@@ -215,6 +273,18 @@ public sealed record CpuContentionPolicy
 
     /// <summary>The counter carrying a VM's SMP co-scheduling wait.</summary>
     public string CoStopCounter { get; init; } = "cpu.costop.summation";
+
+    /// <summary>
+    /// The counter carrying time a VM was held back by its own CPU limit.
+    /// </summary>
+    /// <remarks>
+    /// The one counter here whose absence changes an answer rather than
+    /// removing one. If it never arrives — a wrong name, a statistics level
+    /// this estate does not reach — nothing throws and nothing is reported
+    /// missing; the rule simply stops suppressing and goes back to calling
+    /// limited machines victims of their hosts. See the counter map §5g.
+    /// </remarks>
+    public string MaxLimitedCounter { get; init; } = "cpu.maxlimited.summation";
 
     /// <summary>The counter carrying a host's overall CPU usage, as a percentage.</summary>
     public string HostUsageCounter { get; init; } = "cpu.usage.average";
@@ -278,7 +348,76 @@ public sealed record CpuContentionPolicy
 /// machine with no way to order them.
 /// </description>
 /// </item>
+/// <item>
+/// <description>
+/// <b>This VM is held back by its own CPU limit.</b> The false positive the
+/// first three shipped with, now closed. A VM under a configured ceiling
+/// accrues exactly the ready time of one starved by its host, so the rule
+/// called it a victim and sent somebody to a host that was fine — while the
+/// machine's real problem, a limit set years ago and probably by accident,
+/// stayed invisible. <c>cpu.maxlimited</c> is what separates them, and it is
+/// decisive rather than suggestive: it accumulates under no circumstances
+/// except a ceiling binding.
+/// </description>
+/// </item>
 /// </list>
+/// <para>
+/// The fourth verdict is not a fourth <em>rule</em>, and it could not have
+/// been. It does not merely add a sentence — it <b>withdraws</b> one, which no
+/// other verdict here does, and withdrawing a sentence another rule is about to
+/// utter is exactly the coordination the design note above says two rules
+/// cannot do. Both changes are inside the one grouping:
+/// </para>
+/// <list type="bullet">
+/// <item>
+/// <description>
+/// <b>A limited machine does not count toward its host's victim tally.</b>
+/// <see cref="CpuContentionPolicy.MinimumWaitingVirtualMachines"/> is not a
+/// measure of how many machines are unhappy; it is the corroboration that
+/// stands in for the multi-sample gate this codebase cannot implement — several
+/// machines agreeing that <em>the host</em> is the cause. A limited machine
+/// agrees to no such thing; its waiting already has an explanation, and
+/// counting it is the error of stacking evidence that another finding has
+/// already accounted for. It would also be the original defect wearing a
+/// better disguise: a host at 90% with two limited guests and nobody else
+/// waiting would raise a host verdict citing two victims, which is harder to
+/// dismiss than the single-VM version, not easier. The verdict therefore fires
+/// strictly less often than before and never more.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <b>A limited machine stays in the sibling median.</b> The opposite answer,
+/// and deliberately so, because the median is a description rather than an
+/// attribution. "Is this machine waiting far more than the machines it shares a
+/// host with" is answered by what those machines actually experienced, whatever
+/// caused it. Dropping them would also fail in the dangerous direction: on a
+/// host where four of seven guests are limited at 25%, removing them leaves a
+/// median taken from three quiet machines, and every remaining waiting guest
+/// becomes a three-times outlier on the strength of a number we chose to
+/// discard. That is the same failure the rule already names for powered-off
+/// neighbours — a thinner denominator makes every survivor look exceptional —
+/// and it is worse here, because these machines were measured. They are
+/// excluded from being <em>named</em> a victim, which is the suppression, and
+/// from nothing else.
+/// </description>
+/// </item>
+/// </list>
+/// <para>
+/// Every machine the suppression removes receives the limit verdict instead:
+/// the two sets are the same set, by construction rather than by coincidence,
+/// because one gate decides both. Silence is not an acceptable substitute for a
+/// confident wrong answer — it leaves the forgotten limit as invisible as the
+/// wrong answer did.
+/// </para>
+/// <para>
+/// What it still does not say. It does not claim the limit is <em>wrong</em>: a
+/// licence-bound or deliberately capped machine is working as designed, and the
+/// alert says what is happening rather than what to do about it. It does not
+/// report the limit's value, because the configured MHz ceiling is not
+/// collected and quoting a number nobody has would be the same arithmetic
+/// dressed as measurement that keeps ready time off a per-vCPU basis.
+/// </para>
 /// <para>
 /// What it deliberately does not say. It never reports "the cluster is
 /// unbalanced" — that is a rung further down §4's ladder and needs
@@ -290,15 +429,6 @@ public sealed record CpuContentionPolicy
 /// looking and finding nothing are different answers, and only the second one
 /// is silence earned.
 /// </para>
-/// <para>
-/// One known false positive, stated rather than hidden. A VM held back by its
-/// own configured CPU limit shows the same waiting as one held back by a busy
-/// host, and this rule would call it a victim of the host. Dynatrace separates
-/// the two with <c>guestCpuLimitReached</c>, which needs the VM's usage in MHz
-/// against its configured limit; neither <c>cpu.usagemhz.average</c> nor
-/// <c>cpu.maxlimited.summation</c> is collected today, so the distinction
-/// cannot be drawn here.
-/// </para>
 /// </remarks>
 public static class CpuContention
 {
@@ -309,10 +439,21 @@ public static class CpuContention
     /// Shown beside the co-stop alert, which is advice rather than a fault.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Separated from <see cref="Category"/> because the two lead to different
     /// work. Contention is an incident somebody responds to now; an over-wide
     /// VM is a change somebody makes at the next maintenance window, and
     /// filing them together would bury one in the other.
+    /// </para>
+    /// <para>
+    /// The CPU limit verdict is filed here too, and that is the test of whether
+    /// this split means anything. It reads like contention — the machine is
+    /// waiting, right now, and somebody is complaining — but the work it leads
+    /// to is a configuration change to one machine at a convenient moment, with
+    /// no host to drain and nobody else affected. Filing it as contention would
+    /// put it in the queue beside a saturated host, which is the queue it was
+    /// wrongly in before this verdict existed.
+    /// </para>
     /// </remarks>
     public const string SizingCategory = "Right-sizing";
 
@@ -335,6 +476,7 @@ public static class CpuContention
     private const string HostTitle = "Host is short of CPU";
     private const string VictimTitle = "Waiting far more than its neighbours";
     private const string WidthTitle = "More vCPUs than the host can place";
+    private const string LimitTitle = "Held back by its own CPU limit";
 
     /// <summary>
     /// Every CPU verdict this batch of observations supports.
@@ -363,6 +505,7 @@ public static class CpuContention
         // something the graph does not place is simply never looked up.
         var ready = PercentagesOf(observations, rules.ReadyCounter);
         var costop = PercentagesOf(observations, rules.CoStopCounter);
+        var limited = PercentagesOf(observations, rules.MaxLimitedCounter);
         var hostUsage = LevelsOf(observations, rules.HostUsageCounter);
 
         var alerts = new List<AlertDefinition>();
@@ -376,14 +519,29 @@ public static class CpuContention
 
             var waiting = measured.Where(g => ready[g] >= rules.ReadyPercent).ToList();
 
-            if (Saturated(host, waiting.Count, hostUsage, rules))
+            // The machines whose waiting already has an explanation. Split out
+            // of `waiting` and not out of `measured`, which is the whole of the
+            // design: they stop being evidence about the host and stop being
+            // candidates to name, and they stay in the population the sibling
+            // median is taken over. See the type's remarks for both arguments.
+            var throttled = waiting.Where(g => Throttled(g, limited, rules)).ToList();
+            var victims = waiting.Where(g => !Throttled(g, limited, rules)).ToList();
+
+            if (Saturated(host, victims.Count, hostUsage, rules))
             {
-                alerts.Add(HostIsShort(host, waiting, ready, hostUsage[host], rules));
+                alerts.Add(HostIsShort(host, victims, ready, hostUsage[host], rules));
             }
             else if (measured.Count >= rules.MinimumSiblings)
             {
-                alerts.AddRange(Victims(host, measured, waiting, ready, rules));
+                alerts.AddRange(Victims(host, measured, victims, ready, rules));
             }
+
+            // Every machine the suppression removed, named for the real cause.
+            // One gate decides both, so this set and the set withdrawn above
+            // are the same set — a machine cannot fall between them and
+            // disappear from the product.
+            alerts.AddRange(
+                throttled.Select(g => HeldByItsLimit(g, ready[g], limited[g], rules)));
 
             // Width is judged per machine and needs no peers: a VM's vCPU count
             // is wrong or it is not, whoever it shares a host with. It is the
@@ -449,6 +607,63 @@ public static class CpuContention
         };
 
     /// <summary>
+    /// Whether a machine's own ceiling, rather than its host, is the answer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A missing reading is not a zero one, exactly as in
+    /// <see cref="Saturated"/>. If the limit counter did not arrive we have not
+    /// established that a limit is biting, and the machine is judged as it was
+    /// before — which is the honest fallback and also the dangerous one: the
+    /// suppression simply stops happening and the old false positive returns,
+    /// silently. That is stated at <c>MaxLimitedCounter</c> and in the counter
+    /// map §5g, because an empty performance answer is not an error.
+    /// </para>
+    /// <para>
+    /// Asked only of machines already in <c>waiting</c>, so a quiet VM under a
+    /// deliberate cap — a licence-bound application server doing nothing much —
+    /// reaches no verdict at all. A limit that is configured and not hurting
+    /// anything is not news.
+    /// </para>
+    /// </remarks>
+    private static bool Throttled(
+        EntityId guest,
+        Dictionary<EntityId, double> limited,
+        CpuContentionPolicy rules) =>
+        limited.TryGetValue(guest, out var held) &&
+        held >= rules.MaxLimitedPercent;
+
+    private static AlertDefinition HeldByItsLimit(
+        EntityId guest, double ready, double limited, CpuContentionPolicy rules) =>
+        new()
+        {
+            // The machine and the limit counter. The same shape as the width
+            // verdict and for the same reason: a configured ceiling travels
+            // with the machine, so there was never a host to leave out, and
+            // naming the counter keeps this history separate from the
+            // contention one for a machine that is later genuinely starved.
+            Fingerprint = AlertFingerprint.Create(
+                Platform, LimitTitle, SizingCategory,
+                $"{guest.Value}/{rules.MaxLimitedCounter}", "cpu-limit-reached"),
+            Severity = AlertSeverity.Warning,
+            Title = LimitTitle,
+            Description =
+                $"This virtual machine spent {Percent(ready)}% of the sample interval ready " +
+                $"to run without running, and {Percent(limited)}% of it was time its own " +
+                "configured CPU limit held it back rather than a shortage of physical cores. " +
+                "That distinction is the whole of this alert: the same waiting from a busy " +
+                "host would be somebody else's problem on somebody else's console. The host " +
+                "is not being blamed for this machine and this machine is not being compared " +
+                "with its neighbours. Check the virtual machine's CPU limit — a limit set " +
+                "during a migration or a test and never removed is the usual cause, and " +
+                "raising or clearing it is a change to this machine alone.",
+            Category = SizingCategory,
+            Source = Platform,
+            Entity = guest,
+            IsDerived = true,
+        };
+
+    /// <summary>
     /// The guests that are waiting far more than the rest of their host.
     /// </summary>
     /// <remarks>
@@ -463,11 +678,15 @@ public static class CpuContention
     private static IEnumerable<AlertDefinition> Victims(
         EntityId host,
         List<EntityId> measured,
-        List<EntityId> waiting,
+        List<EntityId> candidates,
         Dictionary<EntityId, double> ready,
         CpuContentionPolicy rules)
     {
-        foreach (var guest in waiting)
+        // `candidates` is the waiting machines minus the ones a configured
+        // limit already explains; `measured` is still everyone with a reading,
+        // limited machines included. The asymmetry is the point — see the
+        // type's remarks on the median.
+        foreach (var guest in candidates)
         {
             // The median of everyone else, so the candidate is not compared
             // with itself — one bad reading among three would otherwise drag

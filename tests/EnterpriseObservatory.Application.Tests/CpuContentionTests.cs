@@ -22,6 +22,7 @@ public class CpuContentionTests
     private const string Ready = "cpu.ready.summation";
     private const string CoStop = "cpu.costop.summation";
     private const string Usage = "cpu.usage.average";
+    private const string MaxLimited = "cpu.maxlimited.summation";
 
     /// <summary>
     /// A ready or co-stop reading, given as the percentage it should convert
@@ -207,6 +208,197 @@ public class CpuContentionTests
 
         Assert.Single(alerts);
         Assert.Equal(new EntityId(Host), alerts[0].Entity);
+    }
+
+    // ---------------------------------------------------------------
+    // The limit verdict, and the false positive it exists to close.
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public void A_machine_held_back_by_its_own_cpu_limit_is_never_counted_among_a_hosts_victims()
+    {
+        // The defect this verdict was added to close, and the load-bearing
+        // test of the whole file. A VM throttled by a configured limit shows
+        // the same ready time as one starved by its host, so before the limit
+        // counter arrived the rule called it a victim and blamed the host.
+        //
+        // The consequence is concrete and it is the worst kind this product
+        // can produce: an operator is told the host is short of CPU, drains or
+        // buys a host, finds it was fine, and learns to distrust the alert --
+        // while the VM's real problem, a limit somebody set years ago and
+        // forgot, stays invisible in every number on the screen.
+        //
+        // Two halves, and both matter. The host at 92% has exactly two
+        // machines waiting and both are limited, so there is no corroboration
+        // left for a host verdict and it must not fire; and neither machine
+        // may be filed against the host either.
+        var alerts = CpuContention.Evaluate(
+            [
+                HostBusy(92),
+                .. Quiet(),
+                Wait("vc-1:vm-9", 30),
+                Wait("vc-1:vm-9", 20, MaxLimited),
+                Wait("vc-1:vm-10", 25),
+                Wait("vc-1:vm-10", 18, MaxLimited),
+            ],
+            Estate(Guests(10)));
+
+        Assert.DoesNotContain(alerts, a => a.Entity == new EntityId(Host));
+        Assert.DoesNotContain(alerts, a => a.Title == "Waiting far more than its neighbours");
+
+        // And it is replaced rather than merely silenced: a confident wrong
+        // answer swapped for silence would still leave the forgotten limit
+        // invisible, which is half the defect.
+        Assert.Equal(2, alerts.Count(a => a.Title == "Held back by its own CPU limit"));
+    }
+
+    [Fact]
+    public void A_limited_machine_is_told_about_its_limit_rather_than_about_its_neighbours()
+    {
+        // The other console. On an unsaturated host this machine used to be
+        // named a noisy-neighbour victim, which sends its owner to check
+        // shares and vCPU counts and to argue with the platform team about
+        // placement -- for a machine whose answer is one checkbox on its own
+        // configuration. Nobody else in this market says this sentence.
+        var alerts = CpuContention.Evaluate(
+            [.. Quiet(1), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-9", 20, MaxLimited)],
+            Estate(Guests(9)));
+
+        var alert = Assert.Single(alerts);
+
+        Assert.Equal(new EntityId("vc-1:vm-9"), alert.Entity);
+        Assert.Equal("Held back by its own CPU limit", alert.Title);
+    }
+
+    [Fact]
+    public void A_limit_that_barely_bites_does_not_excuse_a_host_that_is_genuinely_short()
+    {
+        // The gate's other edge, and the more dangerous one. "Non-zero at all"
+        // was the tempting reading of this counter, and it would trade this
+        // rule's false positive for a false negative in its most valuable
+        // verdict: an estate really out of cores going quiet because its VMs
+        // happen to carry limits that clip the occasional spike. Two tenths of
+        // a percent of the window explains none of a machine losing a third of
+        // its wall clock, so the host is still the answer.
+        var alerts = CpuContention.Evaluate(
+            [
+                HostBusy(92),
+                .. Quiet(),
+                Wait("vc-1:vm-9", 30),
+                Wait("vc-1:vm-9", 0.2, MaxLimited),
+                Wait("vc-1:vm-10", 25),
+                Wait("vc-1:vm-10", 0.2, MaxLimited),
+            ],
+            Estate(Guests(10)));
+
+        var alert = Assert.Single(alerts);
+
+        Assert.Equal(new EntityId(Host), alert.Entity);
+        Assert.Contains("2 of its virtual machines", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_capped_machine_that_is_not_waiting_is_left_alone()
+    {
+        // A CPU limit is a configuration somebody chose, and on a
+        // licence-bound application server it is correct and permanent. This
+        // verdict explains waiting; it does not police limits. Without this
+        // gate the product opens a warning on every deliberately capped
+        // machine in the estate, every cycle, for ever -- and that is the
+        // standing false alarm that gets a whole category muted, taking the
+        // real limit findings with it.
+        Assert.Empty(CpuContention.Evaluate(
+            [.. Quiet(1), Wait("vc-1:vm-9", 2), Wait("vc-1:vm-9", 40, MaxLimited)],
+            Estate(Guests(9))));
+    }
+
+    [Fact]
+    public void A_limited_machine_still_counts_in_the_median_its_neighbours_are_judged_against()
+    {
+        // The asymmetry at the heart of the fourth verdict, and the half that
+        // is easy to get wrong by making it symmetrical. A limited machine
+        // leaves the host's victim tally because that tally is corroboration
+        // about the host -- but it stays in the sibling median, because the
+        // median describes what the neighbourhood actually experienced rather
+        // than attributing it to anyone.
+        //
+        // Four of these eight guests are throttled at 25%. Drop them from the
+        // median and it falls from 25% to 1%, and the eighth machine -- at a
+        // perfectly unremarkable 12% on a host where half the estate is
+        // waiting harder than that -- becomes a three-times outlier and gets a
+        // ticket, on the strength of numbers the rule chose to discard. That
+        // is the powered-off-neighbour failure exactly: a thinner denominator
+        // makes every survivor look exceptional.
+        var alerts = CpuContention.Evaluate(
+            [
+                .. Enumerable.Range(1, 4).SelectMany(i => new[]
+                {
+                    Wait($"vc-1:vm-{i}", 25),
+                    Wait($"vc-1:vm-{i}", 20, MaxLimited),
+                }),
+                Wait("vc-1:vm-5", 1),
+                Wait("vc-1:vm-6", 1),
+                Wait("vc-1:vm-7", 1),
+                Wait("vc-1:vm-8", 12),
+            ],
+            Estate(Guests(8)));
+
+        Assert.DoesNotContain(alerts, a => a.Entity == new EntityId("vc-1:vm-8"));
+        Assert.Equal(4, alerts.Count);
+        Assert.All(alerts, a => Assert.Equal("Held back by its own CPU limit", a.Title));
+    }
+
+    [Fact]
+    public void The_limit_counter_is_policy_rather_than_a_dependency_on_vsphere()
+    {
+        // The suppression is now load-bearing, so the name that feeds it is
+        // too. A vim25 counter name compiled into the analysis layer would
+        // mean a Hyper-V or KVM collector inherits the false positive with no
+        // way to hand the rule its own vocabulary -- and the failure would be
+        // silent, because a counter that never arrives simply stops
+        // suppressing.
+        var alerts = CpuContention.Evaluate(
+            [
+                .. Quiet(1),
+                Wait("vc-1:vm-9", 30),
+                Wait("vc-1:vm-9", 20, counter: "hv.cpu.capped"),
+            ],
+            Estate(Guests(9)),
+            CpuContentionPolicy.Default with { MaxLimitedCounter = "hv.cpu.capped" });
+
+        Assert.Equal("Held back by its own CPU limit", Assert.Single(alerts).Title);
+    }
+
+    [Fact]
+    public void The_limit_floor_is_what_separates_a_biting_ceiling_from_a_clipped_spike()
+    {
+        // The gate stated as a gate, because no vendor publishes this number:
+        // vROps has no CPU ready alert at all and Dynatrace publishes the
+        // structure of guestCpuLimitReached without a single level in it. Move
+        // it and the rule changes its mind about who to blame, so it has to be
+        // a number somebody can see moving.
+        List<Observation> readings =
+        [
+            HostBusy(92),
+            .. Quiet(),
+            Wait("vc-1:vm-9", 30),
+            Wait("vc-1:vm-9", 0.2, MaxLimited),
+            Wait("vc-1:vm-10", 25),
+            Wait("vc-1:vm-10", 0.2, MaxLimited),
+        ];
+
+        Assert.Contains(
+            CpuContention.Evaluate(readings, Estate(Guests(10))),
+            a => a.Entity == new EntityId(Host));
+
+        // Lower the floor under the clipped spike and the host is excused a
+        // shortage it really has -- the false negative the floor exists to
+        // prevent.
+        Assert.DoesNotContain(
+            CpuContention.Evaluate(
+                readings, Estate(Guests(10)),
+                CpuContentionPolicy.Default with { MaxLimitedPercent = 0.0001d }),
+            a => a.Entity == new EntityId(Host));
     }
 
     // ---------------------------------------------------------------
