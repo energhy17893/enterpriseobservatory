@@ -316,6 +316,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             "runtime.inMaintenanceMode",
             "hardware.systemInfo.uuid",
             "parent",
+            "triggeredAlarmState",
         ],
         ["VirtualMachine"] =
         [
@@ -325,12 +326,14 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             "runtime.host",
             "config.instanceUuid",
             "datastore",
+            "triggeredAlarmState",
         ],
         ["ClusterComputeResource"] =
         [
             "name",
             "configuration.dasConfig.enabled",
             "configuration.drsConfig.enabled",
+            "triggeredAlarmState",
         ],
         ["Datastore"] =
         [
@@ -339,6 +342,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             "summary.freeSpace",
             "summary.accessible",
             "summary.type",
+            "triggeredAlarmState",
         ],
     };
 
@@ -364,6 +368,9 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
                 });
             }
 
+            var alarms = await ReadTriggeredAlarmsAsync(
+                content, objects, failures, cancellationToken).ConfigureAwait(false);
+
             return new VsphereInventoryPayload
             {
                 VCenterName = string.IsNullOrWhiteSpace(content.Name) ? InstanceId : content.Name,
@@ -371,6 +378,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
                 VirtualMachines = [.. objects.Where(o => o.Type == "VirtualMachine").Select(ToVirtualMachine)],
                 Clusters = [.. objects.Where(o => o.Type == "ClusterComputeResource").Select(ToCluster)],
                 Datastores = [.. objects.Where(o => o.Type == "Datastore").Select(ToDatastore)],
+                TriggeredAlarms = alarms,
                 Failures = failures,
                 PagesRetrieved = pages,
             };
@@ -458,6 +466,137 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
 
         return (all, pages);
     }
+
+    /// <summary>
+    /// Gathers the alarms vCenter has raised, once each.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two things measured against a live vCenter shape this. First, the
+    /// property comes back on every object, nearly always as an empty array —
+    /// so its presence says nothing and only its contents do. Second, a
+    /// triggered alarm is reported on the object it concerns <em>and</em> on
+    /// every ancestor: one memory alarm on one host appeared on the host and on
+    /// its cluster, byte for byte the same. Keying on vCenter's own
+    /// <c>key</c> collapses those back into the single fact they are.
+    /// </para>
+    /// <para>
+    /// The name needs a second call. An <c>AlarmState</c> carries a reference
+    /// and no words, so "alarm-115" has to be turned into "Host memory status"
+    /// by reading the definition. Only the references that actually appear are
+    /// resolved, which on a healthy estate is none and on a troubled one is a
+    /// handful — never the whole alarm catalogue.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<VsphereTriggeredAlarm>> ReadTriggeredAlarmsAsync(
+        VsphereServiceContent content,
+        IReadOnlyList<PropertyObject> objects,
+        List<VsphereReadFailure> failures,
+        CancellationToken cancellationToken)
+    {
+        var byKey = new Dictionary<string, VsphereTriggeredAlarm>(StringComparer.Ordinal);
+
+        foreach (var state in objects
+            .Where(o => o.Structures.ContainsKey("triggeredAlarmState"))
+            .SelectMany(o => o.Structures["triggeredAlarmState"]))
+        {
+            var key = Field(state, "key");
+            var entity = Field(state, "entity");
+            var alarm = Field(state, "alarm");
+
+            // Without these three there is nothing to report, nothing to
+            // attribute it to and no way to tell one triggering from another.
+            if (key.Length == 0 || entity.Length == 0 || alarm.Length == 0)
+            {
+                continue;
+            }
+
+            byKey.TryAdd(key, new VsphereTriggeredAlarm
+            {
+                Key = key,
+                EntityMoRef = entity,
+                EntityType = Field(state, "entity@type"),
+                AlarmMoRef = alarm,
+                OverallStatus = Field(state, "overallStatus") is { Length: > 0 } status
+                    ? status
+                    : null,
+                TriggeredAtUtc = DateTimeOffset.TryParse(
+                    Field(state, "time"), CultureInfo.InvariantCulture,
+                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                    out var at) ? at : null,
+                Acknowledged = bool.TryParse(Field(state, "acknowledged"), out var ack) && ack,
+                AcknowledgedByUser = Field(state, "acknowledgedByUser") is { Length: > 0 } who
+                    ? who
+                    : null,
+            });
+        }
+
+        if (byKey.Count == 0)
+        {
+            return [];
+        }
+
+        var definitions = await ReadAlarmDefinitionsAsync(
+            content,
+            [.. byKey.Values.Select(a => a.AlarmMoRef).Distinct(StringComparer.Ordinal)],
+            failures,
+            cancellationToken).ConfigureAwait(false);
+
+        return
+        [
+            .. byKey.Values.Select(a => definitions.TryGetValue(a.AlarmMoRef, out var definition)
+                ? a with { AlarmName = definition.Name, AlarmDescription = definition.Description }
+                : a),
+        ];
+    }
+
+    /// <summary>Reads the names behind a set of alarm references.</summary>
+    /// <remarks>
+    /// One call for all of them. A failure here is recorded and survived: an
+    /// alarm under its reference is worse to read than one under its name, and
+    /// far better than one nobody is told about.
+    /// </remarks>
+    private async Task<Dictionary<string, (string? Name, string? Description)>>
+        ReadAlarmDefinitionsAsync(
+            VsphereServiceContent content,
+            IReadOnlyList<string> alarmMoRefs,
+            List<VsphereReadFailure> failures,
+            CancellationToken cancellationToken)
+    {
+        var resolved = new Dictionary<string, (string? Name, string? Description)>(
+            StringComparer.Ordinal);
+
+        try
+        {
+            var response = await SendAsync(
+                VsphereSoapRequests.RetrieveAlarmDefinitions(
+                    content.PropertyCollector, alarmMoRefs),
+                cancellationToken).ConfigureAwait(false);
+
+            foreach (var o in PropertyCollectorParser.ParsePage(response).Objects)
+            {
+                resolved[o.MoRef] = (
+                    PropertyCollectorParser.ReadString(o.Values, "info.name"),
+                    PropertyCollectorParser.ReadString(o.Values, "info.description"));
+            }
+        }
+        catch (VsphereApiException ex)
+        {
+            failures.Add(new VsphereReadFailure
+            {
+                Target = "alarm definitions",
+                Detail =
+                    $"{alarmMoRefs.Count} triggered alarms are reported under their references " +
+                    $"rather than their names: {ex.Message}",
+                IsPermissionDenied = ex.Kind == VsphereFaultKind.NoPermission,
+            });
+        }
+
+        return resolved;
+    }
+
+    private static string Field(IReadOnlyDictionary<string, string> fields, string name) =>
+        fields.TryGetValue(name, out var value) ? value : string.Empty;
 
     private static VsphereHost ToHost(PropertyObject o) => new()
     {

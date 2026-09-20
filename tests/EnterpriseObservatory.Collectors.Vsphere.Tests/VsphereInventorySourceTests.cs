@@ -31,6 +31,7 @@ public class VsphereInventorySourceTests
         IReadOnlyList<VsphereVirtualMachine>? vms = null,
         IReadOnlyList<VsphereCluster>? clusters = null,
         IReadOnlyList<VsphereDatastore>? datastores = null,
+        IReadOnlyList<VsphereTriggeredAlarm>? alarms = null,
         IReadOnlyList<VsphereReadFailure>? failures = null) => new()
         {
             VCenterName = "vc01.corp.local",
@@ -38,6 +39,7 @@ public class VsphereInventorySourceTests
             VirtualMachines = vms ?? [],
             Clusters = clusters ?? [],
             Datastores = datastores ?? [],
+            TriggeredAlarms = alarms ?? [],
             Failures = failures ?? [],
         };
 
@@ -449,6 +451,172 @@ public class VsphereInventorySourceTests
         var entity = Assert.Single(snapshot.Entities);
         Assert.Equal(EntityKind.VCenter, entity.Kind);
         Assert.Empty(snapshot.Failures);
+    }
+
+    // --- vCenter's own alarms ---------------------------------------------
+
+    private static VsphereCluster Cluster() => new()
+    {
+        MoRef = "c-1",
+        Name = "prod",
+        HighAvailabilityEnabled = true,
+        DrsEnabled = true,
+    };
+
+    private static VsphereTriggeredAlarm Alarm(
+        string key = "115.1",
+        string entity = "host-1",
+        string entityType = "HostSystem",
+        string? status = "red",
+        string? name = "Host memory status",
+        bool acknowledged = false) => new()
+        {
+            Key = key,
+            EntityMoRef = entity,
+            EntityType = entityType,
+            AlarmMoRef = "alarm-115",
+            AlarmName = name,
+            AlarmDescription = "Default alarm to monitor memory.",
+            OverallStatus = status,
+            TriggeredAtUtc = T0.AddHours(-3),
+            Acknowledged = acknowledged,
+        };
+
+    [Fact]
+    public async Task A_red_host_now_has_an_alert_saying_why()
+    {
+        // The gap this closes. Against a live estate the product showed one
+        // host Critical and, on the same screen, "no alert is currently firing
+        // for this entity" — the colour came from summary.overallStatus and
+        // the reason lived in a triggered alarm nobody read.
+        var snapshot = await Read(Payload(hosts: [Host(status: "red")], alarms: [Alarm()]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Category == "vCenter");
+
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+        Assert.Equal("Host memory status", alert.Title);
+        Assert.Equal(EntityId.For("vc-1", "host-1"), alert.Entity);
+        Assert.Contains("clear it there", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task One_alarm_reported_on_both_a_host_and_its_cluster_raises_one_alert()
+    {
+        // Measured against a live vCenter: a memory alarm on host-3615 came
+        // back on the host AND on its cluster, identical down to the key,
+        // because vCenter propagates alarms up the tree. Keying on anything
+        // but vCenter's own key counts one problem twice and reddens a cluster
+        // that has nothing wrong with it.
+        var snapshot = await Read(Payload(
+            hosts: [Host()],
+            clusters: [Cluster()],
+            alarms: [Alarm(), Alarm()]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Category == "vCenter");
+
+        Assert.Equal(EntityId.For("vc-1", "host-1"), alert.Entity);
+    }
+
+    [Fact]
+    public async Task An_alarm_is_attributed_to_the_object_it_concerns_not_the_one_holding_it()
+    {
+        // The state found on a cluster names the host in its entity field.
+        // Attributing to the holder would put a memory fault on a cluster.
+        var snapshot = await Read(Payload(
+            hosts: [Host()],
+            clusters: [Cluster()],
+            alarms: [Alarm(entity: "host-1")]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Category == "vCenter");
+
+        Assert.NotEqual(EntityId.For("vc-1", "c-1"), alert.Entity);
+        Assert.Equal(EntityId.For("vc-1", "host-1"), alert.Entity);
+    }
+
+    [Theory]
+    [InlineData("green")]
+    [InlineData("gray")]
+    [InlineData(null)]
+    public async Task A_status_that_is_not_a_problem_raises_nothing(string? status)
+    {
+        // Green is a triggered alarm that recovered and was never cleared;
+        // gray is one vCenter cannot currently evaluate. Neither is news, and
+        // gray in particular must not arrive as a crisis — nor as health.
+        var snapshot = await Read(Payload(
+            hosts: [Host()], alarms: [Alarm(status: status)]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Category == "vCenter");
+    }
+
+    [Fact]
+    public async Task A_yellow_alarm_is_a_warning()
+    {
+        var snapshot = await Read(Payload(hosts: [Host()], alarms: [Alarm(status: "yellow")]));
+
+        Assert.Equal(
+            AlertSeverity.Warning,
+            Assert.Single(snapshot.Alerts, a => a.Category == "vCenter").Severity);
+    }
+
+    [Fact]
+    public async Task An_alarm_about_an_object_we_do_not_collect_is_counted_not_invented()
+    {
+        // vCenter raises alarms on datacentres, folders and resource pools,
+        // none of which this collector reads. Attaching one to a nearby entity
+        // would be a fabrication; dropping it silently would be the kind of
+        // absence this product keeps being bitten by. So: counted, and said.
+        var snapshot = await Read(Payload(
+            hosts: [Host()],
+            alarms: [Alarm(key: "9.1", entity: "datacenter-2", entityType: "Datacenter")]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Category == "vCenter");
+
+        Assert.Equal("vCenter alarms on uncollected objects", alert.Title);
+        Assert.Contains("1 alarm(s)", alert.Description, StringComparison.Ordinal);
+        Assert.Equal(EntityId.For("vc-1", "vcenter"), alert.Entity);
+    }
+
+    [Fact]
+    public async Task An_alarm_whose_name_could_not_be_read_is_still_reported()
+    {
+        // The name needs a second call, and a read-only account may be refused
+        // it. An alarm under its reference is harder to read than one under
+        // its name and infinitely better than one nobody is told about.
+        var snapshot = await Read(Payload(hosts: [Host()], alarms: [Alarm(name: null)]));
+
+        Assert.Equal(
+            "vCenter alarm alarm-115",
+            Assert.Single(snapshot.Alerts, a => a.Category == "vCenter").Title);
+    }
+
+    [Fact]
+    public async Task A_vcenter_acknowledgement_is_reported_but_does_not_acknowledge_our_alert()
+    {
+        // The product keeps its own acknowledgement with its own audit trail.
+        // Adopting vCenter's would show an alert as taken by somebody this
+        // installation cannot name — and quietly silence it for our operator.
+        var snapshot = await Read(Payload(
+            hosts: [Host()],
+            alarms: [Alarm(acknowledged: true) with { AcknowledgedByUser = "VSPHERE.LOCAL\\ops" }]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Category == "vCenter");
+
+        Assert.Contains("Acknowledged in vCenter by", alert.Description, StringComparison.Ordinal);
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+    }
+
+    [Fact]
+    public async Task The_fingerprint_survives_an_alarm_being_renamed()
+    {
+        // vCenter's key is alarmId.entityId. Fingerprinting on the name would
+        // resolve the old alert and raise a new one the day somebody edits an
+        // alarm's title, losing its history and waking everybody.
+        var before = await Read(Payload(hosts: [Host()], alarms: [Alarm(name: "Host memory status")]));
+        var after = await Read(Payload(hosts: [Host()], alarms: [Alarm(name: "Bellek durumu")]));
+
+        Assert.Equal(
+            Assert.Single(before.Alerts, a => a.Category == "vCenter").Fingerprint,
+            Assert.Single(after.Alerts, a => a.Category == "vCenter").Fingerprint);
     }
 
     private static Entity Ds(InventorySnapshot snapshot, string name) =>

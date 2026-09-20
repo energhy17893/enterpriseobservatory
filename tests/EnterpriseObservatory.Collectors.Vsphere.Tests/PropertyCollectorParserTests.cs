@@ -178,6 +178,128 @@ public class PropertyCollectorParserTests
         Assert.Empty(page.Objects);
         Assert.False(page.HasMore);
     }
+
+    // --- structures -------------------------------------------------------
+
+    /// <summary>
+    /// Copied from a live vCenter, whitespace and all. See docs/collectors.
+    /// </summary>
+    private const string TriggeredAlarm = """
+        <RetrievePropertiesExResponse xmlns="urn:vim25">
+          <returnval>
+            <objects>
+              <obj type="HostSystem">host-3615</obj>
+              <propSet>
+                <name>name</name>
+                <val xsi:type="xsd:string" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">10.34.75.77</val>
+              </propSet>
+              <propSet>
+                <name>triggeredAlarmState</name>
+                <val xsi:type="ArrayOfAlarmState" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+                  <AlarmState xsi:type="AlarmState">
+                    <key>115.3615</key>
+                    <entity type="HostSystem">host-3615</entity>
+                    <alarm type="Alarm">alarm-115</alarm>
+                    <overallStatus>red</overallStatus>
+                    <time>2026-09-19T01:20:16.604498Z</time>
+                    <acknowledged>false</acknowledged>
+                    <eventKey>32074097</eventKey>
+                  </AlarmState>
+                </val>
+              </propSet>
+            </objects>
+          </returnval>
+        </RetrievePropertiesExResponse>
+        """;
+
+    [Fact]
+    public void An_array_of_structures_is_read_field_by_field()
+    {
+        var host = Assert.Single(PropertyCollectorParser.ParsePage(TriggeredAlarm).Objects);
+
+        var alarm = Assert.Single(host.Structures["triggeredAlarmState"]);
+
+        Assert.Equal("115.3615", alarm["key"]);
+        Assert.Equal("host-3615", alarm["entity"]);
+        Assert.Equal("alarm-115", alarm["alarm"]);
+        Assert.Equal("red", alarm["overallStatus"]);
+        Assert.Equal("false", alarm["acknowledged"]);
+    }
+
+    [Fact]
+    public void A_reference_inside_a_structure_keeps_its_type()
+    {
+        // "host-3615" alone cannot say what it is, and the alarm's subject is
+        // the one thing that decides which entity the alert belongs to.
+        var host = Assert.Single(PropertyCollectorParser.ParsePage(TriggeredAlarm).Objects);
+
+        Assert.Equal("HostSystem", host.Structures["triggeredAlarmState"][0]["entity@type"]);
+        Assert.Equal("Alarm", host.Structures["triggeredAlarmState"][0]["alarm@type"]);
+    }
+
+    [Fact]
+    public void A_structure_is_not_also_offered_as_a_string()
+    {
+        // It used to be, and the string was a lie: the flattener took each
+        // element's first grandchild, so an alarm arrived as "115.3615" — its
+        // key, wearing the name of the whole structure. A caller reading
+        // Values would have got that and never known.
+        var host = Assert.Single(PropertyCollectorParser.ParsePage(TriggeredAlarm).Objects);
+
+        Assert.False(host.Values.ContainsKey("triggeredAlarmState"));
+        Assert.Null(PropertyCollectorParser.ReadString(host.Values, "triggeredAlarmState"));
+    }
+
+    [Fact]
+    public void An_empty_array_of_structures_is_not_a_structure()
+    {
+        // What vCenter returns for almost every object: the property is
+        // present and empty. Treating presence as content matches everything
+        // and finds nothing.
+        const string xml = """
+            <RetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval>
+                <objects>
+                  <obj type="Datastore">datastore-35429</obj>
+                  <propSet><name>name</name><val>PRODVOL10</val></propSet>
+                  <propSet><name>triggeredAlarmState</name><val xsi:type="ArrayOfAlarmState" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></val></propSet>
+                </objects>
+              </returnval>
+            </RetrievePropertiesExResponse>
+            """;
+
+        var datastore = Assert.Single(PropertyCollectorParser.ParsePage(xml).Objects);
+
+        Assert.False(datastore.Structures.ContainsKey("triggeredAlarmState"));
+        Assert.Equal("PRODVOL10", PropertyCollectorParser.ReadString(datastore.Values, "name"));
+    }
+
+    [Fact]
+    public void A_flat_array_is_still_a_flat_array()
+    {
+        // A VM's datastore list has no structure and must keep arriving as
+        // values, or every relationship built from one disappears.
+        const string xml = """
+            <RetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval>
+                <objects>
+                  <obj type="VirtualMachine">vm-1</obj>
+                  <propSet>
+                    <name>datastore</name>
+                    <val><ManagedObjectReference type="Datastore">ds-1</ManagedObjectReference><ManagedObjectReference type="Datastore">ds-2</ManagedObjectReference></val>
+                  </propSet>
+                </objects>
+              </returnval>
+            </RetrievePropertiesExResponse>
+            """;
+
+        var vm = Assert.Single(PropertyCollectorParser.ParsePage(xml).Objects);
+
+        Assert.Empty(vm.Structures);
+        Assert.Equal(
+            ["ds-1", "ds-2"],
+            PropertyCollectorParser.SplitValues(vm.Values["datastore"]));
+    }
 }
 
 public class VsphereSoapFaultReaderTests

@@ -266,4 +266,33 @@ public class VsphereSoapRequestsTests
         var entity = Assert.Single(Named(Parse(soap), "entity"));
         Assert.Equal("VirtualMachine", entity.Attribute("type")?.Value);
     }
+
+    [Fact]
+    public void Alarm_definitions_are_asked_for_by_reference_not_by_sweeping_the_inventory()
+    {
+        // One object spec per alarm and no container view. A view over every
+        // Alarm would read hundreds of definitions to name the two that are
+        // actually triggered, on every inventory cycle.
+        var soap = VsphereSoapRequests.RetrieveAlarmDefinitions("propCollector", ["alarm-115", "alarm-7"]);
+
+        var objects = Named(Parse(soap), "obj").ToList();
+
+        Assert.Equal(["alarm-115", "alarm-7"], objects.Select(o => o.Value.Trim()));
+        Assert.All(objects, o => Assert.Equal("Alarm", o.Attribute("type")?.Value));
+        Assert.Empty(Named(Parse(soap), "selectSet"));
+    }
+
+    [Fact]
+    public void An_alarm_is_asked_for_its_name_rather_than_its_localisation_key()
+    {
+        // info.systemName is "alarm.MemoryHealthAlarm" and info.name is "Host
+        // memory status". Only one of those is readable by somebody who does
+        // not already know the answer.
+        var paths = Named(Parse(VsphereSoapRequests.RetrieveAlarmDefinitions("pc", ["alarm-115"])), "pathSet")
+            .Select(p => p.Value.Trim())
+            .ToList();
+
+        Assert.Contains("info.name", paths);
+        Assert.DoesNotContain("info.systemName", paths);
+    }
 }

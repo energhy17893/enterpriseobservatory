@@ -58,6 +58,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         AddHosts(payload, Id, now, vCenter.Id, entities, relationships, alerts);
         AddDatastores(payload, Id, now, entities, relationships, alerts);
         AddVirtualMachines(payload, Id, now, entities, relationships);
+        AddTriggeredAlarms(payload, Id, entities, alerts);
 
         return new InventorySnapshot
         {
@@ -232,6 +233,151 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 AddFullnessAlert(datastore, fullness, id(datastore.MoRef), InstanceId, alerts);
             }
         }
+    }
+
+    /// <summary>
+    /// Turns the alarms vCenter has raised into alerts of our own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without this the product could show a host as Critical and have nothing
+    /// in the inbox to say why — which is exactly what a live estate did: one
+    /// red host, one screen reading "no alert is currently firing for this
+    /// entity". The colour came from <c>summary.overallStatus</c>, and the
+    /// reason for the colour lived in a triggered alarm nobody was reading.
+    /// </para>
+    /// <para>
+    /// These are vCenter's judgements, not the product's, and they are labelled
+    /// as such. An operator needs to know which tool to go and silence, and an
+    /// alarm somebody disabled in vCenter should stop appearing here without
+    /// anyone touching this product.
+    /// </para>
+    /// <para>
+    /// Alarms about objects outside the collected inventory are dropped rather
+    /// than attached to something nearby. vCenter raises alarms on datacentres,
+    /// folders and the vCenter itself, none of which this collector reads yet;
+    /// an alert pointing at an entity that does not exist is worse than a known
+    /// gap, because it cannot be navigated to or understood.
+    /// </para>
+    /// </remarks>
+    private void AddTriggeredAlarms(
+        VsphereInventoryPayload payload,
+        Func<string, EntityId> id,
+        List<Entity> entities,
+        List<AlertDefinition> alerts)
+    {
+        if (payload.TriggeredAlarms.Count == 0)
+        {
+            return;
+        }
+
+        var known = entities.Select(e => e.Id).ToHashSet();
+        var unattached = 0;
+
+        // De-duplicated here as well as in the client. The client collapses by
+        // vCenter's key so it need not resolve one alarm's name twice; this
+        // collapses by fingerprint so the mapping is right on its own terms.
+        // A source that is only correct because its supplier was careful is a
+        // source that breaks the first time a different supplier is honest.
+        var seen = new HashSet<AlertFingerprint>();
+
+        foreach (var alarm in payload.TriggeredAlarms)
+        {
+            // Green is a triggered alarm that has returned to normal and not
+            // yet been cleared; gray is one that cannot currently be evaluated.
+            // Neither is a reason to wake anybody, and gray in particular must
+            // not read as healthy — it is absence of knowledge, and the entity
+            // health model already carries that.
+            var severity = alarm.OverallStatus?.ToUpperInvariant() switch
+            {
+                "RED" => AlertSeverity.Critical,
+                "YELLOW" => AlertSeverity.Warning,
+                _ => (AlertSeverity?)null,
+            };
+
+            if (severity is not { } level)
+            {
+                continue;
+            }
+
+            var entity = id(alarm.EntityMoRef);
+
+            if (!known.Contains(entity))
+            {
+                unattached++;
+                continue;
+            }
+
+            // vCenter's own key, which is alarmId.entityId and survives both a
+            // restart and the alarm appearing on several objects at once.
+            // Deriving one from the name instead would raise a second alert
+            // the day somebody renames an alarm.
+            var fingerprint = AlertFingerprint.Create(
+                InstanceId, "vCenter alarm", "vCenter", alarm.Key, "vcenter-alarm");
+
+            if (!seen.Add(fingerprint))
+            {
+                continue;
+            }
+
+            var name = alarm.AlarmName is { Length: > 0 } resolved
+                ? resolved
+                : $"vCenter alarm {alarm.AlarmMoRef}";
+
+            alerts.Add(new AlertDefinition
+            {
+                Fingerprint = fingerprint,
+                Severity = level,
+                Title = name,
+                Description = Describe(alarm, name),
+                Category = "vCenter",
+                Source = InstanceId,
+                Entity = entity,
+            });
+        }
+
+        if (unattached > 0)
+        {
+            alerts.Add(new AlertDefinition
+            {
+                Fingerprint = AlertFingerprint.Create(
+                    InstanceId, "vCenter alarms on uncollected objects", "vCenter",
+                    InstanceId, "vcenter-alarm-unattached"),
+                Severity = AlertSeverity.Warning,
+                Title = "vCenter alarms on uncollected objects",
+                Description =
+                    $"{unattached.ToString(CultureInfo.InvariantCulture)} alarm(s) vCenter has " +
+                    "raised concern objects this collector does not read — datacentres, folders, " +
+                    "resource pools or the vCenter itself. They are counted rather than shown, " +
+                    "because an alert pointing at an entity that does not exist cannot be acted on.",
+                Category = "vCenter",
+                Source = InstanceId,
+                Entity = id("vcenter"),
+            });
+        }
+    }
+
+    private static string Describe(VsphereTriggeredAlarm alarm, string name)
+    {
+        var description = alarm.AlarmDescription is { Length: > 0 } text
+            ? text.Trim()
+            : $"vCenter raised '{name}'.";
+
+        var raised = alarm.TriggeredAtUtc is { } at
+            ? string.Create(CultureInfo.InvariantCulture, $" Raised {at:u}.")
+            : string.Empty;
+
+        // Said, not obeyed. The product keeps its own acknowledgement with its
+        // own audit trail, and adopting vCenter's would show an alert as
+        // acknowledged by somebody this installation cannot name.
+        var acknowledged = alarm.Acknowledged
+            ? alarm.AcknowledgedByUser is { Length: > 0 } who
+                ? $" Acknowledged in vCenter by {who}."
+                : " Acknowledged in vCenter."
+            : string.Empty;
+
+        return $"{description}{raised}{acknowledged} Raised by vCenter, not by this product — " +
+               "clear it there.";
     }
 
     /// <summary>

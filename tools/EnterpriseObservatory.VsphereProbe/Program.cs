@@ -152,14 +152,18 @@ try
     Console.WriteLine($"  page size                {pageSize}");
     Console.WriteLine($"  pages retrieved          {payload.PagesRetrieved}");
 
-    var expectedPages = (int)Math.Ceiling(total / (double)pageSize);
+    // maxObjects is a ceiling, not an instruction. A live vCenter 8 asked for
+    // 250 returned 100 and a continuation token, which is well within the
+    // schema — so more pages than the arithmetic predicts proves the
+    // continuation path rather than casting doubt on it. Only the opposite
+    // would be a fault, and it is the silent one: stopping early looks like a
+    // small healthy estate.
     if (payload.PagesRetrieved > 1)
     {
-        var consistent = payload.PagesRetrieved == expectedPages;
-        Console.WriteLine(consistent
-            ? $"  paging                   VERIFIED — {total} objects over {payload.PagesRetrieved} pages"
-            : $"  paging                   SUSPECT — {total} objects over {payload.PagesRetrieved} pages, " +
-              $"expected {expectedPages}");
+        Console.WriteLine(
+            $"  paging                   VERIFIED — {total} objects over {payload.PagesRetrieved} pages");
+        Console.WriteLine(
+            $"                           (the server paged at its own size, not the {pageSize} asked for)");
     }
     else
     {
@@ -183,6 +187,33 @@ try
     {
         Console.WriteLine($"  clusters with unreadable HA/DRS   {unreadableClusters}" +
                           "   (reported Unknown, never assumed off)");
+    }
+
+    // vCenter's own judgements. Zero of them is the common and correct answer
+    // on a healthy estate, so the line is printed either way: an estate with no
+    // alarms and a collector that stopped reading them look identical from the
+    // inbox.
+    Section("Alarms vCenter has raised");
+    Console.WriteLine($"  triggered                {payload.TriggeredAlarms.Count}   (de-duplicated across the tree)");
+
+    foreach (var alarm in payload.TriggeredAlarms
+        .OrderBy(a => a.OverallStatus, StringComparer.Ordinal)
+        .Take(10))
+    {
+        var name = alarm.AlarmName is { Length: > 0 } resolved
+            ? Show(resolved, mask)
+            : $"(unresolved {alarm.AlarmMoRef})";
+
+        var attached = payload.Hosts.Any(h => h.MoRef == alarm.EntityMoRef) ||
+                       payload.VirtualMachines.Any(v => v.MoRef == alarm.EntityMoRef) ||
+                       payload.Datastores.Any(d => d.MoRef == alarm.EntityMoRef) ||
+                       payload.Clusters.Any(c => c.MoRef == alarm.EntityMoRef)
+            ? string.Empty
+            : "   [on an object this collector does not read]";
+
+        Console.WriteLine(
+            $"    {alarm.OverallStatus,-6} {name}  on {alarm.EntityType} " +
+            $"{Show(alarm.EntityMoRef, mask)}{attached}");
     }
 
     // The numbers the fullness rule is judging, printed whether or not it

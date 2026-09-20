@@ -34,6 +34,9 @@ public sealed record VsphereInventoryPayload
 
     public IReadOnlyList<VsphereDatastore> Datastores { get; init; } = [];
 
+    /// <summary>Alarms vCenter itself currently has raised.</summary>
+    public IReadOnlyList<VsphereTriggeredAlarm> TriggeredAlarms { get; init; } = [];
+
     /// <summary>Parts of the inventory that could not be read.</summary>
     public IReadOnlyList<VsphereReadFailure> Failures { get; init; } = [];
 
@@ -58,6 +61,69 @@ public sealed record VsphereReadFailure
 
     /// <summary>True when the server refused for lack of privilege.</summary>
     public bool IsPermissionDenied { get; init; }
+}
+
+/// <summary>
+/// An alarm vCenter has raised, and the object it is about.
+/// </summary>
+/// <remarks>
+/// <para>
+/// vCenter propagates a triggered alarm up the inventory tree: a memory alarm
+/// on a host is reported on the host <em>and</em> on its cluster, with
+/// identical contents. The object it was found on is therefore not the object
+/// it concerns — <see cref="EntityMoRef"/> is, and it is what this carries.
+/// Attributing to the holder instead would light up a cluster that has nothing
+/// wrong with it and count one problem twice.
+/// </para>
+/// <para>
+/// <see cref="Key"/> is vCenter's own, in the form <c>alarmId.entityId</c>. It
+/// is stable across cycles and across the objects the alarm appears on, which
+/// makes it both the way to de-duplicate and the natural fingerprint.
+/// </para>
+/// </remarks>
+public sealed record VsphereTriggeredAlarm
+{
+    /// <summary>vCenter's identity for this triggering, e.g. <c>115.3615</c>.</summary>
+    public required string Key { get; init; }
+
+    /// <summary>The object the alarm is about, e.g. <c>host-3615</c>.</summary>
+    public required string EntityMoRef { get; init; }
+
+    /// <summary>Its type, e.g. <c>HostSystem</c>. Empty when vCenter omitted it.</summary>
+    public string EntityType { get; init; } = string.Empty;
+
+    /// <summary>The alarm definition's reference, e.g. <c>alarm-115</c>.</summary>
+    public required string AlarmMoRef { get; init; }
+
+    /// <summary>
+    /// The alarm's name, when it could be resolved.
+    /// </summary>
+    /// <remarks>
+    /// The state carries only a reference; the name lives on the definition and
+    /// costs a second call. Null means that call did not answer — the alarm is
+    /// still real and still reported, under its reference.
+    /// </remarks>
+    public string? AlarmName { get; init; }
+
+    public string? AlarmDescription { get; init; }
+
+    /// <summary>red, yellow, green or gray.</summary>
+    public string? OverallStatus { get; init; }
+
+    /// <summary>When vCenter raised it.</summary>
+    public DateTimeOffset? TriggeredAtUtc { get; init; }
+
+    /// <summary>
+    /// Whether somebody acknowledged it in vCenter.
+    /// </summary>
+    /// <remarks>
+    /// Carried, not acted on. The product has its own acknowledgement with its
+    /// own audit trail, and silently adopting vCenter's would mean an alert
+    /// showing as acknowledged by nobody this installation can name.
+    /// </remarks>
+    public bool Acknowledged { get; init; }
+
+    public string? AcknowledgedByUser { get; init; }
 }
 
 /// <summary>An ESXi host as vCenter sees it.</summary>

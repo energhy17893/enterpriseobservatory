@@ -250,6 +250,53 @@ public static class VsphereSoapRequests
             """);
     }
 
+    /// <summary>
+    /// Reads the names behind a set of alarm references.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// No container view and no traversal: the references are already known, so
+    /// each is named directly in its own object spec. A view over every Alarm
+    /// in the inventory would read hundreds of definitions to use the two that
+    /// are currently triggered.
+    /// </para>
+    /// <para>
+    /// <c>info.name</c> is what an operator recognises — "Host memory status" —
+    /// while <c>info.systemName</c> is the localisation key behind it. The name
+    /// is what goes on screen, because the key is only readable to somebody who
+    /// already knows the answer.
+    /// </para>
+    /// </remarks>
+    public static string RetrieveAlarmDefinitions(
+        string propertyCollectorMoRef,
+        IReadOnlyList<string> alarmMoRefs)
+    {
+        ArgumentNullException.ThrowIfNull(alarmMoRefs);
+
+        var objectSet = string.Concat(alarmMoRefs.Select(moRef => $"""
+
+                    <vim25:objectSet>
+                      <vim25:obj type="Alarm">{Escape(moRef)}</vim25:obj>
+                      <vim25:skip>false</vim25:skip>
+                    </vim25:objectSet>
+            """));
+
+        return Envelope($"""
+                <vim25:RetrievePropertiesEx>
+                  <vim25:_this type="PropertyCollector">{Escape(propertyCollectorMoRef)}</vim25:_this>
+                  <vim25:specSet>
+                    <vim25:propSet>
+                      <vim25:type>Alarm</vim25:type>
+                      <vim25:all>false</vim25:all>
+                      <vim25:pathSet>info.name</vim25:pathSet>
+                      <vim25:pathSet>info.description</vim25:pathSet>
+                    </vim25:propSet>{objectSet}
+                  </vim25:specSet>
+                  <vim25:options />
+                </vim25:RetrievePropertiesEx>
+            """);
+    }
+
     /// <summary>Fetches the next page.</summary>
     /// <remarks>
     /// Not optional. Stopping at the first page truncates the inventory at

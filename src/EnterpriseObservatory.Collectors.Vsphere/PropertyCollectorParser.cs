@@ -16,6 +16,28 @@ public sealed record PropertyObject
     public IReadOnlyDictionary<string, string> Values { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Property path to the structures it contained, for array-of-structure
+    /// properties such as <c>triggeredAlarmState</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Kept apart from <see cref="Values"/> because a structure cannot be
+    /// rendered as one string without deciding which field matters, and that
+    /// decision belongs to the caller who knows what it asked for. Each entry
+    /// is one element of the array, as field name to text.
+    /// </para>
+    /// <para>
+    /// Managed object references keep their type: a field's value is the
+    /// reference and <c>field@type</c> is the type attribute beside it. An
+    /// alarm state names the object it is about in exactly this way, and losing
+    /// the type would leave <c>host-3615</c> with nothing to say what it is.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string>>> Structures
+    { get; init; } = new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string>>>(
+        StringComparer.Ordinal);
+
     /// <summary>Properties that were requested but could not be read.</summary>
     /// <remarks>
     /// vCenter reports these per object in <c>missingSet</c>, typically because
@@ -88,14 +110,30 @@ public static class PropertyCollectorParser
             }
 
             var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            var structures =
+                new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string>>>(
+                    StringComparer.Ordinal);
+
             foreach (var propSet in Elements(objectContent, "propSet"))
             {
                 var name = Child(propSet, "name");
                 var value = Elements(propSet, "val").FirstOrDefault();
-                if (!string.IsNullOrWhiteSpace(name) && value is not null)
+                if (string.IsNullOrWhiteSpace(name) || value is null)
                 {
-                    values[name] = Flatten(value);
+                    continue;
                 }
+
+                if (IsStructureArray(value))
+                {
+                    structures[name] = [.. value.Elements().Select(ReadStructure)];
+
+                    // Deliberately not also in Values. A structure has no
+                    // honest one-line rendering, and offering a wrong one is
+                    // how it gets read by a caller who did not look.
+                    continue;
+                }
+
+                values[name] = Flatten(value);
             }
 
             objects.Add(new PropertyObject
@@ -103,6 +141,7 @@ public static class PropertyCollectorParser
                 MoRef = obj.Value.Trim(),
                 Type = obj.Attribute("type")?.Value ?? string.Empty,
                 Values = values,
+                Structures = structures,
                 Missing = [.. ReadMissing(objectContent)],
             });
         }
@@ -126,13 +165,42 @@ public static class PropertyCollectorParser
     private static string Flatten(XElement value)
     {
         var children = value.Elements().ToList();
-        if (children.Count == 0)
+
+        return children.Count == 0
+            ? value.Value.Trim()
+            : string.Join('', children.Select(c => c.Value.Trim()));
+    }
+
+    /// <summary>
+    /// An array whose elements are structures rather than scalars.
+    /// </summary>
+    /// <remarks>
+    /// vCenter returns <c>triggeredAlarmState</c> as an array of
+    /// <c>AlarmState</c>, each carrying a key, the entity it concerns, the
+    /// alarm it came from and a status. Any element having children of its own
+    /// is enough to tell it apart from a list of names or references.
+    /// </remarks>
+    private static bool IsStructureArray(XElement value) =>
+        value.Elements().Any(child => child.Elements().Any());
+
+    private static IReadOnlyDictionary<string, string> ReadStructure(XElement element)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var field in element.Elements())
         {
-            return value.Value.Trim();
+            // Last one wins is wrong for a repeated field, but no structure
+            // this reads has one; first wins keeps it predictable if that
+            // changes, rather than silently depending on document order.
+            fields.TryAdd(field.Name.LocalName, field.Value.Trim());
+
+            if (field.Attribute("type")?.Value is { Length: > 0 } type)
+            {
+                fields.TryAdd($"{field.Name.LocalName}@type", type);
+            }
         }
 
-        return string.Join('', children.Select(c =>
-            c.Elements().Any() ? c.Elements().First().Value.Trim() : c.Value.Trim()));
+        return fields;
     }
 
     /// <summary>Splits a value produced by <see cref="Flatten"/>.</summary>
