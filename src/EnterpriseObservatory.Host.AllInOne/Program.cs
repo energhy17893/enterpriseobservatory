@@ -187,9 +187,22 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // lives beside the database rather than inside it. Beside, not in: a backup
 // that captures both is a backup that captures the passwords in usable form,
 // and an operator has to be able to treat the two differently. See ADR-0015.
+//
+// Where it is going to live is checked before it is used, and the check runs
+// here rather than after the first failed decryption because by then the keys
+// are already gone. %TEMP% was a real setting on a real installation this
+// morning; Windows emptied it and one vCenter's password stopped existing. The
+// product reported that correctly and far too late. See ADR-0020.
+var keyRingLocation = KeyRingDurabilityGuard.Inspect(KeyRingPath(builder.Configuration));
+
+// The only refusal in this guard, and it is the same refusal the database makes
+// above: a key ring that cannot be written is not a degraded product, it is one
+// that cannot hold a credential at all.
+KeyRingDurabilityGuard.EnsureUsable(keyRingLocation);
+
 var keyRing = builder.Services.AddDataProtection()
     .SetApplicationName("EnterpriseObservatory")
-    .PersistKeysToFileSystem(new DirectoryInfo(KeyRingPath(builder.Configuration)));
+    .PersistKeysToFileSystem(new DirectoryInfo(keyRingLocation.Path));
 
 if (OperatingSystem.IsWindows())
 {
@@ -279,6 +292,34 @@ if (Directory.Exists(host.Environment.WebRootPath))
 // clause in a sentence: it is a security posture someone chose, and it should
 // be as easy to find in a log as it was to turn on.
 var startupLog = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("EnterpriseObservatory");
+
+// Said once, at Critical, and only when it is true. A key ring in ProgramData
+// or in a durable directory an operator chose produces nothing here at all:
+// this line exists to be believed the one time it appears, and a check that
+// speaks on a correct installation spends exactly that.
+//
+// Not a refusal. The fix for a losable location is a setting and a restart, and
+// the fix for a key ring that has already been emptied is an administrator
+// signing in and re-typing passwords — neither is possible from a service that
+// will not boot, and the estate that is still monitorable goes on being
+// monitored in the meantime. The argument is set out in ADR-0020.
+if (keyRingLocation.Risk is KeyRingRisk.Losable)
+{
+    HostLog.KeyRingInLosableLocation(
+        startupLog, keyRingLocation.Path, keyRingLocation.Reason, keyRingLocation.KeyCount);
+}
+
+// Connections that came from configuration are excluded deliberately: their
+// passwords never went through the key ring, so they are not evidence of
+// anything and counting them would put a number in front of an operator that
+// does not match the number of vCenters they have to go and fix.
+var storedConnections = host.Services.GetRequiredService<ISourceConnectionStore>().All
+    .Count(c => c.Origin is not ConnectionOrigin.Configuration);
+
+if (KeyRingDurabilityGuard.CredentialsAreUnrecoverable(keyRingLocation, storedConnections))
+{
+    HostLog.KeyRingLostItsKeys(startupLog, keyRingLocation.Path, storedConnections);
+}
 
 // Printed only while it is usable. A token in a log for an installation that
 // already has an administrator is noise that looks like a secret.
@@ -401,6 +442,9 @@ static string KeyRingPath(IConfiguration configuration)
             "keys")
         : configured;
 
-    Directory.CreateDirectory(keys);
+    // Not created here any more. Creating it is now part of inspecting it,
+    // because whether the directory can be created is one of the answers the
+    // inspection has to give and there is no way to learn it except by trying.
+    // See KeyRingDurabilityGuard.
     return keys;
 }
