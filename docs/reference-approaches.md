@@ -86,8 +86,9 @@ tanımlı, testli ve **üretimde çağrısız**, cluster'lar ilk döngüden beri
 > containment kenarlarını izler."*
 
 Aria'nın yaptığı bu değil. Aria ilişkileri **influence ve analitik** için
-kullanıyor, badge devralma için değil. ADR düzenlenmez; bu düzeltme yeni bir
-ADR'ye girmeli.
+kullanıyor, badge devralma için değil. ADR düzenlenmez; bu düzeltme
+[ADR-0018](adr/0018-health-derives-from-alerts-not-propagation.md)'e yazıldı —
+orada ADR-0004'ün hangi kısmının ayakta kaldığı da tek tek sayılıyor.
 
 **Ama `ImpactFlow` kalmalı.** Bizde `RelationshipRules.ImpactFlow` zaten var ve
 `EventCorrelation` tarafından **kullanılıyor** — yani Dynatrace tarzı etki
@@ -104,7 +105,16 @@ ADR-0017'yi ölçümle yazdık. Referans, şeklin farklı olabileceğini göster
 |---|---|---|
 | Ham örnek | 20 sn toplanır, 5 dakikalığa katlanır katlanmaz **atılır** | 30 sn, **2 gün** saklanır |
 | Orta kademe | 5 dakika, **6 ay** (varsayılan) | 5 dakika, **30 gün** |
-| Kaba kademe | 1 saat, 10 yıla kadar | 1 saat, **90 gün** |
+| Kaba kademe | 1 saat, **36 ay** (varsayılan) | 1 saat, **90 gün** |
+
+**Düzeltme — kaba kademe satırı.** Bu tabloda önceden *"1 saat, 10 yıla kadar"*
+yazıyordu. Birincil belgeden doğrulandığında sayı bu değil: Aria Operations'ın
+global ayarlarında *"Time Series Data Retention"* beş dakikalık veriyi
+varsayılan **6 ay** tutuyor, *"Additional Time Series Retention"* ise onu saatlik
+kovaya katlayıp **36 ay daha** saklıyor. Yani varsayılan toplam ufuk üç buçuk
+yıl civarı, on yıl değil. "10 yıla kadar" büyük olasılıkla ayarın üst sınırından
+geliyordu; varsayılanla karıştırılmıştı. Karşılaştırmayı varsayılanlar üzerinden
+yapmak gerekir, çünkü bizim ADR-0017'deki sayılarımız da varsayılan.
 
 İki şey çıkıyor:
 
@@ -132,6 +142,129 @@ seri başına 288 satır/gün. Bu, ölçülüp ayrı karar verilecek.
 **Ham pencereyi atmak.** vROps'un yolu ucuz ama olay incelemesinde saniye
 seviyesini tamamen kaybettiriyor. Bizim ürün tezimiz teşhis; ham pencere
 kalıyor.
+
+### 2.1. vCenter'ın kendi istatistikleri vROps'unkiyle aynı şey değil
+
+Bu ikisi sürekli birbirine karıştırılıyor ve karışmanın sebebi tesadüfi bir
+çakışma: her ikisinde de "5 dakika" diye bir sayı var ve **aynı şeyi
+anlatmıyorlar.**
+
+vCenter'ın kendi istatistik alt sistemi bağımsız bir mekanizma ve vROps onu
+kullanmıyor — vROps 20 saniyelik örnekleri doğrudan platformdan toplayıp kendi
+kademelerini kuruyor. vCenter'ın kendi kademeleri şunlar:
+
+| Kademe | Saklama |
+|---|---|
+| Gerçek zamanlı, 20 sn | ~1 saat |
+| 5 dakika | 1 gün |
+| 30 dakika | 1 hafta |
+| 2 saat | 1 ay |
+| 1 gün | 1 yıl |
+
+Üstüne bir de **istatistik seviyesi** (1–4, varsayılan **1**) var: seviye, hangi
+sayaçların o kademeye hiç yazılacağını belirliyor. Yani vCenter'da bir sayacın
+geçmişte olmaması iki ayrı sebepten olabilir — kademe süresi dolmuş olabilir ya
+da o sayaç o seviyede **hiç toplanmamış** olabilir.
+
+Bizi ilgilendiren pratik sonuç: vCenter'ın "5 dakika, 1 gün"ü ile vROps'un
+"5 dakika, 6 ay"ı karşılaştırılabilir sayılar değil. Bizim beş dakikalık
+kademamizin referansı vROps'unki; vCenter'ınki bizim *toplama* tarafımızın
+kısıtı, *saklama* tarafımızın değil.
+
+### 2.2. vROps dışındaki referanslar: yaş kademesi aslında geri çekiliyor
+
+vROps ve bizim tasarımımız veriyi **yaşına göre** kademelere ayırıyor. Diğer
+referanslara bakıldığında bunun evrensel bir şekil olmadığı, hatta modern
+ürünlerde terk edilmekte olduğu görünüyor.
+
+| Ürün | Şekil | Saklama |
+|---|---|---|
+| **Dynatrace (Metrics Classic)** | 4 kademe: 0–14 g 1 dk, 14–28 g 5 dk, 28–400 g 1 sa, 400 g–5 yıl 1 gün | — |
+| **Dynatrace (Grail, güncel)** | **Yaş kademesi yok** — tüm geçmiş 1 dakika | 15 ay varsayılan, 10 yıla uzatılabilir |
+| **Datadog** | Yaş kademesi yok, depolama çözünürlüğü 1 saniye | Düz **15 ay** |
+| **Prometheus** | Aşağı örnekleme **hiç yok** | 15 gün varsayılan |
+| **Thanos** | ham / 5 dk / 1 sa | Varsayılan `0d` = sonsuz |
+| **Grafana Mimir** | Aşağı örnekleme yok | Varsayılan `0s` = kapalı |
+
+Burada kaydedilmesi gereken üç ayrıntı var, çünkü üçü de kolayca yanlış
+alıntılanıyor:
+
+**Dynatrace'in dört kademeli tablosu artık eski.** O tablo Metrics Classic'e
+ait. Güncel Grail'de yaş kademesi *yok*: sorgu ne kadar geriye giderse gitsin
+çözünürlük bir dakika. Yani "olgun APM ürünleri de yaşa göre kademeliyor"
+cümlesi bugün artık doğru değil ve bizim kademeli tasarımımızın savunması
+Dynatrace'e dayanamaz — vROps'a dayanır.
+
+**Datadog'un aşağı örneklemesi depolama zamanında değil, sorgu zamanında.**
+15 ayın tamamı saniye çözünürlüğünde duruyor; kabalaştırma sorgu cevaplanırken
+yapılıyor. Bunun belgelenmiş kanıtı Nested Queries özelliği: iç sorgu geçmiş bir
+aralıkta daha ince çözünürlük çekebiliyor — kademeli depolamada bu mümkün
+olmazdı, çünkü ince veri diskte olmazdı.
+
+**Prometheus'un bayrağı değişti.** `--storage.tsdb.retention.time` komut satırı
+bayrağı artık **kullanımdan kaldırılmış** durumda; yerini yapılandırma
+dosyasındaki `storage.tsdb.retention.time` alanı aldı. Bizim belgelerimizde ya
+da karşılaştırmalarımızda bayrak biçimini kullanmamak gerekiyor.
+
+### 2.3. Thanos üzerine üç düzeltme
+
+Thanos, aşağı örneklemeyi *bizimkine en çok benzeyen* şekilde yapan referans, ve
+tam da bu yüzden hakkında dolaşan yanlışlar bizi yanlış yöne çekebilir.
+
+**Düzeltme 1 — "önerilen piramit" diye bir şey yok.** Üçüncü taraf yazılarda
+sıkça tekrarlanan *"Thanos ham 30–40 gün / 5 dk 90 gün / 1 sa 365 gün önerir"*
+piramidi **Thanos belgelerinde geçmiyor.** Bu folklor. Thanos'un kendi yazdığı
+tavsiye bunun tersi: *her aşağı örnekleme seviyesi için saklama süresi aynı
+olmalı.* Yani Thanos kademeleri birbirinin yerine geçen bir piramit olarak değil,
+aynı zaman aralığının farklı çözünürlükteki kopyaları olarak görüyor.
+
+**Düzeltme 2 — Thanos'a göre aşağı örnekleme yer kazandırmaz.** Belgeleri bunu
+açıkça söylüyor: *"downsampling doesn't save you any space"*. Tam tersine
+depolamayı **~3 kat artırabiliyor**, çünkü her seviye kendi toplam (aggregate)
+parçalarını ekliyor. Thanos için aşağı örneklemenin amacı yer değil, **uzun
+aralıklı sorguların hızı.**
+
+> **Bu alıntıyı bizim tasarımımıza uygulamak yanlış olur.** Fark yapısal:
+> Thanos her kademeyi **sonsuza kadar yan yana tutuyor**, biz ince kademeyi
+> süresi dolunca **siliyoruz.** Thanos'ta seviye eklemek toplama işlemidir,
+> bizde yer değiştirme. Dolayısıyla ADR-0017'nin "her kademe kendinden
+> öncekinden daha çok satır tutuyordu" aritmetiği ve 20,9 GB → 13,6 GB hesabı
+> **aynen geçerli.** Bu cümle burada, alıntının yanına, yanlış uygulanmasın
+> diye yazılıyor.
+
+**Düzeltme 3 — kademeler arasında sıralama kısıtı var.** Thanos 5 dakikalık
+aşağı örneklemeyi verinin **40. saatinde**, 1 saatliği **10. gününde** yapıyor.
+Eğer 5 dakikalık kademenin saklama süresi 10 günden kısaysa, 5 dakikalık bloklar
+1 saatlik geçiş çalışmadan önce silinir ve **1 saatlik kademe hiç oluşmaz.**
+Bizde katlama yolu farklı (kovalar ham veriden ilerleyen bir su işaretiyle
+üretiliyor, bloklardan değil) ama kısıtın öğrettiği şey genel: *bir kademenin
+kaynağı, o kademe üretilmeden silinemez.* Saklama sürelerini ayrı ayrı
+yapılandırılabilir yaptığımız için bu bizde de kurulabilir bir tuzak.
+
+### 2.4. Ödünç alınabilir kural: çözünürlüğü yaş değil, sorgu adımı seçsin
+
+Thanos'un sorgu tarafındaki kuralı tek satır:
+
+```
+max_source_resolution = step / 5
+```
+
+Yani 5 dakikalık veri ancak `step >= 25 dakika` olduğunda, 1 saatlik veri ancak
+`step >= 5 saat` olduğunda kullanılıyor. Seçim tamamen **sorgunun adımına**
+bakıyor; verinin yaşına bakmıyor.
+
+Bizim `SeriesRetentionPolicy.RetainedResolutionFor` metodumuz ikisine birden
+bakıyor: aralık/`maxPoints` çiftinden nokta bütçesine sığan en ince kademeyi
+seçiyor, sonra **o kademenin saklama süresi pencerenin başına yetişiyor mu**
+diye ayrıca kontrol ediyor. Oradaki yaş kontrolü bir seçim ölçütü değil, bir
+erişilebilirlik kapısı — Thanos'ta olmamasının sebebi de bu: Thanos hiçbir
+kademeyi silmediği için yaş hiçbir kademeyi erişilemez yapmıyor.
+
+Yani bu bir kusur değil, farklı bir saklama modelinin gerektirdiği ek koşul.
+Ödünç alınabilecek olan, `maxPoints` yerine **açık bir `step` parametresi**
+düşünmek: bugün çözünürlük çağıranın nokta bütçesinden dolaylı olarak çıkıyor,
+Thanos'ta ise çağıran ne kadar kabalık istediğini doğrudan söylüyor. Bu bir
+karar değil, **düşünülecek bir şey** olarak kaydediliyor.
 
 ---
 
@@ -269,6 +402,95 @@ kademe için verilen kararın aynısı.
 **Açık karar, tetiği belli:** geçmişe dayalı bir taban çizgisi isteyen ilk
 kural yazıldığında A/B/C arasında seçim yapılır ve yeni bir ADR'ye girer.
 
+---
+
+## 6. Yokluk — altı üründen altısı "kural sustu"yu "her şey yolunda"dan ayırıyor
+
+Soru şuydu: bir kural o turda **hiç çalışmadıysa**, o kuralın açık alarmlarına ne
+olmalı? Referans taraması bu konuda alışılmadık biçimde nettir — bakılan altı
+ürünün **hepsi** bu ayrımı yapıyor ve **hiçbiri sessizliği sağlık saymıyor.**
+Altıda altı çıkan başka bir başlık yok.
+
+| Ürün | Mekanizma |
+|---|---|
+| **Grafana** | `Error` ve `No Data` birinci sınıf kural durumları. Kaybolan bir seri son durumunu **iki değerlendirme aralığı** korur, sonra `grafana_state_reason: MissingSeries` ek açıklamasıyla kapanır |
+| **Prometheus** | Patlayan kural için staleness işareti **yazılmaz**: `/alerts` alarmı hâlâ firing gösterirken `/rules` aynı kuralı `health: "err"` gösterir. Ama akışın ilerisinde `ValidUntil = 4 × max(interval, resendDelay)` var — kaynak yorumu *"iki değerlendirme veya Alertmanager gönderim hatasına izin ver"* — yani sürekli patlayan bir kural, alarmlarını ~4 aralık sonra **sessizce çözer** |
+| **Zabbix** | Trigger *state* (Normal/Unknown), *value*'dan (OK/PROBLEM) bağımsız bir eksen. `Unknown` ifade boyunca yayılır (`1 and Unknown → Unknown`) ve kendi dahili olaylarını üretir |
+| **Netdata** | `UNDEFINED` (0), `CLEAR` (1)'den ayrı bir durum. Kuralın kaldırılması bile kendi sonlandırıcı durumunu alır |
+| **Dynatrace** | Kural başına *"eksik veride alarm üret"* seçimi — ve kendi belgeleri, seyrek serilerde bunu açmanın alarm fırtınası yarattığı uyarısını yapıyor |
+| **vROps** | İptal, koşulun **false olmasını** gerektirir (Cancel Cycle). Yokluk hiçbir iptal yolu değil; kendi *"veri alınmıyor"* alarmını alır |
+
+Prometheus'un satırı en öğretici olanı, çünkü ürünün **iki ucu birbiriyle
+çelişiyor**: değerlendirici tarafı dürüst (kural sağlığı ayrı yayınlanıyor,
+alarm haritasına dokunulmuyor), bildirici tarafı ise zaman aşımıyla kapatıyor.
+Yani tek bir üründe hem yapılacak şey hem de kaçınılacak şey var. Bu ayrım
+[yokluk önerisinde](proposals/alert-absence.md) §4'ün genel bekleme süresini
+reddetme gerekçesidir.
+
+Bu bulgunun ürüne dönüşü o öneride duruyor; burada kaydedilen, **kararın
+referansla değil, referansların örtüşmesiyle** verildiğidir.
+
+## 7. Çalışma zamanında kural denetimi — susturma ile durdurma aynı şey değil
+
+Bu satılan bir ürün, ve gürültülü bir kuralla karşılaşan operatörün elinde bir
+şey olmalı. Referanslar burada da örtüşüyor, ve örtüştükleri yer bir **ayrım**:
+
+- **Grafana** *değerlendirmeyi duraklatmak* ile *bildirimi susturmak*'ı açıkça
+  ikiye ayırıyor. Duraklatılan kural hiç koşmaz; susturulan kural koşar, durumu
+  görünür, yalnızca bildirim gitmez.
+- **Netdata** aynı ayrımı aynı biçimde yapıyor: DISABLE değerlendirmeyi
+  durdurur, SILENCE bildirimi durdurur.
+- **vROps** ayrımı kapsam ekseninde zenginleştiriyor: symptom ve alarm tanımları
+  bir **policy** içinde etkinleştirilip devre dışı bırakılıyor, policy de nesne
+  gruplarına bağlanıyor. Sonuç hem *kural başına* hem *nesne başına* kapsam —
+  "bu kural şu cluster'da çalışmasın" ifade edilebilir bir cümle oluyor.
+
+Neden önemli: ikisi karıştırıldığında ortaya çıkan şey tam olarak §6'nın kusuru.
+Bir kuralı susturmak için değerlendirmesini durdurursan, o kuralın açık
+alarmları yokluk yoluna düşer ve *"arıza geçti"* damgasıyla kapanır. Yani
+duraklatma ile susturmanın ayrı olması bir arayüz zarafeti değil, **yokluk
+semantiğinin doğru kalmasının şartı.** Bizde henüz ikisi de yok; geldiğinde ayrı
+gelmeli.
+
+Ölçek farkı da kaydedilmeli: vROps'un policy'si bir yönetim nesnesidir ve kendi
+ekranını, devralmasını ve atamasını getirir. Bizim bugünkü ihtiyacımız
+muhtemelen daha küçük — kural kimliğine göre bir anahtar, artı ADR-0013'ün
+istediği atıf. Ama **kapsamın bir gün nesne grubuna genişleyeceği** bilinerek
+tasarlanmalı, çünkü sonradan eklemek anahtarın şeklini değiştirir.
+
+## 8. Doğrulanamayanlar — bilerek boş bırakılan yerler
+
+Aşağıdakiler arandı ve **bulunamadı.** Buraya yazılmalarının sebebi, birinin
+altı ay sonra aynı aramayı yapıp aynı boşluğu makul görünen bir cümleyle
+doldurmasını önlemek. Bunlar "henüz bakmadık" değil, **"bakıldı, yok"** kaydıdır.
+
+**Hiçbir üretici, bir kademe sınırının neden orada olduğunu açıklamıyor.**
+Dynatrace 14/28/400 sayılarını çıplak yayınlıyor; Datadog 15 ayı gerekçesiz
+veriyor; Thanos'un aşağı örnekleme tasarımı için bir tasarım önerisi (design
+proposal) **mevcut değil** — özellik, projenin öneri sürecinden önce geldiği için
+hiç yazılmamış. Yani bizim ADR-0017'de yaptığımız şeyin — bir sayıyı ölçümle
+gerekçelendirmenin — kamusal bir emsali yok. Bu, ADR-0017'yi zayıflatmıyor;
+tersine, kopyalanacak bir sayı olmadığını ve ölçmekten başka yol bulunmadığını
+doğruluyor.
+
+**Hiçbir üretici, sorgu davranışını veri yaşına göre nicelemiyor.** *"N günden
+eskisinde sorguların %X'i saatlik çözünürlük kullanıyor"* biçiminde kamuya açık
+hiçbir veri yok. Bu, bizim kademe sürelerini kullanım verisiyle ayarlamak
+istediğimizde **kendi telemetrimizi toplamak zorunda** olacağımız anlamına
+geliyor.
+
+**Broadcom 6 aylık varsayılan için gerekçe vermiyor.** Bulunabilen en yakın şey
+dolaylı: kapasite motoru mevsimsellik tespiti için *"her 5 dakikada bir veri
+noktası tüketiyor"* ve haftalık/aylık periyotlara bakıyor. Bundan "6 ay, aylık
+periyodu birkaç kez görebilmek için seçilmiş olabilir" **çıkarımı** yapılabilir —
+ama bu bizim çıkarımımız, Broadcom'un ifadesi değil. Öyle işaretlenmiştir.
+
+**Dynatrace, Grail'in hangi kabalaştırma çözünürlüklerini materyalize ettiğini
+belgelemiyor.** "Yaş kademesi yok, tüm geçmiş 1 dakika" ifadesi belgeli; bunun
+arkasında sorguyu hızlandıran önceden hesaplanmış bir kabalaştırma olup olmadığı
+belgesiz. Yani §2.2'deki "yaş kademesi yok" satırı **kullanıcıya görünen
+sözleşme** hakkındadır, depolama iç yapısı hakkında değil.
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:
@@ -277,7 +499,8 @@ Bir sonraki adıma geçmeden önce bakılacaklar:
 |---|---|---|
 | Kapasite projeksiyonu yöntemi | "12 gün sonra dolar" nasıl hesaplanıyor, hangi güven aralığıyla | vROps Capacity Analytics |
 | Uygunluk kıstas içeriği | vSphere Security Configuration Guide / STIG hazır kıstaslar | Aria compliance packs |
-| Sorgu zamanı çözünürlük seçimi | Bizde yeni düzeltildi; Prometheus/Grafana'nın `step` modeli | Prometheus range query |
+| ~~Sorgu zamanı çözünürlük seçimi~~ | **Cevaplandı — §2.4.** Thanos `max_source_resolution = step / 5` kuralını kullanıyor; bizim ek yaş kapımızın sebebi kademe silmemiz | — |
+| Kural duraklatma/susturma kapsamı | §7 ayrımı benimsenecekse anahtar nesne grubuna genişleyebilmeli | vROps policy modeli, Grafana pause/silence |
 
 ---
 
@@ -295,3 +518,36 @@ Bir sonraki adıma geçmeden önce bakılacaklar:
 - [TOMsOps — Custom Compliance Management using vRealize Operations](https://thomas-kopton.de/vblog/?p=605)
 - [Dynatrace — Auto-adaptive thresholds for anomaly detection](https://docs.dynatrace.com/docs/discover-dynatrace/platform/davis-ai/anomaly-detection/concepts/auto-adaptive-threshold)
 - [LogicMonitor — Static thresholds vs. dynamic thresholds](https://www.logicmonitor.com/blog/static-thresholds-vs-dynamic-thresholds)
+
+### Saklama ve aşağı örnekleme (§2)
+
+> **Bağlantılar hakkında dürüstlük notu.** Aşağıdaki kaynakların *belge adları ve
+> içerikleri* araştırmada birincil üretici belgesinden doğrulanmıştır. Bazı
+> URL'ler ise üreticinin belge sitesindeki kanonik yoldan türetilmiştir ve
+> üretici belge sitelerini yeniden düzenlediğinde kırılabilir. Bir bağlantı
+> ölürse **belge adıyla aramak** gerekir; iddia belge adına bağlıdır, URL'ye
+> değil.
+
+- [Aria Operations 8.18 Configuration Guide — List of Global Settings](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-configuration-guide/configuring-global-settings/list-of-global-settings.html) — *Time Series Data Retention* (6 ay) ve *Additional Time Series Retention* (36 ay)
+- [Broadcom KB 315941 — vRealize/Aria Operations Data Collection](https://knowledge.broadcom.com/external/article/315941/vrealize-operations-data-collection.html)
+- [Broadcom KB 393839 — rollup granularity](https://knowledge.broadcom.com/external/article/393839)
+- [vSphere 8.0 — Data collection intervals](https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/8-0/vsphere-monitoring-and-performance-8-0/monitoring-inventory-objects-with-performance-charts/data-collection-intervals.html)
+- [vSphere 8.0 — Data collection levels](https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/8-0/vsphere-monitoring-and-performance-8-0/monitoring-inventory-objects-with-performance-charts/data-collection-levels.html)
+- [Dynatrace — Grail metrics retention](https://docs.dynatrace.com/docs/discover-dynatrace/references/dynatrace-concepts/retention-periods)
+- [Dynatrace — Metrics Classic data retention (legacy)](https://docs.dynatrace.com/docs/analyze-explore-automate/metrics/metric-data-points)
+- [Datadog — Metrics retention and resolution](https://docs.datadoghq.com/metrics/)
+- [Datadog — Nested queries](https://docs.datadoghq.com/dashboards/functions/#nested-queries)
+- [Prometheus — Storage: operational aspects](https://prometheus.io/docs/prometheus/latest/storage/)
+- [Thanos — Compactor: downsampling, resolution and retention](https://thanos.io/tip/components/compact.md/)
+- [Thanos — Querier: max_source_resolution](https://thanos.io/tip/components/query.md/)
+- [Grafana Mimir — Compactor / retention configuration](https://grafana.com/docs/mimir/latest/references/architecture/components/compactor/)
+
+### Yokluk ve kural denetimi (§6, §7)
+
+- [Grafana — Alert rule state and health / No Data and Error handling](https://grafana.com/docs/grafana/latest/alerting/fundamentals/alert-rules/state-and-health/)
+- [Grafana — Pause alert rule evaluation / Silences](https://grafana.com/docs/grafana/latest/alerting/alerting-rules/)
+- [Prometheus — Alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)
+- [Zabbix — Trigger state and unknown value](https://www.zabbix.com/documentation/current/en/manual/config/triggers)
+- [Netdata — Health alert statuses](https://learn.netdata.cloud/docs/alerts-and-notifications/alert-configuration-reference)
+- [Dynatrace — Metric events: alert on missing data](https://docs.dynatrace.com/docs/analyze-explore-automate/metrics/metric-events)
+- [Aria Operations — Alert policies and object groups](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-configuration-guide/configuring-and-using-policies.html)
