@@ -15,10 +15,28 @@ public class VsphereObservationSourceTests
 
     private sealed class Targets(params string[] hosts) : IVsphereSampleTargetProvider
     {
-        public VsphereSampleTargets Current { get; } = new() { Hosts = hosts };
+        public VsphereSampleTargets Current { get; private set; } = new() { Hosts = hosts };
 
         /// <summary>Unknown refs resolve to null, as an unmapped entity would.</summary>
         public HashSet<string> Resolvable { get; } = [.. hosts];
+
+        /// <summary>Also sample these virtual machines, resolvable like the hosts.</summary>
+        /// <remarks>
+        /// A second entity type is what makes a per-type failure visible at
+        /// all: with one type, "the type failed" and "the source failed" are
+        /// the same observation and no test can tell them apart.
+        /// </remarks>
+        public Targets AndVirtualMachines(params string[] virtualMachines)
+        {
+            Current = Current with { VirtualMachines = virtualMachines };
+
+            foreach (var moRef in virtualMachines)
+            {
+                Resolvable.Add(moRef);
+            }
+
+            return this;
+        }
 
         /// <summary>Volume identifier to the datastore that owns it.</summary>
         public Dictionary<string, string> Volumes { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -41,7 +59,16 @@ public class VsphereObservationSourceTests
 
         public int? MaxQueryMetrics { get; init; } = 256;
 
-        public List<VsphereCounter> Catalog { get; init; } = [.. AllHostCounters()];
+        public List<VsphereCounter> Catalog { get; init; } = [.. AllWantedCounters()];
+
+        /// <summary>A type whose performance query faults, and with what.</summary>
+        /// <remarks>
+        /// Posed as an exception rather than a flag so a test can choose which
+        /// fault: the whole point of the guard is that two vim25 faults are
+        /// treated differently from each other, and a boolean could not ask
+        /// that question.
+        /// </remarks>
+        public (VsphereEntityType Type, Exception Error)? FaultOn { get; init; }
 
         /// <summary>What the platform is actually collecting. Defaults to everything.</summary>
         public HashSet<string>? Available { get; init; }
@@ -86,6 +113,11 @@ public class VsphereObservationSourceTests
         {
             ObservedBatchSizes.Add(entityMoRefs.Count);
             ObservedQueries.Add((nowUtc, entityType));
+
+            if (FaultOn is { } fault && fault.Type == entityType)
+            {
+                throw fault.Error;
+            }
 
             if (entityMoRefs.Count > RefuseBatchesLargerThan)
             {
@@ -139,8 +171,22 @@ public class VsphereObservationSourceTests
         /// <summary>Volume identifiers this host reports datastore counters for.</summary>
         public List<string> Volumes { get; init; } = [];
 
-        private static IEnumerable<VsphereCounter> AllHostCounters() =>
-            VsphereCounters.Host.Select((key, index) =>
+        /// <summary>
+        /// Every counter the product asks for, of either type.
+        /// </summary>
+        /// <remarks>
+        /// Both lists, because a vCenter offering host counters offers the
+        /// virtual-machine ones too. A catalogue holding only the host's would
+        /// make every VM query fail as "this vCenter has no such counter", so a
+        /// test about a faulting VM query would never reach the query.
+        /// Deduplicated because <c>mem.vmmemctl.average</c> is on both lists
+        /// and a real catalogue names a counter once.
+        /// </remarks>
+        private static IEnumerable<VsphereCounter> AllWantedCounters() =>
+            VsphereCounters.Host
+                .Concat(VsphereCounters.VirtualMachine)
+                .Distinct(StringComparer.Ordinal)
+                .Select((key, index) =>
             {
                 var parts = key.Split('.');
                 return new VsphereCounter
@@ -417,6 +463,143 @@ public class VsphereObservationSourceTests
         Assert.Equal(CollectionFailureKind.NotConfigured, failure.Kind);
         Assert.Equal("HostSystem", failure.Target);
         Assert.DoesNotContain("level 1", failure.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // --- one entity type failing, and the rest of the read surviving ------
+
+    /// <summary>A vCenter that faults on the virtual-machine query only.</summary>
+    private static FakeApi FaultingOnVirtualMachines(Exception error) =>
+        new() { FaultOn = (VsphereEntityType.VirtualMachine, error) };
+
+    /// <summary>One host and one VM, so the two types can be told apart.</summary>
+    private static Targets HostAndVirtualMachine() =>
+        new Targets("host-1").AndVirtualMachines("vm-1");
+
+    private static VsphereApiException Fault(VsphereFaultKind kind, string message) =>
+        new(kind, message);
+
+    [Fact]
+    public async Task One_entity_types_failure_does_not_discard_another_types_samples()
+    {
+        // The deployment this was found in, and it is a common one: the
+        // monitoring account may read some entity types and not others. The
+        // host samples are gathered first and were then thrown away when the
+        // next type's query faulted, so a vCenter that was answering perfectly
+        // well produced no metrics at all — every cycle, indefinitely, while
+        // the data was already in hand.
+        var api = FaultingOnVirtualMachines(
+            Fault(VsphereFaultKind.NoPermission, "Permission to perform this operation was denied."));
+
+        var batch = await Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None);
+
+        Assert.Contains(batch.Observations, o => o.Entity == new EntityId("host-1"));
+    }
+
+    [Fact]
+    public async Task The_type_that_could_not_be_read_is_named_rather_than_the_whole_vcenter()
+    {
+        // What the operator is sent to do. "Virtual machine metrics are not
+        // permitted" ends at a role assignment; "collector unreachable" — which
+        // is what the runner reports for an escaped exception — sends somebody
+        // to the network team about a vCenter that is answering every other
+        // query, and they find nothing, because nothing is wrong there.
+        var api = FaultingOnVirtualMachines(
+            Fault(VsphereFaultKind.NoPermission, "Permission to perform this operation was denied."));
+
+        var batch = await Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None);
+
+        var failure = Assert.Single(batch.Failures, f => f.Target == "VirtualMachine");
+
+        Assert.Equal(CollectionFailureKind.AuthorizationDenied, failure.Kind);
+        Assert.Contains("denied", failure.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task The_type_that_could_not_be_read_contributes_no_samples_at_all()
+    {
+        // In vSphere the normal shape of failure is silence, and a fabricated
+        // zero is worse than a gap because zero reads as a measurement: a VM
+        // with no cpu.ready sample is unknown, and one reading zero is a VM
+        // with no CPU contention. Nothing downstream can tell those apart
+        // afterwards, so the difference has to be preserved here.
+        var api = FaultingOnVirtualMachines(
+            Fault(VsphereFaultKind.NoPermission, "Permission to perform this operation was denied."));
+
+        var batch = await Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(batch.Observations, o => o.Entity == new EntityId("vm-1"));
+    }
+
+    [Fact]
+    public async Task A_fault_on_one_managed_object_costs_that_type_and_not_the_cycle()
+    {
+        // An object deleted between being inventoried and being read. Common on
+        // a busy estate and nobody's fault, so it must not escalate: throwing
+        // would have a routine VM deletion mark the whole vCenter Unknown and
+        // trigger two pointless re-reads of the types that had just worked.
+        var api = FaultingOnVirtualMachines(
+            Fault(VsphereFaultKind.ManagedObjectNotFound, "The object has already been deleted."));
+
+        var batch = await Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None);
+
+        Assert.Contains(batch.Observations, o => o.Entity == new EntityId("host-1"));
+        Assert.Equal(
+            CollectionFailureKind.ProtocolError,
+            Assert.Single(batch.Failures, f => f.Target == "VirtualMachine").Kind);
+    }
+
+    [Fact]
+    public async Task A_rejected_login_is_not_demoted_to_one_types_problem()
+    {
+        // Credentials belong to the session, not to the type being asked about:
+        // if this login is rejected the next type's query is rejected too, and
+        // reporting one failure per type would say three things about one
+        // problem and name none of them. Worse, the runner would never see it —
+        // it counts a returned batch as a success — so the one-strike rule that
+        // exists to stop repeated rejected logins would never fire, and the
+        // product would spend the account's way into an SSO lockout while
+        // showing a message promising it does not.
+        var api = FaultingOnVirtualMachines(
+            Fault(VsphereFaultKind.InvalidLogin, "Cannot complete login due to an incorrect user name or password."));
+
+        var thrown = await Assert.ThrowsAsync<VsphereApiException>(() =>
+            Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None));
+
+        Assert.Equal(VsphereFaultKind.InvalidLogin, thrown.Kind);
+    }
+
+    [Fact]
+    public async Task An_expired_session_is_not_demoted_to_one_types_problem()
+    {
+        // The session token is gone, so every remaining query in this call
+        // would fault for the same reason. The fix is to start the read again
+        // on a fresh connection, which only the runner can do — holding the
+        // failure here as a per-type note would leave the collector looking
+        // reachable while it quietly stopped collecting anything.
+        var api = FaultingOnVirtualMachines(
+            Fault(VsphereFaultKind.NotAuthenticated, "The session is not authenticated."));
+
+        var thrown = await Assert.ThrowsAsync<VsphereApiException>(() =>
+            Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None));
+
+        Assert.Equal(VsphereFaultKind.NotAuthenticated, thrown.Kind);
+    }
+
+    [Fact]
+    public async Task A_failure_with_no_fault_behind_it_is_not_demoted_either()
+    {
+        // vCenter answers a query it dislikes with a SOAP fault, so a transport
+        // exception means it did not answer at all — the socket, the TLS
+        // handshake or the host itself. There is nothing to say about one
+        // entity type in particular, and saying it anyway would have the
+        // product report "virtual machine metrics unavailable" while the truth
+        // is that the vCenter is gone and every other number on screen is
+        // equally stale.
+        var api = FaultingOnVirtualMachines(
+            new HttpRequestException("The SSL connection could not be established."));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None));
     }
 
     // --- datastore counters, measured on hosts ----------------------------
