@@ -103,9 +103,61 @@ public class StateStoreTests : IDisposable
         var until = T0.AddMinutes(15);
 
         store.TryAdd(Account());
-        store.Update(Account() with { FailedAttempts = 5, LockedUntilUtc = until });
+        store.Mutate("ertugrul", stored => stored with { FailedAttempts = 5, LockedUntilUtc = until });
 
         Assert.Equal(until, store.Find("ertugrul")!.LockedUntilUtc);
+    }
+
+    [SkippableFact]
+    public void Simultaneous_wrong_passwords_are_all_counted_and_the_account_locks()
+    {
+        RequireDatabase();
+
+        // The claim the fake cannot make. A lock inside one process would look
+        // right in the host suite and be worth nothing here, because the whole
+        // reason this store exists is that two of them may be serving sign-ins
+        // at once -- and a burst of guesses spread across both is the cheapest
+        // way to post them in parallel. What holds the row is FOR UPDATE, held
+        // by the server from the read to the commit, so both processes wait.
+        //
+        // Each thread gets its own store over its own connection, which is as
+        // close to two processes as one test can get. If the counter ends at
+        // one instead of five, the lockout never fires and the guessing never
+        // has to stop.
+        var attempts = LockoutPolicy.Default.MaxAttempts;
+        var clock = new TestClock(T0);
+
+        new PostgresUserAccountStore(_live.Database).TryAdd(Account() with { Role = Role.Viewer });
+
+        using var together = new Barrier(attempts);
+        var guessers = new Thread[attempts];
+
+        for (var i = 0; i < attempts; i++)
+        {
+            guessers[i] = new Thread(() =>
+            {
+                var authentication = new AuthenticationService(
+                    new PostgresUserAccountStore(_live.Database), clock);
+
+                together.SignalAndWait();
+                authentication.SignIn("ertugrul", Secret.From("wrong password here"));
+            });
+
+            guessers[i].Start();
+        }
+
+        foreach (var guesser in guessers)
+        {
+            guesser.Join();
+        }
+
+        var store = new PostgresUserAccountStore(_live.Database);
+
+        Assert.Equal(attempts, store.Find("ertugrul")!.FailedAttempts);
+        Assert.Equal(
+            SignInFailure.LockedOut,
+            new AuthenticationService(store, clock)
+                .SignIn("ertugrul", Secret.From("a long enough passphrase")).Failure);
     }
 
     [SkippableFact]

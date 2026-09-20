@@ -27,34 +27,90 @@ namespace EnterpriseObservatory.Host.AllInOne.Tests;
 /// </remarks>
 internal sealed class InMemoryUserAccountStore : IUserAccountStore
 {
+    /// <summary>
+    /// The same guarantee the real store makes, for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// PostgresUserAccountStore holds the row with <c>FOR UPDATE</c> from the
+    /// read to the commit, so that a burst of sign-in attempts increments the
+    /// failure counter once each rather than once between them. A fake without
+    /// an equivalent would let the lockout tests pass while the lockout was
+    /// defeatable by posting the guesses at the same moment, which is the one
+    /// thing the lockout is for.
+    /// </remarks>
+    private readonly Lock _gate = new();
+
     private readonly Dictionary<string, UserAccount> _accounts = new(StringComparer.Ordinal);
 
-    public bool Any => _accounts.Count > 0;
+    public bool Any
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _accounts.Count > 0;
+            }
+        }
+    }
 
-    public UserAccount? Find(string username) =>
-        _accounts.GetValueOrDefault(UserAccount.Normalize(username));
+    public UserAccount? Find(string username)
+    {
+        lock (_gate)
+        {
+            return _accounts.GetValueOrDefault(UserAccount.Normalize(username));
+        }
+    }
 
-    public IReadOnlyList<UserAccount> All() =>
-        [.. _accounts.Values.OrderBy(a => a.Username, StringComparer.Ordinal)];
+    public IReadOnlyList<UserAccount> All()
+    {
+        lock (_gate)
+        {
+            return [.. _accounts.Values.OrderBy(a => a.Username, StringComparer.Ordinal)];
+        }
+    }
 
     public bool TryAdd(UserAccount account)
     {
         ArgumentNullException.ThrowIfNull(account);
 
-        return _accounts.TryAdd(account.Username, account);
-    }
-
-    public void Update(UserAccount account)
-    {
-        ArgumentNullException.ThrowIfNull(account);
-
-        if (_accounts.ContainsKey(account.Username))
+        lock (_gate)
         {
-            _accounts[account.Username] = account;
+            return _accounts.TryAdd(account.Username, account);
         }
     }
 
-    public bool Remove(string username) => _accounts.Remove(UserAccount.Normalize(username));
+    public UserAccount? Mutate(string username, Func<UserAccount, UserAccount> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+
+        lock (_gate)
+        {
+            // Applied to the account as stored, never to a copy the caller
+            // brought with it.
+            if (!_accounts.TryGetValue(UserAccount.Normalize(username), out var stored))
+            {
+                return null;
+            }
+
+            var next = change(stored) with
+            {
+                Username = stored.Username,
+                CreatedUtc = stored.CreatedUtc,
+            };
+
+            _accounts[stored.Username] = next;
+
+            return next;
+        }
+    }
+
+    public bool Remove(string username)
+    {
+        lock (_gate)
+        {
+            return _accounts.Remove(UserAccount.Normalize(username));
+        }
+    }
 }
 
 internal sealed class InMemoryEntityGraphStore : IEntityGraphStore

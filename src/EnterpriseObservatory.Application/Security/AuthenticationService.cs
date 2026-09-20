@@ -5,8 +5,19 @@ namespace EnterpriseObservatory.Application.Security;
 
 /// <summary>Where accounts live.</summary>
 /// <remarks>
+/// <para>
 /// In the state database rather than a file, so that an account survives a
 /// restart for the same reason an acknowledgement does. See ADR-0011.
+/// </para>
+/// <para>
+/// Changes go through <see cref="Mutate"/> rather than a bare write, for the
+/// reason <see cref="Alerts.IAlertStateStore"/> has <c>Mutate</c> and
+/// <c>Reconcile</c>: the interesting changes here read the row, decide from
+/// what they read, and write the answer back. Handing a caller a copy and a
+/// setter makes that sequence unprotectable from inside the store, and a
+/// counter whose whole purpose is to notice repeated attempts is exactly the
+/// thing repeated attempts arrive at in parallel.
+/// </para>
 /// </remarks>
 public interface IUserAccountStore
 {
@@ -20,7 +31,24 @@ public interface IUserAccountStore
     /// <summary>Creates an account, or returns false if the name is taken.</summary>
     bool TryAdd(UserAccount account);
 
-    void Update(UserAccount account);
+    /// <summary>
+    /// Applies a change to the stored account, with nothing able to interleave
+    /// between reading it and writing the answer back.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The change is handed the account as stored, never a copy the caller
+    /// brought with it, and returns what should replace it. Whatever the store
+    /// has to do to make that indivisible — a lock, a row lock, a single
+    /// statement — is the store's problem, which is the point: no caller can
+    /// get this wrong by forgetting something.
+    /// </para>
+    /// <para>
+    /// Returns what was stored, or null if there is no such account. The change
+    /// does not get to rename the account; identity is not a mutation.
+    /// </para>
+    /// </remarks>
+    UserAccount? Mutate(string username, Func<UserAccount, UserAccount> change);
 
     /// <summary>Removes an account, or returns false if it was not there.</summary>
     bool Remove(string username);
@@ -123,19 +151,49 @@ public sealed class AuthenticationService(
 
         if (!account.Password.Verify(password))
         {
-            _accounts.Update(RecordFailure(account, now));
+            // Counted against the row as it stands, not against the copy read
+            // above. Five attempts posted at once all read nought failures, and
+            // five increments computed from that copy all store one: the
+            // counter whose entire purpose is to notice a burst is the one
+            // thing a burst can talk out of noticing. The lockout then never
+            // fires and the guessing never has to stop.
+            _accounts.Mutate(
+                account.Username,
+                stored => stored.IsLockedAt(now) ? stored : RecordFailure(stored, now));
 
             return new SignInResult { Succeeded = false, Failure = SignInFailure.Rejected };
         }
 
-        var signedIn = account with
-        {
-            LastSignedInUtc = now,
-            FailedAttempts = 0,
-            LockedUntilUtc = null,
-        };
+        // The reset is the same read-decide-write wearing better clothes: a
+        // success that puts back the counter it read before a concurrent
+        // failure raised it has forgotten that failure. Applied to the stored
+        // row, and refused outright if that row has since locked — otherwise a
+        // lockout could be ended early by something that started before it.
+        var signedIn = _accounts.Mutate(account.Username, stored => stored.IsLockedAt(now)
+            ? stored
+            : stored with
+            {
+                LastSignedInUtc = now,
+                FailedAttempts = 0,
+                LockedUntilUtc = null,
+            });
 
-        _accounts.Update(signedIn);
+        if (signedIn is null)
+        {
+            // Removed between the lookup and here. The same answer as a wrong
+            // password, for the same reason.
+            return new SignInResult { Succeeded = false, Failure = SignInFailure.Rejected };
+        }
+
+        if (signedIn.IsLockedAt(now))
+        {
+            return new SignInResult
+            {
+                Succeeded = false,
+                Failure = SignInFailure.LockedOut,
+                LockedUntilUtc = signedIn.LockedUntilUtc,
+            };
+        }
 
         return new SignInResult { Succeeded = true, Account = signedIn };
     }

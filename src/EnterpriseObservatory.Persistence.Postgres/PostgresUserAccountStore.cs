@@ -85,12 +85,57 @@ public sealed class PostgresUserAccountStore(PostgresDatabase database) : IUserA
         });
     }
 
-    public void Update(UserAccount account)
+    /// <summary>
+    /// Reads, decides and writes without letting go of the row in between.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>FOR UPDATE</c> inside the write's transaction, which is this engine's
+    /// version of the lock <see cref="PostgresAlertStateStore"/> holds across
+    /// its own read-decide-store. A lock in this process would not do: the
+    /// remark at the top of this file is that two processes may serve sign-ins
+    /// at once, and that is exactly the deployment this store exists for. The
+    /// row lock is held by the database, so both of them wait on it.
+    /// </para>
+    /// <para>
+    /// A second attempt blocks here until the first commits and then reads what
+    /// the first wrote, so the failure counter counts attempts rather than
+    /// counting rounds of them. Bounded by the command timeout, and the section
+    /// it covers is one select and one update against a primary key.
+    /// </para>
+    /// </remarks>
+    public UserAccount? Mutate(string username, Func<UserAccount, UserAccount> change)
     {
-        ArgumentNullException.ThrowIfNull(account);
+        ArgumentNullException.ThrowIfNull(change);
 
-        _database.Write(connection =>
+        var normalized = UserAccount.Normalize(username);
+
+        return _database.Write(connection =>
         {
+            UserAccount? stored;
+
+            using (var select = Command(connection, $"{Columns} WHERE username = @username FOR UPDATE;"))
+            {
+                select.Bind("@username", normalized);
+
+                using var reader = select.ExecuteReader();
+                stored = reader.Read() ? Read(reader) : null;
+            }
+
+            if (stored is null)
+            {
+                return null;
+            }
+
+            // Identity is not the caller's to change: the name is how the row
+            // was found and how it will be found again, and the creation time
+            // is a fact about the past.
+            var next = change(stored) with
+            {
+                Username = stored.Username,
+                CreatedUtc = stored.CreatedUtc,
+            };
+
             using var command = Command(connection, """
                 UPDATE user_account SET
                     password_hash = @hash,
@@ -101,8 +146,10 @@ public sealed class PostgresUserAccountStore(PostgresDatabase database) : IUserA
                 WHERE username = @username;
                 """);
 
-            Bind(command, account);
+            Bind(command, next);
             command.ExecuteNonQuery();
+
+            return next;
         });
     }
 

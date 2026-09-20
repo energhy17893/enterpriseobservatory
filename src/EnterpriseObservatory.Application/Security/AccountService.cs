@@ -116,7 +116,7 @@ public sealed class AccountService(IUserAccountStore accounts, IClock clock)
             return AccountChangeResult.Refused(AccountChangeFailure.Unusable);
         }
 
-        return Store(account with
+        return Store(account.Username, stored => stored with
         {
             Password = PasswordHash.Create(replacement),
             // A change of password clears a lockout: somebody who can prove the
@@ -146,7 +146,7 @@ public sealed class AccountService(IUserAccountStore accounts, IClock clock)
             return AccountChangeResult.Refused(AccountChangeFailure.Unusable);
         }
 
-        return Store(account with
+        return Store(account.Username, stored => stored with
         {
             Password = PasswordHash.Create(replacement),
             FailedAttempts = 0,
@@ -167,7 +167,12 @@ public sealed class AccountService(IUserAccountStore accounts, IClock clock)
             return AccountChangeResult.Refused(AccountChangeFailure.WouldLockEverybodyOut);
         }
 
-        return Store(account with { Role = role });
+        // Applied to the row as it stands rather than to the copy read above.
+        // A whole-row write built from that copy would put back the failure
+        // counter and the lockout time as they were when it was read, so an
+        // administrator changing somebody's role during an attack on that
+        // account would quietly end the lockout the attack had earned.
+        return Store(account.Username, stored => stored with { Role = role });
     }
 
     /// <summary>Removes an account.</summary>
@@ -208,12 +213,10 @@ public sealed class AccountService(IUserAccountStore accounts, IClock clock)
         return _accounts.All().Count(a => a.Role == Role.Administrator) <= 1;
     }
 
-    private AccountChangeResult Store(UserAccount account)
-    {
-        _accounts.Update(account);
-
-        return AccountChangeResult.Done(account);
-    }
+    private AccountChangeResult Store(string username, Func<UserAccount, UserAccount> change) =>
+        _accounts.Mutate(username, change) is { } stored
+            ? AccountChangeResult.Done(stored)
+            : AccountChangeResult.Refused(AccountChangeFailure.NotFound);
 
     private static bool IsUsablePassword(Secret password) =>
         password.Reveal().Length >= AuthenticationService.MinimumPasswordLength;
