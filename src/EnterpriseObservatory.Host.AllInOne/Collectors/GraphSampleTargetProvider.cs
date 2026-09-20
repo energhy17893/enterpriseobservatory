@@ -73,18 +73,39 @@ public sealed class GraphSampleTargetProvider(IEntityGraphStore store, string in
         return _store.Current.Entities.ContainsKey(id) ? id : null;
     }
 
-    /// <summary>The volume index, and the graph it was built from.</summary>
+    /// <summary>A volume index together with the graph it was built from.</summary>
     /// <remarks>
-    /// Invalidated by reference rather than by a timer or a subscription. The
-    /// inventory cycle replaces the graph wholesale — that is what
-    /// <see cref="IEntityGraphStore.Replace"/> means — so a different instance
-    /// is an exact signal that the index is stale, with no way for the two to
-    /// disagree. A datastore added this afternoon is therefore indexed on the
-    /// first metric cycle after the inventory cycle that found it.
+    /// <para>
+    /// One value rather than two fields, and that is the whole point of it.
+    /// The index is invalidated by reference — the inventory cycle replaces the
+    /// graph wholesale, which is what <see cref="IEntityGraphStore.Replace"/>
+    /// means, so a different instance is an exact signal that the index is
+    /// stale. That only works while the index and the graph it came from cannot
+    /// disagree, and as two separate unsynchronised writes they could.
+    /// </para>
+    /// <para>
+    /// Two reads can be in here at once: the metric cycle is driven from a
+    /// source the runner may have abandoned at its timeout without stopping it,
+    /// so a read from the previous cycle can still be running. If the older one
+    /// published its index after the newer one published its graph, the pair
+    /// ended up mismatched — index from the old graph, stamped with the new —
+    /// and every later lookup then found them equal and served the old index
+    /// for as long as that graph stayed current. A datastore the latest
+    /// inventory cycle discovered would resolve to nothing and its latency
+    /// samples would be dropped, silently, which is the one failure this
+    /// product exists to prevent: missing data that looks like healthy data.
+    /// </para>
     /// </remarks>
-    private EntityGraph? _indexed;
+    private sealed record VolumeIndex(EntityGraph Graph, Dictionary<string, EntityId> Volumes);
 
-    private Dictionary<string, EntityId> _volumes = new(StringComparer.OrdinalIgnoreCase);
+    private VolumeIndex? _index;
+
+    /// <remarks>
+    /// Held across the rebuild, which is pure dictionary work over a graph
+    /// already in memory — never across a vCenter call, where a hang would cost
+    /// the next cycle rather than this one.
+    /// </remarks>
+    private readonly Lock _padlock = new();
 
     /// <summary>
     /// Finds the datastore a volume identifier belongs to.
@@ -105,15 +126,24 @@ public sealed class GraphSampleTargetProvider(IEntityGraphStore store, string in
             return null;
         }
 
+        // Read once. Asking the store again below could hand back a different
+        // graph, which would be the same mismatch by another route.
         var graph = _store.Current;
 
-        if (!ReferenceEquals(graph, _indexed))
+        Dictionary<string, EntityId> volumes;
+
+        lock (_padlock)
         {
-            _volumes = BuildVolumeIndex(graph);
-            _indexed = graph;
+            if (_index is not { } index || !ReferenceEquals(graph, index.Graph))
+            {
+                index = new VolumeIndex(graph, BuildVolumeIndex(graph));
+                _index = index;
+            }
+
+            volumes = index.Volumes;
         }
 
-        return _volumes.TryGetValue(volumeIdentifier, out var datastore) ? datastore : null;
+        return volumes.TryGetValue(volumeIdentifier, out var datastore) ? datastore : null;
     }
 
     /// <remarks>

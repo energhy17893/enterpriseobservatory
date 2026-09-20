@@ -32,6 +32,7 @@ public interface IInventorySource
     /// <summary>Identifies this source instance, e.g. a particular vCenter.</summary>
     string InstanceId { get; }
 
+    /// <inheritdoc cref="IObservationSource.ReadAsync"/>
     Task<InventorySnapshot> ReadAsync(CancellationToken cancellationToken);
 }
 
@@ -40,6 +41,31 @@ public interface IObservationSource
 {
     string InstanceId { get; }
 
+    /// <summary>Reads one batch. Not re-entrant.</summary>
+    /// <remarks>
+    /// <para>
+    /// One instance serves every cycle — the registry hands back the same
+    /// object and the host holds it as a singleton — so implementations keep
+    /// state between reads: connections, sessions, and caches of what the
+    /// platform said it could supply. None of that is guarded, and guarding it
+    /// would not make two overlapping reads of one vCenter correct anyway;
+    /// they would still compete for one session.
+    /// </para>
+    /// <para>
+    /// So a caller must have at most one read in flight per instance.
+    /// <c>SourceRunner</c> honours that within a cycle, including across its
+    /// own retries: a read it abandoned at the timeout is still running inside
+    /// the source, so it is not started again.
+    /// </para>
+    /// <para>
+    /// It cannot honour it <em>between</em> cycles. A read abandoned in cycle N
+    /// is still there when cycle N+1 starts thirty seconds later, and nothing
+    /// can stop it — a .NET task cannot be aborted. An implementation that
+    /// keeps state across reads must therefore still be safe against that one
+    /// overlap; what this contract buys it is that the overlap is rare and
+    /// bounded, not that it never happens.
+    /// </para>
+    /// </remarks>
     Task<ObservationBatch> ReadAsync(CancellationToken cancellationToken);
 }
 

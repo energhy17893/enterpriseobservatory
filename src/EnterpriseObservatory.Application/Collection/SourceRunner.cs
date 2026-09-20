@@ -27,6 +27,16 @@ internal readonly record struct SourceRunOutcome<TResult>(
 /// because an exception is by definition something the source did not
 /// anticipate.
 /// </para>
+/// <para>
+/// A read that ran out of time is the one exception to "an exception is worth
+/// retrying", and for a reason that has nothing to do with the vendor: the
+/// runner never stopped it. See
+/// <see cref="ReadWithHardTimeoutAsync{TResult}"/> — the read is abandoned, not
+/// cancelled, so it is still inside the source, still holding its vCenter
+/// session, and may still return. Calling the source again would put two
+/// threads inside one instance, which is what
+/// <see cref="IObservationSource.ReadAsync"/> says callers must not do.
+/// </para>
 /// </remarks>
 internal sealed class SourceRunner(IClock clock)
 {
@@ -105,6 +115,21 @@ internal sealed class SourceRunner(IClock clock)
             {
                 lastError = ex;
 
+                if (ex is AbandonedReadException)
+                {
+                    // Not retried, and not because the vendor said so. The
+                    // first read is still running inside the source — we gave
+                    // up waiting, we did not stop it — so a second call would
+                    // put two threads in one source instance, on the caches
+                    // and connections it keeps between reads. Nothing is
+                    // gained either: the abandoned read holds the session the
+                    // new one would need, and if it was slow because the
+                    // vCenter is slow, a second concurrent query is how a slow
+                    // vCenter becomes an overloaded one. The cycle is only
+                    // 30 seconds long; the next one asks again.
+                    break;
+                }
+
                 if (ex is ICollectionFault fault && !CollectionFailures.IsWorthRetrying(fault.Kind))
                 {
                     // The source has told us asking again cannot help. Asking
@@ -151,6 +176,15 @@ internal sealed class SourceRunner(IClock clock)
     /// observed so it cannot resurface elsewhere. The trade is deliberate: a
     /// leaked background read is recoverable, a hung monitoring loop is not.
     /// </para>
+    /// <para>
+    /// Because the read is still running, giving up here is reported as
+    /// <see cref="AbandonedReadException"/> rather than a plain
+    /// <see cref="TimeoutException"/>. The caller has to be able to tell "the
+    /// source stopped and told us it timed out" — which it may ask again —
+    /// from "we walked away from a read that is still in there", which it may
+    /// not. A source is free to throw <see cref="TimeoutException"/> itself,
+    /// so the type alone cannot carry that distinction.
+    /// </para>
     /// </remarks>
     private static async Task<TResult> ReadWithHardTimeoutAsync<TResult>(
         string instanceId,
@@ -173,9 +207,21 @@ internal sealed class SourceRunner(IClock clock)
 
         Forget(reading);
 
-        throw new TimeoutException(
+        throw new AbandonedReadException(
             $"Source '{instanceId}' did not respond within {timeout.TotalSeconds:0.#}s.");
     }
+
+    /// <summary>A read the runner walked away from while it was still running.</summary>
+    /// <remarks>
+    /// Private on purpose. It is not something a source can raise and not
+    /// something a caller can handle — it means only "this runner gave up on a
+    /// read it could not stop", which nobody outside this class is in a
+    /// position to say. It derives from <see cref="TimeoutException"/> so that
+    /// the health record and the operator-facing message read exactly as they
+    /// did before: from the outside this is still a source that ran out of
+    /// time.
+    /// </remarks>
+    private sealed class AbandonedReadException(string message) : TimeoutException(message);
 
     private static void Forget(Task task) =>
         _ = task.ContinueWith(
