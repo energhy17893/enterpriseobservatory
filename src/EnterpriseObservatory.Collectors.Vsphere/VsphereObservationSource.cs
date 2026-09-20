@@ -478,7 +478,14 @@ public sealed class VsphereObservationSource(
                 // from one that is slow from a single host. The first is the
                 // array or the fabric; the second is that host's HBA, cable or
                 // path.
-                Value = value with { Instance = measuredBy ?? measuredOn.Value },
+                // The instance stops naming a device and starts naming an
+                // observer, which is exactly what makes these comparable with
+                // each other. Said explicitly so a rule never has to infer it.
+                Value = value with
+                {
+                    Instance = measuredBy ?? measuredOn.Value,
+                    InstanceIsVantagePoint = true,
+                },
                 SampledAtUtc = now,
                 Source = InstanceId,
             };

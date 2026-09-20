@@ -158,6 +158,10 @@ public sealed record MonitoringOptions
 
     public HysteresisPolicy Hysteresis { get; init; } = HysteresisPolicy.Default;
 
+    /// <summary>How far one vantage point may disagree with its peers.</summary>
+    public Analysis.PeerOutlierPolicy PeerOutliers { get; init; } =
+        Analysis.PeerOutlierPolicy.Default;
+
     public FlapPolicy Flap { get; init; } = FlapPolicy.Default;
 
     public EntityRetentionPolicy EntityRetention { get; init; } = EntityRetentionPolicy.Default;

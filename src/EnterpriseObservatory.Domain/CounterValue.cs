@@ -86,6 +86,34 @@ public readonly record struct CounterValue
     public bool IsFaultCount { get; init; }
 
     /// <summary>
+    /// Whether <see cref="Instance"/> names who measured this rather than what
+    /// was measured.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Usually an instance is a device belonging to the entity: one of a host's
+    /// LUNs, one of its paths. Sometimes it is the opposite — the entity is a
+    /// shared resource and the instance is one of the several places it was
+    /// observed from. A datastore's latency is measured on every host that
+    /// mounts it, so one volume carries one series per host and the instance
+    /// is the host.
+    /// </para>
+    /// <para>
+    /// The distinction is what makes peer comparison possible, and it is the
+    /// reason those series were kept apart rather than collapsed: several
+    /// vantage points onto one shared thing can be compared with each other,
+    /// and a value that disagrees with its peers says the disagreement is
+    /// about the path rather than about the thing.
+    /// </para>
+    /// <para>
+    /// Declared by the collector, like <see cref="IsFaultCount"/>, because the
+    /// meaning is the platform's. Not persisted: it is a property of the
+    /// series rather than of the sample.
+    /// </para>
+    /// </remarks>
+    public bool InstanceIsVantagePoint { get; init; }
+
+    /// <summary>
     /// The device this sample is for, or empty when it covers all of them.
     /// </summary>
     /// <remarks>

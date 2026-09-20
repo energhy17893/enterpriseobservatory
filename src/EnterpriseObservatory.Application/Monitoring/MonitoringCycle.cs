@@ -175,6 +175,7 @@ public sealed class MonitoringCycle(
         // next pass would resolve them.
         var observed = cycle.CollectionAlerts
             .Concat(Analysis.FaultCounters.Evaluate(cycle.Observations))
+            .Concat(Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers))
             .ToList();
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
