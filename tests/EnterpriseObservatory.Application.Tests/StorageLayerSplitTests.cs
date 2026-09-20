@@ -254,14 +254,36 @@ public class StorageLayerSplitTests
     }
 
     [Fact]
-    public void One_device_never_produces_two_verdicts()
+    public void One_device_never_produces_two_verdicts_and_the_host_is_tried_first()
     {
         // "The array is slow and so is the queue" is not a diagnosis, it is
         // two people sent to two consoles over one fault. Layers are tried in
         // order and the first that wins ends the question, so a device where
-        // several look high still yields exactly one.
-        Assert.Single(StorageLayerSplit.Evaluate([.. Triple(device: 30, kernel: 30, queue: 30)],
+        // all three qualify still yields exactly one -- and it is the host's.
+        // The order is the cheaper, nearer and more reversible explanation
+        // first; reversing it would send an operator to the storage team over
+        // a queue depth they could have changed themselves.
+        var alert = Assert.Single(StorageLayerSplit.Evaluate(
+            [.. Triple(device: 30, kernel: 30, queue: 30)],
             StorageLayerPolicy.Default with { ArrayMultiple = 1d, HostMultiple = 1d }));
+
+        Assert.Equal("Host queue depth is the bottleneck", alert.Title);
+    }
+
+    [Fact]
+    public void A_host_side_layer_barely_ahead_of_the_array_is_not_a_verdict_either()
+    {
+        // The host side gets the smaller multiple, not no multiple. Seven
+        // against six is not a layer holding up a device, it is three numbers
+        // in the same neighbourhood, and naming the largest is a diagnosis
+        // produced by arithmetic rather than by evidence. Without this the
+        // product would blame a queue every time one arrived a hair high.
+        List<Observation> readings = [.. Triple(device: 6, kernel: 1, queue: 7)];
+
+        Assert.Empty(StorageLayerSplit.Evaluate(readings));
+
+        Assert.Single(StorageLayerSplit.Evaluate(
+            readings, StorageLayerPolicy.Default with { HostMultiple = 1d }));
     }
 
     [Fact]

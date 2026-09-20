@@ -1,4 +1,4 @@
-using EnterpriseObservatory.Application.Analysis;
+﻿using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Domain;
 
 namespace EnterpriseObservatory.Application.Tests;
@@ -66,6 +66,13 @@ public class SharedVolumeLatencyTests
     /// <summary>A volume elevated everywhere, carrying enough load to mean it.</summary>
     private static List<Observation> Unanimous(double ms = 8, int hosts = 5) =>
         [.. AllHosts(ms, hosts), Load(100)];
+
+    /// <summary>
+    /// Four other volumes carrying an ordinary load, so the estate has a
+    /// median to be measured against rather than only the volume under test.
+    /// </summary>
+    private static IEnumerable<Observation> Neighbours(double operations = 50) =>
+        Enumerable.Range(1, 4).Select(i => Load(operations, $"vc-1:ds-other{i}"));
 
     [Fact]
     public void A_volume_slow_from_every_host_that_mounts_it_names_the_array()
@@ -285,17 +292,59 @@ public class SharedVolumeLatencyTests
     }
 
     [Fact]
-    public void A_summed_fault_counter_is_not_mistaken_for_demand()
+    public void A_fault_counter_is_not_mistaken_for_demand()
     {
         // Bus resets are counted in the same unit as operations a second and
         // mean something entirely different. Counting them as load would let a
         // burst of resets push a volume over the busy line and silence the
-        // very alert the resets are evidence for.
-        var readings = Unanimous();
-        readings.Add(From("esx01", 900_000, counter: "datastore.busResets.summation",
-            unit: "number", rollup: RollupType.Summation, fault: true));
+        // very alert the resets are evidence for -- the counter doing the
+        // silencing would be the counter proving the fault. The rollup usually
+        // separates them, but the collector's own declaration is the thing
+        // that must be trusted: a counter it calls a fault is never a rate,
+        // whatever shape it arrives in.
+        List<Observation> readings =
+        [
+            .. Unanimous(), .. Neighbours(),
+            From("esx01", 900_000, counter: "datastore.busResets.summation",
+                unit: "number", fault: true),
+        ];
 
         Assert.Single(SharedVolumeLatency.Evaluate(readings));
+    }
+
+    [Fact]
+    public void A_summed_counter_is_not_mistaken_for_a_rate()
+    {
+        // A summation says "this many, during this interval"; an average of a
+        // rate says "this many per second". Reading one as the other is the
+        // silent wrong answer CounterValue was built to make impossible, and
+        // at a three-hundred-second interval it is wrong by a factor of three
+        // hundred -- easily enough to rule a struggling volume busy.
+        List<Observation> readings =
+        [
+            .. Unanimous(), .. Neighbours(),
+            From("esx01", 900_000, counter: "datastore.read.summation",
+                unit: "number", rollup: RollupType.Summation),
+        ];
+
+        Assert.Single(SharedVolumeLatency.Evaluate(readings));
+    }
+
+    [Fact]
+    public void A_volumes_load_is_what_all_its_hosts_ask_of_it_together()
+    {
+        // The array does not know which host sent what. Three operations a
+        // second from each of five hosts is fifteen reaching the volume, which
+        // is enough to mean something; reading any one host's share alone
+        // would rule the volume idle and withhold the finding. The same
+        // mistake in the other direction under-counts a volume being hammered
+        // from every host at once, which is the case most worth seeing.
+        Assert.Single(SharedVolumeLatency.Evaluate(
+        [
+            .. AllHosts(20),
+            .. Enumerable.Range(1, 5).Select(i =>
+                From($"esx0{i}", 3, counter: Reads, unit: "number")),
+        ]));
     }
 
     [Fact]
