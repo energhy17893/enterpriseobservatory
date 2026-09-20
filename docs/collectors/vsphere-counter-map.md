@@ -562,12 +562,76 @@ estate zaten yol faultları için ~2 500 seri ödüyor; bu, onun %40'ı.
 
 ---
 
+## 5h. `cpu.maxlimited.summation` — yanlış cevabı susturmak değil, değiştirmek
+
+20 Eylül 2026'da eklendi. VirtualMachine üzerinde, toplam (aggregate) instance,
+milisaniye cinsinden `summation`.
+
+> **Cevapladığı soru:** "Bu VM neden çekirdek bekliyor — host doluysa mı, yoksa
+> kendi tavanı mı?" `cpu.ready.summation` bu ikisini **ayıramaz.** Kendi CPU
+> limiti altında tutulan bir VM, host'u dolu olan bir VM ile birebir aynı
+> bekleme süresini biriktirir. CPU kuralı bu yüzden limitlenmiş makineyi
+> "host'un kurbanı" ilan ediyordu.
+
+Bu, ürünün en çok kaçındığı hata tipiydi ve yazarı tarafından **sessizce
+gönderilmek yerine kendi raporunda bildirilmişti**. Maliyeti iki katlı:
+
+1. Operatöre "host CPU'suz" denir, gidip host'a bakar, host **iyidir**, ve bir
+   daha bu uyarıya inanmaz.
+2. VM'in **asıl** sorunu — muhtemelen yıllar önce, muhtemelen yanlışlıkla
+   konmuş bir CPU limiti — hiçbir ekranda görünmez.
+
+Dynatrace aynı ayrımı `guestCpuLimitReached` ile yapıyor: aynı iki sinyal, artı
+ayıran üçüncü terim. Yapı yayımlanmış, **seviye yayımlanmamış** (§ CpuContention
+politikası).
+
+### Neden bu sayaç ve neden ucuz
+
+| Özellik | Değer | Sonucu |
+|---|---|---|
+| Nesne | VirtualMachine | Limit makinenin özelliği; host'ta karşılığı yok |
+| Rollup | `summation` | `cpu.ready` ile aynı — yeni dönüşüm makinesi gerekmiyor |
+| Birim | millisecond | `AsPercentageOfInterval` aynen uygulanır |
+| Instance | toplam (per-vCPU bırakıldı) | `KeepPerDevice` `cpu.` ile eşleşmiyor (§6.5) |
+| `IsFaultCount` | **Hayır** | Aşağıda |
+| Seri maliyeti | 145 VM × 1 = **145 seri ≈ 0,33 GB** | `mem.active.average` ile aynı büyüklük |
+
+**Sıfırı yapısaldır.** Limit tanımlanmamış bir VM'de vSphere buraya hiç
+biriktirmez. Yani sıfırdan büyük bir okuma yorumlanacak bir *seviye* değil,
+**şu anda ısıran bir tavanın varlığıdır.** §5c'nin "toplanan bir sayacın sıfırı
+bilgidir" ayrımının en temiz örneği.
+
+### Neden `IsFaultCount` değil
+
+§5e'deki düşen paket argümanının daha keskin hâli. CPU limiti **birinin
+seçtiği bir yapılandırmadır**. Lisans gereği ya da test amacıyla kasıtlı olarak
+sınırlanmış bir VM'de her turda ısırır ve bu tamamen doğrudur. Sıfırdan büyük
+okuma bir *arıza* değil, bekleme süresinin *açıklamasıdır*. Bayrak konsaydı,
+doğru yapılandırılmış her makine kalıcı bir uyarı üretirdi.
+
+### Bu sayacın diğerlerinden farkı: **bir hükmü susturuyor**
+
+Bu dosyadaki başka hiçbir sayaç bunu yapmıyor. Diğerleri bir soruya cevap
+*ekler*; bu, mevcut bir cevabı **bastırır** (bkz. `CpuContentionPolicy.MaxLimitedPercent`).
+Sonucu §5g için doğrudan bir risk artışıdır ve orada ayrıca yazıldı:
+
+> Adı yanlışsa sayaç hiç gelmez, bastırma hiç çalışmaz, ve kural **kapatılan
+> yanlış pozitife sessizce geri döner** — ürün sağlıklı görünürken. Eksik bir
+> gecikme sayacı bir cevabı kaybettirir; bu, kaybedilmiş bir cevabı *yanlış* bir
+> cevapla değiştirir.
+
+Bu yüzden kural, bastırdığı her makineye **kendi hükmünü veriyor**: bastırılan
+ile adı konan küme birebir aynı. Sessizlik, yanlış cevabın kabul edilebilir
+ikamesi değil.
+
+---
+
 ## 5g. Bu bölüm **ölçülmedi** — §6.4'ün ihlali, bilerek
 
 Bu belgenin ilk satırı, içindeki hiçbir şeyin hatırlanarak yazılmadığını
 söylüyor. §5d, §5e ve §5f **bu kuralın istisnasıdır ve öyle işaretlenmiştir.**
 
-Eklenen dokuz sayacın adı ve seviyesi **canlı bir vCenter'a sorulmadı.**
+Eklenen on sayacın adı ve seviyesi **canlı bir vCenter'a sorulmadı.**
 Worktree'den erişilebilir bir vCenter yok ve kimlik bilgisi aranmadı.
 Depodaki tek katalog, testlerin fixture'ı, yalnızca `datastore`,
 `storagePath` ve `virtualDisk` gruplarını kapsıyor — yani `disk.*`, `mem.*`
@@ -586,6 +650,7 @@ ve `net.*`'in hiçbiri kontrol edilebilir durumda değil.
 | `mem.active.average` | VM | 2 | **Hayır** |
 | `net.droppedRx.summation` | Host + VM | 2 | **Hayır** |
 | `net.droppedTx.summation` | Host + VM | 2 | **Hayır** |
+| `cpu.maxlimited.summation` | VM | 2 | **Hayır — ve bu en riskli satır** |
 
 "Beklenen seviye" sütunu satıcı belgelerinden gelir, **ölçümden değil.**
 Hiçbirinin **seviye 3** olmadığına inanılıyor — eğer biri öyleyse bu, bir
@@ -598,6 +663,18 @@ güvenilmesi gerekiyordu.
 
 Adın yanlış olması ise hiç raporlanmıyor bile — `ProtocolError` olarak geçer
 ve §0'ın anlattığı hikâye tam olarak budur.
+
+> **`cpu.maxlimited.summation` bu tablodaki diğerlerinden farklı bir risk
+> taşıyor ve ayrı yazılması gerekiyor.** Bu listedeki her sayaç, adı yanlışsa
+> *bir cevabı kaybettirir*. Bu sayaç, adı yanlışsa `CpuContention`'ın bastırma
+> kapısını hiç açtırmaz ve kural **kapattığı yanlış pozitife sessizce geri
+> döner** — yani kaybedilen bir cevabın yerini *yanlış* bir cevap alır. Sürüme
+> girmeden önce `--map` ile doğrulanması gereken ilk satır budur.
+>
+> Kısmi bir teselli var ve ölçüsü kayda değer: bastırma yalnızca sayaç
+> geldiğinde çalışır, dolayısıyla sayacın gelmemesi bugünkü davranışı aynen
+> korur. Yani hata **sessiz bir gerileme**dir, yeni bir kusur değil — ama
+> tam olarak §0'ın "boş cevap, hata değildir" biçimi.
 
 > **Yapılacak iş, tek cümle:** bu sayaçlar bir sürüme girmeden önce
 > `--map` bir kez çalıştırılıp yukarıdaki tablonun sağ sütunu doldurulmalı,
