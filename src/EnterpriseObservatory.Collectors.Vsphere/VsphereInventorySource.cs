@@ -57,7 +57,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         AddClusters(payload, Id, now, entities, relationships, alerts);
         AddHosts(payload, Id, now, vCenter.Id, entities, relationships, alerts);
         AddDatastores(payload, Id, now, entities, relationships, alerts);
-        AddVirtualMachines(payload, Id, now, entities, relationships);
+        AddVirtualMachines(payload, Id, now, entities, relationships, alerts);
         AddTriggeredAlarms(payload, Id, entities, alerts);
 
         return new InventorySnapshot
@@ -160,6 +160,14 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                     ? ObservationState.InMaintenance
                     : ObservationState.Active,
                 LastSeenUtc = now,
+                // The path table, carried rather than judged. What a lost path
+                // means is a rule's decision and it is being written
+                // elsewhere; what this collector owes it is the table itself,
+                // because nothing else in the product can produce it. It is
+                // also the only place a storage path counter's runtime name —
+                // vmhba0:C0:T0:L1, which carries no LUN identity — can be
+                // turned into the NAA a datastore is marked with.
+                StoragePaths = [.. host.StoragePaths.Select(ToStoragePath)],
             });
 
             relationships.Add(Edge(id(host.MoRef), vCenterId, RelationshipKind.ManagedBy, now));
@@ -253,6 +261,8 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             {
                 AddFullnessAlert(datastore, fullness, id(datastore.MoRef), InstanceId, alerts);
             }
+
+            AddOvercommitAlert(datastore, id(datastore.MoRef), InstanceId, alerts);
         }
     }
 
@@ -515,15 +525,17 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
 
     private static double Gigabytes(long bytes) => bytes / 1024d / 1024d / 1024d;
 
-    private static void AddVirtualMachines(
+    private void AddVirtualMachines(
         VsphereInventoryPayload payload,
         Func<string, EntityId> id,
         DateTimeOffset now,
         List<Entity> entities,
-        List<Relationship> relationships)
+        List<Relationship> relationships,
+        List<AlertDefinition> alerts)
     {
         var knownHosts = payload.Hosts.Select(h => h.MoRef).ToHashSet(StringComparer.Ordinal);
         var knownDatastores = payload.Datastores.Select(d => d.MoRef).ToHashSet(StringComparer.Ordinal);
+        var datastores = payload.Datastores.ToDictionary(d => d.MoRef, StringComparer.Ordinal);
 
         foreach (var vm in payload.VirtualMachines)
         {
@@ -542,7 +554,14 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // measure.
                 Health = poweredOn ? MapStatus(vm.OverallStatus) : HealthState.Unknown,
                 LastSeenUtc = now,
+                // Deliberately a property and deliberately not a mark. See
+                // EntitySizing: the vCPU count is what a ready-time percentage
+                // has to be divided by, and it is evidence of nothing at all
+                // about which machine this is.
+                Sizing = SizingOf(vm),
             });
+
+            AddSnapshotAlert(vm, datastores, id(vm.MoRef), now, alerts);
 
             // Only edges to things we actually saw. A reference to a host in
             // another vCenter, or one we failed to read, would otherwise become
@@ -557,6 +576,211 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 relationships.Add(Edge(id(vm.MoRef), id(datastore), RelationshipKind.BackedBy, now));
             }
         }
+    }
+
+    /// <summary>
+    /// Carries a machine's configured sizes, or nothing when none were read.
+    /// </summary>
+    /// <remarks>
+    /// Null rather than an <see cref="EntitySizing"/> full of nulls, so that
+    /// "this collector read no sizing at all" is one check rather than four —
+    /// and so a rule cannot mistake an empty record for a machine with no
+    /// processors.
+    /// </remarks>
+    private static EntitySizing? SizingOf(VsphereVirtualMachine vm) =>
+        vm is { VirtualCpuCount: null, ConfiguredMemoryMb: null, CpuLimitMhz: null, MemoryLimitMb: null }
+            ? null
+            : new EntitySizing
+            {
+                VirtualCpuCount = vm.VirtualCpuCount,
+                ConfiguredMemoryMb = vm.ConfiguredMemoryMb,
+                CpuLimitMhz = vm.CpuLimitMhz,
+                MemoryLimitMb = vm.MemoryLimitMb,
+            };
+
+    private static StoragePath ToStoragePath(VsphereStoragePath path) => new()
+    {
+        Name = path.Name,
+        StorageDeviceId = path.StorageDeviceId,
+        State = path.State,
+        Adapter = path.Adapter,
+    };
+
+    /// <summary>
+    /// Reports a snapshot that has been left behind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// vROps has no snapshot alert. It reads the snapshot tree only as a guard
+    /// — "does this machine have one at all" — and never says a word about how
+    /// old it is or how large it has grown. That is not parity to be matched;
+    /// it is the gap, and a forgotten snapshot is the most common self-inflicted
+    /// outage in a VMware estate. Nobody deletes one on purpose and forgets;
+    /// somebody takes one before a change, the change goes fine, and a delta
+    /// disk grows for eight months until the volume fills and every machine on
+    /// it stops at once. The same failure this file's
+    /// <see cref="CriticalFullnessPercent"/> remark describes, from the other
+    /// end.
+    /// </para>
+    /// <para>
+    /// The severity is not a threshold on size, because there is no size that
+    /// is wrong in itself. It is critical when the chain is already larger
+    /// than the free space on a datastore it lives on — at that point the
+    /// outage is arithmetic, not a risk — and otherwise it is a question of
+    /// age, because age is what "forgotten" means.
+    /// </para>
+    /// <para>
+    /// Size travels in the message beside the age for the same reason free
+    /// space travels beside fullness: a three-week-old snapshot holding two
+    /// hundred megabytes is somebody's tidying task, and a three-week-old one
+    /// holding four hundred gigabytes is somebody's weekend.
+    /// </para>
+    /// </remarks>
+    private void AddSnapshotAlert(
+        VsphereVirtualMachine vm,
+        Dictionary<string, VsphereDatastore> datastores,
+        EntityId entity,
+        DateTimeOffset now,
+        List<AlertDefinition> alerts)
+    {
+        if (vm.Snapshots.Count == 0)
+        {
+            return;
+        }
+
+        // Oldest first, and a snapshot whose creation time vCenter would not
+        // give up sorts last — so an unreadable timestamp cannot become the
+        // oldest snapshot in the estate.
+        var oldest = vm.Snapshots[0];
+        var age = oldest.CreatedAtUtc is { } created ? now - created : (TimeSpan?)null;
+
+        var willFill = vm.SnapshotBytes is { } bytes && bytes > 0 && vm.DatastoreMoRefs
+            .Select(moRef => datastores.TryGetValue(moRef, out var d) ? d.FreeSpaceBytes : null)
+            .Any(free => free is { } remaining && bytes > remaining);
+
+        var severity = willFill ? AlertSeverity.Critical
+            : age >= StaleSnapshotCritical ? AlertSeverity.Critical
+            : age >= StaleSnapshotWarning ? AlertSeverity.Warning
+            : (AlertSeverity?)null;
+
+        if (severity is not { } level)
+        {
+            return;
+        }
+
+        alerts.Add(new AlertDefinition
+        {
+            // One fingerprint per machine rather than per snapshot. A chain
+            // that grows a second link is the same problem getting worse, and
+            // an inbox that gained a row every time somebody took another
+            // snapshot would be teaching people to ignore it.
+            Fingerprint = AlertFingerprint.Create(
+                InstanceId, "Snapshot left behind", "Capacity", vm.Name, "vm-stale-snapshot"),
+            Severity = level,
+            Title = "Snapshot left behind",
+            Description = DescribeSnapshots(vm, oldest, age, willFill),
+            Category = "Capacity",
+            Source = InstanceId,
+            Entity = entity,
+        });
+    }
+
+    private static string DescribeSnapshots(
+        VsphereVirtualMachine vm, VsphereSnapshot oldest, TimeSpan? age, bool willFill)
+    {
+        var how = age is { } old
+            ? string.Create(CultureInfo.InvariantCulture, $"{old.TotalDays:0} days old")
+            : "of unknown age";
+
+        var size = vm.SnapshotBytes is { } bytes
+            ? string.Create(CultureInfo.InvariantCulture, $"{Gigabytes(bytes):0.#} GB")
+            // Not "0 GB". The layout was unreadable, and a zero here would read
+            // as a measurement rather than as the absence of one.
+            : "an unmeasured amount";
+
+        var count = vm.Snapshots.Count == 1
+            ? "one snapshot"
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"{vm.Snapshots.Count} snapshots, the oldest '{oldest.Name}',");
+
+        var consequence = willFill
+            ? " It is already larger than the free space on a datastore it lives on, so " +
+              "deleting it needs planning rather than a click: consolidation itself needs room."
+            : " Nothing is wrong yet. A snapshot nobody deletes grows until the datastore " +
+              "fills, and then every machine on that volume stops at once.";
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"'{vm.Name}' has {count} {how}, occupying {size}.{consequence}");
+    }
+
+    /// <summary>
+    /// Old enough that somebody has forgotten it.
+    /// </summary>
+    /// <remarks>
+    /// A snapshot taken before a change is meant to live for hours. Three days
+    /// is generous enough that a change window spanning a weekend does not
+    /// raise it, and short enough to catch the thing while it is still small.
+    /// </remarks>
+    private static readonly TimeSpan StaleSnapshotWarning = TimeSpan.FromDays(3);
+
+    /// <summary>Two weeks. By now nobody remembers taking it.</summary>
+    private static readonly TimeSpan StaleSnapshotCritical = TimeSpan.FromDays(14);
+
+    /// <summary>
+    /// Reports a datastore that has promised more than it has left.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Thin provisioning means a disk occupies what it uses rather than what
+    /// it was given, and the difference is a promise. Counter map §4 calls
+    /// <c>summary.uncommitted</c> the only measure that warns long before a
+    /// datastore fills, and the comparison worth making is not against
+    /// capacity but against what remains: once the outstanding promises exceed
+    /// the free space, the volume fills if the machines merely do what they
+    /// were provisioned to do.
+    /// </para>
+    /// <para>
+    /// Warning only, with no critical tier, and that is deliberate. The crisis
+    /// tier already exists — it is
+    /// <see cref="AddFullnessAlert"/> at 95% — and this one's whole purpose is
+    /// to arrive weeks earlier, while somebody can still buy disk or move a
+    /// machine. Two alerts competing to be the emergency would make both of
+    /// them noise.
+    /// </para>
+    /// </remarks>
+    private static void AddOvercommitAlert(
+        VsphereDatastore datastore,
+        EntityId entity,
+        string instanceId,
+        List<AlertDefinition> alerts)
+    {
+        // Both must have been read. An unreadable figure is not a small one,
+        // and a datastore with no thin disks legitimately reports nothing here.
+        if (datastore is not { UncommittedBytes: > 0 and { } promised, FreeSpaceBytes: >= 0 and { } free } ||
+            promised <= free)
+        {
+            return;
+        }
+
+        alerts.Add(new AlertDefinition
+        {
+            Fingerprint = AlertFingerprint.Create(
+                instanceId, "Datastore over-committed", "Capacity",
+                datastore.Name, "datastore-overcommitted"),
+            Severity = AlertSeverity.Warning,
+            Title = "Datastore over-committed",
+            Description = string.Create(
+                CultureInfo.InvariantCulture,
+                $"'{datastore.Name}' has promised {Gigabytes(promised):0.#} GB to thin disks " +
+                $"that have not claimed it yet, and has {Gigabytes(free):0.#} GB free. If those " +
+                $"disks grow into what they were given, the datastore fills — this says so while " +
+                $"there is still time to act, rather than at 95% when there is not."),
+            Category = "Capacity",
+            Source = instanceId,
+            Entity = entity,
+        });
     }
 
     private List<IdentityMark> MarksFor(VsphereHost host)
