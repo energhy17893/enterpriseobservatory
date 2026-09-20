@@ -192,6 +192,85 @@ public class InventoryCollectionPipelineTests
     }
 
     [Fact]
+    public async Task A_read_that_was_abandoned_is_not_started_again_while_it_is_still_running()
+    {
+        // The timeout abandons a read, it does not stop one: a .NET task
+        // cannot be aborted. Retrying it therefore called ReadAsync again
+        // while the first call was still inside the source — three threads in
+        // one VsphereObservationSource, on the Dictionary and HashSet it keeps
+        // between reads, and on the one vCenter session it holds. Two of them
+        // mutating a Dictionary is a lost entry at best and a torn bucket
+        // array at worst, and the source instance is reused for the life of
+        // the process, so the damage outlives the cycle that caused it.
+        var inside = 0;
+        var peak = 0;
+        var padlock = new Lock();
+
+        var uncooperative = new FakeSource("vc-1")
+        {
+            Behaviour = async _ =>
+            {
+                lock (padlock)
+                {
+                    inside++;
+                    peak = Math.Max(peak, inside);
+                }
+
+                try
+                {
+                    // Ignores the token, like a blocking socket read or an SDK
+                    // that never threads it through. This is the case the hard
+                    // timeout exists for, and the only case that can overlap.
+                    await Task.Delay(TimeSpan.FromMilliseconds(400), CancellationToken.None);
+                    return Ok("vc-1");
+                }
+                finally
+                {
+                    lock (padlock)
+                    {
+                        inside--;
+                    }
+                }
+            },
+        };
+
+        var policy = Fast with { SourceTimeout = TimeSpan.FromMilliseconds(30), MaxRetries = 2 };
+
+        var result = await Pipeline().RunAsync([uncooperative], [], policy, CancellationToken.None);
+
+        Assert.Equal(1, peak);
+        Assert.Equal(1, uncooperative.Attempts);
+
+        // Still a failure, reported exactly as a timeout always was. Declining
+        // to retry must not quietly turn "we could not see it" into silence.
+        Assert.Empty(result.Snapshots);
+        Assert.Equal(HealthState.Unknown, result.Health[0].Health);
+        Assert.Single(result.CollectionAlerts);
+    }
+
+    [Fact]
+    public async Task A_read_that_stopped_by_itself_at_the_timeout_is_still_retried()
+    {
+        // The other half, and the reason the rule is about abandonment rather
+        // than about timeouts. A source that honours the token has stopped —
+        // nothing of it is still running — so the resilience policy applies
+        // unchanged. Keying the refusal on TimeoutException instead would have
+        // silently stopped retrying every vendor client that reports its own
+        // timeouts that way, which is most of them.
+        var slow = new FakeSource("vc-1")
+        {
+            Behaviour = attempt => attempt < 3
+                ? throw new TimeoutException("the vendor client timed out")
+                : Task.FromResult(Ok("vc-1")),
+        };
+
+        var result = await Pipeline().RunAsync([slow], [], Fast, CancellationToken.None);
+
+        Assert.Equal(3, slow.Attempts);
+        Assert.Single(result.Snapshots);
+    }
+
+    [Fact]
     public async Task Consecutive_failures_accumulate_across_cycles()
     {
         var bad = new FakeSource("ilo-1")

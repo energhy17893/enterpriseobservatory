@@ -69,9 +69,9 @@ internal static partial class HostLog
         EventId = 1014,
         Level = LogLevel.Debug,
         Message = "Compaction: {Written} buckets written, {SamplesDeleted} samples and " +
-                  "{BucketsDeleted} buckets aged out, {SeriesForgotten} series forgotten.")]
+                  "{BucketsDeleted} buckets aged out.")]
     public static partial void Compacted(
-        ILogger logger, int written, int samplesDeleted, int bucketsDeleted, int seriesForgotten);
+        ILogger logger, int written, int samplesDeleted, int bucketsDeleted);
 
     [LoggerMessage(
         EventId = 1015,

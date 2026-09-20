@@ -35,17 +35,22 @@ public class CompactionOrderingTests
         // raw samples go before they have been summarised and the five-minute
         // tier is short a window that nothing will ever rebuild: the chart for
         // that hour is simply emptier than the estate was, forever.
+        //
+        // The list is exact, so it is also where a fifth step coming back is
+        // noticed. There used to be one: it deleted series rows that had lost
+        // their last sample, reclaiming some 300 bytes each while taking locks
+        // on the table the metric cycle appends to — and sample.series_id
+        // cascades, so the version of it that lost the race took the samples
+        // just written with it, without saying so. ADR-0019.
         var steps = new List<string>();
 
         CompactionSequence.Run(
             () => Step(steps, "fold:5m"),
             () => Step(steps, "fold:1h"),
             () => Step(steps, "delete:samples"),
-            () => Step(steps, "delete:buckets"),
-            () => Step(steps, "forget"));
+            () => Step(steps, "delete:buckets"));
 
-        Assert.Equal(
-            ["fold:5m", "fold:1h", "delete:samples", "delete:buckets", "forget"], steps);
+        Assert.Equal(["fold:5m", "fold:1h", "delete:samples", "delete:buckets"], steps);
     }
 
     [Fact]
@@ -62,8 +67,7 @@ public class CompactionOrderingTests
             () => throw new TimeoutException("the fold exceeded the command timeout"),
             () => Step(steps, "fold:1h"),
             () => Step(steps, "delete:samples"),
-            () => Step(steps, "delete:buckets"),
-            () => Step(steps, "forget")));
+            () => Step(steps, "delete:buckets")));
 
         Assert.Empty(steps);
     }
@@ -84,8 +88,7 @@ public class CompactionOrderingTests
             () => ++folded,
             () => throw new InvalidOperationException("the hourly fold failed"),
             () => Step(steps, "delete:samples"),
-            () => Step(steps, "delete:buckets"),
-            () => Step(steps, "forget")));
+            () => Step(steps, "delete:buckets")));
 
         Assert.Equal(1, folded);
         Assert.Empty(steps);
@@ -98,12 +101,11 @@ public class CompactionOrderingTests
         // a step wired to the wrong field would have the product cheerfully
         // reporting deletions it never performed.
         var report = CompactionSequence.Run(
-            () => 3, () => 4, () => 5, () => 6, () => 9);
+            () => 3, () => 4, () => 5, () => 6);
 
         Assert.Equal(7, report.BucketsWritten);
         Assert.Equal(5, report.SamplesDeleted);
         Assert.Equal(6, report.BucketsDeleted);
-        Assert.Equal(9, report.SeriesForgotten);
         Assert.True(report.DidSomething);
     }
 }

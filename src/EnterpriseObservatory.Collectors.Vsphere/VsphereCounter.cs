@@ -180,6 +180,62 @@ public static class VsphereCounters
     ];
 
     /// <summary>
+    /// SCSI transport faults a host reports per storage device.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same three things that can go wrong on a path, counted against the
+    /// device instead — instance is the LUN's <c>naa.*</c>. That difference is
+    /// the entire reason these are worth having beside
+    /// <see cref="PerStoragePath"/>, which already counts two of them: a path's
+    /// runtime name (<c>vmhba0:C0:T0:L1</c>) carries no LUN identity, so a bus
+    /// reset is attributable to a host and an HBA but not to a volume. A
+    /// <c>naa.*</c> is, and the map's §5c closed that chain end to end —
+    /// datastore to LUN to path. A reset counted here lands on "PRODVOL10, the
+    /// fourteen VMs on it", which is the sentence an operator is actually
+    /// looking for.
+    /// </para>
+    /// <para>
+    /// <c>scsiReservationConflicts</c> has no path-level twin at all and is the
+    /// one of the three that earns its place on its own. A reservation conflict
+    /// is one host being refused a lock another host holds; it is not slowness
+    /// and no latency counter explains it, yet it stalls every host contending
+    /// for that volume at once. It is the classic estate-wide storage stall
+    /// whose cause is invisible in every number this product currently keeps.
+    /// </para>
+    /// <para>
+    /// Faults only, for the same reason the paths are faults only: SCSI does
+    /// not reset a bus because the array is busy, so there is no threshold to
+    /// invent, and a summation's zero is a real answer rather than the
+    /// truncated kind in §5b.
+    /// </para>
+    /// <para>
+    /// This is the most expensive addition in this batch by a wide margin and
+    /// that is not obvious from the counter count. <see cref="KeepPerDevice"/>
+    /// already matches <c>disk.*</c>, so each of these is kept once per LUN:
+    /// on the measured estate, 32 devices plus an aggregate, ten hosts, three
+    /// counters — about 990 series and 2.2 GB of the projected steady state.
+    /// Judged worth it because it buys the volume attribution the path
+    /// counters structurally cannot give, and because the estate already pays
+    /// roughly 2 500 series for the path faults. If it ever has to be cut, the
+    /// two that duplicate <see cref="PerStoragePath"/> are what to cut;
+    /// <c>scsiReservationConflicts</c> is the one with no substitute.
+    /// </para>
+    /// <para>
+    /// Declared before <see cref="Host"/> for the same reason
+    /// <see cref="PerDatastore"/> is: static initialisers run in source order,
+    /// and a list spliced into <see cref="Host"/> before it has been built
+    /// splices in nothing, silently.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> PerDeviceScsiFaults { get; } =
+    [
+        "disk.busResets.summation",
+        "disk.commandsAborted.summation",
+        "disk.scsiReservationConflicts.summation",
+    ];
+
+    /// <summary>
     /// Counters for an ESXi host.
     /// </summary>
     /// <remarks>
@@ -197,6 +253,53 @@ public static class VsphereCounters
         // pressure: high mem.usage on its own is normal and healthy.
         "mem.vmmemctl.average",
         "mem.swapused.average",
+
+        // The host's own verdict on its memory, and the only counter in this
+        // file whose meaning comes with the platform: a published enum —
+        // high, soft, hard, low — rather than a number somebody has to pick a
+        // line through. That matters more than it sounds. Broadcom publishes
+        // almost no thresholds anywhere, so every other memory rule this
+        // product will ever write is an invention; this one is not. "hard" or
+        // "low" means the host is reclaiming in earnest and every VM on it is
+        // degrading at the same moment.
+        //
+        // Not marked as a fault, and it is worth saying why rather than
+        // leaving it to be rediscovered: zero here means *healthy*, which is
+        // the exact opposite of what IsFaultCount promises, and a state of
+        // "soft" is normal operation rather than something that happened.
+        // Expressing it to a rule needs a breakpoint, not a flag — see the
+        // counter map §5d.
+        "mem.state.latest",
+
+        // Memory pressure as a rate rather than a level, which is the whole
+        // point. mem.swapused above is a level: it stays high for weeks after
+        // a single event, so an alert on it fires long after there is anything
+        // to do and is one nobody ends up believing. A rate tells "swapped
+        // once in March" apart from "swapping now". Kept beside the level
+        // rather than instead of it — the level still answers how much is
+        // parked out of memory, which the rate cannot.
+        //
+        // Compression is the step before swap and is what makes this a ladder:
+        // a host compressing is under pressure and still coping, a host
+        // swapping in has already lost. Ballooning and mem.usage are
+        // deliberately not part of this group — a balloon is the mechanism
+        // working, and high mem.usage on a consolidated host is normal.
+        "mem.swapinRate.average",
+        "mem.swapoutRate.average",
+        "mem.compressionRate.average",
+        "mem.decompressionRate.average",
+
+        // The first network data this product collects at all. Until now a
+        // dropped-packet storm presented as "the application is slow" with
+        // every storage and CPU number clean — the blind spot that sends an
+        // operator down the storage ladder for a problem that was never on it.
+        //
+        // Summations, so a zero is a real answer, exactly as for the path
+        // faults. But NOT declared as faults: see IsFaultCounter. And not kept
+        // per NIC: see KeepPerDevice.
+        "net.droppedRx.summation",
+        "net.droppedTx.summation",
+
         "disk.deviceLatency.average",
         "disk.kernelLatency.average",
         "disk.queueLatency.average",
@@ -210,6 +313,11 @@ public static class VsphereCounters
 
         // And the paths beneath them. See PerStoragePath.
         .. PerStoragePath,
+
+        // And the same faults counted against the LUN rather than the route
+        // to it, which is what makes them attributable to a datastore. See
+        // PerDeviceScsiFaults.
+        .. PerDeviceScsiFaults,
     ];
 
     /// <summary>
@@ -225,6 +333,47 @@ public static class VsphereCounters
     /// </remarks>
     public static bool InstanceNamesAnEntity(string? counterKey) =>
         counterKey?.StartsWith("datastore.", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>
+    /// Whether any non-zero reading of this counter is a fault.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// All of these are SCSI transport errors, reported per storage path or
+    /// per storage device. A bus reset, an aborted command or a reservation
+    /// conflict is not a level to threshold — the array being busy does not
+    /// cause any of them — so one is enough to be worth saying, and a count of
+    /// zero genuinely means it did not happen. That is the opposite of the
+    /// latency counters in the map's §5b, whose zeros are a truncation and say
+    /// nothing at all.
+    /// </para>
+    /// <para>
+    /// A list rather than a prefix, deliberately. <c>disk.*</c> and
+    /// <c>storagePath.*</c> each hold far more latencies and throughputs than
+    /// faults, and a prefix that caught them would turn every busy LUN into a
+    /// reported error — the failure mode the classifier's own test names. What
+    /// is enumerated here is enumerated because somebody decided it.
+    /// </para>
+    /// <para>
+    /// Dropped packets are consciously absent. <c>net.dropped{Rx,Tx}</c> are
+    /// summations and their zeros are real, so they look like they belong —
+    /// but the rule this flag feeds has no threshold and no memory, and a
+    /// single dropped frame on a busy uplink would open a warning. A bus reset
+    /// has no benign cause; a dropped packet does. They need a rate and a line
+    /// through it, which is a different rule, so calling them faults would
+    /// produce a standing alert on a healthy estate and bury the resets it
+    /// exists to surface. See the counter map §5e.
+    /// </para>
+    /// <para>
+    /// Declared here because only this collector knows what a vim25 counter
+    /// means; it travels to the rule on <c>CounterValue.IsFaultCount</c> so
+    /// that the rule never has to name a vSphere counter.
+    /// </para>
+    /// </remarks>
+    public static bool IsFaultCounter(string? counterKey) =>
+        counterKey is not null &&
+        (PerStoragePath.Contains(counterKey, StringComparer.OrdinalIgnoreCase) ||
+         PerDeviceScsiFaults.Contains(counterKey, StringComparer.OrdinalIgnoreCase));
 
     /// <summary>
     /// Whether each device's own series is worth keeping beside the summary.
@@ -245,29 +394,22 @@ public static class VsphereCounters
     /// and nobody diagnoses anything by reading core 57. The summary is the
     /// answer there, and keeping the detail would be a tenfold cost for it.
     /// </para>
-    /// </remarks>
-    /// <summary>
-    /// Whether any non-zero reading of this counter is a fault.
-    /// </summary>
-    /// <remarks>
     /// <para>
-    /// Both of these are SCSI transport errors reported per storage path. A
-    /// bus reset or an aborted command is not a level to threshold — the array
-    /// being busy does not cause either — so one is enough to be worth saying,
-    /// and a count of zero genuinely means it did not happen. That is the
-    /// opposite of the latency counters in the map's §5b, whose zeros are a
-    /// truncation and say nothing at all.
+    /// This is also what makes the <c>disk.*</c> faults the expensive half of
+    /// this file: the prefix that keeps a slow LUN visible keeps a quiet one
+    /// too, so each fault counter costs a series per device on every host.
     /// </para>
     /// <para>
-    /// Declared here because only this collector knows what a vim25 counter
-    /// means; it travels to the rule on <c>CounterValue.IsFaultCount</c> so
-    /// that the rule never has to name a vSphere counter.
+    /// <c>net.*</c> is left out on the same reasoning that leaves out CPU. A
+    /// host has around sixteen NICs reporting and vCenter
+    /// supplies an aggregate; the question the dropped-packet counters exist to
+    /// answer is "is this host dropping frames at all", which the aggregate
+    /// answers and which nothing currently answers. Which uplink is a second
+    /// question, and on this estate buying it costs roughly 320 series for two
+    /// counters that read zero on a healthy fabric. It can be bought later,
+    /// by adding <c>net.</c> here, once something has been seen to drop.
     /// </para>
     /// </remarks>
-    public static bool IsFaultCounter(string? counterKey) =>
-        counterKey is not null &&
-        PerStoragePath.Contains(counterKey, StringComparer.OrdinalIgnoreCase);
-
     public static bool KeepPerDevice(string? counterKey) =>
         counterKey is not null &&
         (counterKey.StartsWith("disk.", StringComparison.OrdinalIgnoreCase) ||
@@ -283,7 +425,63 @@ public static class VsphereCounters
     [
         "cpu.ready.summation",
         "cpu.costop.summation",
+
+        // The counter that turns a confident wrong answer into a different and
+        // more useful one. cpu.ready above cannot say WHY a machine was ready
+        // to run and did not: a VM held under its own configured CPU limit
+        // accrues the same waiting as one starved by a busy host, so the
+        // contention rule called the limited machine a victim and sent an
+        // operator to look at a host that was fine. Dynatrace separates the two
+        // with guestCpuLimitReached; this is the cheap half of it.
+        //
+        // A summation in milliseconds like the two above it, and the same
+        // interval, so it needs no new machinery in the rule — it converts to a
+        // percentage of the window exactly as ready and co-stop do. What makes
+        // it decisive is that it is zero by construction on a machine with no
+        // limit set: vSphere only accumulates here when a configured ceiling
+        // actually held the vCPU back. So a non-zero reading is not a level to
+        // interpret, it is the presence of a limit that is biting right now.
+        //
+        // Not a fault, and worth stating rather than leaving to be rediscovered
+        // (see IsFaultCounter): a CPU limit is a configuration somebody chose,
+        // and on a test or licence-bound VM it is chosen on purpose and bites
+        // every cycle. Non-zero is an explanation, not an error. And not kept
+        // per device — see KeepPerDevice; vSphere reports this per vCPU too,
+        // and a per-vCPU series is not a small virtual machine.
+        //
+        // Safe here as a plain literal: unlike PerDatastore and
+        // PerStoragePath, nothing splices this list into another, so the
+        // source-order hazard those two carry does not apply. Adding it as a
+        // spliced list ABOVE Host would be the thing to get wrong.
+        "cpu.maxlimited.summation",
+
         "mem.vmmemctl.average",
+
+        // The counter that stops the ballooning alert being wrong, and the
+        // reason vmmemctl above is not enough on its own. Datadog's guidance
+        // is to alert on any positive vmmemctl; Dynatrace ignores ballooning
+        // entirely. Both are reacting to the same fact from opposite ends: a
+        // balloon reclaiming pages from a VM whose active memory is far below
+        // what it was granted is the mechanism working exactly as designed,
+        // and on any healthy consolidated estate that is most VMs most of the
+        // time. Alert on vmmemctl alone and the product ships a standing
+        // false alarm; ignore ballooning and it cannot see a genuinely starved
+        // guest at all.
+        //
+        // mem.active is the gate between the two: a balloon is worth saying
+        // something about when the guest is touching the memory being taken
+        // away from it. Active memory is an estimate from sampled pages and
+        // understates a guest with a large warm cache, which is a real limit —
+        // but it is the difference between "reclaiming" and "starving", and
+        // the product has no other way to tell them apart.
+        "mem.active.average",
+
+        // The VM end of the network blind spot. On the host these say the
+        // uplink is dropping; here they say which guest is losing frames,
+        // which is what turns "the application is slow" into a ticket
+        // somebody can act on. Not faults — see IsFaultCounter.
+        "net.droppedRx.summation",
+        "net.droppedTx.summation",
 
         // Read and write separately, because vSphere has no combined virtual
         // disk latency counter and because the two mean different things: read

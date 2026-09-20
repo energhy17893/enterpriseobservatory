@@ -743,4 +743,304 @@ public class VsphereInventorySourceTests
             Ds(snapshot, "VOL").Marks,
             m => m.Kind == IdentityMarkKind.VolumeIdentifier);
     }
+
+    // --- what the inventory now carries onward ----------------------------
+
+    private static VsphereVirtualMachine SizedVm(
+        string name = "app-db-01",
+        int? vcpus = 8,
+        long? memoryMb = 32768,
+        long? cpuLimit = -1,
+        long? memoryLimit = -1) => new()
+    {
+        MoRef = "vm-" + name,
+        Name = name,
+        PowerState = "poweredOn",
+        OverallStatus = "green",
+        VirtualCpuCount = vcpus,
+        ConfiguredMemoryMb = memoryMb,
+        CpuLimitMhz = cpuLimit,
+        MemoryLimitMb = memoryLimit,
+    };
+
+    private static Entity Vm(InventorySnapshot snapshot, string name) =>
+        snapshot.Entities.Single(e => e.Kind == EntityKind.VirtualMachine && e.DisplayName == name);
+
+    [Fact]
+    public async Task The_vCPU_count_reaches_the_entity_so_a_rule_can_divide_by_it()
+    {
+        // The point of collecting it at all. cpu.ready.summation is summed
+        // across every vCPU, so a ready percentage is the raw total divided by
+        // the interval and by this; CounterValue.AsPercentageOfInterval does
+        // the first half and had nowhere to get the second. If this stops
+        // arriving, the contention rule either states a figure wrong by a
+        // factor of eight or states none at all.
+        var snapshot = await Read(Payload(vms: [SizedVm()]));
+
+        Assert.Equal(8, Vm(snapshot, "app-db-01").Sizing?.VirtualCpuCount);
+        Assert.Equal(32768, Vm(snapshot, "app-db-01").Sizing?.ConfiguredMemoryMb);
+    }
+
+    [Fact]
+    public async Task The_vCPU_count_is_not_an_identity_mark()
+    {
+        // Marks are weighed by the resolver to decide whether two records are
+        // the same machine, and "8 vCPUs" is true of several thousand of them.
+        // It is the same worthless evidence as the short hostname "10" derived
+        // from 10.5.1.76, which this product has already been bitten by —
+        // adding it as a mark would not be untidy, it would make identity
+        // resolution actively worse.
+        var snapshot = await Read(Payload(vms: [SizedVm()]));
+
+        Assert.DoesNotContain(Vm(snapshot, "app-db-01").Marks, m => m.Value.Contains('8'));
+    }
+
+    [Fact]
+    public async Task A_configured_limit_reaches_the_entity_and_unlimited_stays_distinguishable()
+    {
+        // A throttled machine waits exactly like a contended one while the
+        // host is fine, so a contention rule needs to know which it is looking
+        // at. Three states and all three matter: a real ceiling, the
+        // platform's -1 for none, and null for a configuration nobody was
+        // allowed to read.
+        var limited = await Read(Payload(vms: [SizedVm("limited", cpuLimit: 4000)]));
+        var free = await Read(Payload(vms: [SizedVm("free", cpuLimit: -1)]));
+        var unread = await Read(Payload(vms: [SizedVm("unread", cpuLimit: null)]));
+
+        Assert.True(Vm(limited, "limited").Sizing?.IsCpuLimited);
+        Assert.False(Vm(free, "free").Sizing?.IsCpuLimited);
+        Assert.Equal(-1, Vm(free, "free").Sizing?.CpuLimitMhz);
+        Assert.Null(Vm(unread, "unread").Sizing?.CpuLimitMhz);
+    }
+
+    [Fact]
+    public async Task A_machine_with_no_sizing_read_at_all_carries_none_rather_than_an_empty_one()
+    {
+        // One check instead of four, and no record full of nulls that a rule
+        // could mistake for a machine with no processors.
+        var snapshot = await Read(Payload(vms:
+        [
+            SizedVm("bare", vcpus: null, memoryMb: null, cpuLimit: null, memoryLimit: null),
+        ]));
+
+        Assert.Null(Vm(snapshot, "bare").Sizing);
+    }
+
+    [Fact]
+    public async Task A_host_carries_its_storage_paths_so_a_dead_one_can_be_attributed()
+    {
+        // Counter map §5c's broken link. A storagePath fault counter names its
+        // path vmhba0:C0:T0:L1, which carries no LUN identity, so a bus reset
+        // could be attributed to a host and an HBA but never to the datastore
+        // it took down. The NAA here is the same identifier the datastore
+        // carries as a StorageDeviceId mark, and the two together are the
+        // join. Lose this and the chain is broken again.
+        var snapshot = await Read(Payload(hosts:
+        [
+            Host() with
+            {
+                StoragePaths =
+                [
+                    new VsphereStoragePath
+                    {
+                        Name = "vmhba0:C0:T0:L1",
+                        State = "active",
+                        Adapter = "vmhba0",
+                        StorageDeviceId = "naa.600508b1001cb736",
+                    },
+                    new VsphereStoragePath
+                    {
+                        Name = "vmhba1:C0:T0:L1",
+                        State = "dead",
+                        Adapter = "vmhba1",
+                        StorageDeviceId = "naa.600508b1001cb736",
+                        DeviceKey = "key-vim.host.ScsiDisk-0200",
+                    },
+                ],
+            },
+        ]));
+
+        var host = snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost);
+
+        Assert.Equal(2, host.StoragePaths.Count);
+        Assert.Single(host.StoragePaths, p => p.IsDead);
+        Assert.All(host.StoragePaths, p => Assert.Equal("naa.600508b1001cb736", p.StorageDeviceId));
+
+        // The platform's key travels too, so paths can still be grouped per
+        // device when the NAA lookup failed. Grouping on an empty name would
+        // pile every unnamed device into one heap.
+        Assert.Single(host.StoragePaths, p => p.DeviceKey == "key-vim.host.ScsiDisk-0200");
+    }
+
+    [Fact]
+    public async Task A_standby_path_is_not_counted_as_lost()
+    {
+        // A standby path in an ALUA configuration is working and unused.
+        // Counting it as dead would raise a redundancy alert about every
+        // correctly configured array in the estate, which is how a real one
+        // stops being read.
+        var snapshot = await Read(Payload(hosts:
+        [
+            Host() with
+            {
+                StoragePaths = [new VsphereStoragePath { Name = "vmhba0:C0:T0:L1", State = "standby" }],
+            },
+        ]));
+
+        Assert.All(
+            snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost).StoragePaths,
+            p => Assert.False(p.IsDead));
+    }
+
+    // --- thin overcommit --------------------------------------------------
+
+    [Fact]
+    public async Task A_datastore_that_has_promised_more_than_it_has_left_is_reported()
+    {
+        // Counter map §4: the only measure that warns long before a datastore
+        // fills. This volume is 20% full, so the fullness alert says nothing
+        // and will say nothing for months — and it is already certain to fill
+        // if the thin disks merely grow into what they were given.
+        var snapshot = await Read(Payload(datastores:
+        [
+            Store("vmfs01", capacity: 100 * Gb, free: 80 * Gb) with { UncommittedBytes = 300 * Gb },
+        ]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Datastore over-committed");
+        Assert.Equal(AlertSeverity.Warning, alert.Severity);
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore nearly full");
+    }
+
+    [Fact]
+    public async Task Promises_within_the_remaining_space_are_not_an_alert()
+    {
+        // Thin provisioning is a technique, not a fault. Alerting on its mere
+        // presence would fire on every correctly run estate in existence, and
+        // the comparison that means something is against what remains rather
+        // than against capacity.
+        var snapshot = await Read(Payload(datastores:
+        [
+            Store("vmfs01", capacity: 100 * Gb, free: 80 * Gb) with { UncommittedBytes = 40 * Gb },
+        ]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore over-committed");
+    }
+
+    [Fact]
+    public async Task A_datastore_whose_uncommitted_space_was_not_read_is_not_called_over_committed()
+    {
+        // Absent on a datastore with no thin provisioning, and absent when the
+        // account could not read it. Neither is a promise we may assert, and
+        // the alert must not fire on the strength of a null.
+        var snapshot = await Read(Payload(datastores:
+        [
+            Store("vmfs01", capacity: 100 * Gb, free: 80 * Gb),
+        ]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore over-committed");
+    }
+
+    // --- snapshots --------------------------------------------------------
+
+    private static VsphereVirtualMachine WithSnapshot(
+        DateTimeOffset? created,
+        long? bytes = Gb,
+        IReadOnlyList<string>? datastores = null,
+        int count = 1) => new()
+    {
+        MoRef = "vm-1",
+        Name = "fileserver",
+        PowerState = "poweredOn",
+        OverallStatus = "green",
+        DatastoreMoRefs = datastores ?? [],
+        SnapshotBytes = bytes,
+        Snapshots =
+        [
+            .. Enumerable.Range(0, count).Select(i => new VsphereSnapshot
+            {
+                MoRef = "snapshot-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Name = "before upgrade",
+                CreatedAtUtc = created,
+                Depth = i + 1,
+            }),
+        ],
+    };
+
+    [Fact]
+    public async Task A_snapshot_nobody_has_deleted_is_reported()
+    {
+        // vROps has no snapshot alert at all — it reads the tree only as a
+        // guard, "does this machine have one". So this is differentiation
+        // rather than parity, and it is the most common self-inflicted outage
+        // in a VMware estate: nobody forgets on purpose, somebody takes one
+        // before a change and the change goes fine.
+        var snapshot = await Read(Payload(vms: [WithSnapshot(T0.AddDays(-20))]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Snapshot left behind");
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+        Assert.Contains("20 days old", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_snapshot_taken_this_morning_is_not_an_alert()
+    {
+        // A snapshot taken before a change is doing its job. Alerting the
+        // moment one exists would make the alert meaningless by the second day
+        // of use, which is what vROps's guard-only reading implicitly admits.
+        var snapshot = await Read(Payload(vms: [WithSnapshot(T0.AddHours(-4))]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Snapshot left behind");
+    }
+
+    [Fact]
+    public async Task A_snapshot_larger_than_the_free_space_beneath_it_is_critical_whatever_its_age()
+    {
+        // Not a threshold on size, because no size is wrong in itself. At this
+        // point the outage is arithmetic rather than a risk — and worse, the
+        // obvious remedy is not available: consolidating a snapshot needs room
+        // on the same volume, so somebody has to plan rather than click.
+        var snapshot = await Read(Payload(
+            vms: [WithSnapshot(T0.AddHours(-2), bytes: 90 * Gb, datastores: ["ds-vmfs01"])],
+            datastores: [Store("vmfs01", capacity: 100 * Gb, free: 10 * Gb)]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Snapshot left behind");
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+        Assert.Contains("deleting it needs planning", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_growing_chain_stays_one_alert_rather_than_one_per_snapshot()
+    {
+        // A chain that gains a link is the same problem getting worse. An
+        // inbox that gained a row every time somebody took another snapshot
+        // would be teaching people to ignore the whole category. Depth is said
+        // as well as count because they are different problems: four snapshots
+        // side by side is somebody being careful, four deep is four delta
+        // disks every read has to walk.
+        var snapshot = await Read(Payload(vms: [WithSnapshot(T0.AddDays(-30), count: 4)]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Snapshot left behind");
+        Assert.Contains("4 snapshots 4 deep", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_snapshot_whose_size_could_not_be_read_says_so_rather_than_saying_zero()
+    {
+        // Zero looks like a measurement, and the counter map calls that this
+        // product's most dangerous number: an operator reading "0 GB" strikes
+        // snapshots off the list when in fact nobody looked.
+        var snapshot = await Read(Payload(vms: [WithSnapshot(T0.AddDays(-20), bytes: null)]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Snapshot left behind");
+        Assert.Contains("an unmeasured amount", alert.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("0 GB", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_machine_with_no_snapshots_raises_nothing()
+    {
+        var snapshot = await Read(Payload(vms: [SizedVm()]));
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Snapshot left behind");
+    }
 }

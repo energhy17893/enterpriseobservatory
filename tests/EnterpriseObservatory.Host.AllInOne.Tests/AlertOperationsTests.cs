@@ -313,6 +313,7 @@ public class AlertOperationsTests
                 _alerts.Reconcile(AlertScopes.Inventory, (stored, flaps) =>
                     AlertReconciler.Reconcile(new AlertReconciliationRequest
                     {
+                        Scope = AlertScopes.Inventory,
                         Observed = [.. Enumerable.Range(0, 20).Select(n => Definition($"a{n}"))],
                         Stored = stored,
                         FlapHistories = flaps,
@@ -379,6 +380,7 @@ public class AlertOperationsTests
         _alerts.Reconcile(AlertScopes.Inventory, (stored, flaps) =>
             AlertReconciler.Reconcile(new AlertReconciliationRequest
             {
+                Scope = AlertScopes.Inventory,
                 Observed = [Definition("psu")],
                 Stored = stored,
                 FlapHistories = flaps,

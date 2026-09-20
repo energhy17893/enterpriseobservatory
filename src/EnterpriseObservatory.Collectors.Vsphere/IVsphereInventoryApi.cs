@@ -155,6 +155,54 @@ public sealed record VsphereHost
     public bool InMaintenanceMode { get; init; }
 
     public string? ClusterMoRef { get; init; }
+
+    /// <summary>
+    /// Every route this host has to a storage device, and the state of each.
+    /// </summary>
+    /// <remarks>
+    /// Empty when the path table could not be read, which is not the same as a
+    /// host with no storage — an unreadable table must not be reported as a
+    /// host that has lost every path.
+    /// </remarks>
+    public IReadOnlyList<VsphereStoragePath> StoragePaths { get; init; } = [];
+}
+
+/// <summary>One entry of a host's multipath table, as vCenter reports it.</summary>
+/// <remarks>
+/// <para>
+/// Read from <c>config.storageDevice.multipathInfo</c>, which is an array of
+/// <c>HostMultipathInfoLogicalUnit</c>: one per device, each carrying the
+/// paths that reach it. The device is named there by an internal key rather
+/// than by the NAA the rest of the product speaks, so
+/// <c>config.storageDevice.scsiLun</c> is read alongside it purely to turn
+/// that key into a canonical name.
+/// </para>
+/// <para>
+/// <strong>Unverified against a live vCenter.</strong> The shape follows the
+/// published vim25 schema. The one structure in this collector that <em>was</em>
+/// dumped from a real server turned out not to match what its name implied —
+/// <c>volume</c> is a sibling of <c>mountInfo</c>, not a child — so this
+/// should be treated as a reasonable reading rather than a measured one until
+/// somebody points it at a server. The parsing is covered by tests against XML
+/// in the schema's shape; that proves the reader, not the schema.
+/// </para>
+/// </remarks>
+public sealed record VsphereStoragePath
+{
+    /// <summary>Runtime name, e.g. <c>vmhba0:C0:T0:L1</c>.</summary>
+    public required string Name { get; init; }
+
+    /// <summary>The adapter the path leaves by, e.g. <c>vmhba0</c>.</summary>
+    public string Adapter { get; init; } = string.Empty;
+
+    /// <summary>active, standby, disabled, dead or unknown. Empty when unreported.</summary>
+    public string State { get; init; } = string.Empty;
+
+    /// <summary>The device's internal key, as the path table names it.</summary>
+    public string DeviceKey { get; init; } = string.Empty;
+
+    /// <summary>The device's NAA, when the second table could resolve it.</summary>
+    public string StorageDeviceId { get; init; } = string.Empty;
 }
 
 /// <summary>A virtual machine as vCenter sees it.</summary>
@@ -175,6 +223,76 @@ public sealed record VsphereVirtualMachine
     public string? HostMoRef { get; init; }
 
     public IReadOnlyList<string> DatastoreMoRefs { get; init; } = [];
+
+    /// <summary>
+    /// How many virtual processors it was given, or null when unreadable.
+    /// </summary>
+    /// <remarks>
+    /// Requested for arithmetic rather than for display.
+    /// <c>cpu.ready.summation</c> is summed across every vCPU, so the ready
+    /// percentage anybody reasons about is the raw total divided by the
+    /// interval <em>and</em> by this. Without it a rule either states a figure
+    /// that is wrong by a factor of the vCPU count or declines to state one.
+    /// </remarks>
+    public int? VirtualCpuCount { get; init; }
+
+    /// <summary>Configured memory in megabytes, or null when unreadable.</summary>
+    public long? ConfiguredMemoryMb { get; init; }
+
+    /// <summary>
+    /// The configured CPU ceiling in MHz: null unreadable, -1 unlimited.
+    /// </summary>
+    /// <remarks>
+    /// vCenter's own <c>-1</c> is kept rather than turned into null, because a
+    /// machine with no limit and a machine whose configuration we may not read
+    /// are different facts. See <see cref="Domain.EntitySizing.CpuLimitMhz"/>.
+    /// </remarks>
+    public long? CpuLimitMhz { get; init; }
+
+    /// <summary>The configured memory ceiling in MB. See <see cref="CpuLimitMhz"/>.</summary>
+    public long? MemoryLimitMb { get; init; }
+
+    /// <summary>
+    /// The snapshots it currently has, oldest first, flattened from the tree.
+    /// </summary>
+    /// <remarks>
+    /// Empty both for a machine with no snapshots and for one whose snapshot
+    /// property could not be read; the two are told apart by the read failures
+    /// on the payload, as everywhere else here.
+    /// </remarks>
+    public IReadOnlyList<VsphereSnapshot> Snapshots { get; init; } = [];
+
+    /// <summary>
+    /// Bytes occupied by the snapshot chain, or null when it could not be computed.
+    /// </summary>
+    /// <remarks>
+    /// Null and zero are different answers. Zero means the file layout was read
+    /// and nothing in it belongs to a snapshot; null means the layout was not
+    /// readable, and a machine whose size we could not compute must not be
+    /// reported as one carrying nothing.
+    /// </remarks>
+    public long? SnapshotBytes { get; init; }
+}
+
+/// <summary>One snapshot, flattened out of the tree it arrived in.</summary>
+/// <remarks>
+/// The tree is kept only as far as <see cref="Depth"/>. What the failure mode
+/// needs is the oldest creation time and how many there are; the parent/child
+/// shape adds nothing an alert can act on, and flattening it means no consumer
+/// has to walk a recursive structure to answer "how old is the oldest".
+/// </remarks>
+public sealed record VsphereSnapshot
+{
+    public required string Name { get; init; }
+
+    /// <summary>Its managed object reference, e.g. <c>snapshot-2041</c>.</summary>
+    public required string MoRef { get; init; }
+
+    /// <summary>When it was taken, or null when vCenter's timestamp was unreadable.</summary>
+    public DateTimeOffset? CreatedAtUtc { get; init; }
+
+    /// <summary>How deep in the chain it sits; a root snapshot is 1.</summary>
+    public int Depth { get; init; } = 1;
 }
 
 /// <summary>A cluster as vCenter sees it.</summary>
@@ -209,6 +327,26 @@ public sealed record VsphereDatastore
     public long? CapacityBytes { get; init; }
 
     public long? FreeSpaceBytes { get; init; }
+
+    /// <summary>
+    /// Space promised to thin disks that has not been taken yet.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The one measure that warns long before a datastore fills, and the
+    /// counter map says so in as many words. Fullness is a statement about
+    /// today: at 84% nothing is wrong and nothing is said, and the alert
+    /// arrives at 85% with however many days of headroom that happens to
+    /// leave. Uncommitted space is a statement about what has already been
+    /// promised — a volume 40% full whose thin disks are entitled to three
+    /// times its capacity is going to fill, and the only question is when.
+    /// </para>
+    /// <para>
+    /// Null when unreadable, and legitimately absent on a datastore with no
+    /// thin provisioning at all. Neither is a zero we may assert.
+    /// </para>
+    /// </remarks>
+    public long? UncommittedBytes { get; init; }
 
     /// <summary>Null when unreadable — not assumed reachable.</summary>
     public bool? Accessible { get; init; }

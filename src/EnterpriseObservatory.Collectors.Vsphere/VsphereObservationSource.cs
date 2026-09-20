@@ -82,12 +82,7 @@ public sealed class VsphereObservationSource(
     /// </remarks>
     private static readonly TimeSpan RecheckInterval = TimeSpan.FromHours(1);
 
-    /// <summary>When each type the probe dismissed may be tried again.</summary>
-    private readonly Dictionary<VsphereEntityType, DateTimeOffset> _nextRecheck = [];
-
-    /// <summary>
-    /// Types where the probe said "nothing" and the data disagreed.
-    /// </summary>
+    /// <summary>What this session has learnt about the probe, per entity type.</summary>
     /// <remarks>
     /// In memory rather than stored, deliberately. It is an observation about
     /// this session's conversation with one server, and a restart re-reads the
@@ -95,7 +90,85 @@ public sealed class VsphereObservationSource(
     /// yesterday is still being second-guessed today on the strength of a
     /// disagreement nobody can see.
     /// </remarks>
-    private readonly HashSet<VsphereEntityType> _probeProvedWrong = [];
+    private readonly ProbeMemory _probe = new();
+
+    /// <summary>
+    /// The probe's reputation, per entity type, guarded.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This instance is shared by every read — the registry hands back the same
+    /// source and the host holds it as a singleton — and
+    /// <see cref="IObservationSource.ReadAsync"/> is documented as
+    /// non-re-entrant on that basis. It is not, however, enough. A read the
+    /// runner abandoned at its timeout is still running in here when the next
+    /// cycle starts thirty seconds later, and nothing can stop it: a .NET task
+    /// cannot be aborted. So two reads can be in this object at once, rarely,
+    /// and a bare <c>Dictionary</c> and <c>HashSet</c> written from both is a
+    /// lost entry at best and a torn bucket array at worst — a lookup that
+    /// throws, or one that never returns, inside the collector that is supposed
+    /// to be watching everything else.
+    /// </para>
+    /// <para>
+    /// The lock is held only around the dictionary work, never across the
+    /// vCenter call. A source that hangs must cost its own read and nothing
+    /// else; holding this while waiting on a network would let one slow vCenter
+    /// stop the next cycle from starting, which is the whole failure the hard
+    /// timeout exists to prevent.
+    /// </para>
+    /// <para>
+    /// <see cref="DueForRecheck"/> is one operation rather than a read and a
+    /// write for the same reason it is locked at all: split in two, the
+    /// overlapping read would pass a check the first read was about to
+    /// invalidate, and both would query — turning the hourly re-check this
+    /// exists to ration back into two.
+    /// </para>
+    /// </remarks>
+    private sealed class ProbeMemory
+    {
+        private readonly Lock _padlock = new();
+
+        /// <summary>When each type the probe dismissed may be tried again.</summary>
+        private readonly Dictionary<VsphereEntityType, DateTimeOffset> _nextRecheck = [];
+
+        /// <summary>Types where the probe said "nothing" and the data disagreed.</summary>
+        private readonly HashSet<VsphereEntityType> _probeProvedWrong = [];
+
+        public bool HasBeenProvedWrongAbout(VsphereEntityType entityType)
+        {
+            lock (_padlock)
+            {
+                return _probeProvedWrong.Contains(entityType);
+            }
+        }
+
+        /// <summary>
+        /// Whether the hourly re-check for this type is due, claiming it if so.
+        /// </summary>
+        public bool DueForRecheck(VsphereEntityType entityType, DateTimeOffset now, TimeSpan interval)
+        {
+            lock (_padlock)
+            {
+                if (_nextRecheck.TryGetValue(entityType, out var due) && now < due)
+                {
+                    return false;
+                }
+
+                _nextRecheck[entityType] = now + interval;
+                return true;
+            }
+        }
+
+        /// <summary>Records that data arrived for a type the probe dismissed.</summary>
+        public void RecordProbeWasWrong(VsphereEntityType entityType)
+        {
+            lock (_padlock)
+            {
+                _probeProvedWrong.Add(entityType);
+                _nextRecheck.Remove(entityType);
+            }
+        }
+    }
 
     public string InstanceId => _api.InstanceId;
 
@@ -363,7 +436,7 @@ public sealed class VsphereObservationSource(
         // skip expires. Once an hour the query goes out regardless, and if data
         // comes back the probe has been proven wrong for this type and is not
         // consulted for it again.
-        var trustTheProbe = availableSet.Count == 0 && !_probeProvedWrong.Contains(entityType);
+        var trustTheProbe = availableSet.Count == 0 && !_probe.HasBeenProvedWrongAbout(entityType);
 
         if (trustTheProbe)
         {
@@ -379,12 +452,10 @@ public sealed class VsphereObservationSource(
                     "than taking the answer as permanent.",
             });
 
-            if (_nextRecheck.TryGetValue(entityType, out var due) && now < due)
+            if (!_probe.DueForRecheck(entityType, now, RecheckInterval))
             {
                 return;
             }
-
-            _nextRecheck[entityType] = now + RecheckInterval;
         }
 
         // A type the probe has been caught out on, or an hourly re-check: use
@@ -474,8 +545,7 @@ public sealed class VsphereObservationSource(
                 // forever while the data was there all along.
                 if (ignoreTheProbe && read.Count > 0)
                 {
-                    _probeProvedWrong.Add(entityType);
-                    _nextRecheck.Remove(entityType);
+                    _probe.RecordProbeWasWrong(entityType);
                 }
 
                 observations.AddRange(read);

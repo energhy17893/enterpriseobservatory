@@ -52,10 +52,29 @@ public sealed class PostgresObservationStore : IObservationStore
     /// Series ids, kept in memory because every sample needs one.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Concurrent rather than lock-guarded: the collection cycle writes to it
     /// while the interface reads series for a chart, and a lock spanning
     /// database calls would reintroduce exactly the serialisation this engine
     /// was chosen to avoid.
+    /// </para>
+    /// <para>
+    /// A hint, not an authority. The dictionary being thread-safe was never the
+    /// question; what an entry MEANS is. An id read from here names a row that
+    /// another transaction may delete before the sample referring to it is
+    /// written, and <c>sample.series_id</c> is a foreign key — so a stale entry
+    /// used unchecked costs the whole cycle's samples for every entity, not
+    /// just the one series. Every id taken from here is therefore confirmed and
+    /// pinned inside the appending transaction before it is used. See
+    /// <see cref="BindSeries"/>.
+    /// </para>
+    /// <para>
+    /// It only grows. Nothing removes an entry, because nothing removes a
+    /// series row: a counter that stops being collected keeps its row and its
+    /// place here forever. What that costs, and the estate shape where it would
+    /// stop being affordable, is worked out in the note in <see cref="Compact"/>
+    /// and recorded in ADR-0019.
+    /// </para>
     /// </remarks>
     private readonly ConcurrentDictionary<SeriesKey, long> _seriesIds = new();
 
@@ -90,6 +109,12 @@ public sealed class PostgresObservationStore : IObservationStore
     /// The temporary table lives for the transaction, so an interrupted append
     /// leaves nothing behind to clean up.
     /// </para>
+    /// <para>
+    /// Series ids are bound inside this same transaction rather than trusted
+    /// from the cache, because a compaction sweep running in its own background
+    /// service can delete a series between the two. See <see cref="BindSeries"/>
+    /// for what that costs and why it is one statement rather than six thousand.
+    /// </para>
     /// </remarks>
     public void Append(IReadOnlyList<Observation> observations)
     {
@@ -100,8 +125,26 @@ public sealed class PostgresObservationStore : IObservationStore
             return;
         }
 
+        // One entry per distinct series in the batch. A cycle carries several
+        // samples of the same counter, and the binding below upserts — which
+        // PostgreSQL refuses outright if the same key appears twice in one
+        // statement, so the de-duplication is required rather than tidy.
+        var wanted = new Dictionary<SeriesKey, CounterValue>();
+
+        foreach (var observation in observations)
+        {
+            wanted.TryAdd(
+                new SeriesKey(
+                    observation.Entity,
+                    observation.Value.CounterName,
+                    observation.Value.Instance),
+                observation.Value);
+        }
+
         _database.Write(connection =>
         {
+            var bound = BindSeries(connection, wanted);
+
             var resolved = new List<(long Series, long At, double Value)>(observations.Count);
 
             foreach (var observation in observations)
@@ -112,7 +155,7 @@ public sealed class PostgresObservationStore : IObservationStore
                     observation.Value.Instance);
 
                 resolved.Add((
-                    SeriesId(connection, key, observation.Value),
+                    bound[key],
                     Seconds(observation.SampledAtUtc),
                     observation.Value.Raw));
             }
@@ -154,41 +197,171 @@ public sealed class PostgresObservationStore : IObservationStore
     }
 
     /// <summary>
-    /// The id of a series, creating it the first time it is seen.
+    /// An id for every series in one batch, valid for the calling transaction.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Stores the raw value, not a converted one. What a number means is
     /// carried by its unit and rollup, which are recorded here once rather than
     /// applied at write time — converting on the way in would make the stored
     /// history depend on the version of the code that wrote it, and a
     /// correction to a conversion could never be applied to what is already
     /// there. See the metric contract.
+    /// </para>
+    /// <para>
+    /// The defect this exists to close: the cache was consulted outside any
+    /// transaction that owned the row it named. Compaction is its own
+    /// background service, so a sweep could empty a decommissioned machine's
+    /// counter, delete the series row and commit in the gap between this store
+    /// reading the id and the <c>COPY</c> landing. The insert then violates the
+    /// foreign key, nothing commits, and the cycle's samples are lost for every
+    /// entity in the estate — thirty seconds of blank history across the whole
+    /// site because one series was tidied away. Removing the cache entry after
+    /// the delete never closed that gap: the id had already been read.
+    /// </para>
+    /// <para>
+    /// Two statements close it, not six thousand. The first confirms the cached
+    /// ids still exist AND pins them with <c>FOR KEY SHARE</c> — the same lock
+    /// the foreign key would take, acquired early — so a sweep cannot delete
+    /// them out from under the append; an id whose row has already gone simply
+    /// does not come back, which is how staleness is detected rather than
+    /// assumed. The second creates or re-creates only what the first could not
+    /// account for, which in steady state is nothing and the statement is
+    /// skipped. Resolving each series on its own would be correct too and would
+    /// turn one round trip into one per series, every thirty seconds, forever:
+    /// the reason this adapter uses <c>COPY</c> at all.
+    /// </para>
     /// </remarks>
-    private long SeriesId(NpgsqlConnection connection, SeriesKey key, CounterValue value)
+    private Dictionary<SeriesKey, long> BindSeries(
+        NpgsqlConnection connection, Dictionary<SeriesKey, CounterValue> wanted)
     {
-        if (_seriesIds.TryGetValue(key, out var cached))
+        var hinted = SeriesBinding.HintedIds(wanted.Keys, _seriesIds);
+
+        var pinned = hinted.Count == 0
+            ? new HashSet<long>()
+            : Pin(connection, hinted);
+
+        var bound = new Dictionary<SeriesKey, long>(wanted.Count);
+
+        foreach (var key in wanted.Keys)
         {
-            return cached;
+            if (_seriesIds.TryGetValue(key, out var id) && pinned.Contains(id))
+            {
+                bound[key] = id;
+            }
+        }
+
+        var unbound = SeriesBinding.NeedingResolution(wanted.Keys, _seriesIds, pinned);
+
+        if (unbound.Count == 0)
+        {
+            return bound;
+        }
+
+        foreach (var (key, id) in Resolve(connection, unbound, wanted))
+        {
+            bound[key] = id;
+            _seriesIds[key] = id;
+        }
+
+        return bound;
+    }
+
+    /// <summary>
+    /// The ids among these that still name a row, locked against deletion.
+    /// </summary>
+    /// <remarks>
+    /// <c>FOR KEY SHARE</c> rather than <c>FOR UPDATE</c>: the append does not
+    /// modify the series row, it only needs the row to keep existing until it
+    /// commits, and that is exactly the lock a foreign key check takes. It
+    /// writes no new row version, so a cycle does not leave six thousand dead
+    /// tuples behind for autovacuum every thirty seconds.
+    /// </remarks>
+    private static HashSet<long> Pin(NpgsqlConnection connection, IReadOnlyList<long> ids)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id FROM series WHERE id = ANY(@ids) FOR KEY SHARE;";
+        command.Parameters.Add(new NpgsqlParameter("ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint)
+        {
+            Value = ids.ToArray(),
+        });
+
+        var present = new HashSet<long>();
+        using var reader = command.ExecuteReader();
+
+        while (reader.Read())
+        {
+            present.Add(reader.GetInt64(0));
+        }
+
+        return present;
+    }
+
+    /// <summary>
+    /// Creates the series that are missing, in one statement, and returns them all.
+    /// </summary>
+    /// <remarks>
+    /// <c>ON CONFLICT ... DO UPDATE</c> rather than <c>DO NOTHING</c> for two
+    /// reasons: <c>DO NOTHING</c> returns nothing for a row that already
+    /// existed, leaving the caller without the id it came for; and the update
+    /// takes a row lock, which is what makes a series this append resolved safe
+    /// from a sweep for the rest of the transaction.
+    /// </remarks>
+    private static List<(SeriesKey Key, long Id)> Resolve(
+        NpgsqlConnection connection,
+        IReadOnlyList<SeriesKey> keys,
+        Dictionary<SeriesKey, CounterValue> wanted)
+    {
+        var entities = new string[keys.Count];
+        var counters = new string[keys.Count];
+        var instances = new string[keys.Count];
+        var units = new string[keys.Count];
+        var rollups = new string[keys.Count];
+
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var value = wanted[keys[i]];
+
+            entities[i] = keys[i].Entity.Value;
+            counters[i] = keys[i].Counter;
+            instances[i] = keys[i].Instance;
+            units[i] = value.Unit;
+            rollups[i] = value.Rollup.ToString();
         }
 
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO series (entity_id, counter, instance, unit, rollup)
-            VALUES (@entity, @counter, @instance, @unit, @rollup)
+            SELECT * FROM unnest(@entities, @counters, @instances, @units, @rollups)
+                AS incoming (entity_id, counter, instance, unit, rollup)
             ON CONFLICT (entity_id, counter, instance) DO UPDATE SET unit = EXCLUDED.unit
-            RETURNING id;
+            RETURNING id, entity_id, counter, instance;
             """;
 
-        command.Parameters.AddWithValue("entity", key.Entity.Value);
-        command.Parameters.AddWithValue("counter", key.Counter);
-        command.Parameters.AddWithValue("instance", key.Instance);
-        command.Parameters.AddWithValue("unit", value.Unit);
-        command.Parameters.AddWithValue("rollup", value.Rollup.ToString());
+        Add(command, "entities", entities);
+        Add(command, "counters", counters);
+        Add(command, "instances", instances);
+        Add(command, "units", units);
+        Add(command, "rollups", rollups);
 
-        var id = (long)command.ExecuteScalar()!;
-        _seriesIds[key] = id;
+        var resolved = new List<(SeriesKey, long)>(keys.Count);
+        using var reader = command.ExecuteReader();
 
-        return id;
+        while (reader.Read())
+        {
+            resolved.Add((
+                new SeriesKey(
+                    new EntityId(reader.GetString(1)), reader.GetString(2), reader.GetString(3)),
+                reader.GetInt64(0)));
+        }
+
+        return resolved;
+
+        static void Add(NpgsqlCommand command, string name, string[] values) =>
+            command.Parameters.Add(new NpgsqlParameter(name, NpgsqlDbType.Array | NpgsqlDbType.Text)
+            {
+                Value = values,
+            });
     }
 
     // --- reading ----------------------------------------------------------
@@ -282,8 +455,7 @@ public sealed class PostgresObservationStore : IObservationStore
             () => Fold(nowUtc, policy, SeriesResolution.OneHour),
             () => DeleteAgedSamples(nowUtc, policy),
             () => DeleteAgedBuckets(nowUtc, policy, SeriesResolution.FiveMinutes) +
-                  DeleteAgedBuckets(nowUtc, policy, SeriesResolution.OneHour),
-            ForgetEmptySeries);
+                  DeleteAgedBuckets(nowUtc, policy, SeriesResolution.OneHour));
     }
 
     /// <summary>
@@ -499,45 +671,50 @@ public sealed class PostgresObservationStore : IObservationStore
             return command.ExecuteNonQuery();
         });
 
-    /// <summary>
-    /// Removes series with nothing left at any resolution.
-    /// </summary>
-    /// <remarks>
-    /// Otherwise the dictionary grows forever with every counter of every
-    /// virtual machine that has ever existed, and it is loaded into memory at
-    /// startup.
-    /// </remarks>
-    private int ForgetEmptySeries()
-    {
-        var removed = _database.Write(connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                DELETE FROM series
-                WHERE NOT EXISTS (SELECT 1 FROM sample WHERE sample.series_id = series.id)
-                  AND NOT EXISTS (SELECT 1 FROM bucket WHERE bucket.series_id = series.id)
-                RETURNING entity_id, counter, instance;
-                """;
-
-            var keys = new List<SeriesKey>();
-            using var reader = command.ExecuteReader();
-
-            while (reader.Read())
-            {
-                keys.Add(new SeriesKey(
-                    new EntityId(reader.GetString(0)), reader.GetString(1), reader.GetString(2)));
-            }
-
-            return keys;
-        });
-
-        foreach (var key in removed)
-        {
-            _seriesIds.TryRemove(key, out _);
-        }
-
-        return removed.Count;
-    }
+    // There is deliberately no step here that deletes series rows left with no
+    // samples and no buckets. There used to be one. It was removed, and this
+    // note is what should stop it being helpfully restored.
+    //
+    // It reclaimed nothing. A series row is six short columns: about 300 bytes
+    // on disk once both indexes are counted, about 370 bytes in the startup
+    // dictionary. Everything expensive about that series -- the samples and the
+    // buckets -- had already been deleted by the two steps above, which is what
+    // made the row eligible in the first place.
+    //
+    // What it actually bought was a smaller in-memory dictionary at startup,
+    // and loading that lazily buys the same thing without putting a timed
+    // DELETE across the ingest path.
+    //
+    // That DELETE was expensive in a way the code did not show: sample.series_id
+    // CASCADES. A delete landing while a metric cycle is appending does not
+    // merely contend -- if it wins, the samples just written go with the row,
+    // silently. FOR UPDATE SKIP LOCKED on the sweep side and in-transaction id
+    // binding on the append side made it safe (the binding stays: it guards
+    // more than this), but the honest reading is that a sweep reclaiming
+    // nothing should never have been sharing locks with the hot path. Deleting
+    // rows to save nothing is what put a foreign key race on ingest.
+    //
+    // The consequence, stated so nobody has to rediscover it: empty series rows
+    // now accumulate forever. On the measured estate (ADR-0017: 200 entities,
+    // 6,084 live series, so about 30 series per entity) there are two sources.
+    //
+    //   Counters stopped by configuration. Dropping the storagePath pair on
+    //   20 September left 2,536 orphan rows in one afternoon -- ~1.7 MB of disk
+    //   and memory together, once and forever. This is the larger source, and
+    //   it is bounded by the counter catalogue rather than by time.
+    //
+    //   Decommissioned entities. At 10-20% replacement a year, 600 to 1,200
+    //   rows a year: under 1 MB a year, roughly 5 MB after a decade.
+    //
+    // Against a host whose working set is already 150-170 MB, that is beneath
+    // notice, and it is why this is a reasonable thing to stop doing.
+    //
+    // Where it is NOT beneath notice, and the signal to re-open ADR-0019: an
+    // estate whose entities are recreated rather than kept. Two hundred
+    // non-persistent VDI desktops rebuilt nightly are 6,000 new series a day --
+    // 2.2 million rows and some 800 MB of dictionary within a year, all of it
+    // loaded before the service answers its first request. The answer then is
+    // lazy loading or a bounded cache, not this DELETE back on the ingest path.
 
     // --- internals --------------------------------------------------------
 
@@ -690,6 +867,94 @@ public sealed class PostgresObservationStore : IObservationStore
 }
 
 /// <summary>
+/// Deciding which cached series ids may be used, separated from the SQL that confirms them.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Its own type for the same reason <see cref="CompactionSequence"/> is: this
+/// is the part that can be quietly and expensively wrong, and inside
+/// <c>Append</c> it could only be checked against a live server — which is a
+/// server with a password, on one machine, that most people refactoring this
+/// will not have. Here the rule is a function of three plain values and holds
+/// on any machine.
+/// </para>
+/// <para>
+/// The rule is one sentence: a cached id may be used only if the database has
+/// just said, inside this transaction, that its row is still there. Anything
+/// else — no cached id at all, or a cached id whose row did not come back —
+/// has to be resolved again. Get the second case wrong and the append refers
+/// to a series that a compaction sweep has already deleted; the foreign key
+/// rejects it, the transaction never commits, and every entity's samples for
+/// that cycle are lost, not just that series'.
+/// </para>
+/// </remarks>
+public static class SeriesBinding
+{
+    /// <summary>The distinct ids worth asking the database to confirm.</summary>
+    /// <remarks>
+    /// Distinct because a batch may carry the same series twice and asking
+    /// twice would only make the array longer.
+    /// </remarks>
+    public static IReadOnlyList<long> HintedIds(
+        IEnumerable<SeriesKey> keys, IReadOnlyDictionary<SeriesKey, long> hints)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        ArgumentNullException.ThrowIfNull(hints);
+
+        var ids = new HashSet<long>();
+
+        foreach (var key in keys)
+        {
+            if (hints.TryGetValue(key, out var id))
+            {
+                ids.Add(id);
+            }
+        }
+
+        return [.. ids];
+    }
+
+    /// <summary>
+    /// The keys that still have to be resolved against the database.
+    /// </summary>
+    /// <param name="keys">Every series the batch is about to write to.</param>
+    /// <param name="hints">What the cache believes, which may be out of date.</param>
+    /// <param name="confirmed">
+    /// The ids the database has just confirmed and locked. An id absent from
+    /// here is not "probably fine": it is a row that has been deleted.
+    /// </param>
+    public static IReadOnlyList<SeriesKey> NeedingResolution(
+        IEnumerable<SeriesKey> keys,
+        IReadOnlyDictionary<SeriesKey, long> hints,
+        IReadOnlySet<long> confirmed)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        ArgumentNullException.ThrowIfNull(hints);
+        ArgumentNullException.ThrowIfNull(confirmed);
+
+        var needed = new List<SeriesKey>();
+        var seen = new HashSet<SeriesKey>();
+
+        foreach (var key in keys)
+        {
+            if (hints.TryGetValue(key, out var id) && confirmed.Contains(id))
+            {
+                continue;
+            }
+
+            // De-duplicated because these become one upsert, and PostgreSQL
+            // refuses an ON CONFLICT statement that would touch a row twice.
+            if (seen.Add(key))
+            {
+                needed.Add(key);
+            }
+        }
+
+        return needed;
+    }
+}
+
+/// <summary>
 /// The order of one compaction sweep, separated from the SQL that carries it out.
 /// </summary>
 /// <remarks>
@@ -737,19 +1002,22 @@ public static class CompactionSequence
     /// </param>
     /// <param name="deleteAgedSamples">Enforces raw retention.</param>
     /// <param name="deleteAgedBuckets">Enforces bucket retention, at every resolution.</param>
-    /// <param name="forgetEmptySeries">Removes series with nothing left anywhere.</param>
+    /// <remarks>
+    /// Four steps, and there is no fifth. A step that deleted series rows with
+    /// nothing left used to run last. It reclaimed nothing and shared locks
+    /// with the ingest path in order to do it, so it is gone; see the note in
+    /// <c>PostgresObservationStore.Compact</c> and ADR-0019.
+    /// </remarks>
     public static CompactionReport Run(
         Func<int> foldFiveMinutes,
         Func<int> foldOneHour,
         Func<int> deleteAgedSamples,
-        Func<int> deleteAgedBuckets,
-        Func<int> forgetEmptySeries)
+        Func<int> deleteAgedBuckets)
     {
         ArgumentNullException.ThrowIfNull(foldFiveMinutes);
         ArgumentNullException.ThrowIfNull(foldOneHour);
         ArgumentNullException.ThrowIfNull(deleteAgedSamples);
         ArgumentNullException.ThrowIfNull(deleteAgedBuckets);
-        ArgumentNullException.ThrowIfNull(forgetEmptySeries);
 
         // Both folds, before anything is deleted. Nothing is caught here on
         // purpose: a throw leaves this method with the deletes unreached, which
@@ -764,7 +1032,6 @@ public static class CompactionSequence
             BucketsWritten = written,
             SamplesDeleted = samplesDeleted,
             BucketsDeleted = bucketsDeleted,
-            SeriesForgotten = forgetEmptySeries(),
         };
     }
 }

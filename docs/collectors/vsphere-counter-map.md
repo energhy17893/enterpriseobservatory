@@ -419,6 +419,319 @@ karıştırmamalı.
 
 ---
 
+## 5d. `mem.state.latest` — satıcının yayımladığı tek eşik
+
+20 Eylül 2026'da eklendi. HostSystem üzerinde, instance yok, host başına tek
+seri.
+
+Bu dosyadaki diğer her sayaçtan farklı bir şey: **anlamı platformla birlikte
+geliyor.** Değer bir sayı değil, yayımlanmış bir enum.
+
+| Değer | Ad | Ne demek |
+|---|---|---|
+| 0 | high | Boş bellek bol, geri kazanım yok |
+| 1 | soft | Balon şişiyor — mekanizma çalışıyor |
+| 2 | hard | Sıkıştırma ve takas devrede |
+| 3 | low | Host agresif geri kazanımda; üstündeki her VM aynı anda bozuluyor |
+
+> **Cevapladığı soru:** "Bu host belleği geri kazanıyor mu, ve ne kadar
+> sertlikte?" — vROps araştırmasının kurduğu şey tam da buydu: Broadcom
+> neredeyse hiçbir yerde eşik yayımlamıyor. Bu ürünün yazacağı her bellek
+> kuralı birinin uydurduğu bir çizgidir; **bu değil.** "hard" ya da "low",
+> tartışılacak bir seviye değil, satıcının kendi verdiği hükümdür.
+
+### Neden `IsFaultCount` değil
+
+Denendi ve **iki ayrı yerden** tutmadı. İkisini de yazmak gerekiyor, çünkü
+birincisi düzeltilse ikincisi kalırdı:
+
+1. **Burada sıfır *iyi* demek.** `IsFaultCount` bayrağının verdiği söz,
+   sıfırın "hiç olmadı" anlamına gelmesidir (§5c). Burada 0 = `high` =
+   sağlıklı. Bayrağın sözü tam tersine dönüyor.
+2. **`FaultCounters` toplam (aggregate) instance'ları atlıyor.** Bu sayacın
+   instance'ı her zaman boştur. Yani bayrak konsa bile kural onu hiç okumaz —
+   yanlış *ve* ölü bir bayrak olurdu.
+
+### Peki bir kurala nasıl ulaşmalı
+
+`CounterValue` bunu **taşıyamıyor.** Taşıdığı şey `Raw = 2.0` ve
+`Unit = "number"`; bir kural bunu okuyup "2 kötüdür" diyebilmek için
+`mem.state.latest` adını bilmek zorunda kalır — ki uygulama katmanının bir
+vim25 sayacını adlandırması yasak (bkz. `FaultCounters` ve ADR-0005).
+
+Gereken şey bir **bayrak değil, bir kırılma noktası**: toplayıcının
+bildirdiği "şu değerden itibaren bozulmuş" tamsayısı. `IsFaultCount` bir
+bool olabildi çünkü sorusu evet/hayırdı; burada soru "hangi değerden sonra"
+ve cevabı satıcıdan geliyor, yani veri taşınmalı, tip değil.
+
+**Bugün eklenmedi ve bu bilinçli.** Bayrağı tüketecek kural yok; şimdi
+eklemek `CounterValue`'ya okunmayan bir alan ve ayrıştırıcıya boşa bir dal
+koymak olur — `IsFaultCount` ve `InstanceIsVantagePoint`'in ikisi de
+kendilerini okuyan kuralla **aynı anda** geldiler. Sayaç bugün toplanıyor ki
+kural yazıldığında karşısında üç aylık geçmiş bulsun; kural yazıldığında
+`CounterValue.DegradedAtOrAbove` (int?) eklenecek ve bu satır ona işaret
+ediyor.
+
+---
+
+## 5e. Düşen paketler: `summation` ama **arıza değil**
+
+20 Eylül 2026'da eklendi. `net.droppedRx.summation` ve
+`net.droppedTx.summation`, hem HostSystem hem VirtualMachine üzerinde.
+
+> **Cevapladığı soru:** "Yavaşlığın sebebi ağ mı?" — ve bugüne kadar ürünün
+> bu soruya verebileceği hiçbir cevabı yoktu. **Bu ürün hiçbir türde ağ
+> verisi toplamıyordu.** Düşen paket fırtınası sahada "uygulama yavaş" diye
+> görünür; depolama ve CPU sayılarının hepsi temizdir. Yani operatör,
+> sorunun hiç bulunmadığı merdivenden aşağı iner — bu ürünün var olma sebebi
+> olan körlüğün ta kendisi.
+
+### Neden `storagePath` faultları ile aynı kutuya konmadılar
+
+İlk bakışta aynı argüman geçerli: ikisi de `summation`, dolayısıyla
+**sıfırları gerçektir** (§5c'deki ayrım). Toplanma gerekçesi gerçekten de
+odur.
+
+Ama `IsFaultCount` bundan fazlasını söylüyor: *hiçbir* sıfırdan büyük okuma
+kabul edilebilir değildir. Bu, bus reset için doğru — SCSI, dizi meşgul diye
+bus'ı sıfırlamaz. Düşen paket için **doğru değil**: yoğun bir uplink'te
+küçük ve sürekli bir düşme oranı normaldir.
+
+Ve `FaultCounters`'ın **eşiği yok, hafızası yok**. Bayrak konsaydı, sağlıklı
+bir estate'te tek bir düşen çerçeve her turda bir uyarı açardı — yani ürün,
+bu bayrağın görünür kılmak için var olduğu bus reset'i kendi gürültüsüne
+gömerdi. Bunlar bir **oran** ve içinden geçirilecek bir çizgi istiyor; o,
+başka bir kural.
+
+### Neden cihaz başına tutulmuyorlar
+
+`KeepPerDevice` bilerek `net.` ile eşleşmiyor. Host başına ~16 vmnic × 2
+sayaç × 10 host ≈ **320 seri**, "hangi uplink" sorusu için. Toplam serinin
+cevapladığı soru "bu host hiç paket düşürüyor mu" — ki bugün hiçbir şey onu
+cevaplamıyor. İkinci soru, bir şeyin düştüğü *görüldükten sonra*, tek satır
+değiştirilerek satın alınabilir. CPU için verilen kararın aynısı (§KeepPerDevice).
+
+---
+
+## 5f. 20 Eylül eklemelerinin maliyeti
+
+ADR-0017'nin ölçülmüş rakamlarıyla: 6 084 seri ≈ 13,6 GB, yani **seri başına
+≈ 2,24 MB** kararlı durumda.
+
+| Ekleme | Nesne | Cihaz başına mı | Seri | ≈ Disk |
+|---|---|---|---|---|
+| `disk.busResets.summation` | Host | **Evet** (32 + toplam) × 10 | 330 | 0,74 GB |
+| `disk.commandsAborted.summation` | Host | **Evet** | 330 | 0,74 GB |
+| `disk.scsiReservationConflicts.summation` | Host | **Evet** | 330 | 0,74 GB |
+| `mem.state.latest` | Host | Hayır | 10 | 0,02 GB |
+| `mem.swapinRate` / `swapoutRate` / `compressionRate` / `decompressionRate` | Host | Hayır | 40 | 0,09 GB |
+| `mem.active.average` | VM | Hayır | 145 | 0,33 GB |
+| `net.droppedRx` / `droppedTx` | Host + VM | Hayır | 310 | 0,69 GB |
+| **Toplam** | | | **≈ 1 495** | **≈ 3,4 GB** |
+
+6 084 → **≈ 7 579 seri** (+%24,6), 13,6 GB → **≈ 17,0 GB**.
+
+**Bunun üçte ikisi üç sayaçtan geliyor**, ve bu sayaç listesine bakarak
+görülmez: `KeepPerDevice` zaten `disk.*` ile eşleştiği için her biri LUN
+başına bir seri. Üç sayaç, 990 seri.
+
+Buna rağmen tutuluyorlar, ve gerekçe §5c'nin kendisi: yol faultları yolu
+**çalışma zamanı adıyla** adlandırıyor ve o adda LUN kimliği yok, dolayısıyla
+bir reset host'a ve HBA'ya atfedilebiliyor ama datastore'a
+atfedilemiyor. `disk.*` faultları `naa.*` taşıyor ve §5c'de kapatılan zincir
+onu datastore'a ve üstündeki VM'lere çeviriyor — aranan cümle o. Ayrıca
+estate zaten yol faultları için ~2 500 seri ödüyor; bu, onun %40'ı.
+
+> **Kesmek gerekirse ne kesilecek, şimdiden yazılı:** `busResets` ve
+> `commandsAborted`, `storagePath` karşılıklarıyla örtüşüyor — gidecek olan
+> onlar. `scsiReservationConflicts`'ın hiçbir yerde karşılığı yok.
+> 20 Eylül'de `storagePath` gecikmesinin çıkarılması (2 536 seri, ~8 GB,
+> cevaplanamayan bir soru için) emsaldir; buradaki fark, sorunun
+> cevaplanabilir olması.
+
+### Bırakılması önerilenler
+
+- **`net.*` cihaz başına** — 320 seri, "hangi uplink". Toplam seri, asıl
+  körlüğü zaten kapatıyor. (§5e)
+- **`storagePath.scsiReservationConflicts`** diye bir şey aranmadı: yol
+  düzeyinde yok, cihaz düzeyinde var.
+- **`mem.usage` ve `mem.vmmemctl`'i bellek baskısı grubuna almak** —
+  Dynatrace'in `esxiHighMemoryDetection`'ı bu ikisini açıkça dışarıda
+  bırakıyor, ve gerekçesi bu belgenin diliyle aynı: balon, mekanizmanın
+  *çalışmasıdır*; konsolide bir host'ta yüksek `mem.usage` normaldir.
+
+---
+
+## 5h. `cpu.maxlimited.summation` — yanlış cevabı susturmak değil, değiştirmek
+
+20 Eylül 2026'da eklendi. VirtualMachine üzerinde, toplam (aggregate) instance,
+milisaniye cinsinden `summation`.
+
+> **Cevapladığı soru:** "Bu VM neden çekirdek bekliyor — host doluysa mı, yoksa
+> kendi tavanı mı?" `cpu.ready.summation` bu ikisini **ayıramaz.** Kendi CPU
+> limiti altında tutulan bir VM, host'u dolu olan bir VM ile birebir aynı
+> bekleme süresini biriktirir. CPU kuralı bu yüzden limitlenmiş makineyi
+> "host'un kurbanı" ilan ediyordu.
+
+Bu, ürünün en çok kaçındığı hata tipiydi ve yazarı tarafından **sessizce
+gönderilmek yerine kendi raporunda bildirilmişti**. Maliyeti iki katlı:
+
+1. Operatöre "host CPU'suz" denir, gidip host'a bakar, host **iyidir**, ve bir
+   daha bu uyarıya inanmaz.
+2. VM'in **asıl** sorunu — muhtemelen yıllar önce, muhtemelen yanlışlıkla
+   konmuş bir CPU limiti — hiçbir ekranda görünmez.
+
+Dynatrace aynı ayrımı `guestCpuLimitReached` ile yapıyor: aynı iki sinyal, artı
+ayıran üçüncü terim. Yapı yayımlanmış, **seviye yayımlanmamış** (§ CpuContention
+politikası).
+
+### Neden bu sayaç ve neden ucuz
+
+| Özellik | Değer | Sonucu |
+|---|---|---|
+| Nesne | VirtualMachine | Limit makinenin özelliği; host'ta karşılığı yok |
+| Rollup | `summation` | `cpu.ready` ile aynı — yeni dönüşüm makinesi gerekmiyor |
+| Birim | millisecond | `AsPercentageOfInterval` aynen uygulanır |
+| Instance | toplam (per-vCPU bırakıldı) | `KeepPerDevice` `cpu.` ile eşleşmiyor (§6.5) |
+| `IsFaultCount` | **Hayır** | Aşağıda |
+| Seri maliyeti | 145 VM × 1 = **145 seri ≈ 0,33 GB** | `mem.active.average` ile aynı büyüklük |
+
+**Sıfırı yapısaldır.** Limit tanımlanmamış bir VM'de vSphere buraya hiç
+biriktirmez. Yani sıfırdan büyük bir okuma yorumlanacak bir *seviye* değil,
+**şu anda ısıran bir tavanın varlığıdır.** §5c'nin "toplanan bir sayacın sıfırı
+bilgidir" ayrımının en temiz örneği.
+
+### Neden `IsFaultCount` değil
+
+§5e'deki düşen paket argümanının daha keskin hâli. CPU limiti **birinin
+seçtiği bir yapılandırmadır**. Lisans gereği ya da test amacıyla kasıtlı olarak
+sınırlanmış bir VM'de her turda ısırır ve bu tamamen doğrudur. Sıfırdan büyük
+okuma bir *arıza* değil, bekleme süresinin *açıklamasıdır*. Bayrak konsaydı,
+doğru yapılandırılmış her makine kalıcı bir uyarı üretirdi.
+
+### Bu sayacın diğerlerinden farkı: **bir hükmü susturuyor**
+
+Bu dosyadaki başka hiçbir sayaç bunu yapmıyor. Diğerleri bir soruya cevap
+*ekler*; bu, mevcut bir cevabı **bastırır** (bkz. `CpuContentionPolicy.MaxLimitedPercent`).
+Sonucu §5g için doğrudan bir risk artışıdır ve orada ayrıca yazıldı:
+
+> Adı yanlışsa sayaç hiç gelmez, bastırma hiç çalışmaz, ve kural **kapatılan
+> yanlış pozitife sessizce geri döner** — ürün sağlıklı görünürken. Eksik bir
+> gecikme sayacı bir cevabı kaybettirir; bu, kaybedilmiş bir cevabı *yanlış* bir
+> cevapla değiştirir.
+
+Bu yüzden kural, bastırdığı her makineye **kendi hükmünü veriyor**: bastırılan
+ile adı konan küme birebir aynı. Sessizlik, yanlış cevabın kabul edilebilir
+ikamesi değil.
+
+### Eşik: `MaxLimitedPercent = 1` — ve neden "sıfırdan büyük" değil
+
+Yayımlanmış hiçbir sayı yok. vROps'un CPU ready uyarısı **hiç yok**;
+Dynatrace `guestCpuLimitReached`'in yapısını yayımlıyor, **seviyesini
+yayımlamıyor**. Dolayısıyla sayı, sayacın *ne olduğundan* türetildi.
+
+Cazip cevap "sıfırdan büyük her okuma"ydı, çünkü sayacın sıfırı yapısaldır.
+Yanlış olmasının sebebi şu: kural, limitin **tanımlı** olup olmadığına karar
+vermiyor; limitin **ölçülen beklemeyi açıklayıp açıklamadığına** karar veriyor.
+20 saniyelik pencerede 1 ms ısıran bir tavan, duvar saatinin üçte birini
+kaybeden bir makinenin beklemesini açıklamaz.
+
+> Bu ayrım bir *yanlış pozitifi*, bir *yanlış negatifle* takas etme riskidir:
+> gerçekten çekirdeksiz kalmış bir estate'in, VM'lerinin tepe noktalarını
+> kırpan limitler taşıdığı için susması. Kuralın verebileceği **en değerli
+> hükümde** yanlış negatif, iki taraftan kötü olanıdır.
+
+Yüzde 1 = 200 ms; tek bir zamanlama olayı olamaz. `CoStopPercent`'in 3'ünden
+düşük olması tutarsızlık değil, argümanın kendisi: co-stop sağlıklı geniş bir
+makinede **normal işleyişte de** birikir, bu sayaç ise tavan ısırmadıkça
+**hiç** birikmez — yani geçmesi gereken "olağan bant"ı yok.
+
+### Mutasyon testi (20 Eylül 2026)
+
+Dokuz mutasyon, dokuzu da öldü. Bu bölümdeki her sayı ve her küme işlemi
+değiştirilebilir bir sayıdır, yani bir testin savunması gerekir:
+
+| # | Mutasyon | Sonuç |
+|---|---|---|
+| 1 | `MaxLimitedPercent` → `0,0001` (taban yok) | Öldü (2 test) |
+| 2 | `MaxLimitedPercent` → `1000` (bastırma hiç çalışmaz) | Öldü (4 test) |
+| 3 | Limitli makineler host kurban sayımına geri kondu | Öldü (2 test) |
+| 4 | Limitli makineler yine komşu-kurbanı ilan edilebilir | Öldü (3 test) |
+| 5 | Limit hükmü kaldırıldı (bastırma → sessizlik) | Öldü (4 test) |
+| 6 | Limitli makineler kardeş medyanından çıkarıldı | Öldü (2 test) |
+| 7 | Sayaç adı politika yerine koda gömüldü | Öldü (1 test) |
+| 8 | Limit hükmü beklemeyen makinede de açılıyor | Öldü (1 test) |
+| 9 | Eksik limit okuması "ısıran limit" sayıldı | Öldü (10+ test) |
+
+5 numara özellikle önemli: bastırmayı bırakıp hükmü kaldırmak **derlenir ve
+sessizce çalışır**. Onu öldüren test, sessizliğin yanlış cevabın ikamesi
+olmadığını söyleyen testtir.
+
+---
+
+## 5g. Bu bölüm **ölçülmedi** — §6.4'ün ihlali, bilerek
+
+Bu belgenin ilk satırı, içindeki hiçbir şeyin hatırlanarak yazılmadığını
+söylüyor. §5d, §5e ve §5f **bu kuralın istisnasıdır ve öyle işaretlenmiştir.**
+
+Eklenen on sayacın adı ve seviyesi **canlı bir vCenter'a sorulmadı.**
+Worktree'den erişilebilir bir vCenter yok ve kimlik bilgisi aranmadı.
+Depodaki tek katalog, testlerin fixture'ı, yalnızca `datastore`,
+`storagePath` ve `virtualDisk` gruplarını kapsıyor — yani `disk.*`, `mem.*`
+ve `net.*`'in hiçbiri kontrol edilebilir durumda değil.
+
+| Sayaç | Nesne | Beklenen seviye | Doğrulandı mı |
+|---|---|---|---|
+| `disk.busResets.summation` | Host | 2 | **Hayır** |
+| `disk.commandsAborted.summation` | Host | 2 | **Hayır** |
+| `disk.scsiReservationConflicts.summation` | Host | 2 | **Hayır** |
+| `mem.state.latest` | Host | 2 | **Hayır** |
+| `mem.swapinRate.average` | Host | 2 | **Hayır** |
+| `mem.swapoutRate.average` | Host | 2 | **Hayır** |
+| `mem.compressionRate.average` | Host | 2 | **Hayır** |
+| `mem.decompressionRate.average` | Host | 2 | **Hayır** |
+| `mem.active.average` | VM | 2 | **Hayır** |
+| `net.droppedRx.summation` | Host + VM | 2 | **Hayır** |
+| `net.droppedTx.summation` | Host + VM | 2 | **Hayır** |
+| `cpu.maxlimited.summation` | VM | 2 | **Hayır — ve bu en riskli satır** |
+
+"Beklenen seviye" sütunu satıcı belgelerinden gelir, **ölçümden değil.**
+Hiçbirinin **seviye 3** olmadığına inanılıyor — eğer biri öyleyse bu, bir
+kurulum ön koşulunu değiştirir ve yüksek sesle söylenmesi gerekir. Mevcut
+`InsufficientDetailLevel` mekanizması eksik sayacı adıyla raporluyor ve
+yeni üç `disk.*` faultunun da o yoldan geçtiği testle sabitlendi — yani
+seviye yanlışsa **sessiz kalmaz.** Ama bir fault sayacını sessizce
+kaybetmek, bir gecikme sayacını kaybetmekten kötüdür: sıfırlarına
+güvenilmesi gerekiyordu.
+
+Adın yanlış olması ise hiç raporlanmıyor bile — `ProtocolError` olarak geçer
+ve §0'ın anlattığı hikâye tam olarak budur.
+
+> **`cpu.maxlimited.summation` bu tablodaki diğerlerinden farklı bir risk
+> taşıyor ve ayrı yazılması gerekiyor.** Bu listedeki her sayaç, adı yanlışsa
+> *bir cevabı kaybettirir*. Bu sayaç, adı yanlışsa `CpuContention`'ın bastırma
+> kapısını hiç açtırmaz ve kural **kapattığı yanlış pozitife sessizce geri
+> döner** — yani kaybedilen bir cevabın yerini *yanlış* bir cevap alır. Sürüme
+> girmeden önce `--map` ile doğrulanması gereken ilk satır budur.
+>
+> Kısmi bir teselli var ve ölçüsü kayda değer: bastırma yalnızca sayaç
+> geldiğinde çalışır, dolayısıyla sayacın gelmemesi bugünkü davranışı aynen
+> korur. Yani hata **sessiz bir gerileme**dir, yeni bir kusur değil — ama
+> tam olarak §0'ın "boş cevap, hata değildir" biçimi.
+
+> **Yapılacak iş, tek cümle:** bu sayaçlar bir sürüme girmeden önce
+> `--map` bir kez çalıştırılıp yukarıdaki tablonun sağ sütunu doldurulmalı,
+> ve `disk`, `mem`, `net` grupları test fixture'ına **gerçek vCenter
+> çıktısından yapıştırılmalıdır** — elle yazılarak değil, ki fixture'ın
+> başlığı bunu ayrıca söylüyor.
+
+Fixture'ın kapsamadığı sayaçların listesi artık bir teste yazılı
+(`Every_counter_no_catalogue_in_this_repository_can_check_is_listed_rather_than_assumed`),
+böylece kontrol edilmeyen bir gruba sayaç eklemek de, bir grubu fixture'a
+ekleyip geri dönüp bakmamak da sessizce geçmiyor.
+
+---
+
 ## 6. Bu haritanın dayattığı sonuçlar
 
 1. **Datastore gecikmesi host'tan toplanmalı**, instance→VMFS UUID eşlemesiyle
@@ -441,7 +754,20 @@ karıştırmamalı.
    olarak sayaç adıyla birlikte raporluyor. Bkz. §5c.
 4. **Bir sayacın nesnesi, adından çıkarılamaz.** Yeni bir sayaç eklenirken
    `--map` çıktısına bakılmadan eklenmemeli.
-5. **Boş performans cevabı hata değildir.** Ürün artık bunu raporluyor
+5. **Bir sayacı cihaz başına tutmak, sayaç saymakla görünmez.**
+   `KeepPerDevice` bir *önek* ile eşleşiyor, tek tek sayaçlarla değil. Yani
+   `disk.` ile başlayan yeni bir sayaç, kimse karar vermeden LUN başına bir
+   seri olur: 20 Eylül'de eklenen üç fault sayacı, üç satır kod ve **990
+   seri**. Yeni bir sayacın maliyeti, hangi öneke düştüğüne bakılmadan
+   tahmin edilemez. (§5f)
+6. **`summation` olmak, arıza olmak değildir.** İkisi ayrı sorular:
+   "sıfırı bilgi midir" ve "sıfırdan büyük her okuma arıza mıdır". Yol
+   faultlarında ikisinin de cevabı evet; düşen pakette birincisi evet,
+   ikincisi hayır. `IsFaultCount` ikincisini söyler. (§5e)
+7. **Satıcının yayımladığı bir enum, uydurulmuş bir eşikten değerlidir** —
+   ve ürünün bunu taşıyacak yolu henüz yok. `CounterValue` bir bool
+   taşıyabiliyor, bir kırılma noktası taşıyamıyor. (§5d)
+8. **Boş performans cevabı hata değildir.** Ürün artık bunu raporluyor
    (`PartialFailures`), ama tasarım varsayımı olarak da akılda tutulmalı: vSphere
    entegrasyonunda *sessizlik* en sık görülen hata biçimidir.
 

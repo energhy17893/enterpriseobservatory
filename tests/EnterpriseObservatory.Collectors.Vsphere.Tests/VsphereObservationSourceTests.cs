@@ -247,6 +247,14 @@ public class VsphereObservationSourceTests
         // The vSphere statistics level case. At level 1 the disk latency triad
         // is absent, and those three are what let the product say which layer
         // is slow rather than merely that something is.
+        //
+        // The three device SCSI fault counters ride the same path, which is
+        // the point of checking them here: they are level 2 like the triad,
+        // so an estate that has not raised its statistics level loses them
+        // too — and losing a fault counter silently is worse than losing a
+        // latency one, because its zeros are supposed to be trustworthy. One
+        // failure per counter, named, is what stops "no resets reported" from
+        // being read as "no resets happened".
         var api = new FakeApi
         {
             Available = [.. VsphereCounters.Host.Where(k => !k.StartsWith("disk.", StringComparison.Ordinal))],
@@ -258,10 +266,13 @@ public class VsphereObservationSourceTests
             .Where(f => f.Kind == CollectionFailureKind.InsufficientDetailLevel)
             .ToList();
 
-        Assert.Equal(4, insufficient.Count);
+        Assert.Equal(7, insufficient.Count);
         Assert.Contains(insufficient, f => f.Target == "disk.deviceLatency.average");
         Assert.Contains(insufficient, f => f.Target == "disk.queueLatency.average");
         Assert.Contains(insufficient, f => f.Target == "disk.kernelLatency.average");
+        Assert.Contains(insufficient, f => f.Target == "disk.busResets.summation");
+        Assert.Contains(insufficient, f => f.Target == "disk.commandsAborted.summation");
+        Assert.Contains(insufficient, f => f.Target == "disk.scsiReservationConflicts.summation");
     }
 
     [Fact]
@@ -297,7 +308,9 @@ public class VsphereObservationSourceTests
     [Fact]
     public async Task The_batch_size_respects_the_servers_limit()
     {
-        // 256 * 0.8 / 8 counters = 25 entities per query.
+        // 256 * 0.8 / (counters per host) entities per query, so the ceiling
+        // moves down as counters are added. Asserted as a ceiling rather than
+        // a number for exactly that reason.
         var api = new FakeApi();
         var hosts = Enumerable.Range(0, 60).Select(i => $"host-{i}").ToArray();
 

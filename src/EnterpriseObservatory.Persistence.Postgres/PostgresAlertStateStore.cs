@@ -226,6 +226,16 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
             }
         });
 
+        // Filed exactly as the reconciler produced it. This used to re-stamp
+        // Scope from the argument, because the reconciler returned instances
+        // carrying whatever the definition happened to say and the cache had to
+        // match what LoadInstances would read back out of the column. The
+        // reconciler now stamps its own result from the scope it was given, so
+        // re-stamping here would be a second implementation of a rule with one
+        // implementation — and a second implementation is exactly what let the
+        // live copy and the durable one disagree in the first place. A store
+        // that silently corrects the layer above it also hides the day that
+        // layer stops being correct.
         _instances[scope] = [.. result.Instances];
         _flaps[scope] = [.. result.FlapHistories];
     }

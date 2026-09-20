@@ -143,11 +143,13 @@ public sealed class MonitoringCycle(
         var graphFailure = Guarded(
             "entity-graph", "the topology", () => _graphStore.Replace(graph));
 
-        var observed = cycle.Snapshots.SelectMany(s => s.Alerts)
-            .Concat(cycle.CollectionAlerts)
-            .Concat(healthFailure)
-            .Concat(graphFailure)
-            .ToList();
+        IReadOnlyList<AlertDefinition> observed =
+        [
+            .. cycle.Snapshots.SelectMany(s => s.Alerts),
+            .. cycle.CollectionAlerts,
+            .. healthFailure,
+            .. graphFailure,
+        ];
 
         var reconciliation = Reconcile(AlertScopes.Inventory, observed, options, now);
 
@@ -200,15 +202,17 @@ public sealed class MonitoringCycle(
         // else. Collection sources and storage have always been isolated this
         // way; rules were the one part of the cycle that could still take the
         // whole thing down with them.
-        var observed = cycle.CollectionAlerts
-            .Concat(healthFailure)
-            .Concat(Analysis.GuardedRule.Run(
+        IReadOnlyList<AlertDefinition> observed =
+        [
+            .. cycle.CollectionAlerts,
+            .. healthFailure,
+            .. Analysis.GuardedRule.Run(
                 Analysis.FaultCounters.RuleId,
-                () => Analysis.FaultCounters.Evaluate(cycle.Observations)))
-            .Concat(Analysis.GuardedRule.Run(
+                () => Analysis.FaultCounters.Evaluate(cycle.Observations)),
+            .. Analysis.GuardedRule.Run(
                 Analysis.PeerOutliers.RuleId,
-                () => Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers)))
-            .ToList();
+                () => Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers)),
+        ];
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
 
@@ -434,10 +438,24 @@ public sealed class MonitoringCycle(
     /// Advances alert state for one scope.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Reading and writing the same scope is the whole of the safety here: the
     /// reconciler resolves anything it was given but did not see, so a cycle
     /// that read the other scope's instances would clear them. See
     /// <see cref="AlertScopes"/>.
+    /// </para>
+    /// <para>
+    /// This method used to stamp the observations on the way in, because the
+    /// collection pipelines stamped what the collectors reported and nothing
+    /// stamped what the cycle added to them — the analysis rules and
+    /// <see cref="Guarded"/> both produce definitions with no scope, and
+    /// <c>AlertLifecycle</c> copies whatever it is given. That stamp is gone,
+    /// not because the problem went away but because it moved to the one place
+    /// that can answer it for every producer at once: the reconciler is handed
+    /// <paramref name="scope"/> and stamps what it returns. A definition
+    /// arriving here unscoped is now simply a definition, and the cycle no
+    /// longer has an opinion about the field at all.
+    /// </para>
     /// </remarks>
     private AlertReconciliationResult Reconcile(
         string scope,
@@ -447,6 +465,11 @@ public sealed class MonitoringCycle(
         _alertStore.Reconcile(scope, (stored, flaps) => AlertReconciler.Reconcile(
             new AlertReconciliationRequest
             {
+                // The same value the store is asked to file under, passed once
+                // and used for both. This is the whole of the cycle's part in
+                // scoping now: it says which evaluation is running, and the
+                // reconciler stamps what comes out of it.
+                Scope = scope,
                 Observed = observed,
                 Stored = stored,
                 FlapHistories = flaps,

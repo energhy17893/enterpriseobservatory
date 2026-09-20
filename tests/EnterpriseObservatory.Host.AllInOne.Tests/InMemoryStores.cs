@@ -198,16 +198,20 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
             // writes after it silently undoes the acknowledgement.
             var result = reconcile(Read(scope), ReadFlaps(scope));
 
-            // Stamped with the scope they were reconciled into, because the
-            // real store does: PostgresAlertStateStore sets Scope on every
-            // instance it reads back, from the column it filed them under. A
-            // fake that left it empty is weaker than the contract in exactly
-            // the way the missing lock above was -- and this one hid until a
-            // test asked which evaluation owned an alert.
-            _instances[scope] = [.. result.Instances.Select(i => i with { Scope = scope })];
-            _flaps[scope] = [.. result.FlapHistories.Select(f => f with { Scope = scope })];
+            // Filed exactly as it was decided, which is what
+            // PostgresAlertStateStore.Store now does too. Both stores used to
+            // stamp Scope here from the argument, and this fake once stamped
+            // the returned result as well -- a fake STRONGER than the contract,
+            // which made a cycle that handed in unscoped alerts look correct
+            // here while the real store kept them unscoped until a restart. A
+            // fake that is stronger hides the product's bug; a fake that is
+            // weaker invents one. Neither may differ from the real store at
+            // all -- and the surest way to keep two stores in step about a
+            // field is for neither of them to have anything to say about it.
+            _instances[scope] = [.. result.Instances];
+            _flaps[scope] = [.. result.FlapHistories];
 
-            return result with { Instances = Read(scope), FlapHistories = ReadFlaps(scope) };
+            return result;
         }
     }
 
@@ -340,9 +344,46 @@ internal sealed class InMemoryMaintenanceWindowStore : IMaintenanceWindowStore
 
 internal sealed class InMemoryCollectorHealthStore : ICollectorHealthStore
 {
+    /// <summary>
+    /// The same guarantee the real store makes, for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// PostgresCollectorHealthStore guards both members with a lock because it
+    /// is written by the same cycle that reads it — and there are two such
+    /// cycles, running as independent tasks on different schedules. Each reads
+    /// <see cref="Current"/> and then calls <see cref="Merge"/>, so the metric
+    /// cycle inserting a key can resize the dictionary while the inventory
+    /// cycle is enumerating it.
+    /// </para>
+    /// <para>
+    /// A throw would be the good outcome. The bad one is a short list: a source
+    /// missing from it makes SourceRunner treat it as never seen and hand the
+    /// circuit breaker a fresh CollectorHealth with no failures, so a vCenter
+    /// that has been refusing us all day is hammered again — and an account
+    /// that was only being rate-limited gets locked out by the monitoring tool,
+    /// which product principle 5 exists to forbid.
+    /// </para>
+    /// <para>
+    /// Latent in the suite rather than absent from the product: no test has yet
+    /// run the two cycles at the same moment, which is precisely how the
+    /// missing lock and the missing stamp above both got in.
+    /// </para>
+    /// </remarks>
+    private readonly Lock _gate = new();
+
     private readonly Dictionary<(string, CollectorRole), CollectorHealth> _health = [];
 
-    public IReadOnlyList<CollectorHealth> Current => [.. _health.Values];
+    public IReadOnlyList<CollectorHealth> Current
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _health.Values];
+            }
+        }
+    }
 
     /// <remarks>
     /// Merged rather than replaced, like the real one: a cycle only reports on
@@ -354,9 +395,12 @@ internal sealed class InMemoryCollectorHealthStore : ICollectorHealthStore
     {
         ArgumentNullException.ThrowIfNull(health);
 
-        foreach (var entry in health)
+        lock (_gate)
         {
-            _health[(entry.InstanceId, entry.Role)] = entry;
+            foreach (var entry in health)
+            {
+                _health[(entry.InstanceId, entry.Role)] = entry;
+            }
         }
     }
 }

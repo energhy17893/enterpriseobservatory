@@ -125,8 +125,7 @@ public sealed class CompactionWorker(
                 _logger,
                 report.BucketsWritten,
                 report.SamplesDeleted,
-                report.BucketsDeleted,
-                report.SeriesForgotten);
+                report.BucketsDeleted);
         }
 
         // Reconciled every pass, not only the failing ones. Reconciliation
@@ -138,6 +137,11 @@ public sealed class CompactionWorker(
             GuardedCompaction.Scope,
             (stored, flaps) => AlertReconciler.Reconcile(new AlertReconciliationRequest
             {
+                // The third scope, and the reason the reconciler takes this
+                // rather than the two the monitoring cycle knows about: the
+                // set is open, and a scope no store has an opinion about is
+                // one a new worker cannot file wrongly.
+                Scope = GuardedCompaction.Scope,
                 Observed = outcome.Alerts,
                 Stored = stored,
                 FlapHistories = flaps,

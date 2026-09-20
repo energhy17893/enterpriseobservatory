@@ -29,9 +29,11 @@ public class AlertReconcilerTests
         IReadOnlyList<AlertDefinition> observed,
         AlertReconciliationResult? previous = null,
         DateTimeOffset? now = null,
-        FlapPolicy? flap = null) =>
+        FlapPolicy? flap = null,
+        string scope = AlertScopes.Observation) =>
         AlertReconciler.Reconcile(new AlertReconciliationRequest
         {
+            Scope = scope,
             Observed = observed,
             Stored = previous?.Instances ?? [],
             FlapHistories = previous?.FlapHistories ?? [],
@@ -216,6 +218,7 @@ public class AlertReconcilerTests
 
         var result = AlertReconciler.Reconcile(new AlertReconciliationRequest
         {
+            Scope = AlertScopes.Observation,
             Observed = [Psu()],
             MaintenanceWindows = [window],
             NowUtc = Cycle(1),
@@ -224,6 +227,88 @@ public class AlertReconcilerTests
         Assert.Single(result.Visible);
         Assert.Empty(result.ToNotify);
         Assert.Equal("mw-1", result.Visible[0].SuppressedByWindowId);
+    }
+
+    // --- scope ------------------------------------------------------------
+
+    [Fact]
+    public void An_alert_observed_without_a_scope_is_filed_under_the_cycle_that_reconciled_it()
+    {
+        // The defect this design removes. The analysis rules and GuardedRule
+        // produce definitions with no scope -- they have no reason to know
+        // which cycle is running them -- and AlertLifecycle copies what it is
+        // given. Every fault-counter and peer-outlier alert therefore sat in
+        // the live cache under "" while the database row beside it said
+        // "observation", so the same alert answered differently before and
+        // after a restart. If this assertion fails, an operator asking which
+        // evaluation owns an alert gets an answer that depends on process
+        // uptime, and the alert is filed under a slice no cycle reconciles --
+        // meaning it never resolves and never appears in an inbox.
+        var result = Run([Psu() with { Scope = string.Empty }], scope: AlertScopes.Inventory);
+
+        Assert.Equal(AlertScopes.Inventory, Assert.Single(result.Instances).Scope);
+    }
+
+    [Fact]
+    public void A_definition_claiming_the_wrong_scope_does_not_get_to_keep_it()
+    {
+        // Stamping rather than trusting, and the difference matters because the
+        // pipelines still stamp their own definitions: the inventory pipeline
+        // marks what its collectors report, and if one of those definitions
+        // ever reached the metric cycle it would otherwise be filed under
+        // inventory while the store wrote it into the observation slice. The
+        // two would then disagree about where it lives, and the inventory cycle
+        // would resolve an alert it had never been given -- on the next pass,
+        // silently.
+        var result = Run([Psu() with { Scope = AlertScopes.Inventory }], scope: AlertScopes.Observation);
+
+        Assert.Equal(AlertScopes.Observation, Assert.Single(result.Instances).Scope);
+    }
+
+    [Fact]
+    public void A_flap_history_and_the_alert_derived_from_it_land_in_the_reconciled_scope()
+    {
+        // Flap histories outlive the instances they describe and are the one
+        // thing here that is built rather than observed, so they were a third
+        // path to the same field. The derived alert takes its scope from the
+        // history; a history in the wrong scope raises "Unstable signal" into
+        // an evaluation that never observes it again, so the next pass of that
+        // cycle resolves it -- the instability alert would appear and vanish
+        // every other cycle, which is precisely the behaviour flap detection
+        // exists to report about something else.
+        var flap = new FlapPolicy { Threshold = 3, Window = TimeSpan.FromHours(1) };
+
+        AlertReconciliationResult? state = null;
+        for (var cycle = 0; cycle < 10; cycle++)
+        {
+            var observed = cycle % 2 == 0 ? new[] { Fan() } : [];
+            state = Run(observed, previous: state, now: Cycle(cycle), flap: flap, scope: AlertScopes.Inventory);
+        }
+
+        Assert.NotNull(state);
+        Assert.All(state.FlapHistories, f => Assert.Equal(AlertScopes.Inventory, f.Scope));
+        Assert.Equal(
+            AlertScopes.Inventory,
+            Assert.Single(state.Instances, i => i.Title == "Unstable signal").Scope);
+    }
+
+    [Fact]
+    public void A_reconciliation_without_a_scope_is_refused_rather_than_filed_under_nothing()
+    {
+        // `required` stops a caller forgetting the field; nothing stops a
+        // caller passing a scope it never worked out. An empty one is not a
+        // harmless default: the store would file real alerts under a slice no
+        // cycle ever reconciles, so they would be invisible in every inbox,
+        // never resolve, and never notify. Failing here costs one cycle and
+        // says why; succeeding costs the alerts silently.
+        var request = new AlertReconciliationRequest
+        {
+            Scope = "   ",
+            Observed = [Psu()],
+            NowUtc = Cycle(0),
+        };
+
+        Assert.Throws<ArgumentException>(() => AlertReconciler.Reconcile(request));
     }
 
     [Fact]
