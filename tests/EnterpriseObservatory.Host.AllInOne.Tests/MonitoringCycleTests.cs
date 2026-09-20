@@ -1,4 +1,4 @@
-using EnterpriseObservatory.Application.Alerts;
+﻿using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
@@ -908,6 +908,147 @@ public class MonitoringCycleTests : IDisposable
         Assert.Contains(result.Visible, a => a.Title == "Slow from one host only");
     }
 
+    /// <summary>Three hosts: the fewest that can agree about a shared volume.</summary>
+    private static readonly string[] MountingHosts = ["esx01", "esx02", "esx03"];
+
+    // --- the rules are reached at all -------------------------------------
+
+    [Fact]
+    public async Task Every_rule_the_cycle_guards_can_reach_the_inbox()
+    {
+        // Four rules were written, tested and merged before anything called
+        // them. A rule that is never invoked is indistinguishable from a rule
+        // that found nothing -- which is precisely the failure this suite
+        // already caught once, when GuardedRule had eight passing unit tests
+        // and no test of its call site. These fixtures make two of the four
+        // fire through the real cycle; the wiring block is shared, so a rule
+        // dropped from it takes its title with it.
+        var cycle = Cycle();
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    // Slow from every host that mounts it, and carrying load:
+                    // the array, not one path. PeerOutliers must stay quiet
+                    // here and SharedVolumeLatency must speak.
+                    .. MountingHosts.Select(h => Vantage(h, 9)),
+                    .. MountingHosts.Select(h => Demand(h, 40)),
+
+                    // A second volume that is busy and reads exactly zero with
+                    // SIOC inactive -- the estate cannot measure it at all.
+                    .. MountingHosts
+                        .Select(h => Vantage(h, 0, "vc-1:ds-blind")),
+                    .. MountingHosts
+                        .Select(h => Demand(h, 40, "vc-1:ds-blind")),
+                    .. MountingHosts.Select(Sioc),
+                ],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Contains(result.Visible, a => a.Title == "Slow from every host");
+        Assert.Contains(result.Visible, a => a.Title == "Storage latency cannot be measured here");
+
+        // No rule threw on the way. A guarded rule that fails still reports,
+        // so a green wiring test with this alert in the inbox would be proving
+        // the guard rather than the wire.
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
+
+    [Fact]
+    public async Task The_shared_volume_rule_is_given_the_peer_policy_the_peer_rule_got()
+    {
+        // The two rules are mutually exclusive by recomputing each other's
+        // test, so they must read one set of numbers. The cycle forces this
+        // rather than trusting both defaults to match: two copies that drifted
+        // apart would open a band where both fire, or neither does, and
+        // nothing would say so.
+        //
+        // Raising the peer floor above the readings must silence BOTH. If the
+        // shared-volume rule kept its own default floor, it would still fire
+        // here and this assertion would fail.
+        var cycle = Cycle();
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    .. MountingHosts.Select(h => Vantage(h, 9)),
+                    .. MountingHosts.Select(h => Demand(h, 40)),
+                ],
+            },
+        };
+
+        var strict = Options with
+        {
+            PeerOutliers = PeerOutlierPolicy.Default with
+            {
+                MinimumMilliseconds = 50d,
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], strict, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var result = await cycle.RunObservationsAsync([metrics], strict, CancellationToken.None);
+
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Slow from every host");
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Slow from one host only");
+    }
+
+    /// <summary>What a volume is being asked to do, beside what it costs.</summary>
+    /// <remarks>
+    /// Both storage rules refuse to judge an idle volume: the average latency
+    /// of a handful of requests is the fate of those requests, not a property
+    /// of the storage.
+    /// </remarks>
+    private static Observation Demand(string host, double ops, string entity = "vc-1:ds-prod") => new()
+    {
+        Entity = new EntityId(entity),
+        SampledAtUtc = T0,
+        Source = "vc-1",
+        Value = new CounterValue
+        {
+            CounterName = "datastore.numberReadAveraged.average",
+            Raw = ops,
+            Rollup = RollupType.Average,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "number",
+            Instance = host,
+            InstanceIsVantagePoint = true,
+        },
+    };
+
+    /// <summary>
+    /// The counter collected solely as evidence that the latency numbers mean
+    /// anything. Zero means Storage I/O Control is not running.
+    /// </summary>
+    private static Observation Sioc(string host) => new()
+    {
+        Entity = new EntityId("vc-1:ds-blind"),
+        SampledAtUtc = T0,
+        Source = "vc-1",
+        Value = new CounterValue
+        {
+            CounterName = "datastore.siocActiveTimePercentage.average",
+            Raw = 0,
+            Rollup = RollupType.Average,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "percent",
+            Instance = host,
+            InstanceIsVantagePoint = true,
+        },
+    };
+
     /// <summary>
     /// A fault reading that names no source, which FaultCounters cannot
     /// fingerprint.
@@ -945,9 +1086,10 @@ public class MonitoringCycleTests : IDisposable
     /// at nothing else. Three hosts is its minimum, and 12 against peers at
     /// zero clears both the floor and the ratio.
     /// </remarks>
-    private static Observation Vantage(string host, double ms) => new()
+    private static Observation Vantage(
+        string host, double ms, string entity = "vc-1:ds-prod") => new()
     {
-        Entity = new EntityId("vc-1:ds-prod"),
+        Entity = new EntityId(entity),
         SampledAtUtc = T0,
         Source = "vc-1",
         Value = new CounterValue

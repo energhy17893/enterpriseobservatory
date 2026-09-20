@@ -212,6 +212,29 @@ public sealed class MonitoringCycle(
             .. Analysis.GuardedRule.Run(
                 Analysis.PeerOutliers.RuleId,
                 () => Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers)),
+            .. Analysis.GuardedRule.Run(
+                Analysis.CpuContention.RuleId,
+                () => Analysis.CpuContention.Evaluate(
+                    cycle.Observations, _graphStore.Current, options.CpuContention)),
+            .. Analysis.GuardedRule.Run(
+                Analysis.StorageLayerSplit.RuleId,
+                () => Analysis.StorageLayerSplit.Evaluate(
+                    cycle.Observations, options.StorageLayers)),
+
+            // Its peer policy is forced to the one PeerOutliers was given, not
+            // merely defaulted to the same value. The two rules are mutually
+            // exclusive by recomputing each other's test, and two copies that
+            // drifted apart would open a band where both fire, or neither
+            // does, with nothing to say so.
+            .. Analysis.GuardedRule.Run(
+                Analysis.SharedVolumeLatency.RuleId,
+                () => Analysis.SharedVolumeLatency.Evaluate(
+                    cycle.Observations,
+                    options.SharedVolumes with { Peers = options.PeerOutliers })),
+            .. Analysis.GuardedRule.Run(
+                Analysis.StorageLatencyBlindSpot.RuleId,
+                () => Analysis.StorageLatencyBlindSpot.Evaluate(
+                    cycle.Observations, options.StorageLatencyBlindSpot)),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
