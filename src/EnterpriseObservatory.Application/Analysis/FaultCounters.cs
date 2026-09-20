@@ -1,4 +1,4 @@
-using EnterpriseObservatory.Domain;
+﻿using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Analysis;
@@ -110,6 +110,9 @@ public static class FaultCounters
     /// Shown beside the alert and used to separate these from thresholds.
     /// </summary>
     public const string Category = "Fault";
+    /// <summary>Names this rule in a failure alert. Stable across releases.</summary>
+    public const string RuleId = "fault-counters";
+
 
     /// <summary>
     /// A readable title from the counter's own name.
