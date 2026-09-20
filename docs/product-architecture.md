@@ -1,4 +1,4 @@
-# Ürün Kurgusu
+﻿# Ürün Kurgusu
 
 Bu belge ürünün **ne olduğunu** ve **hangi yapının bunu mümkün kıldığını** tarif
 eder. README ilkeleri koyar, ADR'ler tek tek kararları kaydeder; bu belge ikisinin
@@ -311,22 +311,36 @@ Gerekçe netleşmeden adaptör yazmak, yanlış problemi çözmek olur.
 
 ## 9. Bugün ne var, ne yok
 
+*20 Eylül 2026 akşamı güncellendi. Önceki hâli kural yazma turundan önce
+alınmıştı ve birkaç satırı artık yanlıştı.*
+
 | Yetenek | Durum |
 |---|---|
 | Topoloji, kimlik, ilişki | var |
 | Zaman serisi + aşağı örnekleme | var |
 | Alarm yaşam döngüsü, atıf, bakım penceresi | var |
-| Topolojik olay gruplaması | var, **canlıda sınanmadı** (alarm çıkmadı) |
-| vSphere performans toplama | var — cihaz başına seri dahil (20 Eylül 2026) |
-| Datastore gecikmesi | yok (host'tan toplanmalı) |
-| Datastore doluluk | yapılıyor |
-| Yapılandırma toplama | yok |
+| Topolojik olay gruplaması | var, **canlıda sınanmadı** |
+| vSphere performans toplama | var — cihaz başına seri dahil |
+| Datastore gecikmesi | **var** — host'tan toplanıp Datastore varlığına taşınıyor (§5b) |
+| Datastore doluluk | var; **aşırı taahhüt de var** (`summary.uncommitted`) |
+| Teşhis merdiveni | **kısmen** — dört basamak: akran aykırılığı, dizi, katman ayrımı, CPU çekişmesi |
+| Eşik motoru | **kural başına politika var**, merkezî motor yok |
+| Yapılandırma toplama | **kısmen** — snapshot, VM boyutlandırma, CPU/bellek limitleri, multipath, HA/DRS |
 | Uygunluk motoru | yok |
-| Eşik motoru | yok |
-| Teşhis merdiveni | yok |
 | Olay toplama | yok |
 | Eğilim çıkarımı | yok |
 | İkinci satıcı (iLO/iDRAC/SAN/storage) | yok |
+
+### Ölçülmüş bir sınır
+
+Depolama kurallarının üçü **bu estate'te yapısal olarak ateşleyemez.** Probe ile
+ölçüldü: `datastore.total{Read,Write}Latency` 302 okumanın 302'sinde sıfır,
+`disk.device/kernel/queueLatency` 33 okumanın 33'ünde sıfır — ama IOPS sıfır
+değil. SIOC kapalı ve platform 1 ms altını sıfıra kırpıyor.
+
+Kurallar yine de duruyor: dizinin gerçekten bozulduğu bir estate'te oradalar.
+Ama **sessizlikleri sağlık sanılmamalı**, ve `StorageLatencyBlindSpot` tam
+olarak bunu söylemek için yazıldı.
 
 ---
 
@@ -334,42 +348,147 @@ Gerekçe netleşmeden adaptör yazmak, yanlış problemi çözmek olur.
 
 Sıra, **her adımın bir sonrakini mümkün kılması** ilkesine göre kuruldu.
 
-**1. Cihaz başına seri** — ✅ *20 Eylül 2026'da yapıldı.* Merdivenin alt yarısı
-buna bağlıydı: tek değere çöken bir seri "hangi LUN" sorusunu yapısal olarak
-cevaplayamıyordu. Artık `disk.*` sayaçları hem özet (en kötü cihaz) hem de
-cihaz başına saklanıyor — canlıda host başına 32 cihaz, estate genelinde 43
-ayrı cihaz adı. CPU'ya uygulanmadı: aynı host 96 çekirdek instance'ı sunuyor
-ve kimse 57. çekirdeği okuyarak teşhis koymuyor. Datastore sayaçları ise ayrı
-bir durumdu — instance bir cihaz değil, başka bir **varlık**tı; onlar Datastore
-varlığına taşındı (§5b).
+### Her adım referansla başlar
 
-**1b. Kalan basamak: `storagePath`** — Canlıda ölçüldü: 10 sayaç × 252 cihaz =
-1135 seri **mevcut** ve toplanmıyor. SFP/kablo/zoning teşhisi için merdivenin
-en alt basamağı bu. Bir sonraki doğal adım.
+Bu bir üslup tercihi değil, ölçülmüş bir sonuç. Kural yazma turunda dört ardışık
+"makul" tasarım yanlış çıktı ve üçü referans literatürde zaten yazılıydı. Bir
+adıma başlamadan önce vROps/Aria, Dynatrace, Datadog ve açık kaynak tarafının o
+konuda **ne yaptığı ve neyi bilerek yapmadığı** çıkarılır.
 
-**2. Yapılandırma ekseni** — Uygunluğun, değişim geçmişinin ve çapraz
-doğrulamanın önkoşulu. Satıcı eklemeden önce yapılmalı, yoksa her satıcı kendi
-yapılandırma modelini getirir.
+İki uyarı, ikisi de bu turda bedel ödetti:
 
-**3. Teşhis merdiveni (tek satıcı)** — Sadece vSphere ile bile VM/host/cluster/
-datastore basamakları çalışır. Ürünün imzası burada görünür hâle gelir ve
-sonraki satıcılar merdivene *basamak ekler*, yeni ürün yazmaz.
+- **Eşikler belgelerde yok.** vROps tüm vCenter çözümünde iki sayısal eşik
+  yayınlıyor. Dynatrace yapıyı yayınlıyor, seviyeleri değil. Alıntılayamadığın
+  bir eşiği kullanma; ya bu üründe gözden geçirilmiş bir değerden ödünç al, ya
+  yapısal bir şey seç, ya da *"bu benim seçimim"* diye işaretle.
+- **Kopyalanmayacaklar listesi de çıkarılır.** vROps'un on iki neredeyse-aynı
+  contention alarmı, on bir ayrı sensör alarmı ve vSphere 5.5'e sabitlenmiş
+  hardening tanımları bilerek alınmadı. Referans, taklit edilecek bir liste
+  değil; birinin bizden önce ödediği öğrenme maliyeti.
 
-**4. Uygunluk + eşik motoru** — Tek satıcıyla bile satılabilir değer: ESXi
-hardening, eskimiş snapshot, doluluk, aşırı tahsis.
+**1. Cihaz başına seri** — ✅ *20 Eylül 2026.* Merdivenin alt yarısı buna
+bağlıydı. CPU'ya uygulanmadı: 96 çekirdek instance'ı var ve kimse 57. çekirdeği
+okuyarak teşhis koymuyor.
 
-**5. Eğilim çıkarımı** — Mevcut veriyle yapılabilir, yeni toplama gerektirmez.
+**1b. `storagePath`** — ✅ *kısmen yapıldı, kısmen reddedildi.* Arıza sayaçları
+(`busResets`, `commandsAborted`) toplanıyor ve `FaultCounters`'tan geçiyor.
+Gecikme sayaçları ölçülüp **çıkarıldı**: 2.536 seri, ~8 GB, ve §5b'nin
+cevaplanamaz olduğunu gösterdiği bir soru. Kalan bilinen maliyet: bir bus reset
+host ve HBA'ya atfedilebiliyor ama datastore'a otomatik atfedilemiyordu —
+`multipathInfo` + `scsiLun` artık toplandığı için bu kapatılabilir hâle geldi.
 
-**6. İkinci uç: iLO / iDRAC** — Kimlik katlamanın (ilke 3) ilk gerçek sınavı.
+### 0. Kapanmamış borçlar
 
-**7. SAN switch + storage** — Merdivenin en alt basamakları ve suçlama
-çıkmazının diğer ucu.
+Hepsi kayıtlı ve küçük. Yeni yetenek başlamadan önce, çünkü her biri var olan
+bir yeteneğin **sessizce** yanlış çalışmasına izin veriyor.
 
-**8. Çapraz doğrulama** — Yol sayısı, MPIO tutarlılığı, zoning, HCL. 6 ve 7
-olmadan imkânsız.
+- **`ChangeOwnPassword` mutate dışında doğruluyor.** Bir yöneticinin sıfırlaması
+  o aralığa denk gelirse kullanıcının kendi değişikliğiyle ezilir.
+- **`cpu.maxlimited.summation` canlıya karşı doğrulanmadı.** Diğer doğrulanmamış
+  sayaçlar adı yanlışsa bir cevabı kaybeder; bu sayaç **baskılamayı durdurur** ve
+  `CpuContention` kapatmak için eklendiği yanlış pozitife sessizce geri döner.
+- **Yük kapısının çalkalanması** (ADR-0021). SIOC'si kapalı bir volume tek turda
+  boşta kalırsa temizlenmiş alarmı emekliye ayrılıyor ve döndüğünde yeniden
+  bildiriyor — dalgalı volume'larda toplu temizlemeler aşınıyor.
+- **`mem.state.latest` okunmuyor.** Sayaç toplandı, kuralı yok. İhtiyacı olan şey
+  bir bayrak değil, toplayıcının bildirdiği bir **eşik değeri**
+  (`DegradedAtOrAbove`) — çünkü burada sıfır *sağlıklı* demek ve bayrağın
+  "sıfır = olmadı" vaadini tersine çevirir.
+- **Anahtar halkası koruması log, alarm değil** (ADR-0020, Alternatif D).
 
-**9. Raporlama ve sunum** — Artık raporlanacak iki ayrı şey var: sağlık/kapasite
-eğilimi ve uygunluk/güvenlik durumu.
+### 1. Teşhis merdivenini tamamla — ürünün imzası
+
+Referans araştırması bir **pazar boşluğu** buldu: vROps, Dynatrace ve Datadog'un
+hiçbiri gürültücü komşuyu adlandırmıyor. Üçü de kurbanı ve host'u görüyor;
+Dynatrace VM'in kimliğini eline alıp host seviyesinde bir probleme çevirip
+atıyor. Zor yarısı — instance→varlık eşlemesi ve gözlem-noktası modeli —
+`PeerOutliers` ile zaten kanıtlandı.
+
+- **1a. Gürültücü komşu, CPU.** Host doygun **ve** ≥3 misafir **ve** birinin payı
+  medyanın N katı **ve** o makinenin kendi ready'si düşük. Susturan: en çok
+  tüketen *de* bekliyorsa o da kurbandır ve host yetersizdir, zehirli değil.
+  `cpu.usagemhz.average` gerekiyor.
+- **1b. Gürültücü komşu, datastore.** Volume her host'tan yavaş **ve** IOPS
+  gecikmeyle birlikte yükselmiş **ve** bir makinenin vDisk IOPS'u akran
+  medyanının N katı. Susturan: IOPS yükselmediyse dizi sabit yük altında
+  bozuluyor demektir ve bir VM'i suçlamak kendinden emin yanlış cevaptır. Ayrıca
+  **vMotion penceresi** — göç bu imzayı meşru olarak üretir, ve Dynatrace'in
+  göç olaylarını zaman çizelgesi bağlamı olarak kullanması ucuz bir kapıdır.
+- **1c. Gerçek bellek baskısı.** Swap-in/out oranı **veya** sıkıştırma/açma
+  oranı. `mem.usage` **değil** ve balon tek başına **değil**: balon erken ve
+  yüksek yanlış-pozitifli, swap geç ve neredeyse hatasız — Datadog ile
+  Dynatrace'in açıkça ayrıştığı yer burası ve ayrışma cevabın kendisi. Sayaçlar
+  toplandı, `mem.active` de balonun yanlış pozitifini kapatmak için orada.
+- **1d. Yol yedekliliği.** `multipathInfo` ve `scsiLun` toplanıyor, kural yok.
+  vROps bunu Health/Immediate sayıyor: kaybolan bir yol **ikincisi ölene kadar
+  tamamen sessiz**, sonra datastore düşüyor.
+- **1e. Düşen paketler.** Sayaçlar toplandı ve bilerek **arıza değil seviye**
+  olarak işaretlendi: meşgul bir uplink çerçeve düşürür, SCSI dizi meşgul diye
+  bus reset atmaz. Yani eşik ve oran gerekiyor, `FaultCounters` yolu değil.
+
+### 2. Olay toplama
+
+vCenter **event stream**'i — alarm geçişi değil. Tek bir bağımlılık altı
+yeteneğin kilidini açıyor: beş HA alarmı (host izole, olası host arızası,
+başarısız failover, yetersiz failover kaynağı, kayıp master), NFS bağlantı
+kaybı, pNIC flapping ve uplink yedekliliği. Bugünkü `triggeredAlarmState` geçişi
+bunları yalnızca vCenter *ayrıca bir alarm da* yükselttiğinde yakalıyor, ki aynı
+küme değil.
+
+**Belgedeki sıradan tek sapma bu:** olay toplama yapılandırma ekseninin önüne
+alındı. Gerekçe, bağımlılık oranı — tek iş, altı yetenek — ve yapılandırma
+ekseninin model kararının acele edilmemesi gerektiği.
+
+### 3. Yapılandırma ekseni
+
+Önkoşul gerekçesi değişmedi: satıcı eklemeden önce yapılmalı, yoksa her satıcı
+kendi yapılandırma modelini getirir. Ama artık bir başlangıç var ve **modeli yok**
+— özellikler `Entity` üzerine tek tek eklendi.
+
+- **3a.** Yapılandırma zaman serisi değil, **durum geçmişi**. "Bu ayar ne zaman
+  değişti" sorusu metrikten farklı bir depolama istiyor.
+- **3b.** `Entity.Sizing` ve `Entity.StoragePaths` **kalıcı değil** — yeniden
+  başlatmadan sonra bir envanter turuna kadar null. `Sizing` dört sütun,
+  `StoragePaths` yeni bir tablo.
+- **3c.** Toplanacaklar: host gelişmiş ayarları, NTP, syslog hedefi, VM donanım
+  sürümü, cluster HA admission control politikası.
+
+### 4. Uygunluk motoru
+
+Snapshot ve aşırı taahhüt **kural olarak** çalışıyor ama §6'daki bulgu yaşam
+döngüsü yok. Uygunluk bulgusu alarmdan farklı bir şeydir: kendiliğinden kapanmaz,
+kabul edilir, ve istisnası olur.
+
+Referans uyarısı burada özellikle sert: vROps'un hardening-guide alarmları hâlâ
+**vSphere 5.5**'e sabitlenmiş ve 8.18'de gönderilmeye devam ediyor. Uygunluğu
+alarm olarak modellemenin bedeli budur; kendi yaşam döngüsü olan bir motor
+gerekiyor.
+
+### 5. Eğilim çıkarımı
+
+Datastore kapasitesi **seri olarak toplanmıyor** — yalnızca anlık envanter
+okuması var, yani *"altı gün sonra dolar"* cevaplanamıyor. Önce
+`disk.capacity/used/provisioned.latest` (seviye 1, Datastore nesnesinde).
+ADR-0012 persentili yasaklıyor, ama doğrusal eğilim persentil istemiyor.
+
+### 6. İkinci uç: iLO / iDRAC
+
+Kimlik katlamanın (ilke 3) ilk gerçek sınavı.
+
+### 7. SAN switch + storage → 8. Çapraz doğrulama → 9. Raporlama
+
+Değişmedi.
+
+### Çapraz kesen: kompozisyon kökü testi
+
+`Program.cs` 406 satır ve **hiçbir testi yok**. `UseAuthorization()`'ı silmek her
+`RequireAuthorization`'ı no-op yapıyor, `OnValidatePrincipal` handler'ını silmek
+kaldırılmış bir hesaba 12 saat erişim bırakıyor — ve hiçbir test düşmüyor. Bir
+`WebApplicationFactory` duman takımı gerekiyor: anonim istek 401, Viewer'ın yazma
+denemesi 403, oturum ortasında kaldırılan hesap 401.
+
+Bir sonraki commit'ten önce değil, **bir sonraki sürümden önce**. Kimseyle
+çakışmadığı için paralel yürür.
 
 ---
 
