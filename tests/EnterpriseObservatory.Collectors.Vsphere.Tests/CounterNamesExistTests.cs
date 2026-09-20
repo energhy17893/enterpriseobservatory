@@ -184,6 +184,14 @@ public class CounterNamesExistTests
             data.Add(key, true);
         }
 
+        // The same SCSI errors counted against the LUN rather than the route
+        // to it. Same argument, same answer: the array being busy does not
+        // reset a bus, abort a command or refuse a reservation.
+        foreach (var key in VsphereCounters.PerDeviceScsiFaults)
+        {
+            data.Add(key, true);
+        }
+
         // Levels, not faults: each of these is high or low, and a high one is
         // a threshold question rather than an error that happened.
         foreach (var key in new[]
@@ -193,6 +201,26 @@ public class CounterNamesExistTests
             "disk.deviceLatency.average",
             "datastore.totalReadLatency.average",
             "mem.vmmemctl.average",
+
+            // A summation whose zeros are real, like the fault counters, and
+            // still not a fault. A dropped frame has benign causes a bus reset
+            // does not, and the rule this flag feeds carries no threshold and
+            // no memory — so one dropped packet anywhere on a busy uplink
+            // would open a warning, every cycle, on a healthy estate.
+            "net.droppedRx.summation",
+            "net.droppedTx.summation",
+
+            // A published enum, not a count. Zero here is "high" — the
+            // healthy state — so the flag's promise that zero means nothing
+            // happened is inverted, and the rule's own guard (skip the
+            // aggregate instance) would discard it anyway.
+            "mem.state.latest",
+
+            // Rates. A host swapping 4 MB/s is a level to draw a line
+            // through, not an error that occurred.
+            "mem.swapinRate.average",
+            "mem.compressionRate.average",
+            "mem.active.average",
         })
         {
             data.Add(key, false);
@@ -283,6 +311,209 @@ public class CounterNamesExistTests
         // a guess would be worse than the problem it solves.
         Assert.Equal(3000d, VsphereUnitNormalizer.Normalize(3000d, "kiloBytesPerSecond"));
         Assert.Equal("kiloBytesPerSecond", VsphereUnitNormalizer.NormalizedUnit("kiloBytesPerSecond"));
+    }
+
+    [Fact]
+    public void The_scsi_faults_counted_per_device_are_kept_per_device_or_they_name_nothing()
+    {
+        // The entire reason these are collected beside the path faults. A
+        // path's runtime name carries no LUN identity, so a reset on a path is
+        // attributable to a host and an HBA and stops there; a device fault
+        // carries naa.*, and the map's §5c chain turns that into a datastore
+        // and the VMs on it. Collapse them to a host summary and that is
+        // exactly the half that is lost — the alert becomes "this host had a
+        // reservation conflict" with thirty LUNs to choose from.
+        Assert.All(
+            VsphereCounters.PerDeviceScsiFaults,
+            key => Assert.True(VsphereCounters.KeepPerDevice(key), key));
+
+        Assert.All(
+            VsphereCounters.PerDeviceScsiFaults,
+            key => Assert.Contains(key, VsphereCounters.Host));
+
+        // And they are about this host's devices, not about another entity.
+        // Marking them otherwise would stop the parser computing the host
+        // summary at all.
+        Assert.All(
+            VsphereCounters.PerDeviceScsiFaults,
+            key => Assert.False(VsphereCounters.InstanceNamesAnEntity(key), key));
+
+        // Summations, every one. The property the whole fault argument rests
+        // on: a summation of zero says "it did not happen", where a truncated
+        // average of zero says nothing at all (§5b). An average sneaking into
+        // this list would be a fault alert fired on a rounding artefact.
+        Assert.All(
+            VsphereCounters.PerDeviceScsiFaults,
+            key => Assert.Equal(RollupType.Summation, RollupOf(key)));
+    }
+
+    [Fact]
+    public void The_reservation_conflict_counter_has_no_substitute_and_is_pinned_as_such()
+    {
+        // Pinned because it is the one counter in this batch that would be
+        // dropped first by anybody counting series and last by anybody who
+        // has debugged the problem. busResets and commandsAborted duplicate
+        // the path counters at a different grain; a reservation conflict is
+        // collected nowhere else. It is one host being refused a lock another
+        // host holds — no latency counter explains it, and it stalls every
+        // host contending for the volume at the same moment.
+        Assert.Contains("disk.scsiReservationConflicts.summation", VsphereCounters.PerDeviceScsiFaults);
+        Assert.True(VsphereCounters.IsFaultCounter("disk.scsiReservationConflicts.summation"));
+
+        Assert.DoesNotContain(
+            VsphereCounters.PerStoragePath,
+            k => k.Contains("scsiReservation", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Dropped_packets_are_collected_on_both_objects_and_summarised_rather_than_kept_per_nic()
+    {
+        // This product collected no network data of any kind, which made a
+        // dropped-packet storm indistinguishable from an application problem:
+        // every storage and CPU number clean while the operator walks down
+        // the storage ladder. Host side says the uplink is dropping, VM side
+        // says which guest lost the frames, and either alone leaves the other
+        // question open.
+        foreach (var key in new[] { "net.droppedRx.summation", "net.droppedTx.summation" })
+        {
+            Assert.Contains(key, VsphereCounters.Host);
+            Assert.Contains(key, VsphereCounters.VirtualMachine);
+            Assert.Equal(RollupType.Summation, RollupOf(key));
+
+            // Deliberately summarised. Sixteen NICs a host, two counters,
+            // ten hosts is roughly 320 series to answer "which uplink" — a
+            // second question, bought later if anything is ever seen to drop.
+            // If this flips, the cost has to be argued in the counter map
+            // rather than arriving as a surprise in the series count.
+            Assert.False(VsphereCounters.KeepPerDevice(key), key);
+        }
+    }
+
+    [Fact]
+    public void Memory_pressure_is_asked_for_as_rates_beside_the_level_they_cannot_replace()
+    {
+        // mem.swapused is a level and stays high for weeks after one event,
+        // so an alert on it fires long after there is anything to do and
+        // becomes an alert nobody believes. The rates separate "swapped once
+        // in March" from "swapping now". Compression is the rung below swap:
+        // a host compressing is under pressure and coping, a host swapping in
+        // has already lost — and without both rungs the product can only say
+        // "bad", never "getting worse".
+        string[] rates =
+        [
+            "mem.swapinRate.average",
+            "mem.swapoutRate.average",
+            "mem.compressionRate.average",
+            "mem.decompressionRate.average",
+        ];
+
+        foreach (var key in rates)
+        {
+            Assert.Contains(key, VsphereCounters.Host);
+        }
+
+        // The level is kept, not replaced: it still answers how much is
+        // parked out of memory, which no rate can.
+        Assert.Contains("mem.swapused.average", VsphereCounters.Host);
+
+        // And ballooning is not in this group on purpose. Dynatrace's
+        // detection uses these four and explicitly not vmmemctl or mem.usage,
+        // because a balloon is the mechanism working and high usage on a
+        // consolidated host is normal. Putting either here would rebuild the
+        // false alarm the group exists to avoid.
+        Assert.DoesNotContain("mem.vmmemctl.average", rates);
+        Assert.DoesNotContain("mem.usage.average", rates);
+    }
+
+    [Fact]
+    public void Ballooning_is_never_asked_about_a_virtual_machine_without_the_counter_that_qualifies_it()
+    {
+        // The pairing is the finding, so it is pinned as a pairing. Datadog
+        // says alert on any positive vmmemctl; Dynatrace ignores ballooning
+        // entirely; both are right about half of it. A balloon taking pages
+        // from a VM whose active memory is far below its granted memory is
+        // the mechanism working, and on a healthy consolidated estate that is
+        // most VMs — so vmmemctl alone ships a standing false alarm. Remove
+        // mem.active and that is what the product goes back to.
+        Assert.Contains("mem.vmmemctl.average", VsphereCounters.VirtualMachine);
+        Assert.Contains("mem.active.average", VsphereCounters.VirtualMachine);
+    }
+
+    [Fact]
+    public void The_host_memory_state_enum_is_collected_but_not_forced_into_the_fault_flag()
+    {
+        // The one counter here whose meaning is published rather than
+        // invented — high / soft / hard / low, straight from the vendor —
+        // which matters because Broadcom publishes almost no thresholds and
+        // every other memory rule this product writes will be somebody's
+        // guess.
+        //
+        // It does not fit IsFaultCount, and it fails twice rather than once,
+        // which is why it is not shaded into it: zero means "high", the
+        // healthy state, so the flag's promise that zero means nothing
+        // happened is exactly inverted; and the rule that consumes the flag
+        // skips aggregate instances, which this counter always is. Marking it
+        // would produce a flag that is wrong AND never read.
+        Assert.Contains("mem.state.latest", VsphereCounters.Host);
+        Assert.False(VsphereCounters.IsFaultCounter("mem.state.latest"));
+        Assert.Equal(RollupType.Latest, RollupOf("mem.state.latest"));
+
+        // Nor is a new flag declared here yet. What it needs is a breakpoint —
+        // "degraded at or above 2" — which is a value, not a bool, and it has
+        // no rule to travel to. See the counter map §5d.
+        Assert.False(VsphereCounters.InstanceNamesAnEntity("mem.state.latest"));
+        Assert.False(VsphereCounters.KeepPerDevice("mem.state.latest"));
+    }
+
+    [Fact]
+    public void Every_counter_no_catalogue_in_this_repository_can_check_is_listed_rather_than_assumed()
+    {
+        // The honest half of the guard above. The fixture covers datastore,
+        // storagePath and virtualDisk only, so the theory that checks counter
+        // names against a real vCenter silently skips every cpu, mem, disk
+        // and net counter the product asks for — including all nine added on
+        // 2026-09-20, whose names and statistics levels came from vendor
+        // documentation and have NOT been put to a server.
+        //
+        // A skipped check that looks like a passing one is the shape of
+        // defect this whole file exists to stop, so the skipped set is
+        // written down. Two things then fail loudly instead of quietly:
+        // adding a counter in an unchecked group without noticing, and
+        // pasting a real catalogue in for one of these groups without going
+        // back to confirm the names it now covers.
+        var unverifiable = VsphereCounters.Host
+            .Concat(VsphereCounters.VirtualMachine)
+            .Concat(VsphereCounters.Datastore)
+            .Distinct(StringComparer.Ordinal)
+            .Where(c => !CoveredGroups.Contains(GroupOf(c)))
+            .OrderBy(c => c, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "cpu.costop.summation",
+                "cpu.ready.summation",
+                "cpu.usage.average",
+                "disk.busResets.summation",
+                "disk.commandsAborted.summation",
+                "disk.deviceLatency.average",
+                "disk.kernelLatency.average",
+                "disk.maxTotalLatency.latest",
+                "disk.queueLatency.average",
+                "disk.scsiReservationConflicts.summation",
+                "mem.active.average",
+                "mem.compressionRate.average",
+                "mem.decompressionRate.average",
+                "mem.state.latest",
+                "mem.swapinRate.average",
+                "mem.swapoutRate.average",
+                "mem.swapused.average",
+                "mem.usage.average",
+                "mem.vmmemctl.average",
+                "net.droppedRx.summation",
+                "net.droppedTx.summation",
+            ],
+            unverifiable);
     }
 
     private static string GroupOf(string key) =>

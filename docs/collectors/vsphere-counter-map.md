@@ -419,6 +419,199 @@ karıştırmamalı.
 
 ---
 
+## 5d. `mem.state.latest` — satıcının yayımladığı tek eşik
+
+20 Eylül 2026'da eklendi. HostSystem üzerinde, instance yok, host başına tek
+seri.
+
+Bu dosyadaki diğer her sayaçtan farklı bir şey: **anlamı platformla birlikte
+geliyor.** Değer bir sayı değil, yayımlanmış bir enum.
+
+| Değer | Ad | Ne demek |
+|---|---|---|
+| 0 | high | Boş bellek bol, geri kazanım yok |
+| 1 | soft | Balon şişiyor — mekanizma çalışıyor |
+| 2 | hard | Sıkıştırma ve takas devrede |
+| 3 | low | Host agresif geri kazanımda; üstündeki her VM aynı anda bozuluyor |
+
+> **Cevapladığı soru:** "Bu host belleği geri kazanıyor mu, ve ne kadar
+> sertlikte?" — vROps araştırmasının kurduğu şey tam da buydu: Broadcom
+> neredeyse hiçbir yerde eşik yayımlamıyor. Bu ürünün yazacağı her bellek
+> kuralı birinin uydurduğu bir çizgidir; **bu değil.** "hard" ya da "low",
+> tartışılacak bir seviye değil, satıcının kendi verdiği hükümdür.
+
+### Neden `IsFaultCount` değil
+
+Denendi ve **iki ayrı yerden** tutmadı. İkisini de yazmak gerekiyor, çünkü
+birincisi düzeltilse ikincisi kalırdı:
+
+1. **Burada sıfır *iyi* demek.** `IsFaultCount` bayrağının verdiği söz,
+   sıfırın "hiç olmadı" anlamına gelmesidir (§5c). Burada 0 = `high` =
+   sağlıklı. Bayrağın sözü tam tersine dönüyor.
+2. **`FaultCounters` toplam (aggregate) instance'ları atlıyor.** Bu sayacın
+   instance'ı her zaman boştur. Yani bayrak konsa bile kural onu hiç okumaz —
+   yanlış *ve* ölü bir bayrak olurdu.
+
+### Peki bir kurala nasıl ulaşmalı
+
+`CounterValue` bunu **taşıyamıyor.** Taşıdığı şey `Raw = 2.0` ve
+`Unit = "number"`; bir kural bunu okuyup "2 kötüdür" diyebilmek için
+`mem.state.latest` adını bilmek zorunda kalır — ki uygulama katmanının bir
+vim25 sayacını adlandırması yasak (bkz. `FaultCounters` ve ADR-0005).
+
+Gereken şey bir **bayrak değil, bir kırılma noktası**: toplayıcının
+bildirdiği "şu değerden itibaren bozulmuş" tamsayısı. `IsFaultCount` bir
+bool olabildi çünkü sorusu evet/hayırdı; burada soru "hangi değerden sonra"
+ve cevabı satıcıdan geliyor, yani veri taşınmalı, tip değil.
+
+**Bugün eklenmedi ve bu bilinçli.** Bayrağı tüketecek kural yok; şimdi
+eklemek `CounterValue`'ya okunmayan bir alan ve ayrıştırıcıya boşa bir dal
+koymak olur — `IsFaultCount` ve `InstanceIsVantagePoint`'in ikisi de
+kendilerini okuyan kuralla **aynı anda** geldiler. Sayaç bugün toplanıyor ki
+kural yazıldığında karşısında üç aylık geçmiş bulsun; kural yazıldığında
+`CounterValue.DegradedAtOrAbove` (int?) eklenecek ve bu satır ona işaret
+ediyor.
+
+---
+
+## 5e. Düşen paketler: `summation` ama **arıza değil**
+
+20 Eylül 2026'da eklendi. `net.droppedRx.summation` ve
+`net.droppedTx.summation`, hem HostSystem hem VirtualMachine üzerinde.
+
+> **Cevapladığı soru:** "Yavaşlığın sebebi ağ mı?" — ve bugüne kadar ürünün
+> bu soruya verebileceği hiçbir cevabı yoktu. **Bu ürün hiçbir türde ağ
+> verisi toplamıyordu.** Düşen paket fırtınası sahada "uygulama yavaş" diye
+> görünür; depolama ve CPU sayılarının hepsi temizdir. Yani operatör,
+> sorunun hiç bulunmadığı merdivenden aşağı iner — bu ürünün var olma sebebi
+> olan körlüğün ta kendisi.
+
+### Neden `storagePath` faultları ile aynı kutuya konmadılar
+
+İlk bakışta aynı argüman geçerli: ikisi de `summation`, dolayısıyla
+**sıfırları gerçektir** (§5c'deki ayrım). Toplanma gerekçesi gerçekten de
+odur.
+
+Ama `IsFaultCount` bundan fazlasını söylüyor: *hiçbir* sıfırdan büyük okuma
+kabul edilebilir değildir. Bu, bus reset için doğru — SCSI, dizi meşgul diye
+bus'ı sıfırlamaz. Düşen paket için **doğru değil**: yoğun bir uplink'te
+küçük ve sürekli bir düşme oranı normaldir.
+
+Ve `FaultCounters`'ın **eşiği yok, hafızası yok**. Bayrak konsaydı, sağlıklı
+bir estate'te tek bir düşen çerçeve her turda bir uyarı açardı — yani ürün,
+bu bayrağın görünür kılmak için var olduğu bus reset'i kendi gürültüsüne
+gömerdi. Bunlar bir **oran** ve içinden geçirilecek bir çizgi istiyor; o,
+başka bir kural.
+
+### Neden cihaz başına tutulmuyorlar
+
+`KeepPerDevice` bilerek `net.` ile eşleşmiyor. Host başına ~16 vmnic × 2
+sayaç × 10 host ≈ **320 seri**, "hangi uplink" sorusu için. Toplam serinin
+cevapladığı soru "bu host hiç paket düşürüyor mu" — ki bugün hiçbir şey onu
+cevaplamıyor. İkinci soru, bir şeyin düştüğü *görüldükten sonra*, tek satır
+değiştirilerek satın alınabilir. CPU için verilen kararın aynısı (§KeepPerDevice).
+
+---
+
+## 5f. 20 Eylül eklemelerinin maliyeti
+
+ADR-0017'nin ölçülmüş rakamlarıyla: 6 084 seri ≈ 13,6 GB, yani **seri başına
+≈ 2,24 MB** kararlı durumda.
+
+| Ekleme | Nesne | Cihaz başına mı | Seri | ≈ Disk |
+|---|---|---|---|---|
+| `disk.busResets.summation` | Host | **Evet** (32 + toplam) × 10 | 330 | 0,74 GB |
+| `disk.commandsAborted.summation` | Host | **Evet** | 330 | 0,74 GB |
+| `disk.scsiReservationConflicts.summation` | Host | **Evet** | 330 | 0,74 GB |
+| `mem.state.latest` | Host | Hayır | 10 | 0,02 GB |
+| `mem.swapinRate` / `swapoutRate` / `compressionRate` / `decompressionRate` | Host | Hayır | 40 | 0,09 GB |
+| `mem.active.average` | VM | Hayır | 145 | 0,33 GB |
+| `net.droppedRx` / `droppedTx` | Host + VM | Hayır | 310 | 0,69 GB |
+| **Toplam** | | | **≈ 1 495** | **≈ 3,4 GB** |
+
+6 084 → **≈ 7 579 seri** (+%24,6), 13,6 GB → **≈ 17,0 GB**.
+
+**Bunun üçte ikisi üç sayaçtan geliyor**, ve bu sayaç listesine bakarak
+görülmez: `KeepPerDevice` zaten `disk.*` ile eşleştiği için her biri LUN
+başına bir seri. Üç sayaç, 990 seri.
+
+Buna rağmen tutuluyorlar, ve gerekçe §5c'nin kendisi: yol faultları yolu
+**çalışma zamanı adıyla** adlandırıyor ve o adda LUN kimliği yok, dolayısıyla
+bir reset host'a ve HBA'ya atfedilebiliyor ama datastore'a
+atfedilemiyor. `disk.*` faultları `naa.*` taşıyor ve §5c'de kapatılan zincir
+onu datastore'a ve üstündeki VM'lere çeviriyor — aranan cümle o. Ayrıca
+estate zaten yol faultları için ~2 500 seri ödüyor; bu, onun %40'ı.
+
+> **Kesmek gerekirse ne kesilecek, şimdiden yazılı:** `busResets` ve
+> `commandsAborted`, `storagePath` karşılıklarıyla örtüşüyor — gidecek olan
+> onlar. `scsiReservationConflicts`'ın hiçbir yerde karşılığı yok.
+> 20 Eylül'de `storagePath` gecikmesinin çıkarılması (2 536 seri, ~8 GB,
+> cevaplanamayan bir soru için) emsaldir; buradaki fark, sorunun
+> cevaplanabilir olması.
+
+### Bırakılması önerilenler
+
+- **`net.*` cihaz başına** — 320 seri, "hangi uplink". Toplam seri, asıl
+  körlüğü zaten kapatıyor. (§5e)
+- **`storagePath.scsiReservationConflicts`** diye bir şey aranmadı: yol
+  düzeyinde yok, cihaz düzeyinde var.
+- **`mem.usage` ve `mem.vmmemctl`'i bellek baskısı grubuna almak** —
+  Dynatrace'in `esxiHighMemoryDetection`'ı bu ikisini açıkça dışarıda
+  bırakıyor, ve gerekçesi bu belgenin diliyle aynı: balon, mekanizmanın
+  *çalışmasıdır*; konsolide bir host'ta yüksek `mem.usage` normaldir.
+
+---
+
+## 5g. Bu bölüm **ölçülmedi** — §6.4'ün ihlali, bilerek
+
+Bu belgenin ilk satırı, içindeki hiçbir şeyin hatırlanarak yazılmadığını
+söylüyor. §5d, §5e ve §5f **bu kuralın istisnasıdır ve öyle işaretlenmiştir.**
+
+Eklenen dokuz sayacın adı ve seviyesi **canlı bir vCenter'a sorulmadı.**
+Worktree'den erişilebilir bir vCenter yok ve kimlik bilgisi aranmadı.
+Depodaki tek katalog, testlerin fixture'ı, yalnızca `datastore`,
+`storagePath` ve `virtualDisk` gruplarını kapsıyor — yani `disk.*`, `mem.*`
+ve `net.*`'in hiçbiri kontrol edilebilir durumda değil.
+
+| Sayaç | Nesne | Beklenen seviye | Doğrulandı mı |
+|---|---|---|---|
+| `disk.busResets.summation` | Host | 2 | **Hayır** |
+| `disk.commandsAborted.summation` | Host | 2 | **Hayır** |
+| `disk.scsiReservationConflicts.summation` | Host | 2 | **Hayır** |
+| `mem.state.latest` | Host | 2 | **Hayır** |
+| `mem.swapinRate.average` | Host | 2 | **Hayır** |
+| `mem.swapoutRate.average` | Host | 2 | **Hayır** |
+| `mem.compressionRate.average` | Host | 2 | **Hayır** |
+| `mem.decompressionRate.average` | Host | 2 | **Hayır** |
+| `mem.active.average` | VM | 2 | **Hayır** |
+| `net.droppedRx.summation` | Host + VM | 2 | **Hayır** |
+| `net.droppedTx.summation` | Host + VM | 2 | **Hayır** |
+
+"Beklenen seviye" sütunu satıcı belgelerinden gelir, **ölçümden değil.**
+Hiçbirinin **seviye 3** olmadığına inanılıyor — eğer biri öyleyse bu, bir
+kurulum ön koşulunu değiştirir ve yüksek sesle söylenmesi gerekir. Mevcut
+`InsufficientDetailLevel` mekanizması eksik sayacı adıyla raporluyor ve
+yeni üç `disk.*` faultunun da o yoldan geçtiği testle sabitlendi — yani
+seviye yanlışsa **sessiz kalmaz.** Ama bir fault sayacını sessizce
+kaybetmek, bir gecikme sayacını kaybetmekten kötüdür: sıfırlarına
+güvenilmesi gerekiyordu.
+
+Adın yanlış olması ise hiç raporlanmıyor bile — `ProtocolError` olarak geçer
+ve §0'ın anlattığı hikâye tam olarak budur.
+
+> **Yapılacak iş, tek cümle:** bu sayaçlar bir sürüme girmeden önce
+> `--map` bir kez çalıştırılıp yukarıdaki tablonun sağ sütunu doldurulmalı,
+> ve `disk`, `mem`, `net` grupları test fixture'ına **gerçek vCenter
+> çıktısından yapıştırılmalıdır** — elle yazılarak değil, ki fixture'ın
+> başlığı bunu ayrıca söylüyor.
+
+Fixture'ın kapsamadığı sayaçların listesi artık bir teste yazılı
+(`Every_counter_no_catalogue_in_this_repository_can_check_is_listed_rather_than_assumed`),
+böylece kontrol edilmeyen bir gruba sayaç eklemek de, bir grubu fixture'a
+ekleyip geri dönüp bakmamak da sessizce geçmiyor.
+
+---
+
 ## 6. Bu haritanın dayattığı sonuçlar
 
 1. **Datastore gecikmesi host'tan toplanmalı**, instance→VMFS UUID eşlemesiyle
@@ -441,7 +634,20 @@ karıştırmamalı.
    olarak sayaç adıyla birlikte raporluyor. Bkz. §5c.
 4. **Bir sayacın nesnesi, adından çıkarılamaz.** Yeni bir sayaç eklenirken
    `--map` çıktısına bakılmadan eklenmemeli.
-5. **Boş performans cevabı hata değildir.** Ürün artık bunu raporluyor
+5. **Bir sayacı cihaz başına tutmak, sayaç saymakla görünmez.**
+   `KeepPerDevice` bir *önek* ile eşleşiyor, tek tek sayaçlarla değil. Yani
+   `disk.` ile başlayan yeni bir sayaç, kimse karar vermeden LUN başına bir
+   seri olur: 20 Eylül'de eklenen üç fault sayacı, üç satır kod ve **990
+   seri**. Yeni bir sayacın maliyeti, hangi öneke düştüğüne bakılmadan
+   tahmin edilemez. (§5f)
+6. **`summation` olmak, arıza olmak değildir.** İkisi ayrı sorular:
+   "sıfırı bilgi midir" ve "sıfırdan büyük her okuma arıza mıdır". Yol
+   faultlarında ikisinin de cevabı evet; düşen pakette birincisi evet,
+   ikincisi hayır. `IsFaultCount` ikincisini söyler. (§5e)
+7. **Satıcının yayımladığı bir enum, uydurulmuş bir eşikten değerlidir** —
+   ve ürünün bunu taşıyacak yolu henüz yok. `CounterValue` bir bool
+   taşıyabiliyor, bir kırılma noktası taşıyamıyor. (§5d)
+8. **Boş performans cevabı hata değildir.** Ürün artık bunu raporluyor
    (`PartialFailures`), ama tasarım varsayımı olarak da akılda tutulmalı: vSphere
    entegrasyonunda *sessizlik* en sık görülen hata biçimidir.
 
