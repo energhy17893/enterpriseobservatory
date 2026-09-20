@@ -1,4 +1,5 @@
 using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
@@ -489,6 +490,120 @@ public class MonitoringCycleTests : IDisposable
 
         Assert.DoesNotContain(_alerts.All, a => a.Category == "Fault");
     }
+
+    [Fact]
+    public async Task A_rule_that_throws_does_not_cost_the_cycle_its_other_work()
+    {
+        // GuardedRuleTests proves the guard catches. Nothing proved the cycle
+        // puts its rules behind it, and that is the half that can be removed
+        // in silence: unwrap either call in RunObservationsAsync and every one
+        // of those unit tests still passes. What the estate would get instead
+        // is one unreadable sample ending the whole pass -- the collection
+        // alert never reconciled, its notification never sent, the peer
+        // comparison never run -- and an inbox that looks calm because nothing
+        // survived long enough to be reported.
+        var cycle = Cycle();
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    Sourceless(),
+                    Vantage("esx01", 0),
+                    Vantage("esx02", 0),
+                    Vantage("esx03", 12),
+                ],
+                Failures =
+                [
+                    new CollectionFailure
+                    {
+                        Kind = CollectionFailureKind.InsufficientDetailLevel,
+                        Target = "disk.deviceLatency.average",
+                        Detail = "Statistics level 1; level 2 required.",
+                    },
+                ],
+            },
+        };
+
+        // Twice: all three of these are Warnings, and hysteresis confirms a
+        // warning on its second consecutive observation.
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        // What the source managed to say about itself still arrives. This is
+        // the work the broken rule must not cost: a configuration problem an
+        // operator can actually fix, lost because an unrelated rule tripped.
+        Assert.Contains(result.Visible, a => a.Title == "Platform detail level too low");
+
+        // The blind spot, named. Without the rule's id an operator reads the
+        // missing findings as good news and has nothing to hand support.
+        var failure = Assert.Single(result.Visible, a => a.Title == "Analysis rule failed");
+        Assert.Contains(FaultCounters.RuleId, failure.Description, StringComparison.Ordinal);
+
+        // The sibling still ran. Guarding each rule separately rather than the
+        // block of them is the whole point -- one try around both would let
+        // the first failure silence the storage-path diagnosis, which is the
+        // rule this product was built to deliver.
+        Assert.Contains(result.Visible, a => a.Title == "Slow from one host only");
+    }
+
+    /// <summary>
+    /// A fault reading that names no source, which FaultCounters cannot
+    /// fingerprint.
+    /// </summary>
+    /// <remarks>
+    /// Chosen over a hand-thrown exception because the rule is reached through
+    /// the real cycle and falls over on its own code path --
+    /// AlertFingerprint.Create rejecting a null source -- which is the shape a
+    /// rule bug actually has. A fake rule wired in for the test would prove
+    /// the test's own wiring rather than the product's.
+    /// </remarks>
+    private static Observation Sourceless() => new()
+    {
+        Entity = new EntityId("vc-1:host-1"),
+        SampledAtUtc = T0,
+        Source = null!,
+        Value = new CounterValue
+        {
+            CounterName = "storagePath.busResets.summation",
+            Raw = 1,
+            Rollup = RollupType.Summation,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "number",
+            Instance = "vmhba1:C0:T3:L7",
+            IsFaultCount = true,
+        },
+    };
+
+    /// <summary>
+    /// One host's view of a shared volume, for the rule that must survive its
+    /// sibling.
+    /// </summary>
+    /// <remarks>
+    /// Milliseconds and a vantage-point instance, because PeerOutliers looks
+    /// at nothing else. Three hosts is its minimum, and 12 against peers at
+    /// zero clears both the floor and the ratio.
+    /// </remarks>
+    private static Observation Vantage(string host, double ms) => new()
+    {
+        Entity = new EntityId("vc-1:ds-prod"),
+        SampledAtUtc = T0,
+        Source = "vc-1",
+        Value = new CounterValue
+        {
+            CounterName = "datastore.totalReadLatency.average",
+            Raw = ms,
+            Rollup = RollupType.Average,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "millisecond",
+            Instance = host,
+            InstanceIsVantagePoint = true,
+        },
+    };
 
     private static Observation Fault(string counter, double value, string instance) => new()
     {
