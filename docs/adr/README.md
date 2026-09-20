@@ -60,6 +60,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0018](0018-health-derives-from-alerts-not-propagation.md) | Sağlık alarmlardan türer, kenarlardan yayılmaz | Kabul edildi |
 | [0019](0019-empty-series-rows-are-kept.md) | Boş seri satırları silinmez, birikmesine izin verilir | Kabul edildi |
 | [0020](0020-key-ring-durability-is-checked-at-startup.md) | Anahtar halkasının kaybolabilirliği açılışta denetlenir, servis durdurulmaz | Kabul edildi |
+| [0021](0021-blind-spot-stays-per-datastore.md) | Depolama gecikmesi kör noktası datastore başına raporlanır | Kabul edildi |
 
 ## Şablon
 

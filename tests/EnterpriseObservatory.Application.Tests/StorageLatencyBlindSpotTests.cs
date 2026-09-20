@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -451,6 +452,202 @@ public class StorageLatencyBlindSpotTests
         Assert.Equal(first.Fingerprint, reversed.Fingerprint);
         Assert.Equal(first.Fingerprint, Assert.Single(moved).Fingerprint);
     }
+
+    /// <summary>
+    /// A volume the product can read: the same shape, with real numbers on it.
+    /// </summary>
+    /// <remarks>
+    /// SIOC is left inactive deliberately. These volumes are cleared by the
+    /// latency gate alone, so an estate built from them exercises the
+    /// denominator rather than the SIOC gate.
+    /// </remarks>
+    private static List<Observation> Measured(string datastore) =>
+    [
+        From("esx01", 6, datastore: datastore),
+        From("esx02", 6, datastore: datastore),
+        From("esx03", 6, datastore: datastore),
+        From("esx01", 1638, counter: Iops, unit: "number", datastore: datastore),
+        From("esx01", 0, counter: Sioc, unit: "percent", datastore: datastore),
+    ];
+
+    /// <summary>An estate of a given shape, named so the two halves stay apart.</summary>
+    private static List<Observation> Estate(int blind, int measured)
+    {
+        List<Observation> all = [];
+
+        for (var i = 0; i < blind; i++)
+        {
+            all.AddRange(Blind($"vc-1:ds-blind-{i:00}"));
+        }
+
+        for (var i = 0; i < measured; i++)
+        {
+            all.AddRange(Measured($"vc-1:ds-ok-{i:00}"));
+        }
+
+        return all;
+    }
+
+    [Fact]
+    public void The_live_estate_of_twenty_five_blind_volumes_in_forty_one_raises_twenty_five()
+    {
+        // The estate as it actually is, after the rule shipped: 25 of 41
+        // datastores have Storage I/O Control inactive, and the inbox went from
+        // 9 alerts to 34. This is the case the rule was revised against, and it
+        // is pinned here so that the shape it produces is a decision somebody
+        // made rather than something nobody looked at.
+        //
+        // Twenty-five alerts, because SIOC is enabled per datastore and the
+        // sixteen volumes that already have it must not be swept into a finding
+        // that is not about them. If this ever becomes one alert, the sixteen
+        // lose nothing -- but the twenty-five lose their EntityId, and every
+        // operator decision recorded against them is destroyed the first time
+        // the proportion moves. See the bulk-clear test below, which measures
+        // exactly that.
+        var alerts = StorageLatencyBlindSpot.Evaluate(Estate(blind: 25, measured: 16));
+
+        Assert.Equal(25, alerts.Count);
+        Assert.Equal(25, alerts.Select(a => a.Entity).Distinct().Count());
+        Assert.All(alerts, a =>
+            Assert.Contains("25 of the 41 volume(s)", a.Description, StringComparison.Ordinal));
+
+        // A majority is not an estate-wide default. Twenty-five of forty-one
+        // means sixteen volumes are configured, so "set it once, as policy" is
+        // false on its face and would send the operator to change a setting on
+        // sixteen volumes that already have it.
+        Assert.All(alerts, a =>
+            Assert.DoesNotContain("as policy", a.Description, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_single_configured_volume_is_still_enough_to_deny_an_estate_wide_default()
+    {
+        // The boundary, and the reason it sits at "every" rather than at a
+        // proportion. Forty of forty-one is as lopsided as an estate gets while
+        // still containing a counter-example, and the counter-example is the
+        // whole claim: one volume with Storage I/O Control running proves the
+        // estate has no blanket default, so the sentence that tells an operator
+        // to stop and set policy would be wrong.
+        //
+        // Moving this gate to a proportion -- half, or two thirds -- is the
+        // change this test exists to make somebody argue for. It would put the
+        // policy sentence on an estate that demonstrably has a policy already.
+        var lopsided = StorageLatencyBlindSpot.Evaluate(Estate(blind: 40, measured: 1));
+
+        Assert.Equal(40, lopsided.Count);
+        Assert.All(lopsided, a =>
+            Assert.Contains("40 of the 41 volume(s)", a.Description, StringComparison.Ordinal));
+        Assert.All(lopsided, a =>
+            Assert.DoesNotContain("as policy", a.Description, StringComparison.Ordinal));
+
+        // And the one case where the claim is true, beside it, so that the
+        // gate is pinned from both sides. Neither of these is a mutation of the
+        // other: the difference is one configured volume.
+        var complete = StorageLatencyBlindSpot.Evaluate(Estate(blind: 41, measured: 0));
+
+        Assert.Equal(41, complete.Count);
+        Assert.All(complete, a =>
+            Assert.Contains("as policy", a.Description, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_fingerprint_does_not_move_when_the_rest_of_the_estate_does()
+    {
+        // The property the whole per-datastore shape rests on, and the one
+        // nothing pinned until now -- every other fingerprint test here judges
+        // a single volume, where the proportion is one of one on every pass, so
+        // a fingerprint built from the count would survive all of them.
+        //
+        // It must not carry the count. An operator's clear is filed against the
+        // fingerprint, and the count changes every time anybody enables Storage
+        // I/O Control anywhere in the estate. A fingerprint carrying it would
+        // discard all twenty-five decisions the moment the twenty-sixth volume
+        // was fixed, and raise them again as new alerts.
+        var crowded = StorageLatencyBlindSpot.Evaluate(Estate(blind: 25, measured: 16))
+            .Single(a => a.Entity == new EntityId("vc-1:ds-blind-00"));
+
+        var sparse = StorageLatencyBlindSpot.Evaluate(Estate(blind: 2, measured: 39))
+            .Single(a => a.Entity == new EntityId("vc-1:ds-blind-00"));
+
+        Assert.Equal(crowded.Fingerprint, sparse.Fingerprint);
+
+        // The description does move, and must: the count is the sentence that
+        // tells the operator whether they are looking at one volume's switch or
+        // at the estate. Identity stable, wording live.
+        Assert.NotEqual(crowded.Description, sparse.Description);
+    }
+
+    [Fact]
+    public void One_bulk_clear_settles_the_estate_and_survives_the_operator_making_progress()
+    {
+        // "We do not use Storage I/O Control here" is one decision, and this is
+        // the measurement of what that decision costs: one bulk clear, and the
+        // inbox is empty and stays empty.
+        //
+        // This is why the rule was left alone. The complaint that twenty-five
+        // alerts take twenty-five actions to silence is answered a layer up --
+        // AlertOperations.ClearMany, /alerts/clear-many, and the inbox's
+        // select-all -- and an operator's clear is sticky, so re-observing the
+        // same volumes next cycle does not reopen or re-notify.
+        //
+        // The second half is the part a proportion-driven rule could not do at
+        // all. When the operator then enables SIOC on six volumes, the count
+        // moves from 25 to 19 and every surviving alert's wording changes, but
+        // the nineteen clears hold and the six fixed volumes retire quietly.
+        // Acting on the alert is not punished. Were the shape to flip to a
+        // single estate-wide alert at some proportion, crossing that line
+        // retires every per-volume fingerprint and the clears go with them --
+        // measured at 25 retired, 0 surviving, 25 re-notified on the way back.
+        var observed = StorageLatencyBlindSpot.Evaluate(Estate(blind: 25, measured: 16));
+
+        // Two cycles, because a warning confirms on the second hit.
+        var first = Reconcile(observed, [], 0);
+        var confirmed = Reconcile(observed, first.Instances, 1);
+
+        Assert.Equal(25, confirmed.Visible.Count);
+
+        // The decision, taken once over the whole selection.
+        List<AlertInstance> cleared =
+            [.. confirmed.Instances.Select(i => AlertLifecycle.Clear(i, "operator", T0.AddMinutes(2)))];
+
+        var settled = Reconcile(observed, cleared, 3);
+
+        Assert.Empty(settled.Visible);
+        Assert.Empty(settled.ToNotify);
+        Assert.Empty(settled.Retired);
+        Assert.Equal(25, settled.Instances.Count(i => i.ClearedByOperator));
+
+        // Now six of them get Storage I/O Control after all. The proportion
+        // moves, the wording moves, the identities do not.
+        var progressed = StorageLatencyBlindSpot.Evaluate(Estate(blind: 19, measured: 22));
+
+        Assert.Equal(19, progressed.Count);
+        Assert.All(progressed, a =>
+            Assert.Contains("19 of the 41 volume(s)", a.Description, StringComparison.Ordinal));
+
+        var after = Reconcile(progressed, settled.Instances, 4);
+
+        Assert.Empty(after.Visible);
+        Assert.Empty(after.ToNotify);
+        Assert.Equal(19, after.Instances.Count(i => i.ClearedByOperator));
+
+        // The six that were fixed are gone rather than lingering as cleared
+        // rows: the fault disappeared, which is the one thing that ends a
+        // sticky clear.
+        Assert.Equal(6, after.Retired.Count);
+    }
+
+    private static AlertReconciliationResult Reconcile(
+        IReadOnlyList<AlertDefinition> observed,
+        IReadOnlyList<AlertInstance> stored,
+        int minute) =>
+        AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = "observation",
+            Observed = observed,
+            Stored = stored,
+            NowUtc = T0.AddMinutes(minute),
+        });
 
     [Fact]
     public void Nothing_at_all_produces_nothing()
