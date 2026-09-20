@@ -730,7 +730,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         CapacityBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.capacity"),
         FreeSpaceBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.freeSpace"),
         Url = PropertyCollectorParser.ReadString(o.Values, "summary.url"),
-        StorageDevices = VsphereInventorySource.VolumeIdentifier(
+        StorageDevices = VsphereVolume.IdentifierFrom(
                 PropertyCollectorParser.ReadString(o.Values, "summary.url")) is { } volume &&
             volumeDevices.TryGetValue(volume, out var devices)
                 ? devices

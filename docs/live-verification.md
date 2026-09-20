@@ -108,6 +108,78 @@ Acknowledge / Silence / Clear ile göründü.
 
 ---
 
+## 7. Disk büyümesi — ölçüldü, ve bir varsayımı çürüttü
+
+103 saniyelik pencerede, 8 620 seri ile:
+
+| | Ölçüm |
+|---|---|
+| Örnek yazma hızı | 335 / saniye |
+| Veritabanı büyümesi | 20,9 KB/s = **1,73 GB/gün** (retention silmeden önceki ham hız) |
+| Satır başına (`sample`) | 92,2 bayt (indeks dahil) |
+| Satır başına (`bucket`) | 173,1 bayt |
+
+### Kararlı durum projeksiyonu
+
+Yapılandırılmış retention ile (2 gün ham / 30 gün 5-dakika / 400 gün saatlik):
+
+| Katman | Seri başına satır | Toplam satır | Boyut |
+|---|---|---|---|
+| Ham | 5 760 | 49,7 M | 4,3 GB |
+| 5 dakika | 8 640 | 74,5 M | 12,0 GB |
+| Saatlik | 9 600 | 82,8 M | 13,3 GB |
+| **Toplam** | | | **≈ 29,6 GB** |
+
+**Bu 200 varlıklı bir estate için.** ADR-0012'nin örnek ortamı daha büyük
+(30 host, 800 VM).
+
+### Çürütülen varsayım
+
+ADR-0012 şöyle diyor: *"Depolama maliyeti her adımda kabaca on kat düşüyor, bu
+yüzden uzun kuyruk neredeyse bedava."*
+
+**Birim zaman için doğru, yapılandırılmış retention için değil.** 10 kat
+azalma, 15 kat ve 200 kat daha uzun saklama süresiyle fazlasıyla telafi
+ediliyor:
+
+```
+Ham         2 880/gün ×   2 gün =  5 760 satır/seri
+5 dakika      288/gün ×  30 gün =  8 640 satır/seri   ← ham'dan FAZLA
+Saatlik        24/gün × 400 gün =  9 600 satır/seri   ← daha da fazla
+```
+
+Yani her katman, kendinden öncekinden **daha çok** satır tutuyor. Uzun kuyruk
+bedava değil; en pahalı kısım o.
+
+Bu bir hata değil — yapılandırma tam olarak amaçlandığı gibi çalışıyor. Ama
+gerekçe sayılarla uyuşmuyor ve bu, sayılar ölçülene kadar görülemezdi.
+ADR'ler düzenlenmez; bu bulgu yeni bir ADR'yi hak ediyor.
+
+### Ana sürücü: `storagePath`
+
+8 620 serinin **5 072'si (%59)** depolama yolu serisi — 20 Eylül'de eklendi.
+Payı:
+
+| Seçenek | Kararlı durum |
+|---|---|
+| Bugünkü hâli | 29,6 GB |
+| `storagePath` olmadan | 12,2 GB |
+| Saatlik retention 400 → 90 gün | 19,3 GB |
+| Saatlik retention 400 → 180 gün | 22,3 GB |
+
+**Karar gerekiyor** (bkz. [analiz katmanı önerisi](proposals/analysis-layer.md)
+§8'e ek olarak):
+
+1. 30 GB, 200 varlıklı bir kurulum için kabul edilebilir mi? Kabul edilebilirse
+   kurulum şartlarında **yazılmalı**, sürpriz olmamalı.
+2. Yol gecikmesi (seviye 3, 2 sayaç) kesilip yalnızca yol *hataları* (seviye 2)
+   tutulsa, seri sayısı yarıya iner. Hata sayaçları zaten "kablo/SFP bozuk"
+   sinyalini veriyor; gecikme "hangi yol yavaş" sorusu için gerekli.
+3. Saatlik retention gerçekten 400 gün mü olmalı? Bir yıllık kapasite eğilimi
+   için evet; olay incelemesi için 2 günlük ham pencere zaten yeterli.
+
+---
+
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
 
 ### Gecikme 1 ms altında görünmüyor
@@ -150,9 +222,11 @@ kullanın, istemci saatini değil.
 
 Dürüstlük gereği: aşağıdakiler **çalışıyor diye bilinmiyor.**
 
-- **Uzun süreli çalışma.** En uzun kesintisiz koşu birkaç saat. Bellek büyümesi,
-  bağlantı havuzu davranışı, 2 günlük ham pencerenin gerçekte ne kadar yer
-  kapladığı ölçülmedi.
+- **Uzun süreli çalışma.** En uzun kesintisiz koşu 20 dakika — çünkü her
+  derleme, çalışan servisin DLL kilitleri yüzünden onu durdurmayı gerektiriyor.
+  20 dakikada: 154 MB çalışma kümesi, 38 iş parçacığı, 782 tanıtıcı, 20 döngü,
+  tek uyarı yok. Bellek büyümesi ve bağlantı havuzu davranışı **saatler
+  boyunca** ölçülmedi. (Disk büyümesi artık §7'de ölçülü.)
 - **Retention silmeleri canlıda.** Silme yolu *test edilmemiş değil*: gerçek bir
   PostgreSQL'e karşı üç entegrasyon testi var (`Raw_samples_are_folded_before_
   they_are_deleted`, `Everything_past_its_retention_goes`,

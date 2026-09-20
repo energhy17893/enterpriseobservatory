@@ -700,4 +700,47 @@ public class VsphereInventorySourceTests
         Assert.Contains(marks, m => m.Kind == IdentityMarkKind.VolumeIdentifier);
         Assert.DoesNotContain(marks, m => m.Kind == IdentityMarkKind.StorageDeviceId);
     }
+
+    [Theory]
+    // A real one, trailing slash and all.
+    [InlineData("ds:///vmfs/volumes/608bd301-3f719074-6962-f40343e85d10/", "608bd301-3f719074-6962-f40343e85d10")]
+    // Without the trailing slash, which some versions omit.
+    [InlineData("ds:///vmfs/volumes/608bd301-3f719074", "608bd301-3f719074")]
+    // NFS: not a UUID at all, which is why the rule is "last segment" rather
+    // than a UUID pattern. A pattern would have excluded every NFS datastore
+    // in an estate, silently.
+    [InlineData("ds:///vmfs/volumes/a1b2c3d4-e5f6/", "a1b2c3d4-e5f6")]
+    public async Task A_datastore_url_yields_the_volume_identifier(string url, string expected)
+    {
+        var snapshot = await Read(Payload(datastores:
+        [
+            new VsphereDatastore { MoRef = "ds-1", Name = "VOL", Accessible = true, Url = url },
+        ]));
+
+        Assert.Equal(
+            expected,
+            Assert.Single(Ds(snapshot, "VOL").Marks, m => m.Kind == IdentityMarkKind.VolumeIdentifier)
+                .Value);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    // Nothing but a scheme. "ds:" is shared by every datastore, so accepting it
+    // would attach every volume's latency to whichever one was read last —
+    // worse than having no identifier at all.
+    [InlineData("ds://")]
+    [InlineData("ds:")]
+    public async Task A_url_that_names_no_volume_yields_no_mark(string? url)
+    {
+        var snapshot = await Read(Payload(datastores:
+        [
+            new VsphereDatastore { MoRef = "ds-1", Name = "VOL", Accessible = true, Url = url },
+        ]));
+
+        Assert.DoesNotContain(
+            Ds(snapshot, "VOL").Marks,
+            m => m.Kind == IdentityMarkKind.VolumeIdentifier);
+    }
 }
