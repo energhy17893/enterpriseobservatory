@@ -94,6 +94,15 @@ public sealed record CpuContentionPolicy
     /// <c>PeerOutlierPolicy.Multiple</c> describes when it floors a median of
     /// zero at one millisecond. With this floor in place, on a genuinely quiet
     /// host it is <see cref="ReadyPercent"/> that decides, not the ratio.
+    /// <para>
+    /// At the shipped defaults it cannot bind, and that is worth stating
+    /// rather than discovering: <see cref="SiblingMultiple"/> times this is
+    /// three, and nothing reaches a verdict under <see cref="ReadyPercent"/>
+    /// at ten. Mutation testing found it dormant. It is kept because it stops
+    /// being dormant the moment the ready floor is tuned down, which is
+    /// precisely the configuration in which a sibling median of a fifth of a
+    /// percent starts being divided by.
+    /// </para>
     /// </remarks>
     public double SiblingFloorPercent { get; init; } = 1d;
 
@@ -347,9 +356,14 @@ public static class CpuContention
 
         var rules = policy ?? CpuContentionPolicy.Default;
 
-        var ready = PercentagesOf(observations, graph, rules.ReadyCounter, EntityKind.VirtualMachine);
-        var costop = PercentagesOf(observations, graph, rules.CoStopCounter, EntityKind.VirtualMachine);
-        var hostUsage = LevelsOf(observations, graph, rules.HostUsageCounter, EntityKind.EsxiHost);
+        // Readings first, membership second, and the two never mix. These
+        // dictionaries are keyed by whatever entity a sample was attributed
+        // to and hold no opinion about which of those entities matter; only
+        // GuestsByHost decides that, and it decides it once. A reading for
+        // something the graph does not place is simply never looked up.
+        var ready = PercentagesOf(observations, rules.ReadyCounter);
+        var costop = PercentagesOf(observations, rules.CoStopCounter);
+        var hostUsage = LevelsOf(observations, rules.HostUsageCounter);
 
         var alerts = new List<AlertDefinition>();
 
@@ -622,12 +636,20 @@ public static class CpuContention
     /// series is not a small virtual machine: comparing them against each other
     /// would report the busiest core of every guest in the estate.
     /// </para>
+    /// <para>
+    /// It does not ask the graph whether the entity is one this rule cares
+    /// about, and that omission is deliberate rather than an oversight. This
+    /// filtered on kind and liveness until mutation testing showed the check
+    /// was undefended — and then showed why no test could defend it: nothing
+    /// reaches a verdict except through <see cref="GuestsByHost"/>, so a
+    /// reading for an unknown, vanished or wrong-kinded entity is already
+    /// unreachable. A second gate that cannot be observed to fail is a number
+    /// nobody can safely change later; the population is decided in one place.
+    /// </para>
     /// </remarks>
     private static Dictionary<EntityId, double> PercentagesOf(
         IReadOnlyList<Observation> observations,
-        EntityGraph graph,
-        string counter,
-        EntityKind kind)
+        string counter)
     {
         var values = new Dictionary<EntityId, double>();
 
@@ -639,8 +661,7 @@ public static class CpuContention
                 !value.IsAggregateInstance ||
                 value.Rollup != RollupType.Summation ||
                 !IsMilliseconds(value.Unit) ||
-                value.Interval <= TimeSpan.Zero ||
-                !IsLive(graph, observation.Entity, kind))
+                value.Interval <= TimeSpan.Zero)
             {
                 continue;
             }
@@ -660,9 +681,7 @@ public static class CpuContention
     /// </remarks>
     private static Dictionary<EntityId, double> LevelsOf(
         IReadOnlyList<Observation> observations,
-        EntityGraph graph,
-        string counter,
-        EntityKind kind)
+        string counter)
     {
         var values = new Dictionary<EntityId, double>();
 
@@ -672,8 +691,7 @@ public static class CpuContention
 
             if (!Named(value.CounterName, counter) ||
                 !value.IsAggregateInstance ||
-                !string.Equals(value.Unit, "percent", StringComparison.OrdinalIgnoreCase) ||
-                !IsLive(graph, observation.Entity, kind))
+                !string.Equals(value.Unit, "percent", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }

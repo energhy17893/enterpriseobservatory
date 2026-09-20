@@ -558,17 +558,64 @@ public class CpuContentionTests
     [Fact]
     public void The_sibling_floor_is_what_stops_a_multiple_of_almost_nothing()
     {
-        // Neighbours at 0.2% and a machine at 11%. Without flooring the median
-        // the multiple is fifty-five and the rule fires; with it the machine
-        // is compared against one percent and eleven is over three, so this
-        // one needs the floor raised rather than removed to show its work.
-        List<Observation> readings = [.. Quiet(0.2), Wait("vc-1:vm-9", 11)];
+        // Shown on a lowered ready floor, because at the shipped defaults this
+        // gate cannot bind: three times one percent is three, and nothing
+        // reaches a verdict under ten. That is worth knowing rather than
+        // hiding -- it is dormant as shipped and load-bearing the moment
+        // somebody tunes the ready floor down, which is exactly when a median
+        // of 0.2% starts being divided by.
+        List<Observation> readings = [.. Quiet(0.2), Wait("vc-1:vm-9", 1.5)];
+        var tuned = CpuContentionPolicy.Default with { ReadyPercent = 1d };
 
-        Assert.Single(CpuContention.Evaluate(readings, Estate(Guests(9))));
+        Assert.Empty(CpuContention.Evaluate(readings, Estate(Guests(9)), tuned));
 
-        Assert.Empty(CpuContention.Evaluate(
-            readings, Estate(Guests(9)),
-            CpuContentionPolicy.Default with { SiblingFloorPercent = 4d }));
+        // Without the floor the neighbours' 0.2% is divided by directly and a
+        // machine losing a third of a second is reported as seven times worse
+        // than its host -- a large multiple of nothing, which is the failure
+        // PeerOutliers names when it floors a median of zero at one
+        // millisecond.
+        Assert.Single(CpuContention.Evaluate(
+            readings, Estate(Guests(9)), tuned with { SiblingFloorPercent = 0.01d }));
+    }
+
+    [Fact]
+    public void A_host_the_product_can_no_longer_see_has_no_guests_to_compare()
+    {
+        // Its guests are still reporting, but we have stopped seeing the thing
+        // they are placed on. Comparing them would produce an alert whose
+        // description names a host nobody can look at, and would keep doing so
+        // for the thirty days a vanished entity is retained.
+        var graph = Estate(Guests(9));
+        var gone = graph with
+        {
+            Entities = graph.Entities.ToDictionary(
+                e => e.Key,
+                e => e.Key == new EntityId(Host)
+                    ? e.Value with { ObservationState = ObservationState.Vanished }
+                    : e.Value),
+        };
+
+        Assert.Empty(CpuContention.Evaluate([.. Quiet(1), Wait("vc-1:vm-9", 30)], gone));
+    }
+
+    [Fact]
+    public void Only_an_execution_edge_places_a_guest_on_a_host()
+    {
+        // RunsOn means "this is executing there" and is the only edge that
+        // makes two machines each other's competition for a core. Containment
+        // and provisioning edges reach the same entities and mean nothing of
+        // the sort -- accepting them would let a datastore's consumers, or a
+        // host's own parts, be compared as though they shared a scheduler.
+        var graph = Estate(Guests(9));
+        var contained = graph with
+        {
+            Relationships =
+            [
+                .. graph.Relationships.Select(r => r with { Kind = RelationshipKind.PartOf }),
+            ],
+        };
+
+        Assert.Empty(CpuContention.Evaluate([.. Quiet(1), Wait("vc-1:vm-9", 30)], contained));
     }
 
     [Fact]
