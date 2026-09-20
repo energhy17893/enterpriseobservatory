@@ -260,8 +260,21 @@ public class StorageLatencyBlindSpotTests
         // codebase treats as worse than silence. Note this is a different
         // silence from the idle case above, and the two must not be collapsed:
         // that one has an answer, this one has no evidence.
+        List<Observation> unread = [.. Blind().Where(o => o.Value.CounterName != Iops)];
+
+        Assert.Empty(StorageLatencyBlindSpot.Evaluate(unread));
+
+        // And still silent with the load floor taken away, which is the part
+        // that has to be asserted separately. A rule that folded "no counter"
+        // into "zero operations" would look identical here on the default
+        // policy and would start firing on every unmeasured volume the moment
+        // somebody lowered the floor -- a mutant that survives the test above
+        // unless the absence is pinned on its own.
         Assert.Empty(StorageLatencyBlindSpot.Evaluate(
-            [.. Blind().Where(o => o.Value.CounterName != Iops)]));
+            unread, StorageLatencyBlindSpotPolicy.Default with
+            {
+                MinimumOperationsPerSecond = -1d,
+            }));
     }
 
     [Fact]
@@ -294,6 +307,26 @@ public class StorageLatencyBlindSpotTests
                 unit: "number", datastore: "vc-1:esx01", vantage: false),
             From("naa.1", 0, counter: Sioc, unit: "percent",
                 datastore: "vc-1:esx01", vantage: false),
+        ]));
+    }
+
+    [Fact]
+    public void A_duration_that_is_not_from_a_vantage_point_is_not_this_rules_business()
+    {
+        // The previous test is the realistic version and it is stopped by more
+        // than one gate at once, so it cannot say which. This one is the same
+        // claim isolated: everything else about the volume is exactly the
+        // firing case, and only the latency readings are device-scoped rather
+        // than observed from a host. If the shape test goes, the rule starts
+        // recommending Storage I/O Control for a LUN's device latency, which
+        // SIOC does nothing about.
+        Assert.Empty(StorageLatencyBlindSpot.Evaluate(
+        [
+            From("naa.1", 0, vantage: false),
+            From("naa.2", 0, vantage: false),
+            From("naa.3", 0, vantage: false),
+            From("esx01", 1638, counter: Iops, unit: "number"),
+            From("esx01", 0, counter: Sioc, unit: "percent"),
         ]));
     }
 
@@ -400,10 +433,23 @@ public class StorageLatencyBlindSpotTests
         // the order observations arrive in is not stable between cycles, so the
         // alert would be raised anew each pass and lose its history.
         var first = Assert.Single(StorageLatencyBlindSpot.Evaluate(Blind()));
-        var second = Assert.Single(
+
+        // Reversed, which puts a different counter first. A fingerprint built
+        // from the counter name would split one blind volume into one alert per
+        // latency counter.
+        var reversed = Assert.Single(
             StorageLatencyBlindSpot.Evaluate([.. Enumerable.Reverse(Blind())]));
 
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        // And with a different host's reading first, which reversing does not
+        // achieve -- both ends of this fixture are esx01, so the reversal alone
+        // lets a fingerprint carrying the host slip through. That mutant
+        // survived until this line existed.
+        var readings = Blind();
+        var moved = StorageLatencyBlindSpot.Evaluate(
+            [readings[2], .. readings.Where((_, i) => i != 2)]);
+
+        Assert.Equal(first.Fingerprint, reversed.Fingerprint);
+        Assert.Equal(first.Fingerprint, Assert.Single(moved).Fingerprint);
     }
 
     [Fact]
