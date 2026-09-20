@@ -1,4 +1,5 @@
 using System.Globalization;
+using EnterpriseObservatory.Domain;
 
 namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
 
@@ -115,12 +116,42 @@ public class CounterNamesExistTests
         Assert.Equal(2, Catalogue["storagePath.busResets.summation"].Level);
         Assert.Equal(2, Catalogue["storagePath.commandsAborted.summation"].Level);
 
-        // And the latency pair is not, which is why it is asked for anyway and
-        // reported as InsufficientDetailLevel where it is missing rather than
-        // quietly dropped.
+        // The latency pair is level 3, and the fixture keeps it so the reason
+        // it is NOT collected stays legible. It was collected and dropped: it
+        // cost 2,536 of 8,620 series to answer "which path is slow" on an
+        // estate whose path latency cannot resolve below a millisecond in the
+        // first place.
         Assert.Equal(3, Catalogue["storagePath.totalReadLatency.average"].Level);
         Assert.Equal(3, Catalogue["storagePath.totalWriteLatency.average"].Level);
     }
+
+    [Fact]
+    public void Storage_paths_are_collected_for_faults_and_not_for_latency()
+    {
+        // Pinned because it is a decision with a cost on each side, and the
+        // next person to look will wonder why the obvious counter is absent.
+        // Faults say "which path is broken", which is what the bottom of the
+        // ladder is for; latency said "which path is slow", which this
+        // platform cannot answer below a millisecond anyway.
+        Assert.Equal(
+            ["storagePath.busResets.summation", "storagePath.commandsAborted.summation"],
+            VsphereCounters.PerStoragePath);
+
+        Assert.All(
+            VsphereCounters.PerStoragePath,
+            key => Assert.Equal(RollupType.Summation, RollupOf(key)));
+
+        // A summation of zero means it never happened. That is the property
+        // that makes these worth keeping where the latency zeros were not:
+        // a truncated average of zero says nothing at all.
+        Assert.DoesNotContain(
+            VsphereCounters.Host,
+            k => k.StartsWith("storagePath.", StringComparison.Ordinal) &&
+                 k.Contains("Latency", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static RollupType RollupOf(string key) =>
+        VsphereCounter.ParseRollup(key.Split('.')[^1]);
 
     [Fact]
     public void Storage_paths_are_kept_one_by_one_because_averaging_them_is_the_whole_problem()

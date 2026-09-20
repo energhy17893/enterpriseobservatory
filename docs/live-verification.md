@@ -125,13 +125,17 @@ Yapılandırılmış retention ile (2 gün ham / 30 gün 5-dakika / 400 gün saa
 
 | Katman | Seri başına satır | Toplam satır | Boyut |
 |---|---|---|---|
-| Ham | 5 760 | 49,7 M | 4,3 GB |
-| 5 dakika | 8 640 | 74,5 M | 12,0 GB |
-| Saatlik | 9 600 | 82,8 M | 13,3 GB |
-| **Toplam** | | | **≈ 29,6 GB** |
+| Ham | 5 760 | 35,0 M | 3,0 GB |
+| 5 dakika | 8 640 | 52,6 M | 8,5 GB |
+| Saatlik | 9 600 | 58,4 M | 9,4 GB |
+| **Toplam** | | | **≈ 20,9 GB** |
 
 **Bu 200 varlıklı bir estate için.** ADR-0012'nin örnek ortamı daha büyük
 (30 host, 800 VM).
+
+> Bu tablo **6 084 seri** içindir. İlk ölçüm 8 620 seri ve ≈ 29,6 GB idi;
+> `storagePath` gecikme çifti bırakılınca 2 536 seri ve 8,7 GB düştü. Karar ve
+> gerekçesi aşağıda.
 
 ### Çürütülen varsayım
 
@@ -155,28 +159,56 @@ Bu bir hata değil — yapılandırma tam olarak amaçlandığı gibi çalışı
 gerekçe sayılarla uyuşmuyor ve bu, sayılar ölçülene kadar görülemezdi.
 ADR'ler düzenlenmez; bu bulgu yeni bir ADR'yi hak ediyor.
 
-### Ana sürücü: `storagePath`
+### Verilen karar: yol gecikmesi bırakıldı
 
-8 620 serinin **5 072'si (%59)** depolama yolu serisi — 20 Eylül'de eklendi.
-Payı:
+İlk ölçümde 8 620 serinin 5 072'si (%59) depolama yolu serisiydi ve kararlı
+durum ≈ 29,6 GB çıkıyordu. Seçenekler ölçülüp sunuldu; **karar: gecikme çifti
+bırakılsın, hata sayaçları kalsın.**
 
-| Seçenek | Kararlı durum |
-|---|---|
-| Bugünkü hâli | 29,6 GB |
-| `storagePath` olmadan | 12,2 GB |
-| Saatlik retention 400 → 90 gün | 19,3 GB |
-| Saatlik retention 400 → 180 gün | 22,3 GB |
+| | Seri | Kararlı durum |
+|---|---|---|
+| Ölçüldüğü hâli (4 yol sayacı) | 8 620 | 29,6 GB |
+| **Bugünkü hâli (2 yol hata sayacı)** | **6 084** | **20,9 GB** |
+| `storagePath` tamamen çıkarılsaydı | 3 548 | 12,2 GB |
 
-**Karar gerekiyor** (bkz. [analiz katmanı önerisi](proposals/analysis-layer.md)
-§8'e ek olarak):
+Gerekçe tek cümleyle: gecikme çifti 2 536 seri ve 8,7 GB'a mal oluyordu,
+karşılığında "hangi yol yavaş" sorusunu cevaplıyordu — ama §5b bu estate'te yol
+gecikmesinin 1 ms altında zaten çözülemediğini ölçmüştü. Hata sayaçları "hangi
+yol **bozuk**" diyor ve onların sıfırı gerçek bir cevap.
 
-1. 30 GB, 200 varlıklı bir kurulum için kabul edilebilir mi? Kabul edilebilirse
-   kurulum şartlarında **yazılmalı**, sürpriz olmamalı.
-2. Yol gecikmesi (seviye 3, 2 sayaç) kesilip yalnızca yol *hataları* (seviye 2)
-   tutulsa, seri sayısı yarıya iner. Hata sayaçları zaten "kablo/SFP bozuk"
-   sinyalini veriyor; gecikme "hangi yol yavaş" sorusu için gerekli.
-3. Saatlik retention gerçekten 400 gün mü olmalı? Bir yıllık kapasite eğilimi
-   için evet; olay incelemesi için 2 günlük ham pencere zaten yeterli.
+**Bedeli kaydedildi:** kalan iki sayaç yolu çalışma zamanı adıyla
+(`vmhba0:C0:T0:L1`) adlandırıyor, LUN kimliği taşımıyor. Artık bir bus reset
+host ve HBA'ya atfedilebiliyor, otomatik olarak datastore'a değil. Datastore'a
+kadar bağlamak gerekirse yol belli: host'un `config.storageDevice.multipathInfo`
+haritası, envanter ritminde bir kez okunur — seri ödemeden.
+
+### Bir sayaç bırakıldığında geçmişine ne oluyor
+
+Canlıda doğrulandı, çünkü aşikâr değil:
+
+```
+storagePath.busResets.summation        1268 seri — son 2 dk'da 1268'i yazıldı
+storagePath.commandsAborted.summation  1268 seri — son 2 dk'da 1268'i yazıldı
+storagePath.totalReadLatency.average   1268 seri — son 2 dk'da 0
+storagePath.totalWriteLatency.average  1268 seri — son 2 dk'da 0
+
+döngü başına yazılan seri: 6 084   (önce 8 620, −%29)
+toplam seri satırı:        8 620
+```
+
+Bırakılan 2 536 seri **silinmedi**. Yazılmayı durdurdular ama topladıkları
+geçmiş gerçek ölçümdü ve duruyor: ham pencere 2 gün, kovalar 30 ve 400 gün
+sonra retention ile temizlenecek, ardından `A_series_with_nothing_left_is_forgotten`
+seri satırını da kaldıracak. Yani `series` tablosu 8 620'den 6 084'e **400 gün
+içinde** inecek, bugün değil.
+
+Bu doğru davranış: toplamayı bıraktık diye toplanmış ölçümü silmek, veriyi yok
+etmek olurdu. Ama projeksiyon tablosu **yeni yazım hızı** içindir; disk birkaç
+gün boyunca eski geçmişi de taşıyacak.
+
+**Hâlâ açık:** saatlik retention gerçekten 400 gün mü olmalı? 90 güne
+indirilse 13,6 GB, 180 güne indirilse 15,7 GB. Bir yıllık kapasite eğilimi
+istiyorsan 400 doğru; olay incelemesi için 2 günlük ham pencere zaten yeterli.
 
 ---
 
@@ -292,11 +324,13 @@ kullanın, istemci saatini değil.
 
 Dürüstlük gereği: aşağıdakiler **çalışıyor diye bilinmiyor.**
 
-- **Uzun süreli çalışma.** En uzun kesintisiz koşu 20 dakika — çünkü her
-  derleme, çalışan servisin DLL kilitleri yüzünden onu durdurmayı gerektiriyor.
-  20 dakikada: 154 MB çalışma kümesi, 38 iş parçacığı, 782 tanıtıcı, 20 döngü,
-  tek uyarı yok. Bellek büyümesi ve bağlantı havuzu davranışı **saatler
-  boyunca** ölçülmedi. (Disk büyümesi artık §7'de ölçülü.)
+- **Uzun süreli çalışma — kısmen ölçüldü.** En uzun kesintisiz koşu **3 saat**
+  (her derleme servisi durdurmayı gerektirdiği için daha uzunu zor). O koşuda
+  çalışma kümesi **149 MB → 172 MB**: saatte ~8 MB, düz değil ama kaçak da
+  değil; .NET'te sunucu GC'nin bu ölçekte beklenen davranışına benziyor. Tek
+  uyarı, tek hata yok. **Günler boyunca** ölçülmedi ve asıl merak edilen o:
+  8 MB/saat sürerse mi duruyor, yoksa yassılaşıyor mu? (Disk büyümesi §7'de
+  ayrıca ölçülü.)
 - **Retention silmeleri canlıda.** Silme yolu *test edilmemiş değil*: gerçek bir
   PostgreSQL'e karşı üç entegrasyon testi var (`Raw_samples_are_folded_before_
   they_are_deleted`, `Everything_past_its_retention_goes`,

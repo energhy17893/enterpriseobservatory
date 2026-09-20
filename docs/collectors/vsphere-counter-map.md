@@ -276,21 +276,44 @@ seri × 4 sayaç.
 
 Bu, ölçülmeden tahmin edilemeyecek bir şeydi ve önemli:
 
-| Sayaç | Seviye | Instance biçimi |
-|---|---|---|
-| `storagePath.busResets.summation` | **2** | `vmhba0:C0:T0:L1` |
-| `storagePath.commandsAborted.summation` | **2** | `vmhba0:C0:T0:L1` |
-| `storagePath.totalReadLatency.average` | 3 | `fc.<init WWNN>:<init WWPN>-fc.<hedef WWNN>:<hedef WWPN>-naa.<LUN>` |
-| `storagePath.totalWriteLatency.average` | 3 | aynı fabric biçimi |
+| Sayaç | Seviye | Instance biçimi | Toplanıyor mu |
+|---|---|---|---|
+| `storagePath.busResets.summation` | **2** | `vmhba0:C0:T0:L1` | **Evet** |
+| `storagePath.commandsAborted.summation` | **2** | `vmhba0:C0:T0:L1` | **Evet** |
+| `storagePath.totalReadLatency.average` | 3 | `fc.<init WWNN>:<init WWPN>-fc.<hedef WWNN>:<hedef WWPN>-naa.<LUN>` | Hayır — bırakıldı |
+| `storagePath.totalWriteLatency.average` | 3 | aynı fabric biçimi | Hayır — bırakıldı |
 
-Aynı yolu iki ayrı sözlükle adlandırıyorlar. **Doğrudan birbirlerine
-eklenemezler.** Yani "bu yolda bus reset oldu *ve* bu yol yavaş" sorusu bugün
-tek sorguda cevaplanamıyor.
+Aynı yolu iki ayrı sözlükle adlandırıyorlar ve **doğrudan birbirlerine
+eklenemezler.**
 
-Buna karşılık uzun biçim çok daha değerli: içinde **initiator WWPN**, **hedef
-(dizi) WWPN** ve **LUN NAA** var. Bu üçü, ileride SAN switch ve storage
-toplayıcıları geldiğinde zoning ve yol doğrulamasının tam olarak ihtiyaç
-duyduğu şey — ve `IdentityMarkKind.WorldWideName` alanı bunun için zaten var.
+### Gecikme çifti neden bırakıldı
+
+Kısaca toplandı, ölçüldü, sonra **bilinçli olarak çıkarıldı** (20 Eylül 2026
+kararı). Maliyeti: bu estate'in 8 620 serisinin **2 536'sı** ve kararlı durum
+projeksiyonunun yaklaşık **8 GB**'ı. Karşılığında cevapladığı soru "hangi yol
+yavaş" — oysa §5b bu estate'te yol gecikmesinin **1 ms altında zaten
+çözülemediğini** ölçtü. Pahalı bir sayaçtan, zaten alınamayan bir cevap.
+
+Hata sayaçları ise "hangi yol **bozuk**" diyor, ki merdivenin en alt basamağı
+bunun için var — ve **toplanan (summation) bir sayacın sıfırı bilgidir**,
+kesilen bir ortalamanınki değil.
+
+### Bunun bedeli, açıkça
+
+Kalan iki sayaç yolu **çalışma zamanı adıyla** (`vmhba0:C0:T0:L1`) adlandırıyor
+ve bu adda **LUN kimliği yok**. Bırakılan gecikme sayaçları ise initiator
+WWPN, hedef (dizi) WWPN ve LUN NAA taşıyordu.
+
+Sonuç: bir bus reset artık **host'a ve HBA'ya** atfedilebiliyor, ama
+otomatik olarak bir **datastore'a** atfedilemiyor.
+
+Bu, bir kablo ya da SFP için doğru granülarite — gidip bakacağın şey HBA'dır.
+Datastore'a kadar bağlamak gerekirse yol, seri ödemek değil, host'un
+`config.storageDevice.multipathInfo` haritasını okumaktır: çalışma zamanı adını
+LUN NAA'sına çeviren tablo orada ve envanter ritminde bir kez okunur.
+
+`IdentityMarkKind.WorldWideName` alanı, SAN switch ve storage toplayıcıları
+geldiğinde hâlâ bunun için duruyor.
 
 ### Hangi zincir kuruldu, hangisi eksik
 
@@ -364,6 +387,9 @@ kaybolan yarı, çoğu zaman kesintiyi açıklayan yarıdır.
 storagePath.busResets.summation        0 / 7608 örnek sıfırdan büyük
 storagePath.commandsAborted.summation  0 / 7608 örnek sıfırdan büyük
 ```
+
+Bu iki sayacın toplanmaya devam etmesinin, gecikme çiftinin bırakılmasının
+sebebi tam olarak budur: burada sıfır bir cevaptır.
 
 Fark, sayacın türünde. **Kesilen (truncate edilen) bir ortalama sıfırı hiçbir
 şey söylemez; toplanan (summation) bir sayacın sıfırı "hiç olmadı" der.** Bu

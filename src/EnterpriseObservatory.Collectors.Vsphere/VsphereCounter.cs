@@ -135,7 +135,7 @@ public static class VsphereCounters
     ];
 
     /// <summary>
-    /// Counters a host reports per storage path — the bottom of the ladder.
+    /// Faults a host reports per storage path — the bottom of the ladder.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -146,26 +146,37 @@ public static class VsphereCounters
     /// broken path in with the working ones and reports something mild.
     /// </para>
     /// <para>
-    /// The two error counters come first on purpose, and they are level 2:
-    /// available on any estate that already meets the product's stated
-    /// prerequisite. A bus reset or an aborted command is not a threshold to
-    /// tune, it is a fault — SCSI does not reset a bus because the array is
-    /// busy. Measured on a live host, 126 paths report them.
+    /// Faults only, and that is a decision rather than an oversight. Both are
+    /// level 2, so they arrive on any estate already meeting the product's
+    /// stated prerequisite, and neither is a threshold to tune: SCSI does not
+    /// reset a bus because the array is busy, and a command is not aborted
+    /// because a volume is popular. One of either is a fault, and a count of
+    /// zero is a real answer rather than a truncated one — unlike the latency
+    /// counters, whose zeros say nothing at all below a millisecond.
     /// </para>
     /// <para>
-    /// The latency pair is level 3 and is asked for anyway. Where the level is
-    /// lower the existing availability machinery reports it as
-    /// <c>InsufficientDetailLevel</c> against the counter, which names a
-    /// setting an operator can change — far better than the product quietly
-    /// collecting less and looking complete.
+    /// The level-3 latency pair was collected and then deliberately dropped.
+    /// It was 2 536 of this estate's 8 620 series — about 8 GB of the
+    /// projected steady state — to answer "which path is slow" on an estate
+    /// where, per the counter map §5b, path latency cannot be resolved below
+    /// a millisecond anyway. The faults answer "which path is broken", which
+    /// is the question the bottom of the ladder exists for, at a fifth of the
+    /// cost.
+    /// </para>
+    /// <para>
+    /// It costs something real and the map records it: the fault counters name
+    /// a path by its runtime name, which carries no LUN identifier, while the
+    /// latency counters named it by initiator and target WWPN plus the LUN's
+    /// NAA. So a reset is now attributable to a host and an HBA but not
+    /// automatically to a datastore. That is the right granularity for a cable
+    /// or an SFP, and recovering the rest means reading the host's multipath
+    /// map rather than paying for it in series.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<string> PerStoragePath { get; } =
     [
         "storagePath.busResets.summation",
         "storagePath.commandsAborted.summation",
-        "storagePath.totalReadLatency.average",
-        "storagePath.totalWriteLatency.average",
     ];
 
     /// <summary>
