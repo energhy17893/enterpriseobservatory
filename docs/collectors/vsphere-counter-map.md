@@ -241,6 +241,26 @@ IOPS yapıyordu. **3762 IOPS yapan bir volume'ün gecikmesi 0 ms değildir.**
    biriminde olması tam da bu çözünürlük sorunu için — ama SIOC bu estate'te
    302 host-volume çiftinin hiçbirinde etkin değil, dolayısıyla her yerde 0.
 
+### Düzeltme (uzun pencere): "her zaman 0" değil, "%99,6 sıfır"
+
+Yukarıdaki tablo **302 örneklik anlık bir pencereden**. 178 180 okumaya
+çıkıldığında:
+
+| Sayaç | Sıfırdan büyük | Oran | Maks |
+|---|---|---|---|
+| `datastore.totalReadLatency.average` | 669 / 178 180 | %0,38 | **7 ms** |
+| `datastore.totalWriteLatency.average` | 254 / 178 180 | %0,14 | **8 ms** |
+| `datastore.datastoreVMObservedLatency.latest` | 0 | %0 | SIOC kapalı |
+
+**Sonuç doğruydu, ifade fazla kesindi.** Sayaçlar "hep 0" okumuyor: okumaların
+%99,6'sı 0 çünkü 1 ms altı kesiliyor, ama **1 ms'yi aşan sivrilmeler
+görünüyor**. Bu zaten sayaçları tutma gerekçesiydi — aşağıdaki "1 ms üstü,
+yani asıl aranan sorun, doğru görünür" cümlesi.
+
+Kısa bir pencereden mutlak bir cümle kurmak, bu belgenin uyardığı hatanın
+kendi biçimi: *"0 / 302"* doğru bir gözlemdi, *"her zaman 0"* ondan çıkarılmış
+yanlış bir genellemeydi.
+
 ### Sonuç: bu ürünün en tehlikeli sayı tipi
 
 Bu, ürünün kaçınmak için kurulduğu "sessizlik sağlık gibi görünür" hatasının

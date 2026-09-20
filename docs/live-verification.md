@@ -231,8 +231,9 @@ Sıradaki kısılacak yer artık saatlik değil: **beş dakikalık kademe** en b
 
 ### Gecikme 1 ms altında görünmüyor
 
-Bu estate'te **her** datastore gecikme sayacı 0 okuyor; aynı hacimler 3 762
-okuma + 8 230 yazma IOPS yapıyor.
+Kısa bir pencerede (302 örnek) **hiçbir** datastore gecikme sayacı 0'dan büyük
+okumadı; aynı hacimler 3 762 okuma + 8 230 yazma IOPS yapıyordu. Uzun pencerede
+tablo değişiyor — aşağıdaki düzeltmeye bakın.
 
 | Sayaç | Sıfırdan büyük | Neden |
 |---|---|---|
@@ -244,6 +245,44 @@ okuma + 8 230 yazma IOPS yapıyor.
 toplanmaya devam ediyor (1 ms üstü — yani asıl aranan sorun — doğru görünür) ve
 SIOC kanıtı veritabanında duruyor. Uygunluk motoru yazıldığında ilk kurallardan
 biri bu olmalı.
+
+### Düzeltme (uzun pencere): "her zaman 0" fazla kesin bir ifadeydi
+
+Yukarıdaki tablo **302 örneklik anlık bir pencereden** alınmıştı. 178 180
+okumaya çıkıldığında tablo değişiyor:
+
+| Sayaç | Sıfırdan büyük | Oran | Maks |
+|---|---|---|---|
+| `datastore.totalReadLatency.average` | 669 / 178 180 | %0,38 | **7 ms** |
+| `datastore.totalWriteLatency.average` | 254 / 178 180 | %0,14 | **8 ms** |
+| `datastore.datastoreVMObservedLatency.latest` | 0 | %0 | 0 (SIOC kapalı) |
+
+Yani **sonuç doğruydu, ifade değildi.** Sayaçlar "hep 0" okumuyor; okumaların
+%99,6'sı 0 çünkü 1 ms altı kesiliyor, ama **1 ms'yi aşan sivrilmeler
+görünüyor** — 7-8 ms'ye kadar. Bu tam olarak §5b'nin sayaçları tutma
+gerekçesiydi: *"1 ms üstü — yani asıl aranan sorun — doğru görünür."*
+
+Ders, ölçümün kendisi kadar önemli: **kısa bir pencereden mutlak bir cümle
+kurmak.** "0 / 302" doğru bir gözlemdi; "her zaman 0" ondan çıkarılan yanlış
+bir genellemeydi.
+
+### Bırakılan yol gecikmesi ne gösteriyormuş
+
+Dürüstlük gereği, aynı uzun pencerede:
+
+| Sayaç | Sıfırdan büyük | Oran | Maks | ≥10 ms görülen yol |
+|---|---|---|---|---|
+| `storagePath.totalReadLatency.average` | 1 835 / 578 680 | %0,32 | **48 ms** | 3 |
+| `storagePath.totalWriteLatency.average` | 834 / 578 680 | %0,14 | 28 ms | — |
+
+**Sinyal vardı.** 48 ms'lik bir yol gecikmesi önemsiz değil. Ama seyrek ve
+yoğunlaşmış: 578 680 okumanın 3 ayrı yolunda 10 ms'yi aşıyor, 20 ms'yi aşan
+tek bir okuma var.
+
+Karar (yol gecikmesini bırakmak, hata sayaçlarını tutmak) geri alınmadı —
+maliyeti 2 536 seri ve 8,7 GB'dı ve karar kullanıcınındı. Ama **bu sayı
+kayda geçiyor**, çünkü kararı yeniden değerlendirmek gerekirse dayanak bu
+olmalı, hatıra değil.
 
 Buna karşılık `storagePath.busResets` / `commandsAborted` sıfırları **bilgidir**:
 7 608 örnekte tek bir bus reset yok. Fark sayacın türünde — kesilen bir ortalama
