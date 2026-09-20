@@ -631,12 +631,14 @@ public class MonitoringCycleTests : IDisposable
         string source,
         DateTimeOffset now,
         IReadOnlyList<Entity>? entities = null,
-        IReadOnlyList<AlertDefinition>? alerts = null) => new()
+        IReadOnlyList<AlertDefinition>? alerts = null,
+        IReadOnlyList<Relationship>? relationships = null) => new()
         {
             SourceInstanceId = source,
             ReadAtUtc = now,
             Entities = entities ?? [],
             Alerts = alerts ?? [],
+            Relationships = relationships ?? [],
         };
 
     // --- rules on measurements --------------------------------------------
@@ -907,6 +909,157 @@ public class MonitoringCycleTests : IDisposable
         // rule this product was built to deliver.
         Assert.Contains(result.Visible, a => a.Title == "Slow from one host only");
     }
+
+    [Fact]
+    public async Task The_layer_rule_is_reached_and_names_the_layer_it_blames()
+    {
+        // Per-device latency is the product's self-described diagnostic core
+        // and for months nothing read it. This drives the rule through the
+        // real cycle rather than trusting its unit tests: device latency far
+        // above kernel and queue is the array, and the title has to say so,
+        // because the title is what tells an operator which console to open.
+        var cycle = Cycle();
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    Layer("disk.deviceLatency.average", 20),
+                    Layer("disk.kernelLatency.average", 1),
+                    Layer("disk.queueLatency.average", 1),
+                ],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Contains(result.Visible, a => a.Title == "Array or fabric is the bottleneck");
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
+
+    [Fact]
+    public async Task The_cpu_rule_is_reached_and_is_given_the_graph_it_needs()
+    {
+        // This rule cannot answer anything without the entity graph: it
+        // compares a machine against its siblings on the same host, and the
+        // siblings are reachable only through the VM RunsOn Host edges the
+        // inventory cycle builds. Wiring it with the observations alone would
+        // compile, run, and silently find nothing forever -- so the inventory
+        // cycle runs first here on purpose.
+        var cycle = Cycle();
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot(
+                "vc-1",
+                _clock.UtcNow,
+                entities:
+                [
+                    Node("vc-1:host-1", EntityKind.EsxiHost, "esx01"),
+                    .. WaitingGuests.Select(v => Node(v, EntityKind.VirtualMachine, v)),
+                ],
+                relationships:
+                [
+                    .. WaitingGuests.Select(v => new Relationship
+                    {
+                        From = new EntityId(v),
+                        To = new EntityId("vc-1:host-1"),
+                        Kind = RelationshipKind.RunsOn,
+                        ObservedAtUtc = _clock.UtcNow,
+                    }),
+                ]),
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    Busy("vc-1:host-1", 92),
+                    .. WaitingGuests.Select(v => Waiting(v, 4000)),
+                ],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        // The host verdict, not the per-machine one: a saturated host with
+        // several machines waiting is a host problem, and saying so is the
+        // whole reason the rule computes both before choosing.
+        Assert.Contains(result.Visible, a => a.Entity == new EntityId("vc-1:host-1"));
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
+
+    /// <summary>Three guests, so one of them can be compared with its siblings.</summary>
+    private static readonly string[] WaitingGuests = ["vc-1:vm-1", "vc-1:vm-2", "vc-1:vm-3"];
+
+    private static Entity Node(string id, EntityKind kind, string name) => new()
+    {
+        Id = new EntityId(id),
+        Kind = kind,
+        DisplayName = name,
+        SourceInstanceId = "vc-1",
+        LastSeenUtc = T0,
+    };
+
+    /// <summary>One layer of one device's latency, as the host reports it.</summary>
+    private static Observation Layer(string counter, double ms) => new()
+    {
+        Entity = new EntityId("vc-1:host-1"),
+        SampledAtUtc = T0,
+        Source = "vc-1",
+        Value = new CounterValue
+        {
+            CounterName = counter,
+            Raw = ms,
+            Rollup = RollupType.Average,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "millisecond",
+            Instance = "naa.600508b1001c",
+        },
+    };
+
+    private static Observation Busy(string host, double percent) => new()
+    {
+        Entity = new EntityId(host),
+        SampledAtUtc = T0,
+        Source = "vc-1",
+        Value = new CounterValue
+        {
+            CounterName = "cpu.usage.average",
+            Raw = percent,
+            Rollup = RollupType.Average,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "percent",
+        },
+    };
+
+    /// <summary>Ready milliseconds, which only mean anything against the interval.</summary>
+    private static Observation Waiting(string vm, double ms) => new()
+    {
+        Entity = new EntityId(vm),
+        SampledAtUtc = T0,
+        Source = "vc-1",
+        Value = new CounterValue
+        {
+            CounterName = "cpu.ready.summation",
+            Raw = ms,
+            Rollup = RollupType.Summation,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = "millisecond",
+        },
+    };
 
     /// <summary>Three hosts: the fewest that can agree about a shared volume.</summary>
     private static readonly string[] MountingHosts = ["esx01", "esx02", "esx03"];
