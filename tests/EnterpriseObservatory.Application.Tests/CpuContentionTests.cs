@@ -65,12 +65,24 @@ public class CpuContentionTests
         },
     };
 
-    private static Entity Node(string id, EntityKind kind) => new()
+    /// <summary>
+    /// A graph node. Virtual machines are one vCPU wide unless a test says
+    /// otherwise, which is what these fixtures always silently assumed: the
+    /// rule divides ready time by width, so a width of one leaves every
+    /// existing expectation meaning exactly what it meant when it was written.
+    /// Width is stated rather than implied because a machine with no width at
+    /// all is now a distinct case with its own behaviour — see
+    /// <see cref="Widths"/>.
+    /// </summary>
+    private static Entity Node(string id, EntityKind kind, int? width = 1) => new()
     {
         Id = new EntityId(id),
         Kind = kind,
         DisplayName = id,
         LastSeenUtc = T0,
+        Sizing = kind == EntityKind.VirtualMachine && width is not null
+            ? new EntitySizing { VirtualCpuCount = width }
+            : null,
     };
 
     /// <summary>A host with the named guests placed on it.</summary>
@@ -99,6 +111,154 @@ public class CpuContentionTests
     /// <summary>Eight quiet neighbours, so the ninth can be the story.</summary>
     private static IEnumerable<Observation> Quiet(double percent = 1d, int count = 8) =>
         Enumerable.Range(1, count).Select(i => Wait($"vc-1:vm-{i}", percent));
+
+    /// <summary>A graph where the named guests have the given widths.</summary>
+    private static EntityGraph Widths(params (string Guest, int? Width)[] guests) => new()
+    {
+        Entities = new[] { Node(Host, EntityKind.EsxiHost) }
+            .Concat(guests.Select(g =>
+                Node(g.Guest, EntityKind.VirtualMachine, g.Width)))
+            .ToDictionary(e => e.Id),
+        Relationships =
+        [
+            .. guests.Select(g => new Relationship
+            {
+                From = new EntityId(g.Guest),
+                To = new EntityId(Host),
+                Kind = RelationshipKind.RunsOn,
+                ObservedAtUtc = T0,
+            }),
+        ],
+    };
+
+    // ---------------------------------------------------------------
+    // Width: vSphere sums waiting across vCPUs, so it has to be divided.
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public void A_wide_machine_is_not_an_outlier_merely_for_being_wide()
+    {
+        // The defect this divide exists to close, and it was live. vSphere
+        // sums ready across every vCPU, so an eight-way machine and a
+        // one-way machine suffering identically per core arrive as 24% and
+        // 3%. Undivided, the comparison below is a comparison of vCPU counts
+        // and the widest machine on a mixed host is accused for its shape.
+        var alerts = CpuContention.Evaluate(
+            [
+                .. Enumerable.Range(1, 8).Select(i => Wait($"vc-1:vm-{i}", 3)),
+                Wait("vc-1:vm-9", 24),
+            ],
+            Widths([.. Enumerable.Range(1, 8).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-9", (int?)8)]));
+
+        Assert.Empty(alerts);
+    }
+
+    [Fact]
+    public void A_wide_machine_that_is_an_outlier_per_core_is_still_named()
+    {
+        // The other half, and it has to be asserted or the fix above could be
+        // "never accuse anything wide" and every test would still pass.
+        var alerts = CpuContention.Evaluate(
+            [
+                .. Enumerable.Range(1, 8).Select(i => Wait($"vc-1:vm-{i}", 3)),
+                Wait("vc-1:vm-9", 240),
+            ],
+            Widths([.. Enumerable.Range(1, 8).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-9", (int?)8)]));
+
+        var named = Assert.Single(alerts, a => a.Entity is not null);
+        Assert.Equal(new EntityId("vc-1:vm-9"), named.Entity);
+    }
+
+    [Fact]
+    public void A_machine_whose_width_is_unreadable_is_not_judged()
+    {
+        // Assuming one processor is the worst available guess: it leaves the
+        // number inflated by exactly the factor the divide removes, and it
+        // inflates it most for the widest machines, which are the ones most
+        // likely to be accused. So the machine is dropped instead.
+        var alerts = CpuContention.Evaluate(
+            [.. Quiet(1, 8), Wait("vc-1:vm-9", 90)],
+            Widths([.. Enumerable.Range(1, 8).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-9", (int?)null)]));
+
+        Assert.DoesNotContain(alerts, a => a.Entity == new EntityId("vc-1:vm-9"));
+    }
+
+    // ---------------------------------------------------------------
+    // Saying so: the machines the rule could not judge.
+    // ---------------------------------------------------------------
+
+    [Fact]
+    public void The_machines_the_rule_could_not_judge_are_named_once_for_the_estate()
+    {
+        // Principle 1. These machines had a reading and got no verdict, so
+        // their silence is not evidence of health and the product says so
+        // rather than implying it looked.
+        var alerts = CpuContention.Evaluate(
+            [.. Quiet(1, 8), Wait("vc-1:vm-9", 5)],
+            Widths([.. Enumerable.Range(1, 8).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-9", (int?)null)]));
+
+        var finding = Assert.Single(alerts);
+
+        Assert.Null(finding.Entity);
+        Assert.Equal("vCPU count could not be read", finding.Title);
+        Assert.Contains("1 of 9", finding.Description, StringComparison.Ordinal);
+        Assert.Contains("vc-1:vm-9", finding.Description, StringComparison.Ordinal);
+        Assert.Contains("not evidence that they are healthy", finding.Description,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Two_unjudgeable_machines_are_one_finding_and_not_two()
+    {
+        // The operator's decision here is singular -- find out why sizing is
+        // unreadable -- and one row per machine asks them to make it twice.
+        var alerts = CpuContention.Evaluate(
+            [.. Quiet(1, 8), Wait("vc-1:vm-9", 5)],
+            Widths([.. Enumerable.Range(1, 7).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-8", (int?)null), ("vc-1:vm-9", (int?)null)]));
+
+        Assert.Single(alerts);
+        Assert.Contains("2 of 9", Assert.Single(alerts).Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_estate_that_has_read_no_width_at_all_is_a_restart_and_says_nothing()
+    {
+        // The guard, and it is a fact about the data rather than a clock.
+        // EntitySizing is not persisted, so after a restart every machine is
+        // width-unknown until the first inventory round lands. Without this,
+        // the product names the whole estate on every restart and resolves
+        // itself minutes later -- the flapping ADR-0021 records as the thing
+        // that quietly erodes an operator's bulk clears.
+        var alerts = CpuContention.Evaluate(
+            [.. Quiet(1, 8), Wait("vc-1:vm-9", 90)],
+            Widths([.. Enumerable.Range(1, 9).Select(i => ($"vc-1:vm-{i}", (int?)null))]));
+
+        Assert.Empty(alerts);
+    }
+
+    [Fact]
+    public void The_finding_keeps_its_identity_when_the_membership_changes()
+    {
+        // A fingerprint carrying the count or the names would retire and
+        // re-raise the finding -- throwing away the operator's clear -- every
+        // time one more machine's sizing came or went.
+        var one = CpuContention.Evaluate(
+            [.. Quiet(1, 8), Wait("vc-1:vm-9", 5)],
+            Widths([.. Enumerable.Range(1, 8).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-9", (int?)null)]));
+
+        var two = CpuContention.Evaluate(
+            [.. Quiet(1, 8), Wait("vc-1:vm-9", 5)],
+            Widths([.. Enumerable.Range(1, 7).Select(i => ($"vc-1:vm-{i}", (int?)1)),
+                    ("vc-1:vm-8", (int?)null), ("vc-1:vm-9", (int?)null)]));
+
+        Assert.Equal(Assert.Single(one).Fingerprint, Assert.Single(two).Fingerprint);
+    }
 
     // ---------------------------------------------------------------
     // The host verdict: several victims and a busy host.
