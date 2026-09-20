@@ -276,6 +276,54 @@ public class GraphAndAlertTests : IDisposable
     }
 
     [SkippableFact]
+    public void A_bulk_acknowledgement_that_fails_to_commit_leaves_nothing_acknowledged()
+    {
+        RequireDatabase();
+
+        // The cached copy must never be ahead of the record it copies. An
+        // operator acknowledges twenty alerts, a statement fails part-way and
+        // the transaction rolls back, so the database still has all twenty
+        // open. If the cache was written as the batch walked, the request
+        // returns a 500 while every screen shows those alerts acknowledged and
+        // the unacknowledged count no longer includes them -- and the only
+        // thing that corrects it is a restart, which puts them back with
+        // nothing anywhere to explain where they went.
+        //
+        // The failure is injected through the change itself rather than by
+        // breaking the connection, because it aborts the transaction at the
+        // same place a dropped connection would: part-way through, after some
+        // rows have been written and before the commit.
+        var store = new PostgresAlertStateStore(_live.Database);
+        var alerts = Enumerable.Range(0, 20).Select(i => Alert($"bulk-{i}")).ToArray();
+
+        store.Reconcile("Inventory", (_, _) => new AlertReconciliationResult
+        {
+            Instances = alerts,
+        });
+
+        var reached = 0;
+
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            store.MutateMany(
+                [.. alerts.Select(a => a.Fingerprint)],
+                instance => reached++ < 9
+                    ? instance with { State = AlertLifecycleState.Acknowledged }
+                    : throw new InvalidOperationException("the connection dropped"));
+        });
+
+        Assert.All(store.All, a => Assert.Equal(AlertLifecycleState.Open, a.State));
+
+        // And the database agrees, which is the half of the claim the cache
+        // cannot make for itself.
+        _live.Restart();
+
+        Assert.All(
+            new PostgresAlertStateStore(_live.Database).All,
+            a => Assert.Equal(AlertLifecycleState.Open, a.State));
+    }
+
+    [SkippableFact]
     public void Flap_history_survives_a_restart()
     {
         RequireDatabase();

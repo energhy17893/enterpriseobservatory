@@ -177,7 +177,39 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
         // acknowledged and nothing on screen to say which, or why.
         lock (_gate)
         {
-            return [.. fingerprints.Select(f => MutateLocked(f, change)).OfType<AlertInstance>()];
+            // Decided in full before any of it is applied, because the real
+            // store does the whole batch in one transaction and so cannot
+            // leave part of it behind. This fake used to apply each alert as
+            // it reached it, so a change that threw on the twelfth left eleven
+            // acknowledged -- weaker than the contract in exactly the way the
+            // missing lock and the missing Scope stamp above were, and in
+            // exactly the place the tests exist to watch.
+            var pending = new List<(List<AlertInstance> Slice, int Index, AlertInstance Next)>(
+                fingerprints.Count);
+
+            foreach (var fingerprint in fingerprints)
+            {
+                foreach (var slice in _instances.Values)
+                {
+                    var index = slice.FindIndex(i => i.Fingerprint == fingerprint);
+
+                    if (index < 0)
+                    {
+                        continue;
+                    }
+
+                    pending.Add((slice, index, change(slice[index])));
+
+                    break;
+                }
+            }
+
+            foreach (var (slice, index, next) in pending)
+            {
+                slice[index] = next;
+            }
+
+            return [.. pending.Select(p => p.Next)];
         }
     }
 

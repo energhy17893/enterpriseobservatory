@@ -148,13 +148,20 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
 
         lock (_gate)
         {
-            var changed = new List<AlertInstance>(fingerprints.Count);
+            // What the cache will look like once the database agrees, held
+            // aside until it does. See below for why it is not applied here.
+            var pending = new List<(List<AlertInstance> Slice, int Index, AlertInstance Next)>(
+                fingerprints.Count);
 
             // One transaction as well as one lock: a bulk acknowledgement that
             // half survived a crash would be worse than one that did not
             // happen, because nothing would say which half.
             _database.Write(connection =>
             {
+                // Built afresh, not appended to, so that a callback run twice
+                // cannot carry the first attempt's decisions into the second.
+                pending.Clear();
+
                 foreach (var fingerprint in fingerprints)
                 {
                     foreach (var (scope, slice) in _instances)
@@ -171,15 +178,27 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
                         DeleteInstance(connection, fingerprint);
                         WriteInstance(connection, scope, next);
 
-                        slice[index] = next;
-                        changed.Add(next);
+                        pending.Add((slice, index, next));
 
                         break;
                     }
                 }
             });
 
-            return changed;
+            // Only now, and for the same reason Mutate writes in this order:
+            // the database is the record and this is a copy of it. Assigning
+            // inside the transaction makes the copy true before the record is,
+            // and a statement that fails — or a connection that drops before
+            // the commit — leaves twenty alerts reading as acknowledged on
+            // every screen while the database still has them open. The request
+            // returns a 500 and the screens disagree with it, until a restart
+            // reloads from the database and silently puts them back.
+            foreach (var (slice, index, next) in pending)
+            {
+                slice[index] = next;
+            }
+
+            return [.. pending.Select(p => p.Next)];
         }
     }
 
