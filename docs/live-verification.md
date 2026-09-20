@@ -209,6 +209,31 @@ Hata sayaçları `vmhba0:C0:T0:L1`, gecikme sayaçları
 **doğrudan birbirlerine eklenemiyorlar** — "bu yolda reset oldu *ve* bu yol
 yavaş" henüz tek sorguda sorulamıyor.
 
+### Sağlık yayılımı yok — cluster'lar kalıcı olarak Unknown
+
+Kod incelemesinde bulundu, ekranda görünmüyordu çünkü `Unknown` meşru bir
+durum gibi okunuyor.
+
+ADR-0004 hangi kenarların sağlık yayacağını ve **yönünü** karara bağlamış
+(containment: çocuk → ebeveyn, hosting: sağlayıcı → tüketici; `SameAs` ve
+`ConnectedTo` yaymaz). `RelationshipRules.PropagatesHealth` bunu kodluyor ve
+**testleri var**. Ama üretim kodunda **tek bir çağıranı yok.**
+
+Sonuç: 3 cluster'ın üçü de ilk döngüden beri `Unknown`. Bir cluster'ın içinde
+`Critical` bir host varken cluster `Unknown` görünüyor. Genel bakıştaki
+"Unknown · 10" sayısının 3'ü bu.
+
+**Hata değil, eksik karar.** ADR-0004 yönü söylüyor ama **birleştirme
+fonksiyonunu** söylemiyor: on host'tan biri kritikken cluster kritik mi,
+düşmüş (degraded) mü, yoksa HA görevini yaparken hiçbir şey mi? Bu bir ürün
+kararı.
+
+`Unknown` bırakıldı çünkü hesaplanmamış bir sorunun dürüst cevabı odur —
+ürünün 1. ilkesi tespit etmediğini iddia etmemek. Yanıltıcı olan yorum
+satırıydı ve düzeltildi.
+
+**Karar gerekiyor:** birleştirme fonksiyonu ne olmalı?
+
 ### psql üzerinden ölçüm bu makinede yanıltıcı
 
 Sunucuda 0.24 ms'de biten sorgu psql duvar saatinde 6–53 saniye görünüyor.

@@ -86,8 +86,22 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 Id = id(cluster.MoRef),
                 Kind = EntityKind.Cluster,
                 DisplayName = cluster.Name,
-                // A cluster's own health is derived from its members by the
-                // health-propagation pass, not asserted here.
+                // Unknown, and today that is where it stays. This said the
+                // health-propagation pass derives it from the members, which
+                // was not true: ADR-0004 settles which edges propagate and in
+                // which direction, RelationshipRules.PropagatesHealth encodes
+                // it, and nothing calls that method. Every cluster in the
+                // estate has been Unknown since the first cycle.
+                //
+                // Left Unknown rather than guessed at, because Unknown is the
+                // honest answer to a question nobody has computed and the
+                // product's first principle is not to claim what it has not
+                // established. What ADR-0004 does not decide is the combining
+                // function — whether one critical host in ten makes a cluster
+                // critical, or degraded, or nothing at all while HA is doing
+                // its job — and that is a product decision rather than a gap
+                // to be filled in by whoever notices it. See
+                // docs/live-verification.md.
                 Health = HealthState.Unknown,
                 LastSeenUtc = now,
             });

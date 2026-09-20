@@ -187,6 +187,16 @@ Bunlar benim değil, senin kararların:
 5. **Kabul süresi** üst sınırı olmalı mı? (ör. en fazla 90 gün, sonra yeniden
    gerekçelendir)
 
+Bu belgenin kapsamı dışında ama aynı anda bekleyen iki karar daha:
+
+6. **Sağlık yayılımı birleştirme fonksiyonu.** ADR-0004 yönü karara bağladı,
+   birleştirmeyi bağlamadı; `PropagatesHealth`'in üretimde çağıranı yok ve
+   cluster'lar kalıcı olarak `Unknown`. On host'tan biri kritikken cluster ne
+   olmalı — kritik mi, düşmüş mü, yoksa HA görevini yaparken hiçbir şey mi?
+   (Bkz. [canlı doğrulama](../live-verification.md).)
+7. **Saklama ve disk.** Kararlı durumda ≈ 30 GB; bunun 17 GB'ı `storagePath`.
+   Kabul mü, saklama kısalt mı, yoksa yol gecikmesini bırak mı?
+
 ## 9. Yapılmaması önerilen ilk adım
 
 Motoru yazıp sonra kural aramak. Ters sırası doğru: **R3 (yol hatası) tek
