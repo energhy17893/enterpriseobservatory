@@ -135,6 +135,10 @@ aynı dürüstlükle, neyin henüz doğrulanmadığı. Bu projede bulunan hatala
 testleri geçip canlıda sessizce yanlış olan koddaydı; yeşil test bir kanıt
 değildir.
 
+Henüz karar verilmemiş olanlar `docs/proposals/` altında: kod yazılmadan önce
+tartışılacak somut öneriler. Şu an açık olan:
+[analiz ve uygunluk katmanı](docs/proposals/analysis-layer.md).
+
 ## Mimari kararlar
 
 Her önemli karar `docs/adr/` altında numaralı bir kayıttır: bağlam, karar,
