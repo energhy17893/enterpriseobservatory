@@ -266,6 +266,73 @@ Alınan kararlar:
 
 ---
 
+## 5c. Depolama yolu (`storagePath`) ve kimlik zinciri
+
+20 Eylül 2026'da toplanmaya başlandı. Merdivenin en alt basamağı: bir *yol*,
+bir LUN'a giden tek rota. Canlıda host başına 126 yol, estate genelinde 1258
+seri × 4 sayaç.
+
+### İki farklı instance sözlüğü — aynı sayaç grubunda
+
+Bu, ölçülmeden tahmin edilemeyecek bir şeydi ve önemli:
+
+| Sayaç | Seviye | Instance biçimi |
+|---|---|---|
+| `storagePath.busResets.summation` | **2** | `vmhba0:C0:T0:L1` |
+| `storagePath.commandsAborted.summation` | **2** | `vmhba0:C0:T0:L1` |
+| `storagePath.totalReadLatency.average` | 3 | `fc.<init WWNN>:<init WWPN>-fc.<hedef WWNN>:<hedef WWPN>-naa.<LUN>` |
+| `storagePath.totalWriteLatency.average` | 3 | aynı fabric biçimi |
+
+Aynı yolu iki ayrı sözlükle adlandırıyorlar. **Doğrudan birbirlerine
+eklenemezler.** Yani "bu yolda bus reset oldu *ve* bu yol yavaş" sorusu bugün
+tek sorguda cevaplanamıyor.
+
+Buna karşılık uzun biçim çok daha değerli: içinde **initiator WWPN**, **hedef
+(dizi) WWPN** ve **LUN NAA** var. Bu üçü, ileride SAN switch ve storage
+toplayıcıları geldiğinde zoning ve yol doğrulamasının tam olarak ihtiyaç
+duyduğu şey — ve `IdentityMarkKind.WorldWideName` alanı bunun için zaten var.
+
+### Hangi zincir kuruldu, hangisi eksik
+
+Veritabanına karşı ölçüldü:
+
+```
+VM ──BackedBy──> Datastore              ✓  (ilişki grafiği)
+Datastore ──> VMFS UUID                 ✓  (VolumeIdentifier işareti, 41/41)
+Datastore ──> host'tan gecikme          ✓  (§5b, 302 host-volume çifti)
+LUN NAA ──> disk.deviceLatency          ✓  (43 cihaz instance'ı)
+LUN NAA ──> storagePath (WWPN çiftleri) ✓  (42 LUN'ün 41'i disk cihazlarıyla eşleşiyor)
+
+Datastore VMFS UUID ──> LUN NAA         ✗  EKSİK
+```
+
+Datastore'un `summary.url`'inden gelen kimlik bir **VMFS UUID**'dir; yolun ve
+disk cihazının kimliği ise **NAA**'dır. 41 datastore işaretinin hiçbiri NAA
+biçiminde değil. Zincirin kopuk halkası tam olarak burası.
+
+**Kapatmanın yolu belli:** host envanterinde `config.storageDevice` /
+VMFS extent bilgisi okunmalı — `HostVmfsVolume.extent[].diskName` bir VMFS
+volume'ünün hangi NAA üzerinde durduğunu söyler. Bu okunduğunda "SQL Server
+yavaş → hangi datastore → hangi LUN → hangi yol → hangi SFP" zinciri uçtan uca
+sorgulanabilir hale gelir. **Bir sonraki adım budur.**
+
+### Sıfırın iki türü
+
+§5b'deki gecikme sıfırlarının aksine, buradaki sıfırlar **bilgidir**:
+
+```
+storagePath.busResets.summation        0 / 7608 örnek sıfırdan büyük
+storagePath.commandsAborted.summation  0 / 7608 örnek sıfırdan büyük
+```
+
+Fark, sayacın türünde. **Kesilen (truncate edilen) bir ortalama sıfırı hiçbir
+şey söylemez; toplanan (summation) bir sayacın sıfırı "hiç olmadı" der.** Bu
+estate'in fabric'inde 7608 örnek boyunca tek bir bus reset ya da iptal edilmiş
+komut yok — bu gerçek ve iyi bir sağlık sinyali. Ürün bu ikisini birbirine
+karıştırmamalı.
+
+---
+
 ## 6. Bu haritanın dayattığı sonuçlar
 
 1. **Datastore gecikmesi host'tan toplanmalı**, instance→VMFS UUID eşlemesiyle
@@ -281,8 +348,11 @@ Alınan kararlar:
    `summary.freeSpace` zaten her turda okunuyor ve atılıyor; onları varlığa
    taşımak en yüksek getirili ve en ucuz iş. Geçmiş eğilim isteniyorsa
    `disk.capacity/used/provisioned.latest` seviye 1'de hazır bekliyor.
-3. **`storagePath` seviye 3 gerektirir.** SFP/fabric teşhisi istiyorsak bu, ürünün
-   operatörden isteyeceği bir yapılandırma — ve isteyeceğini söylemesi gerekir.
+3. **`storagePath` kısmen seviye 2'dir.** İlk tespit eksikti: `busResets` ve
+   `commandsAborted` **seviye 2**, yani ürünün zaten şart koştuğu seviyede
+   geliyor — ve bunlar eşik değil, arıza sinyalidir. Gecikme çifti seviye 3;
+   yine de isteniyor, eksikse mevcut mekanizma `InsufficientDetailLevel`
+   olarak sayaç adıyla birlikte raporluyor. Bkz. §5c.
 4. **Bir sayacın nesnesi, adından çıkarılamaz.** Yeni bir sayaç eklenirken
    `--map` çıktısına bakılmadan eklenmemeli.
 5. **Boş performans cevabı hata değildir.** Ürün artık bunu raporluyor

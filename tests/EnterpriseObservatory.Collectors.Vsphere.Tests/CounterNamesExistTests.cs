@@ -104,6 +104,47 @@ public class CounterNamesExistTests
     }
 
     [Fact]
+    public void The_path_errors_are_reachable_at_the_level_the_product_already_requires()
+    {
+        // The reason storage paths are collected at all rather than deferred
+        // until someone raises a statistics level. A bus reset and an aborted
+        // command are level 2, which the product already asks for, and they
+        // are faults rather than thresholds — SCSI does not reset a bus
+        // because the array is busy. An estate that never goes past level 2
+        // still gets the one signal that names a bad cable.
+        Assert.Equal(2, Catalogue["storagePath.busResets.summation"].Level);
+        Assert.Equal(2, Catalogue["storagePath.commandsAborted.summation"].Level);
+
+        // And the latency pair is not, which is why it is asked for anyway and
+        // reported as InsufficientDetailLevel where it is missing rather than
+        // quietly dropped.
+        Assert.Equal(3, Catalogue["storagePath.totalReadLatency.average"].Level);
+        Assert.Equal(3, Catalogue["storagePath.totalWriteLatency.average"].Level);
+    }
+
+    [Fact]
+    public void Storage_paths_are_kept_one_by_one_because_averaging_them_is_the_whole_problem()
+    {
+        // A path is the finest grain vSphere offers and the only one that can
+        // separate a bad cable from a slow array. Every coarser number
+        // averages the broken path in with the working ones and reports
+        // something mild — which is how a failing SFP goes unnoticed for weeks.
+        Assert.All(
+            VsphereCounters.PerStoragePath,
+            key => Assert.True(VsphereCounters.KeepPerDevice(key), key));
+
+        Assert.All(
+            VsphereCounters.PerStoragePath,
+            key => Assert.Contains(key, VsphereCounters.Host));
+
+        // But they are about the host, not about some other entity. Only the
+        // datastore counters name a different object in their instance.
+        Assert.All(
+            VsphereCounters.PerStoragePath,
+            key => Assert.False(VsphereCounters.InstanceNamesAnEntity(key), key));
+    }
+
+    [Fact]
     public void A_counter_measured_on_one_entity_about_another_is_marked_as_such()
     {
         // The flag that stops the parser collapsing thirty volumes into one

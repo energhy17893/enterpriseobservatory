@@ -1,7 +1,7 @@
 # A real vSphere 8 counter catalogue, as read from a production vCenter on
 # 2026-09-19 through the product's own /api/connections/{id}/counters endpoint.
 #
-# Partial: the datastore and virtualDisk groups only. Those are the two the
+# Partial: the datastore, virtualDisk and storagePath groups only. Those are the two the
 # product got wrong — it asked for datastore.totalLatency.average and
 # virtualDisk.totalLatency.average, neither of which exists, so every datastore
 # and every virtual machine in the estate went unmeasured for storage latency
@@ -72,3 +72,24 @@ virtualDisk.writeIOSize.latest	number	4
 virtualDisk.writeLatencyUS.latest	microsecond	4
 virtualDisk.writeLoadMetric.latest	number	2
 virtualDisk.writeOIO.latest	number	2
+
+# storagePath, added 2026-09-20 from the same vCenter. The bottom rung of the
+# diagnostic ladder: one row per route to one LUN, spelled vmhba2:C0:T3:L7.
+# 126 paths on the host this was read from.
+#
+# The levels are the point. busResets and commandsAborted are level 2 --
+# available on any estate meeting the product's stated prerequisite -- and they
+# are faults rather than thresholds: SCSI does not reset a bus because the
+# array is busy. Everything else here is level 3, so an estate at level 2 gets
+# the errors and is told, by counter name, which setting would give it the
+# latency.
+storagePath.busResets.summation	number	2
+storagePath.commandsAborted.summation	number	2
+storagePath.commandsAveraged.average	number	3
+storagePath.maxTotalLatency.latest	millisecond	3
+storagePath.numberReadAveraged.average	number	3
+storagePath.numberWriteAveraged.average	number	3
+storagePath.read.average	kiloBytesPerSecond	3
+storagePath.totalReadLatency.average	millisecond	3
+storagePath.totalWriteLatency.average	millisecond	3
+storagePath.write.average	kiloBytesPerSecond	3

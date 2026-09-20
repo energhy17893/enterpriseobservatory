@@ -135,6 +135,40 @@ public static class VsphereCounters
     ];
 
     /// <summary>
+    /// Counters a host reports per storage path — the bottom of the ladder.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A storage path is one route to one LUN: an HBA, a target and a unit,
+    /// spelled <c>vmhba2:C0:T3:L7</c>. It is the finest grain vSphere offers
+    /// and the only one that can distinguish a bad cable, a failing SFP or a
+    /// zoning mistake from a slow array — every coarser number averages the
+    /// broken path in with the working ones and reports something mild.
+    /// </para>
+    /// <para>
+    /// The two error counters come first on purpose, and they are level 2:
+    /// available on any estate that already meets the product's stated
+    /// prerequisite. A bus reset or an aborted command is not a threshold to
+    /// tune, it is a fault — SCSI does not reset a bus because the array is
+    /// busy. Measured on a live host, 126 paths report them.
+    /// </para>
+    /// <para>
+    /// The latency pair is level 3 and is asked for anyway. Where the level is
+    /// lower the existing availability machinery reports it as
+    /// <c>InsufficientDetailLevel</c> against the counter, which names a
+    /// setting an operator can change — far better than the product quietly
+    /// collecting less and looking complete.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> PerStoragePath { get; } =
+    [
+        "storagePath.busResets.summation",
+        "storagePath.commandsAborted.summation",
+        "storagePath.totalReadLatency.average",
+        "storagePath.totalWriteLatency.average",
+    ];
+
+    /// <summary>
     /// Counters for an ESXi host.
     /// </summary>
     /// <remarks>
@@ -162,6 +196,9 @@ public static class VsphereCounters
         // at all on Datastore — so the names below were never wrong, the entity
         // was. See PerDatastore.
         .. PerDatastore,
+
+        // And the paths beneath them. See PerStoragePath.
+        .. PerStoragePath,
     ];
 
     /// <summary>
@@ -199,7 +236,9 @@ public static class VsphereCounters
     /// </para>
     /// </remarks>
     public static bool KeepPerDevice(string? counterKey) =>
-        counterKey?.StartsWith("disk.", StringComparison.OrdinalIgnoreCase) == true;
+        counterKey is not null &&
+        (counterKey.StartsWith("disk.", StringComparison.OrdinalIgnoreCase) ||
+         counterKey.StartsWith("storagePath.", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Counters for a virtual machine.</summary>
     /// <remarks>
