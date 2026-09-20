@@ -20,8 +20,19 @@ public class VsphereObservationSourceTests
         /// <summary>Unknown refs resolve to null, as an unmapped entity would.</summary>
         public HashSet<string> Resolvable { get; } = [.. hosts];
 
+        /// <summary>Volume identifier to the datastore that owns it.</summary>
+        public Dictionary<string, string> Volumes { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Managed object reference to display name.</summary>
+        public Dictionary<string, string> Names { get; } = new(StringComparer.Ordinal);
+
         public EntityId? ResolveEntity(string moRef) =>
             Resolvable.Contains(moRef) ? new EntityId(moRef) : null;
+
+        public EntityId? ResolveVolume(string volumeIdentifier) =>
+            Volumes.TryGetValue(volumeIdentifier, out var datastore) ? new EntityId(datastore) : null;
+
+        public string? DisplayNameOf(string moRef) => Names.GetValueOrDefault(moRef);
     }
 
     private sealed class FakeApi : IVsphereApi
@@ -91,17 +102,42 @@ public class VsphereObservationSourceTests
                 .. entityMoRefs.Select(moRef => new PerfEntitySamples
                 {
                     EntityMoRef = moRef,
-                    Values = [.. counters.Select(c => new CounterValue
-                    {
-                        CounterName = c.Key,
-                        Raw = 42,
-                        Rollup = c.Rollup,
-                        Interval = TimeSpan.FromSeconds(20),
-                        Unit = c.Unit,
-                    })],
+                    Values = [.. counters.SelectMany(c => Series(c))],
                 }),
             ]);
         }
+
+        /// <summary>
+        /// One value per counter, or one per volume for the datastore ones.
+        /// </summary>
+        /// <remarks>
+        /// A host reports datastore counters once per volume it can see, which
+        /// is the shape the re-attribution exists to handle. A fake that
+        /// returned a single instance-less value would let every one of those
+        /// tests pass without exercising anything.
+        /// </remarks>
+        private IEnumerable<CounterValue> Series(VsphereCounter counter)
+        {
+            var instances = VsphereCounters.InstanceNamesAnEntity(counter.Key) && Volumes.Count > 0
+                ? Volumes
+                : [string.Empty];
+
+            foreach (var instance in instances)
+            {
+                yield return new CounterValue
+                {
+                    CounterName = counter.Key,
+                    Raw = 42,
+                    Rollup = counter.Rollup,
+                    Interval = TimeSpan.FromSeconds(20),
+                    Unit = counter.Unit,
+                    Instance = instance,
+                };
+            }
+        }
+
+        /// <summary>Volume identifiers this host reports datastore counters for.</summary>
+        public List<string> Volumes { get; init; } = [];
 
         private static IEnumerable<VsphereCounter> AllHostCounters() =>
             VsphereCounters.Host.Select((key, index) =>
@@ -113,7 +149,13 @@ public class VsphereObservationSourceTests
                     Group = parts[0],
                     Name = parts[1],
                     Rollup = VsphereCounter.ParseRollup(parts[2]),
-                    Unit = parts[0] == "cpu" ? "percent" : "millisecond",
+                    Unit = parts[0] switch
+                    {
+                        "cpu" => "percent",
+                        "datastore" when key.Contains("Observed", StringComparison.Ordinal) => "microsecond",
+                        "datastore" when key.Contains("number", StringComparison.Ordinal) => "number",
+                        _ => "millisecond",
+                    },
                     Level = key.StartsWith("disk.", StringComparison.Ordinal) ? 2 : 1,
                 };
             });
@@ -375,5 +417,127 @@ public class VsphereObservationSourceTests
         Assert.Equal(CollectionFailureKind.NotConfigured, failure.Kind);
         Assert.Equal("HostSystem", failure.Target);
         Assert.DoesNotContain("level 1", failure.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // --- datastore counters, measured on hosts ----------------------------
+
+    /// <summary>A host that sees two volumes, and targets that know them.</summary>
+    private static (FakeApi Api, Targets Targets) HostWithVolumes()
+    {
+        var api = new FakeApi { Volumes = ["vol-aaa", "vol-bbb"] };
+        var targets = new Targets("host-1");
+
+        targets.Volumes["vol-aaa"] = "ds-prod";
+        targets.Volumes["vol-bbb"] = "ds-test";
+        targets.Names["host-1"] = "esx01.corp.local";
+
+        return (api, targets);
+    }
+
+    private static IEnumerable<Observation> DatastoreLatency(ObservationBatch batch) =>
+        batch.Observations.Where(o =>
+            o.Value.CounterName == "datastore.totalReadLatency.average");
+
+    [Fact]
+    public async Task A_datastore_counter_is_filed_under_the_datastore_not_the_host_that_reported_it()
+    {
+        // The correction this whole path exists for. vSphere keeps datastore
+        // counters on HostSystem, so the sample arrives under a host; filing
+        // it there would put storage latency on the wrong page and leave every
+        // datastore in the estate unmeasured, which is what happened.
+        var (api, targets) = HostWithVolumes();
+
+        var batch = await Source(api, targets).ReadAsync(CancellationToken.None);
+
+        var latency = DatastoreLatency(batch).ToList();
+
+        Assert.Equal(2, latency.Count);
+        Assert.Contains(latency, o => o.Entity == new EntityId("ds-prod"));
+        Assert.Contains(latency, o => o.Entity == new EntityId("ds-test"));
+        Assert.DoesNotContain(latency, o => o.Entity == new EntityId("host-1"));
+    }
+
+    [Fact]
+    public async Task The_instance_becomes_the_host_that_measured_it()
+    {
+        // One datastore, one series per host. This is the distinction the
+        // product is for: a volume slow from every host is the array or the
+        // fabric, and one slow from a single host is that host's HBA, cable
+        // or path. Collapsing to a single number per datastore would throw
+        // away the only evidence that separates them.
+        var (api, targets) = HostWithVolumes();
+
+        var batch = await Source(api, targets).ReadAsync(CancellationToken.None);
+
+        Assert.All(DatastoreLatency(batch), o =>
+            Assert.Equal("esx01.corp.local", o.Value.Instance));
+    }
+
+    [Fact]
+    public async Task A_volume_that_is_not_inventoried_is_dropped_rather_than_guessed_at()
+    {
+        // A datastore mounted on a host but not collected, or added since the
+        // last inventory cycle. Attaching its latency to whichever datastore
+        // happened to be nearby would be a number that looks like knowledge.
+        var api = new FakeApi { Volumes = ["vol-aaa", "vol-unknown"] };
+        var targets = new Targets("host-1");
+        targets.Volumes["vol-aaa"] = "ds-prod";
+        targets.Names["host-1"] = "esx01.corp.local";
+
+        var batch = await Source(api, targets).ReadAsync(CancellationToken.None);
+
+        var latency = Assert.Single(DatastoreLatency(batch));
+        Assert.Equal(new EntityId("ds-prod"), latency.Entity);
+    }
+
+    [Fact]
+    public async Task A_host_counter_is_still_a_host_counter()
+    {
+        // The re-attribution must be narrow. CPU and disk latency are about
+        // the host and stay there; a rule that moved everything with an
+        // instance would empty the host pages.
+        var (api, targets) = HostWithVolumes();
+
+        var batch = await Source(api, targets).ReadAsync(CancellationToken.None);
+
+        Assert.Contains(batch.Observations, o =>
+            o.Value.CounterName == "cpu.usage.average" && o.Entity == new EntityId("host-1"));
+        Assert.Contains(batch.Observations, o =>
+            o.Value.CounterName == "disk.deviceLatency.average" && o.Entity == new EntityId("host-1"));
+    }
+
+    [Fact]
+    public async Task Without_a_display_name_the_series_is_still_labelled_rather_than_left_blank()
+    {
+        // An entity the graph has not caught up with. An unlabelled series
+        // would silently merge with another host's, averaging two hosts'
+        // storage paths into one line.
+        var api = new FakeApi { Volumes = ["vol-aaa"] };
+        var targets = new Targets("host-1");
+        targets.Volumes["vol-aaa"] = "ds-prod";
+
+        var batch = await Source(api, targets).ReadAsync(CancellationToken.None);
+
+        Assert.Equal("host-1", Assert.Single(DatastoreLatency(batch)).Value.Instance);
+    }
+
+    [Fact]
+    public async Task Two_hosts_seeing_one_datastore_produce_two_series_not_one()
+    {
+        // The shape a shared SAN volume actually has, and the reason the
+        // instance had to change rather than be cleared.
+        var api = new FakeApi { Volumes = ["vol-aaa"] };
+        var targets = new Targets("host-1", "host-2");
+        targets.Volumes["vol-aaa"] = "ds-prod";
+        targets.Names["host-1"] = "esx01";
+        targets.Names["host-2"] = "esx02";
+
+        var batch = await Source(api, targets).ReadAsync(CancellationToken.None);
+
+        var latency = DatastoreLatency(batch).ToList();
+
+        Assert.Equal(2, latency.Count);
+        Assert.All(latency, o => Assert.Equal(new EntityId("ds-prod"), o.Entity));
+        Assert.Equal(["esx01", "esx02"], latency.Select(o => o.Value.Instance).Order());
     }
 }

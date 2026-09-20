@@ -147,6 +147,19 @@ public enum IdentityMarkKind
 
     /// <summary>World-wide name of an HBA or array port.</summary>
     WorldWideName = 6,
+
+    /// <summary>
+    /// A storage volume's own identifier — a VMFS UUID, or an NFS one.
+    /// </summary>
+    /// <remarks>
+    /// Identity evidence in the ordinary sense, and also the join that makes
+    /// per-datastore performance possible at all: vSphere measures datastore
+    /// latency on each host and names the volume in the counter instance, so
+    /// this is what turns a number measured on a host into a number about a
+    /// datastore. It is expected to be the thing an array also knows the LUN
+    /// by, which is how the storage layer will attach to this one later.
+    /// </remarks>
+    VolumeIdentifier = 7,
 }
 
 /// <summary>

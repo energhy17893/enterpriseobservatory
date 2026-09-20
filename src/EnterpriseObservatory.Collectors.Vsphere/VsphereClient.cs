@@ -342,6 +342,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             "summary.freeSpace",
             "summary.accessible",
             "summary.type",
+            "summary.url",
             "triggeredAlarmState",
         ],
     };
@@ -645,6 +646,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         Name = PropertyCollectorParser.ReadString(o.Values, "name") ?? o.MoRef,
         CapacityBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.capacity"),
         FreeSpaceBytes = PropertyCollectorParser.ReadLong(o.Values, "summary.freeSpace"),
+        Url = PropertyCollectorParser.ReadString(o.Values, "summary.url"),
         Accessible = PropertyCollectorParser.ReadBoolean(o.Values, "summary.accessible"),
         Type = PropertyCollectorParser.ReadString(o.Values, "summary.type"),
     };

@@ -212,10 +212,71 @@ Host'tan gelen datastore sayaçlarını ürünün Datastore varlığına bağlam
 
 ---
 
+## 5b. Sıfır, "hızlı" demek değildir — ölçüm tabanı
+
+20 Eylül 2026'da canlı estate'te ölçüldü. Datastore gecikmesi host üzerinden
+toplanmaya başladıktan sonra **41 datastore'un tamamı ölçülür hale geldi** ve
+sonuç şu oldu:
+
+| Sayaç | Sıfırdan büyük | Maks | Birim |
+|---|---|---|---|
+| `datastore.numberReadAveraged.average` | 33 / 302 | 63 | number |
+| `datastore.numberWriteAveraged.average` | 76 / 302 | 205 | number |
+| `datastore.totalReadLatency.average` | **0 / 302** | 0 | millisecond |
+| `datastore.totalWriteLatency.average` | **0 / 302** | 0 | millisecond |
+| `datastore.datastoreVMObservedLatency.latest` | **0 / 302** | 0 | millisecond |
+| `datastore.siocActiveTimePercentage.average` | **0 / 302** | 0 | percent |
+
+Aynı anda veritabanındaki örneklerde tek bir volume 3762 okuma + 8230 yazma
+IOPS yapıyordu. **3762 IOPS yapan bir volume'ün gecikmesi 0 ms değildir.**
+
+İki ayrı neden, ikisi de ölçüldü:
+
+1. **`total{Read,Write}Latency` tam milisaniye olarak raporlanıyor.** Gözlenen
+   tüm değerler tamsayı: 0, 1, 2. All-flash bir dizide (bu estate'te Pure)
+   her istek ~0.3–0.8 ms'de dönerse sayaç 0 yazar. Ürün ekranda "0 ms" gösterir
+   ve bu *ölçüm* gibi görünür — oysa "1 ms'nin altında, ne kadar altında
+   bilinmiyor" demektir.
+2. **`datastoreVMObservedLatency` yalnızca SIOC etkinken raporlar.** Mikrosaniye
+   biriminde olması tam da bu çözünürlük sorunu için — ama SIOC bu estate'te
+   302 host-volume çiftinin hiçbirinde etkin değil, dolayısıyla her yerde 0.
+
+### Sonuç: bu ürünün en tehlikeli sayı tipi
+
+Bu, ürünün kaçınmak için kurulduğu "sessizlik sağlık gibi görünür" hatasının
+daha kötü hâli: **sıfır, sessizlikten beterdir, çünkü sıfır ölçüm gibi
+görünür.** Bir operatör "storage gecikmesi 0 ms" grafiğine bakıp depolamayı
+eler; oysa ürün ona hiçbir şey söylememiştir.
+
+Alınan kararlar:
+
+- Sayaçlar **toplanmaya devam ediyor**. Yanlış değil, kaba: 1 ms'yi aşan bir
+  gecikme — yani asıl aranan sorun — doğru şekilde görünür.
+- `datastore.siocActiveTimePercentage.average` **kasıtlı olarak toplanıyor**.
+  Performans sayısı değil; diğer ikisinin anlamlı olup olmadığının kanıtı. Bu
+  kanıt kimsenin hafızasında değil, veritabanında durmalı.
+- **Açık borç:** en iyi uygulama motoru yazıldığında ilk kurallardan biri şu
+  olmalı — *"SIOC kapalı ve gecikme sayaçları sürekli 0 iken, bu estate'in
+  depolama gecikmesi 1 ms altında ölçülemiyor; SIOC'u etkinleştirin."* Ürünün
+  kendi körlüğünü söylemesi, kullanıcının tarif ettiği best-practice
+  kontrollerinin tam örneğidir.
+- `--from-store ... --mask` ile çalıştırılan probe artık bu tabloyu
+  **"Sub-millisecond visibility"** başlığı altında kendiliğinden basıyor, yani
+  yeni bir estate'te ilk gün sorulabilir.
+
+---
+
 ## 6. Bu haritanın dayattığı sonuçlar
 
 1. **Datastore gecikmesi host'tan toplanmalı**, instance→VMFS UUID eşlemesiyle
    Datastore varlığına atfedilerek. Datastore nesnesine sormak çalışmaz.
+   *(20 Eylül 2026'da yapıldı. `summary.url`'den çıkarılan volume kimliği
+   `VolumeIdentifier` kimlik işareti olarak saklanıyor; 41/41 datastore'da
+   mevcut ve bir host'un bildirdiği 30 instance'ın 30'u çözümlendi. Seri
+   instance'ı artık ölçümü yapan host'un adı — böylece "her host'tan yavaş"
+   (dizi/fabric) ile "tek host'tan yavaş" (o host'un HBA/kablo/path'i)
+   ayrılabiliyor. Ama önce §5b okunmalı: sayılar toplanıyor, çözünürlükleri
+   sınırlı.)*
 2. **Datastore doluluğu için yeni veri gerekmiyor.** `summary.capacity` ve
    `summary.freeSpace` zaten her turda okunuyor ve atılıyor; onları varlığa
    taşımak en yüksek getirili ve en ucuz iş. Geçmiş eğilim isteniyorsa

@@ -88,6 +88,53 @@ public sealed record VsphereCounter
 public static class VsphereCounters
 {
     /// <summary>
+    /// Counters a host reports per datastore rather than about itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The instance names the volume, so these are not measurements about the
+    /// host at all — they are measurements about each datastore, taken from
+    /// this host's point of view. Both halves of that matter. Attributing them
+    /// to the host would file storage latency under the wrong object; throwing
+    /// away which host saw them would discard the most useful storage question
+    /// there is, which is whether a volume is slow from every host or only
+    /// from one. The first points at the array or the fabric, the second at
+    /// that host's HBA, cable or path.
+    /// </para>
+    /// <para>
+    /// Read and write latency are the two the product already wanted. VM
+    /// observed latency is what a guest actually experiences, queueing
+    /// included: when it greatly exceeds total latency the queue is the
+    /// problem and the array is not. The two IOPS counters are there so that
+    /// "slow" can be told apart from "busy" — high latency at high IOPS is a
+    /// volume doing its job, and at low IOPS it is a volume in trouble.
+    /// </para>
+    /// <para>
+    /// Declared before <see cref="Host"/> because <see cref="Host"/> includes
+    /// it. Static initialisers run in source order, so the other way round
+    /// gives every host an empty counter list and no indication why.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> PerDatastore { get; } =
+    [
+        "datastore.totalReadLatency.average",
+        "datastore.totalWriteLatency.average",
+        "datastore.datastoreVMObservedLatency.latest",
+        "datastore.numberReadAveraged.average",
+        "datastore.numberWriteAveraged.average",
+
+        // Not a performance number. It is how the product knows whether the
+        // two above it mean anything: VM observed latency only reports while
+        // Storage I/O Control is active, and on the estate this was measured
+        // against SIOC was inactive on all 302 host-volume pairs, so that
+        // counter read exactly zero everywhere while the volumes served
+        // thousands of IOPS. Collected so the evidence for "we cannot see
+        // below a millisecond here" lives in the database rather than in
+        // somebody's memory of an afternoon.
+        "datastore.siocActiveTimePercentage.average",
+    ];
+
+    /// <summary>
     /// Counters for an ESXi host.
     /// </summary>
     /// <remarks>
@@ -109,7 +156,27 @@ public static class VsphereCounters
         "disk.kernelLatency.average",
         "disk.queueLatency.average",
         "disk.maxTotalLatency.latest",
+
+        // Datastore counters, asked of the host, because that is where vSphere
+        // keeps them. A live vCenter offers 24 of these on HostSystem and none
+        // at all on Datastore — so the names below were never wrong, the entity
+        // was. See PerDatastore.
+        .. PerDatastore,
     ];
+
+    /// <summary>
+    /// Whether a counter's instance names another entity rather than a device.
+    /// </summary>
+    /// <remarks>
+    /// The distinction decides whether the per-instance series may be collapsed.
+    /// For a host's HBAs the worst of them is a fair summary of the host; for
+    /// a host's datastores it is not a summary of anything, because each
+    /// instance belongs to a different object that has its own page and its own
+    /// alerts. Collapsing those would produce one number about thirty volumes
+    /// and no way to say which one is slow.
+    /// </remarks>
+    public static bool InstanceNamesAnEntity(string? counterKey) =>
+        counterKey?.StartsWith("datastore.", StringComparison.OrdinalIgnoreCase) == true;
 
     /// <summary>Counters for a virtual machine.</summary>
     /// <remarks>
@@ -132,26 +199,32 @@ public static class VsphereCounters
         "virtualDisk.totalWriteLatency.average",
     ];
 
-    /// <summary>Counters for a datastore.</summary>
+    /// <summary>
+    /// Nothing. A datastore is measured through its hosts — see <see cref="PerDatastore"/>.
+    /// </summary>
     /// <remarks>
     /// <para>
-    /// Datastores have no real-time feed, so these come from the 5-minute
-    /// historical interval. See the metric contract §5.
+    /// Empty on evidence rather than on principle. This list asked for
+    /// <c>datastore.totalLatency.average</c>, which does not exist; then for
+    /// the correct <c>totalReadLatency</c> and <c>totalWriteLatency</c>, at the
+    /// correct 300-second interval, with the correct time range — and every
+    /// datastore still came back unmeasured. Four fixes, all of them real
+    /// defects, none of them the cause.
     /// </para>
     /// <para>
-    /// This list asked for <c>datastore.totalLatency.average</c> until it was
-    /// run against a real vCenter. No such counter exists — vSphere separates
-    /// read and write — so every datastore in the estate went unmeasured, and
-    /// the only trace was a partial failure the product was discarding.
-    /// The names here were taken from a live counter catalogue, not written
-    /// from memory, which is the only way this is ever right.
+    /// The cause was that a counter's entity in vim25 is not always the object
+    /// it describes. Asked directly, a live Datastore supplies no performance
+    /// data at all; the same vCenter offers 24 <c>datastore.*</c> counters on
+    /// every HostSystem, with the volume named in the instance. So asking the
+    /// datastore could never have worked, however correct the request.
+    /// </para>
+    /// <para>
+    /// Kept as an empty list rather than deleted, because the emptiness is the
+    /// finding. If a vCenter is ever measured that does answer here, this is
+    /// where the evidence goes.
     /// </para>
     /// </remarks>
-    public static IReadOnlyList<string> Datastore { get; } =
-    [
-        "datastore.totalReadLatency.average",
-        "datastore.totalWriteLatency.average",
-    ];
+    public static IReadOnlyList<string> Datastore { get; } = [];
 
     public static IReadOnlyList<string> For(VsphereEntityType entityType) => entityType switch
     {

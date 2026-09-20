@@ -15,6 +15,28 @@ public interface IVsphereSampleTargetProvider
 
     /// <summary>Maps a managed object reference to the entity it resolved to.</summary>
     EntityId? ResolveEntity(string moRef);
+
+    /// <summary>
+    /// Maps a storage volume identifier to the datastore entity that owns it.
+    /// </summary>
+    /// <remarks>
+    /// A host reports datastore latency with the volume's identifier as the
+    /// counter instance, and nothing else in the sample says which datastore
+    /// that is. Null means the volume is not one this source has inventoried —
+    /// a datastore mounted on a host outside the collected estate, or one
+    /// added since the last inventory cycle — and the measurement is dropped
+    /// rather than attached to a guess.
+    /// </remarks>
+    EntityId? ResolveVolume(string volumeIdentifier);
+
+    /// <summary>The name to show for a managed object, or null when unknown.</summary>
+    /// <remarks>
+    /// Used to label a datastore's series with the host that measured it, so
+    /// "slow from one host" and "slow from all of them" can be told apart on
+    /// screen. A managed object reference would technically serve and would be
+    /// unreadable — nobody diagnoses storage by recognising host-3615.
+    /// </remarks>
+    string? DisplayNameOf(string moRef);
 }
 
 /// <summary>
@@ -304,16 +326,66 @@ public sealed class VsphereObservationSource(
                 continue;
             }
 
+            var measuredBy = _targets.DisplayNameOf(entity.EntityMoRef);
+
             foreach (var value in entity.Values)
             {
+                var withInterval = value.Interval > TimeSpan.Zero
+                    ? value
+                    : value with { Interval = fallbackInterval };
+
+                // Measured on this object, about a different one. The sample
+                // arrived under a host because that is where vSphere keeps
+                // datastore counters; the instance says which datastore, and
+                // filing it under the host would put storage latency on the
+                // wrong page entirely.
+                if (VsphereCounters.InstanceNamesAnEntity(value.CounterName))
+                {
+                    if (Reattribute(withInterval, entityId, measuredBy) is { } moved)
+                    {
+                        yield return moved;
+                    }
+
+                    continue;
+                }
+
                 yield return new Observation
                 {
                     Entity = entityId,
-                    Value = value.Interval > TimeSpan.Zero ? value : value with { Interval = fallbackInterval },
+                    Value = withInterval,
                     SampledAtUtc = now,
                     Source = InstanceId,
                 };
             }
+        }
+
+        Observation? Reattribute(CounterValue value, EntityId measuredOn, string? measuredBy)
+        {
+            // No instance, nothing to attribute it to. vCenter's aggregate
+            // across every volume a host can see is already dropped by the
+            // parser; anything else reaching here is a shape we did not expect,
+            // and inventing a subject for it would be the worst of the options.
+            if (value.Instance.Length == 0 ||
+                _targets.ResolveVolume(value.Instance) is not { } datastore)
+            {
+                return null;
+            }
+
+            return new Observation
+            {
+                Entity = datastore,
+
+                // The instance stops being the volume — that is now the entity
+                // — and becomes the host that took the reading. One datastore
+                // therefore carries one series per host, which is what lets the
+                // product distinguish a volume that is slow from everywhere
+                // from one that is slow from a single host. The first is the
+                // array or the fabric; the second is that host's HBA, cable or
+                // path.
+                Value = value with { Instance = measuredBy ?? measuredOn.Value },
+                SampledAtUtc = now,
+                Source = InstanceId,
+            };
         }
     }
 

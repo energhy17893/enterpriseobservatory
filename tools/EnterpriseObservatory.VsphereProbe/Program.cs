@@ -335,6 +335,113 @@ try
         Console.WriteLine($"    {key}");
     }
 
+    // The join, tested rather than assumed. A host reports these per volume,
+    // naming the volume in the counter instance; a datastore's summary.url is
+    // the only place the inventory carries the same identifier. If the two do
+    // not meet, every number measured here belongs to nothing that can be
+    // shown, and the product would be storing latency against an instance
+    // string no screen can resolve to a name.
+    if (datastoreOnHost.Count > 0)
+    {
+        Section("Host instance to datastore");
+
+        var hostMetrics = await client.GetAvailableMetricsAsync(
+            probeHost.MoRef, VsphereEntityType.HostSystem, DateTimeOffset.UtcNow,
+            cancellation.Token);
+
+        var instances = hostMetrics
+            .Where(m => m.Counter.Key.StartsWith("datastore.", StringComparison.Ordinal))
+            .Select(m => m.Instance)
+            .Where(i => i.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // ds:///vmfs/volumes/<identifier>/ — the identifier is the last
+        // non-empty segment, which is a VMFS UUID for block storage and a
+        // generated one for NFS.
+        static string? Identifier(string? url) => url?
+            .TrimEnd('/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault();
+
+        var byIdentifier = payload.Datastores
+            .Where(d => Identifier(d.Url) is { Length: > 0 })
+            .ToDictionary(d => Identifier(d.Url)!, d => d, StringComparer.OrdinalIgnoreCase);
+
+        var matched = instances.Count(byIdentifier.ContainsKey);
+
+        Console.WriteLine($"  datastore instances      {instances.Count}   on this one host");
+        Console.WriteLine($"  datastores with a url    {byIdentifier.Count} of {payload.Datastores.Count}");
+        Console.WriteLine($"  instances that resolve   {matched}");
+        Console.WriteLine();
+
+        foreach (var instance in instances.Take(8))
+        {
+            Console.WriteLine(byIdentifier.TryGetValue(instance, out var datastore)
+                ? $"    {Show(instance, mask),-40} -> {Show(datastore.Name, mask)}"
+                : $"    {Show(instance, mask),-40} -> UNRESOLVED");
+        }
+
+        if (matched == 0 && instances.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("  Nothing resolved. The instance is not the volume identifier from");
+            Console.WriteLine("  summary.url on this vCenter, and attributing these numbers to a");
+            Console.WriteLine("  datastore would be guessing.");
+        }
+
+        // Whether a zero here means "fast" or "not measured". vSphere reports
+        // the total latency counters as whole milliseconds, so an all-flash
+        // array serving every request in 400 microseconds reports 0 — and a
+        // product whose central diagnostic is storage latency would then have
+        // nothing to say about the storage it is most likely to be asked
+        // about. The microsecond counter exists for exactly that, but only
+        // reports while Storage I/O Control is active, so it is read alongside
+        // SIOC's own activity rather than trusted on its own.
+        Section("Sub-millisecond visibility");
+
+        // A local rather than an inline array argument: the analyser objects
+        // to a constant array handed straight to a call, and it is right that
+        // the list is a thing with a name.
+        string[] judged =
+        [
+            "datastore.totalReadLatency.average",
+            "datastore.totalWriteLatency.average",
+            "datastore.datastoreVMObservedLatency.latest",
+            "datastore.siocActiveTimePercentage.average",
+            "datastore.numberReadAveraged.average",
+            "datastore.numberWriteAveraged.average",
+        ];
+
+        var resolution = judged
+            .Where(byKey.ContainsKey)
+            .Select(k => byKey[k])
+            .ToList();
+
+        var storage = await client.QueryPerfAsync(
+            [.. payload.Hosts.Select(h => h.MoRef)], VsphereEntityType.HostSystem, resolution,
+            DateTimeOffset.UtcNow, cancellation.Token);
+
+        foreach (var group in storage.SelectMany(s => s.Values)
+            .Where(v => v.Instance.Length > 0)
+            .GroupBy(v => v.CounterName, StringComparer.Ordinal)
+            .OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var readings = group.ToList();
+            var nonZero = readings.Count(v => v.Raw > 0);
+
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  {group.Key,-44} {nonZero,5} of {readings.Count,-5} above zero   " +
+                $"max {readings.Max(v => v.Raw),10:0.###} {readings[0].Unit}"));
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  A latency counter reading zero while the IOPS counters do not is not a");
+        Console.WriteLine("  fast volume. Whole-millisecond counters truncate anything faster than");
+        Console.WriteLine("  1ms to 0, and VMObservedLatency reports only while SIOC is active.");
+    }
+
     Section("Sample read");
     var usable = VsphereCounters.Host.Where(availableSet.Contains).Select(k => byKey[k]).ToList();
 

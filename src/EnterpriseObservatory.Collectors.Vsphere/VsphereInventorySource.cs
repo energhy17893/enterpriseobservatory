@@ -200,6 +200,9 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                     null => HealthState.Unknown,
                 },
                 LastSeenUtc = now,
+                Marks = VolumeIdentifier(datastore.Url) is { } volume
+                    ? [IdentityMark.Create(IdentityMarkKind.VolumeIdentifier, volume, InstanceId)]
+                    : [],
             });
 
             relationships.Add(Edge(id(datastore.MoRef), id("vcenter"), RelationshipKind.ManagedBy, now));
@@ -378,6 +381,41 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
 
         return $"{description}{raised}{acknowledged} Raised by vCenter, not by this product — " +
                "clear it there.";
+    }
+
+    /// <summary>
+    /// The volume's own identifier, out of the datastore's URL.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A URL reads <c>ds:///vmfs/volumes/5f2c8b1a-.../</c> and the identifier
+    /// is its last segment — a VMFS UUID for block storage, a generated one for
+    /// NFS. Taking the last segment rather than matching a UUID shape on
+    /// purpose: NFS identifiers are not UUIDs, and a pattern that only accepted
+    /// one would silently exclude every NFS datastore in an estate.
+    /// </para>
+    /// <para>
+    /// This is what joins host-measured latency to the datastore it is about.
+    /// Verified against a live vCenter: 41 of 41 datastores carried a URL and
+    /// all 30 instances one host reported resolved through it.
+    /// </para>
+    /// </remarks>
+    internal static string? VolumeIdentifier(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        var segment = url
+            .TrimEnd('/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault();
+
+        // "ds:" alone would be left if the URL were nothing but a scheme, and
+        // an identifier every datastore shares is worse than none: it would
+        // attach every volume's latency to whichever one was read last.
+        return segment is { Length: > 0 } && !segment.EndsWith(':') ? segment : null;
     }
 
     /// <summary>

@@ -73,6 +73,49 @@ public sealed class GraphSampleTargetProvider(IEntityGraphStore store, string in
         return _store.Current.Entities.ContainsKey(id) ? id : null;
     }
 
+    /// <summary>
+    /// Finds the datastore a volume identifier belongs to.
+    /// </summary>
+    /// <remarks>
+    /// Built per call from the current graph rather than cached. The lookup is
+    /// over a few dozen datastores and runs once per metric cycle, while a
+    /// cache would have to be invalidated by the inventory cycle — and the
+    /// failure it would produce is a datastore added this afternoon whose
+    /// latency silently lands nowhere.
+    /// </remarks>
+    public EntityId? ResolveVolume(string volumeIdentifier)
+    {
+        if (string.IsNullOrWhiteSpace(volumeIdentifier))
+        {
+            return null;
+        }
+
+        foreach (var entity in _store.Current.Entities.Values)
+        {
+            if (entity.Kind != EntityKind.Datastore ||
+                !string.Equals(entity.SourceInstanceId, _instanceId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            foreach (var mark in entity.Marks)
+            {
+                if (mark.Kind == IdentityMarkKind.VolumeIdentifier &&
+                    string.Equals(mark.Value, volumeIdentifier, StringComparison.OrdinalIgnoreCase))
+                {
+                    return entity.Id;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public string? DisplayNameOf(string moRef) =>
+        _store.Current.Entities.TryGetValue(EntityId.For(_instanceId, moRef), out var entity)
+            ? entity.DisplayName
+            : null;
+
     private List<string> MoRefs(List<Entity> entities, EntityKind kind) =>
         [.. entities
             .Where(e => e.Kind == kind)

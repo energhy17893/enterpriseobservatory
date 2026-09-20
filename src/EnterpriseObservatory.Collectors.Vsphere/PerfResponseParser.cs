@@ -173,27 +173,43 @@ public static class PerfResponseParser
     /// </remarks>
     private static List<CounterValue> Aggregate(List<CounterValue> values)
     {
-        var byCounter = values
-            .GroupBy(v => v.CounterName, StringComparer.Ordinal)
-            .Select(group =>
+        var result = new List<CounterValue>();
+
+        foreach (var group in values.GroupBy(v => v.CounterName, StringComparer.Ordinal))
+        {
+            // Some instances are not devices but other entities. A host's
+            // datastore counters name a volume in the instance, and each of
+            // those volumes is an object with its own page — so the per-device
+            // reasoning below does not apply and collapsing them would produce
+            // one number about thirty datastores with no way to say which is
+            // slow. These are kept apart and attributed by the caller.
+            if (VsphereCounters.InstanceNamesAnEntity(group.Key))
             {
-                var aggregate = group.FirstOrDefault(v => v.IsAggregateInstance);
-                if (aggregate.CounterName is not null)
-                {
-                    return aggregate;
-                }
+                // The aggregate is dropped rather than kept: a figure covering
+                // every volume this host can see belongs to none of them, and
+                // there is no entity for it to be about.
+                result.AddRange(group.Where(v => !v.IsAggregateInstance));
+                continue;
+            }
 
-                var first = group.First();
-                var combined = first.Rollup == RollupType.Summation
-                    ? group.Sum(v => v.Raw)
-                    : group.Max(v => v.Raw);
+            var aggregate = group.FirstOrDefault(v => v.IsAggregateInstance);
+            if (aggregate.CounterName is not null)
+            {
+                result.Add(aggregate);
+                continue;
+            }
 
-                // Instance cleared: the sum across devices belongs to no device,
-                // and neither does the worst of them.
-                return first with { Raw = combined, Instance = string.Empty };
-            });
+            var first = group.First();
+            var combined = first.Rollup == RollupType.Summation
+                ? group.Sum(v => v.Raw)
+                : group.Max(v => v.Raw);
 
-        return [.. byCounter];
+            // Instance cleared: the sum across devices belongs to no device,
+            // and neither does the worst of them.
+            result.Add(first with { Raw = combined, Instance = string.Empty });
+        }
+
+        return result;
     }
 
     private static CounterValue? ReadSeries(
@@ -238,12 +254,15 @@ public static class PerfResponseParser
             // The most recent point. Earlier points in the window belong to a
             // trend store, not to the current-state view this feeds.
             //
-            // Normalised because vSphere reports percentages in hundredths:
-            // 26.69% arrives as 2669. See VsphereUnitNormalizer.
+            // Normalised because vSphere reports percentages in hundredths —
+            // 26.69% arrives as 2669 — and some latency counters in
+            // microseconds beside others in milliseconds. The unit travels
+            // with the value so the two stay consistent. See
+            // VsphereUnitNormalizer.
             Raw = VsphereUnitNormalizer.Normalize(points[^1], counter.Unit),
             Rollup = counter.Rollup,
             Interval = interval,
-            Unit = counter.Unit,
+            Unit = VsphereUnitNormalizer.NormalizedUnit(counter.Unit),
             Instance = instance.Trim(),
         };
     }

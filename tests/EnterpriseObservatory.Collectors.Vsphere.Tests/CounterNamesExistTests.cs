@@ -80,26 +80,86 @@ public class CounterNamesExistTests
         // halves say different things — read points at the array or its cache,
         // write at the write path. Collapsing them was never an option; the
         // product just did not know that.
-        Assert.Contains("datastore.totalReadLatency.average", VsphereCounters.Datastore);
-        Assert.Contains("datastore.totalWriteLatency.average", VsphereCounters.Datastore);
+        Assert.Contains("datastore.totalReadLatency.average", VsphereCounters.PerDatastore);
+        Assert.Contains("datastore.totalWriteLatency.average", VsphereCounters.PerDatastore);
         Assert.Contains("virtualDisk.totalReadLatency.average", VsphereCounters.VirtualMachine);
         Assert.Contains("virtualDisk.totalWriteLatency.average", VsphereCounters.VirtualMachine);
     }
 
     [Fact]
-    public void Every_storage_latency_counter_is_measured_in_milliseconds()
+    public void Datastore_counters_are_asked_of_the_host_because_that_is_where_they_live()
     {
-        // A unit mix-up is the same class of silent defect: the catalogue has
-        // latency counters in microseconds a few lines from ones in
-        // milliseconds, and a chart comparing the two would be wrong by a
-        // thousand with nothing on screen to suggest it.
-        foreach (var key in VsphereCounters.Datastore
+        // The correction that took four attempts. Against a live vCenter the
+        // Datastore object supplies no performance data at all, while every
+        // HostSystem offers 24 datastore.* counters with the volume named in
+        // the instance. Asking the datastore could never have worked, however
+        // correct the counter name, the interval and the time range — and all
+        // three were wrong first, which is what made the real cause so hard to
+        // see.
+        Assert.Empty(VsphereCounters.Datastore);
+
+        Assert.All(
+            VsphereCounters.PerDatastore,
+            key => Assert.Contains(key, VsphereCounters.Host));
+    }
+
+    [Fact]
+    public void A_counter_measured_on_one_entity_about_another_is_marked_as_such()
+    {
+        // The flag that stops the parser collapsing thirty volumes into one
+        // number. Without it these would be aggregated like a host's HBAs, and
+        // the worst volume's latency would be filed under the host with
+        // nothing to say which volume it came from.
+        Assert.All(
+            VsphereCounters.PerDatastore,
+            key => Assert.True(VsphereCounters.InstanceNamesAnEntity(key), key));
+
+        Assert.False(VsphereCounters.InstanceNamesAnEntity("disk.deviceLatency.average"));
+        Assert.False(VsphereCounters.InstanceNamesAnEntity("cpu.usage.average"));
+        Assert.False(VsphereCounters.InstanceNamesAnEntity(null));
+    }
+
+    [Fact]
+    public void Every_storage_latency_counter_is_stored_in_milliseconds()
+    {
+        // A unit mix-up is the same class of silent defect, and this caught a
+        // live one: datastore.datastoreVMObservedLatency.latest is in
+        // microseconds, three lines from the millisecond counters it exists to
+        // be compared against. Comparing VM-observed latency with device
+        // latency is how the product tells a queue problem from an array
+        // problem — a comparison wrong by a thousand answers confidently and
+        // incorrectly.
+        //
+        // Asserted on the unit the product stores rather than the one vSphere
+        // sends, because the normaliser converts and carries the unit with the
+        // value. Checking the wire unit would fail for a counter that is
+        // handled correctly.
+        foreach (var key in VsphereCounters.PerDatastore
             .Concat(VsphereCounters.VirtualMachine)
-            .Where(k => k.Contains("Latency", StringComparison.Ordinal))
+            .Concat(VsphereCounters.Host)
+            .Where(k => k.Contains("Latency", StringComparison.OrdinalIgnoreCase))
             .Where(Catalogue.ContainsKey))
         {
-            Assert.Equal("millisecond", Catalogue[key].Unit);
+            Assert.Equal(
+                "millisecond",
+                VsphereUnitNormalizer.NormalizedUnit(Catalogue[key].Unit));
         }
+    }
+
+    [Fact]
+    public void A_microsecond_counter_is_converted_rather_than_stored_beside_milliseconds()
+    {
+        // The conversion itself, pinned. 3000 microseconds is 3 milliseconds,
+        // and the unit has to move with the number or the next reader is owed
+        // an explanation nobody will give them.
+        Assert.Equal(3d, VsphereUnitNormalizer.Normalize(3000d, "microsecond"));
+        Assert.Equal("millisecond", VsphereUnitNormalizer.NormalizedUnit("microsecond"));
+        Assert.True(VsphereUnitNormalizer.IsScaled("microsecond"));
+
+        // And a unit it does not recognise is left exactly alone. Rescaling on
+        // a guess would be worse than the problem it solves.
+        Assert.Equal(3000d, VsphereUnitNormalizer.Normalize(3000d, "kiloBytesPerSecond"));
+        Assert.Equal("kiloBytesPerSecond", VsphereUnitNormalizer.NormalizedUnit("kiloBytesPerSecond"));
     }
 
     private static string GroupOf(string key) =>

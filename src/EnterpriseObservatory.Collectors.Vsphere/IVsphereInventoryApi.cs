@@ -215,4 +215,17 @@ public sealed record VsphereDatastore
 
     /// <summary>VMFS, NFS, vsan and so on.</summary>
     public string? Type { get; init; }
+
+    /// <summary>
+    /// Where the datastore lives, e.g. <c>ds:///vmfs/volumes/5f2c.../</c>.
+    /// </summary>
+    /// <remarks>
+    /// Requested for what is inside it rather than for display. vCenter does
+    /// not collect per-datastore latency on the datastore; it collects it on
+    /// each host, with the datastore's volume identifier as the counter
+    /// instance. This URL is the only thing in the inventory that carries that
+    /// identifier, so it is what joins a number measured on a host to the
+    /// datastore the number is about.
+    /// </remarks>
+    public string? Url { get; init; }
 }
