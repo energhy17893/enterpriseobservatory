@@ -35,7 +35,7 @@ jobs:
       # This job reports the PostgreSQL tests as skipped and that is expected:
       # there is no server here and a Windows runner cannot have one as a
       # service container. They are proved in the postgres-tests job below,
-      # which fails if they skip. Bkz. ADR-0009.
+      # which fails if they skip. Bkz. ADR-0022.
       - name: Test
         run: dotnet test --no-build -c Release --verbosity normal
 
@@ -64,7 +64,7 @@ jobs:
       # Started in a step rather than as a `services:` container, which is the
       # idiomatic shape. A service's environment is fixed before any step runs,
       # so its password would have to be a literal in this file or a secret,
-      # and the password must be neither. Bkz. ADR-0009.
+      # and the password must be neither. Bkz. ADR-0022.
       - name: Start PostgreSQL
         run: |
           docker run --detach --name eo-postgres \

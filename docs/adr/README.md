@@ -61,6 +61,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0019](0019-empty-series-rows-are-kept.md) | Boş seri satırları silinmez, birikmesine izin verilir | Kabul edildi |
 | [0020](0020-key-ring-durability-is-checked-at-startup.md) | Anahtar halkasının kaybolabilirliği açılışta denetlenir, servis durdurulmaz | Kabul edildi |
 | [0021](0021-blind-spot-stays-per-datastore.md) | Depolama gecikmesi kör noktası datastore başına raporlanır | Kabul edildi |
+| [0022](0022-postgres-tests-run-in-a-linux-job.md) | PostgreSQL testleri ayrı bir Linux işinde, tek kullanımlık parolayla çalışır | Kabul edildi |
 
 ## Şablon
 
