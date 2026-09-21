@@ -68,7 +68,13 @@ public class ClusterHighAvailabilityTests
     public void Admission_control_disabled_is_named()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.AdmissionControlEnabledSetting, "false"))]));
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "true"),
+                (Rules.AdmissionControlEnabledSetting, "false"),
+            ]),
+        ]));
 
         Assert.Equal("Cluster admission control is disabled", alert.Title);
         Assert.Equal(AlertSeverity.Warning, alert.Severity);
@@ -78,7 +84,38 @@ public class ClusterHighAvailabilityTests
     public void Admission_control_enabled_is_silent()
     {
         Assert.Empty(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.AdmissionControlEnabledSetting, "true"))]));
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "true"),
+                (Rules.AdmissionControlEnabledSetting, "true"),
+            ]),
+        ]));
+    }
+
+    [Fact]
+    public void Admission_control_disabled_is_silent_when_ha_itself_is_off()
+    {
+        // Nothing about admission control matters on a cluster with no HA
+        // protection at all -- HaDisabled already names the real problem,
+        // and stacking a second finding on top of it is noise.
+        var alerts = ClusterHighAvailability.Evaluate(
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "false"),
+                (Rules.AdmissionControlEnabledSetting, "false"),
+            ]),
+        ]);
+
+        Assert.DoesNotContain(alerts, a => a.Title == "Cluster admission control is disabled");
+    }
+
+    [Fact]
+    public void Admission_control_disabled_is_silent_when_ha_enabled_state_was_never_read()
+    {
+        Assert.Empty(ClusterHighAvailability.Evaluate(
+            [Cluster(settings: (Rules.AdmissionControlEnabledSetting, "false"))]));
     }
 
     // --- host monitoring -------------------------------------------------------
@@ -87,7 +124,13 @@ public class ClusterHighAvailabilityTests
     public void Host_monitoring_disabled_is_named()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.HostMonitoringSetting, "disabled"))]));
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "true"),
+                (Rules.HostMonitoringSetting, "disabled"),
+            ]),
+        ]));
 
         Assert.Equal("Cluster host monitoring is disabled", alert.Title);
         Assert.Equal(AlertSeverity.Critical, alert.Severity);
@@ -97,7 +140,13 @@ public class ClusterHighAvailabilityTests
     public void Host_monitoring_enabled_is_silent()
     {
         Assert.Empty(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.HostMonitoringSetting, "enabled"))]));
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "true"),
+                (Rules.HostMonitoringSetting, "enabled"),
+            ]),
+        ]));
     }
 
     // --- APD / PDL storage protection ------------------------------------------
@@ -106,7 +155,13 @@ public class ClusterHighAvailabilityTests
     public void Apd_response_disabled_is_named()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.ApdResponseSetting, "disabled"))]));
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "true"),
+                (Rules.ApdResponseSetting, "disabled"),
+            ]),
+        ]));
 
         Assert.Equal("Cluster storage failure protection is disabled", alert.Title);
         Assert.Contains("All-Paths-Down", alert.Description, StringComparison.Ordinal);
@@ -116,7 +171,13 @@ public class ClusterHighAvailabilityTests
     public void Pdl_response_disabled_is_named()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.PdlResponseSetting, "disabled"))]));
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "true"),
+                (Rules.PdlResponseSetting, "disabled"),
+            ]),
+        ]));
 
         Assert.Contains("Permanent-Device-Loss", alert.Description, StringComparison.Ordinal);
     }
@@ -128,6 +189,7 @@ public class ClusterHighAvailabilityTests
         [
             Cluster(settings:
             [
+                (Rules.EnabledSetting, "true"),
                 (Rules.ApdResponseSetting, "disabled"),
                 (Rules.PdlResponseSetting, "disabled"),
             ]),
@@ -144,6 +206,7 @@ public class ClusterHighAvailabilityTests
         [
             Cluster(settings:
             [
+                (Rules.EnabledSetting, "true"),
                 (Rules.ApdResponseSetting, "restartConservative"),
                 (Rules.PdlResponseSetting, "restartAggressive"),
             ]),
@@ -175,7 +238,7 @@ public class ClusterHighAvailabilityTests
     public void One_heartbeat_datastore_is_named()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "1"), UserSelected])]));
+            [Cluster(settings: [(Rules.EnabledSetting, "true"), (Rules.HeartbeatDatastoreCountSetting, "1"), UserSelected])]));
 
         Assert.Equal("Cluster has too few HA heartbeat datastores", alert.Title);
         Assert.Contains("1 heartbeat datastore(s)", alert.Description);
@@ -185,21 +248,21 @@ public class ClusterHighAvailabilityTests
     public void Zero_heartbeat_datastores_is_named()
     {
         Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "0"), UserSelected])]));
+            [Cluster(settings: [(Rules.EnabledSetting, "true"), (Rules.HeartbeatDatastoreCountSetting, "0"), UserSelected])]));
     }
 
     [Fact]
     public void Two_heartbeat_datastores_is_silent()
     {
         Assert.Empty(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "2"), UserSelected])]));
+            [Cluster(settings: [(Rules.EnabledSetting, "true"), (Rules.HeartbeatDatastoreCountSetting, "2"), UserSelected])]));
     }
 
     [Fact]
     public void The_minimum_is_policy_rather_than_compiled_in()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "2"), UserSelected])],
+            [Cluster(settings: [(Rules.EnabledSetting, "true"), (Rules.HeartbeatDatastoreCountSetting, "2"), UserSelected])],
             new ClusterHighAvailabilityPolicy { MinimumHeartbeatDatastores = 3 }));
 
         Assert.Equal("Cluster has too few HA heartbeat datastores", alert.Title);
@@ -211,7 +274,13 @@ public class ClusterHighAvailabilityTests
     public void The_redundant_network_warning_being_silenced_is_named_as_a_hidden_risk()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.IgnoreRedundantNetworkWarningSetting, "true"))]));
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "true"),
+                (Rules.IgnoreRedundantNetworkWarningSetting, "true"),
+            ]),
+        ]));
 
         Assert.Equal("Cluster hides its HA network redundancy warning", alert.Title);
         Assert.Contains("hidden risk", alert.Description, StringComparison.Ordinal);
@@ -273,6 +342,7 @@ public class ClusterHighAvailabilityTests
         [
             Cluster(settings:
             [
+                (Rules.EnabledSetting, "true"),
                 (Rules.AdmissionControlEnabledSetting, "false"),
                 (Rules.HeartbeatDatastoreCountSetting, "0"),
                 UserSelected,
@@ -288,5 +358,77 @@ public class ClusterHighAvailabilityTests
     public void A_missing_entity_list_is_a_programming_error_rather_than_an_empty_estate()
     {
         Assert.Throws<ArgumentNullException>(() => ClusterHighAvailability.Evaluate(null!));
+    }
+
+    // --- gating: the other checks depend on HA being confirmed on ------------
+
+    [Fact]
+    public void Every_other_check_is_silent_when_ha_is_disabled_even_if_misconfigured()
+    {
+        // A cluster with HA off and every other dasConfig key also set to a
+        // bad value should still name only the one real problem.
+        var alerts = ClusterHighAvailability.Evaluate(
+        [
+            Cluster(settings:
+            [
+                (Rules.EnabledSetting, "false"),
+                (Rules.AdmissionControlEnabledSetting, "false"),
+                (Rules.HostMonitoringSetting, "disabled"),
+                (Rules.ApdResponseSetting, "disabled"),
+                (Rules.PdlResponseSetting, "disabled"),
+                (Rules.HeartbeatDatastoreCountSetting, "0"),
+                UserSelected,
+                (Rules.IgnoreRedundantNetworkWarningSetting, "true"),
+            ]),
+        ]);
+
+        var alert = Assert.Single(alerts);
+        Assert.Equal("Cluster has no vSphere HA protection", alert.Title);
+    }
+
+    [Fact]
+    public void Every_other_check_is_silent_when_ha_enabled_state_was_never_read()
+    {
+        // HA enabled/disabled unread is not the same claim as HA disabled --
+        // HaDisabled itself stays silent too (see HA_never_read_is_silent) --
+        // and the other checks must not run on an unconfirmed cluster either.
+        Assert.Empty(ClusterHighAvailability.Evaluate(
+        [
+            Cluster(settings:
+            [
+                (Rules.AdmissionControlEnabledSetting, "false"),
+                (Rules.HeartbeatDatastoreCountSetting, "0"),
+                UserSelected,
+                (Rules.IgnoreRedundantNetworkWarningSetting, "true"),
+            ]),
+        ]));
+    }
+
+    // --- unevaluated: a read failure must not resolve open alerts ------------
+
+    [Fact]
+    public void A_cluster_with_no_dasconfig_keys_at_all_keeps_its_fingerprints_open()
+    {
+        // Nothing was read this cycle -- a collection failure, not a
+        // cluster confirmed clean. Reconciliation must not resolve whatever
+        // this cluster's alerts already were.
+        var cluster = Cluster();
+        var unevaluated = new List<AlertFingerprint>();
+
+        var alerts = ClusterHighAvailability.Evaluate([cluster], unevaluated: unevaluated);
+
+        Assert.Empty(alerts);
+        Assert.Equal(ClusterHighAvailability.Fingerprints(cluster.Id), unevaluated);
+    }
+
+    [Fact]
+    public void A_cluster_with_some_dasconfig_keys_read_is_not_added_to_unevaluated()
+    {
+        var cluster = Cluster(settings: (Rules.EnabledSetting, "true"));
+        var unevaluated = new List<AlertFingerprint>();
+
+        ClusterHighAvailability.Evaluate([cluster], unevaluated: unevaluated);
+
+        Assert.Empty(unevaluated);
     }
 }

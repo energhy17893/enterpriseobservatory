@@ -18,6 +18,8 @@ public class DrsRuleViolationsTests
     private const string HostA = "vc-1:host-11";
     private const string HostB = "vc-1:host-12";
 
+    private const string PowerStateSetting = "powerState";
+
     private static Entity Node(string id, EntityKind kind) => new()
     {
         Id = new EntityId(id),
@@ -25,6 +27,14 @@ public class DrsRuleViolationsTests
         DisplayName = id,
         SourceInstanceId = Source,
         LastSeenUtc = T0,
+    };
+
+    private static Entity PoweredOffVm(string id) => Node(id, EntityKind.VirtualMachine) with
+    {
+        Settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [PowerStateSetting] = "poweredOff",
+        },
     };
 
     private static Entity Cluster(params DrsRule[] rules) => new()
@@ -264,6 +274,42 @@ public class DrsRuleViolationsTests
         var graph = Graph([rule], (Vm1, HostA));
 
         Assert.Empty(DrsRuleViolations.Evaluate(graph));
+    }
+
+    [Fact]
+    public void A_powered_off_vms_placement_is_not_judged()
+    {
+        // DRS does not place a machine that is not running. Both VMs land on
+        // HostA below -- a violation of this anti-affinity rule, except Vm1
+        // is powered off, so only Vm2's placement is actually known and
+        // there is nothing left to compare it against.
+        var rule = AntiAffinity(mandatory: true);
+        var graph = new EntityGraph
+        {
+            Entities = new[]
+            {
+                Cluster(rule),
+                PoweredOffVm(Vm1),
+                Node(Vm2, EntityKind.VirtualMachine),
+                Node(HostA, EntityKind.EsxiHost),
+            }.ToDictionary(e => e.Id),
+            Relationships = [RunsOn(Vm1, HostA), RunsOn(Vm2, HostA)],
+        };
+
+        Assert.Empty(DrsRuleViolations.Evaluate(graph));
+    }
+
+    [Fact]
+    public void A_vm_whose_power_state_was_never_collected_is_still_judged()
+    {
+        // Silence about power state is not evidence the VM is off -- only an
+        // explicit non-"poweredOn" value filters a VM out.
+        var rule = AntiAffinity(mandatory: true);
+        var graph = Graph([rule], (Vm1, HostA), (Vm2, HostA));
+
+        var alert = Assert.Single(DrsRuleViolations.Evaluate(graph));
+
+        Assert.Equal("DRS anti-affinity rule violated", alert.Title);
     }
 
     [Fact]

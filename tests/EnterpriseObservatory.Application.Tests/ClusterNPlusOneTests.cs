@@ -163,13 +163,17 @@ public class ClusterNPlusOneTests
 
     // --- what is read: membership -------------------------------------------
 
-    private static Entity HostEntity(EntityId id, ObservationState state = ObservationState.Active) => new()
+    private static Entity HostEntity(
+        EntityId id,
+        ObservationState state = ObservationState.Active,
+        HealthState health = HealthState.Healthy) => new()
     {
         Id = id,
         Kind = EntityKind.EsxiHost,
         DisplayName = id.Value,
         LastSeenUtc = T0,
         ObservationState = state,
+        Health = health,
     };
 
     private static Entity ClusterEntity(EntityId id, string name = "prod-cluster") => new()
@@ -244,6 +248,46 @@ public class ClusterNPlusOneTests
         Assert.Empty(ClusterNPlusOne.HostsByLiveCluster(graph));
     }
 
+    [Fact]
+    public void A_host_in_maintenance_does_not_count_toward_membership()
+    {
+        // In maintenance is deliberately out of service. It is not the
+        // failover headroom a surviving-hosts calculation may spend.
+        var graph = EntityGraph.Empty with
+        {
+            Entities = new Dictionary<EntityId, Entity>
+            {
+                [Cluster] = ClusterEntity(Cluster),
+                [Host1] = HostEntity(Host1),
+                [Host2] = HostEntity(Host2, ObservationState.InMaintenance),
+            },
+            Relationships = [PartOf(Host1, Cluster), PartOf(Host2, Cluster)],
+        };
+
+        Assert.Empty(ClusterNPlusOne.HostsByLiveCluster(graph));
+    }
+
+    [Fact]
+    public void A_disconnected_host_does_not_count_toward_membership()
+    {
+        // VsphereInventorySource reports a host vCenter cannot reach as
+        // Health.Unknown rather than a distinct ObservationState -- see
+        // IsLiveConnectedHost's remarks. A host in that state is not
+        // capacity either.
+        var graph = EntityGraph.Empty with
+        {
+            Entities = new Dictionary<EntityId, Entity>
+            {
+                [Cluster] = ClusterEntity(Cluster),
+                [Host1] = HostEntity(Host1),
+                [Host2] = HostEntity(Host2, health: HealthState.Unknown),
+            },
+            Relationships = [PartOf(Host1, Cluster), PartOf(Host2, Cluster)],
+        };
+
+        Assert.Empty(ClusterNPlusOne.HostsByLiveCluster(graph));
+    }
+
     // --- what is read: current demand ---------------------------------------
 
     private static EntityGraph TwoHostGraph() => EntityGraph.Empty with
@@ -283,6 +327,57 @@ public class ClusterNPlusOneTests
 
         Assert.Null(state.CpuDemandHosts);
         Assert.Null(state.MemoryDemandHosts);
+    }
+
+    [Fact]
+    public void A_sample_older_than_the_staleness_window_is_treated_as_missing()
+    {
+        // Default policy: 30s observation interval, stale after 3 -- 90s.
+        // A host silent for ten minutes is not idle capacity, it is a host
+        // that stopped reporting.
+        var series = new AgedSeries(new Dictionary<EntityId, (double Value, TimeSpan Age)>
+        {
+            [Host1] = (60, TimeSpan.Zero),
+            [Host2] = (40, TimeSpan.FromMinutes(10)),
+        });
+
+        var state = Assert.Single(ClusterNPlusOne.CurrentReadings(
+            series, TwoHostGraph(), T0, ClusterNPlusOnePolicy.Default, SeriesRetentionPolicy.Default));
+
+        Assert.Null(state.CpuDemandHosts);
+        Assert.Null(state.MemoryDemandHosts);
+    }
+
+    [Fact]
+    public void A_sample_inside_the_staleness_window_still_counts()
+    {
+        var series = new AgedSeries(new Dictionary<EntityId, (double Value, TimeSpan Age)>
+        {
+            [Host1] = (60, TimeSpan.FromSeconds(45)),
+            [Host2] = (40, TimeSpan.FromSeconds(60)),
+        });
+
+        var state = Assert.Single(ClusterNPlusOne.CurrentReadings(
+            series, TwoHostGraph(), T0, ClusterNPlusOnePolicy.Default, SeriesRetentionPolicy.Default));
+
+        Assert.Equal(1.0, state.CpuDemandHosts);
+        Assert.Equal(1.0, state.MemoryDemandHosts);
+    }
+
+    [Fact]
+    public void The_staleness_window_is_policy()
+    {
+        var policy = ClusterNPlusOnePolicy.Default with { StaleAfterIntervals = 100 };
+        var series = new AgedSeries(new Dictionary<EntityId, (double Value, TimeSpan Age)>
+        {
+            [Host1] = (60, TimeSpan.FromMinutes(10)),
+            [Host2] = (40, TimeSpan.FromMinutes(10)),
+        });
+
+        var state = Assert.Single(ClusterNPlusOne.CurrentReadings(
+            series, TwoHostGraph(), T0, policy, SeriesRetentionPolicy.Default));
+
+        Assert.Equal(1.0, state.CpuDemandHosts);
     }
 
     // --- the demand trend ----------------------------------------------------
@@ -415,6 +510,39 @@ public class ClusterNPlusOneTests
         Assert.Equal(ClusterNPlusOne.Fingerprints(Cluster), unevaluated);
     }
 
+    [Fact]
+    public void A_missing_cpu_reading_keeps_only_the_cpu_alerts_open()
+    {
+        // "No answer" is not "no problem": a resource CurrentReadings could
+        // not sum this cycle (a host filtered out, or its sample too stale)
+        // must not let reconciliation resolve an alert this rule raised on
+        // an earlier cycle just because this cycle had nothing to say.
+        var series = new CountingSeries();
+        var unevaluated = new List<AlertFingerprint>();
+
+        ClusterNPlusOne.EvaluateEach(
+            [State(cpu: null, memory: 1.0)], series, T0, ClusterNPlusOnePolicy.Default,
+            SeriesRetentionPolicy.Default, unevaluated);
+
+        var all = ClusterNPlusOne.Fingerprints(Cluster);
+        Assert.Equal([all[0], all[1]], unevaluated);
+    }
+
+    [Fact]
+    public void A_cluster_with_fewer_than_two_hosts_keeps_all_its_alerts_open_without_being_queried()
+    {
+        var series = new CountingSeries();
+        var unevaluated = new List<AlertFingerprint>();
+
+        var alerts = ClusterNPlusOne.EvaluateEach(
+            [State(cpu: 1.9, memory: 1.9, hosts: [Host1])], series, T0, ClusterNPlusOnePolicy.Default,
+            SeriesRetentionPolicy.Default, unevaluated);
+
+        Assert.Empty(alerts);
+        Assert.Equal(ClusterNPlusOne.Fingerprints(Cluster), unevaluated);
+        Assert.Empty(series.Queries);
+    }
+
     // --- caching: the estimate is kept while its input stands still ---------
 
     [Fact]
@@ -457,6 +585,41 @@ public class ClusterNPlusOneTests
                 Resolution = SeriesResolution.Raw,
                 Exists = true,
                 Points = [new AggregatedSample { StartUtc = T0, Min = value, Max = value, Sum = value, Count = 1, Last = value }],
+            };
+        }
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    /// <summary>A reading each host answers with, aged by a fixed amount behind whatever "now" the query asks for.</summary>
+    private sealed class AgedSeries(IReadOnlyDictionary<EntityId, (double Value, TimeSpan Age)> readings) : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query)
+        {
+            if (!readings.TryGetValue(query.Key.Entity, out var reading))
+            {
+                return new SeriesResult { Key = query.Key, Resolution = SeriesResolution.Raw };
+            }
+
+            var nowUtc = query.ToUtc - TimeSpan.FromTicks(1);
+
+            return new SeriesResult
+            {
+                Key = query.Key,
+                Resolution = SeriesResolution.Raw,
+                Exists = true,
+                Points =
+                [
+                    new AggregatedSample
+                    {
+                        StartUtc = nowUtc - reading.Age,
+                        Min = reading.Value,
+                        Max = reading.Value,
+                        Sum = reading.Value,
+                        Count = 1,
+                        Last = reading.Value,
+                    },
+                ],
             };
         }
 
