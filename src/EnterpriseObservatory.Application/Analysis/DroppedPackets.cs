@@ -1,4 +1,3 @@
-using System.Globalization;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -214,10 +213,10 @@ public static class DroppedPackets
                 Severity = AlertSeverity.Warning,
                 Title = title,
                 Description =
-                    $"{Number(drop.Count)} of {Number(total)} {verb} packets ({Number(percent)}%) " +
-                    $"were dropped in the last {Number(seconds)} seconds, at {Number(perSecond)} " +
-                    $"packets per second. The line is {Number(rules.DropPercent)}% of real traffic " +
-                    $"(at least {Number(rules.MinimumPacketsPerSecond)} packets per second), not any " +
+                    $"{Readings.Number(drop.Count)} of {Readings.Number(total)} {verb} packets ({Readings.Number(percent)}%) " +
+                    $"were dropped in the last {Readings.Number(seconds)} seconds, at {Readings.Number(perSecond)} " +
+                    $"packets per second. The line is {Readings.Number(rules.DropPercent)}% of real traffic " +
+                    $"(at least {Readings.Number(rules.MinimumPacketsPerSecond)} packets per second), not any " +
                     "drop at all: a busy link drops the odd frame legitimately. This is the aggregate " +
                     "across every NIC of this entity, so it does not say which one. On a virtual " +
                     "machine, receive drops usually mean the guest is not draining its ring buffer " +
@@ -254,7 +253,7 @@ public static class DroppedPackets
         {
             var value = observation.Value;
 
-            if (!string.Equals(value.CounterName, counter, StringComparison.OrdinalIgnoreCase) ||
+            if (!Readings.IsCounter(value.CounterName, counter) ||
                 !value.IsAggregateInstance ||
                 value.Rollup != RollupType.Summation ||
                 value.Interval <= TimeSpan.Zero ||
@@ -272,7 +271,4 @@ public static class DroppedPackets
 
         return values;
     }
-
-    private static string Number(double value) =>
-        value.ToString("0.##", CultureInfo.InvariantCulture);
 }

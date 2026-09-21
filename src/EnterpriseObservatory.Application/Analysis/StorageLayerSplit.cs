@@ -222,12 +222,12 @@ public static class StorageLayerSplit
     private static bool IsLayerReading(CounterValue value, StorageLayerPolicy rules) =>
         !value.IsAggregateInstance &&
         !value.InstanceIsVantagePoint &&
-        string.Equals(value.Unit, "millisecond", StringComparison.OrdinalIgnoreCase) &&
+        Readings.IsMilliseconds(value.Unit) &&
         (Is(value, rules.ArrayCounter) || Is(value, rules.KernelCounter) ||
          Is(value, rules.QueueCounter));
 
     private static bool Is(CounterValue value, string counter) =>
-        string.Equals(value.CounterName, counter, StringComparison.OrdinalIgnoreCase);
+        Readings.IsCounter(value.CounterName, counter);
 
     private static AlertDefinition? Verdict(
         IEnumerable<Observation> readings, StorageLayerPolicy rules)
@@ -289,7 +289,7 @@ public static class StorageLayerSplit
     /// layer at 1 ms because the other two truncated.
     /// </remarks>
     private static bool Dominates(double layer, double multiple, double others) =>
-        layer >= multiple * Math.Max(others, 1d);
+        layer >= Stats.FlooredMultiple(multiple, others, 1d);
 
     private static Observation? Layer(List<Observation> device, string counter)
     {
@@ -325,11 +325,8 @@ public static class StorageLayerSplit
             Entity = reading.Entity,
         };
 
-    private static string Ms(double v) =>
-        v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
-
     private static string Layers(double a, double k, double q) =>
-        $"device {Ms(a)} ms, kernel {Ms(k)} ms, queue {Ms(q)} ms";
+        $"device {Readings.Number(a)} ms, kernel {Readings.Number(k)} ms, queue {Readings.Number(q)} ms";
 
     private static string DescribeQueue(double a, double k, double q) =>
         $"This device waits in the host's own queue longer than it waits for the storage " +

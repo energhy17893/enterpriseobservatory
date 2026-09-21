@@ -56,7 +56,8 @@ public class MaintenanceTests : IDisposable
         _notifier,
         new InMemoryObservationStore(),
         _windows,
-        _clock);
+        _clock,
+        new InMemoryEventStore());
 
     // --- what a window does -----------------------------------------------
 

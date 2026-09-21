@@ -181,11 +181,13 @@ public static class SharedVolumeLatency
         var alerts = new List<AlertDefinition>();
 
         var load = LoadPerVolume(observations);
-        var busyAbove = rules.BusyMultipleOfEstateMedian *
-            Math.Max(Median([.. load.Values]), rules.MinimumOperationsPerSecond);
+        var busyAbove = Stats.FlooredMultiple(
+            rules.BusyMultipleOfEstateMedian,
+            Stats.Median([.. load.Values]),
+            rules.MinimumOperationsPerSecond);
 
         var groups = observations
-            .Where(o => o.Value.InstanceIsVantagePoint && IsDuration(o.Value.Unit))
+            .Where(o => o.Value.InstanceIsVantagePoint && Readings.IsMilliseconds(o.Value.Unit))
             .GroupBy(o => (o.Entity, o.Value.CounterName));
 
         foreach (var group in groups)
@@ -273,9 +275,9 @@ public static class SharedVolumeLatency
         // rather than a promise in a comment.
         var worst = ordered[0];
         var peers = ordered.Skip(1).Select(o => o.Value.Raw).ToList();
-        var peerMedian = Median(peers);
+        var peerMedian = Stats.Median(peers);
 
-        if (worst.Value.Raw >= rules.Peers.Multiple * Math.Max(peerMedian, 1d))
+        if (worst.Value.Raw >= Stats.FlooredMultiple(rules.Peers.Multiple, peerMedian, 1d))
         {
             return null;
         }
@@ -318,47 +320,25 @@ public static class SharedVolumeLatency
     private static string Describe(
         Observation worst, List<Observation> all, double? operations)
     {
-        static string N(double v) =>
-            v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
-
-        var median = Median([.. all.Select(o => o.Value.Raw)]);
+        var median = Stats.Median([.. all.Select(o => o.Value.Raw)]);
 
         // What the load was, or that it was not known. The counter map's own
         // lesson is that an unmeasured thing must not be printed as a measured
         // one, and the whole point of joining latency to demand is lost if the
         // alert does not say which of the two it had.
         var demand = operations is { } ops
-            ? $"It is serving {N(ops)} operations a second, which is not enough load to " +
+            ? $"It is serving {Readings.Number(ops)} operations a second, which is not enough load to " +
               "explain this"
             : "Its load could not be read this cycle, so how much of this is demand is " +
               "unknown";
 
         return
-            $"'{worst.Value.CounterName}' reads a median of {N(median)} ms across all " +
-            $"{all.Count} host(s) that mount this volume, from {N(all.Min(o => o.Value.Raw))} " +
-            $"to {N(worst.Value.Raw)} ms, and no single host stands out. {demand}. A volume " +
+            $"'{worst.Value.CounterName}' reads a median of {Readings.Number(median)} ms across all " +
+            $"{all.Count} host(s) that mount this volume, from {Readings.Number(all.Min(o => o.Value.Raw))} " +
+            $"to {Readings.Number(worst.Value.Raw)} ms, and no single host stands out. {demand}. A volume " +
             "that is slow from every host that mounts it is not one host's path: the hosts " +
             "have different adapters, different cables and different ports, and they agree. " +
             "Check the volume on the array and the fabric in front of it before looking at " +
             "any host.";
-    }
-
-    /// <summary>Milliseconds, and deliberately nothing else. See <see cref="PeerOutliers"/>.</summary>
-    private static bool IsDuration(string unit) =>
-        string.Equals(unit, "millisecond", StringComparison.OrdinalIgnoreCase);
-
-    private static double Median(List<double> values)
-    {
-        if (values.Count == 0)
-        {
-            return 0d;
-        }
-
-        var sorted = values.Order().ToList();
-        var middle = sorted.Count / 2;
-
-        return sorted.Count % 2 == 1
-            ? sorted[middle]
-            : (sorted[middle - 1] + sorted[middle]) / 2d;
     }
 }

@@ -84,7 +84,8 @@ public class UnpollableConnectionTests : IDisposable
         _notifier,
         _observations,
         _maintenance,
-        _clock);
+        _clock,
+        new InMemoryEventStore());
 
     private ReadModel Screens() => new(
         _graphs, _alerts, _health, _coverage, _observations, Options, _clock);

@@ -71,7 +71,8 @@ public class MonitoringCycleTests : IDisposable
         notifier ?? _notifier,
         observations ?? _observations,
         _maintenance,
-        _clock);
+        _clock,
+        new InMemoryEventStore());
 
     // --- scoping ----------------------------------------------------------
 
@@ -319,7 +320,8 @@ public class MonitoringCycleTests : IDisposable
             _notifier,
             new FailingObservationStore(),
             _maintenance,
-            _clock);
+            _clock,
+            new InMemoryEventStore());
 
         var metrics = new FakeObservationSource("vc-1")
         {

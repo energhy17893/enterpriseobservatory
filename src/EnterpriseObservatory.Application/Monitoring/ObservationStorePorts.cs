@@ -89,20 +89,10 @@ public sealed record SeriesResult
 /// blind monitoring system, and the second is much worse than the first.
 /// </para>
 /// </remarks>
-public interface IObservationStore
+public interface IObservationStore : ISeriesReader
 {
     /// <summary>Appends one cycle's samples.</summary>
     void Append(IReadOnlyList<Observation> observations);
-
-    /// <summary>Reads one series.</summary>
-    SeriesResult Query(SeriesQuery query);
-
-    /// <summary>Lists the counters recorded for an entity.</summary>
-    /// <remarks>
-    /// So the interface can offer what actually exists rather than a fixed menu
-    /// that is wrong for half the entity types.
-    /// </remarks>
-    IReadOnlyList<SeriesKey> SeriesFor(EntityId entity);
 
     /// <summary>
     /// Folds complete buckets into coarser ones and deletes what has aged out.
@@ -114,6 +104,27 @@ public interface IObservationStore
     /// sources rather than accumulated into.
     /// </remarks>
     CompactionReport Compact(DateTimeOffset nowUtc, SeriesRetentionPolicy policy);
+}
+
+/// <summary>
+/// The read side of <see cref="IObservationStore"/>, which is what analysis
+/// rules are given.
+/// </summary>
+/// <remarks>
+/// A rule must not write, delete or compact. See the analysis-layer proposal,
+/// which named this port before any rule needed it.
+/// </remarks>
+public interface ISeriesReader
+{
+    /// <summary>Reads one series.</summary>
+    SeriesResult Query(SeriesQuery query);
+
+    /// <summary>Lists the counters recorded for an entity.</summary>
+    /// <remarks>
+    /// So the interface can offer what actually exists rather than a fixed menu
+    /// that is wrong for half the entity types.
+    /// </remarks>
+    IReadOnlyList<SeriesKey> SeriesFor(EntityId entity);
 }
 
 /// <summary>What one compaction pass did.</summary>
