@@ -52,6 +52,8 @@ const GROUPS = [
       { to: '/connections', label: 'Connections' },
       { to: '/maintenance', label: 'Maintenance' },
       { to: '/collectors', label: 'Collectors' },
+      { to: '/reports', label: 'Scheduled reports' },
+      { to: '/email', label: 'Email' },
       { to: '/accounts', label: 'Accounts' },
     ],
   },

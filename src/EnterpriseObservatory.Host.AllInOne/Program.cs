@@ -10,7 +10,9 @@ using EnterpriseObservatory.Collectors.Vsphere;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Host.AllInOne;
 using EnterpriseObservatory.Host.AllInOne.Collectors;
+using EnterpriseObservatory.Application.Reporting;
 using EnterpriseObservatory.Host.AllInOne.Configuration;
+using EnterpriseObservatory.Host.AllInOne.Mail;
 using EnterpriseObservatory.Host.AllInOne.Notifications;
 using EnterpriseObservatory.Host.AllInOne.Security;
 using EnterpriseObservatory.Host.AllInOne.State;
@@ -262,6 +264,17 @@ else
 }
 
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+
+// Scheduled email reports (roadmap M5.4). IReportRenderer is a stub here --
+// the placeholder text body -- until M5.1's CSV/PDF export replaces it; the
+// scheduler and delivery pipe around it are otherwise the finished feature.
+builder.Services.AddSingleton<ISmtpSettingsStore, PostgresSmtpSettingsStore>();
+builder.Services.AddSingleton<IReportSubscriptionStore, PostgresReportSubscriptionStore>();
+builder.Services.AddSingleton<IMailSender, MailKitMailSender>();
+builder.Services.AddSingleton<IReportRenderer, PlaceholderReportRenderer>();
+builder.Services.AddSingleton<ReportDispatchService>();
+builder.Services.AddHostedService<ReportSchedulerWorker>();
+
 builder.Services.AddSingleton<ISourceConnectionStore, PostgresSourceConnectionStore>();
 builder.Services.AddSingleton<VsphereConnectionProbe>();
 builder.Services.AddSingleton<IConnectionProbe>(p => p.GetRequiredService<VsphereConnectionProbe>());
@@ -297,6 +310,8 @@ host.MapAccountsApi();
 host.MapMaintenanceApi();
 host.MapConnections();
 host.MapComplianceApi();
+host.MapEmailApi();
+host.MapReportsApi();
 host.MapObservatoryApi();
 
 // The SPA's build output, when it has been built. Serving the interface from

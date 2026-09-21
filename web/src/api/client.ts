@@ -27,6 +27,12 @@ import type {
   ComplianceFindingView,
   ComplianceView,
   FindingState,
+  SmtpSettingsView,
+  SmtpSettingsCommand,
+  TestEmailCommand,
+  MailTestView,
+  ReportSubscriptionView,
+  ReportSubscriptionCommand,
 } from './types'
 
 /**
@@ -246,4 +252,18 @@ export const api = {
       `/api/entities/${encodeURIComponent(entityId)}/series/${encodeURIComponent(counter)}`,
       query,
     ),
+
+  smtpSettings: () => get<SmtpSettingsView>('/api/email/settings'),
+  updateSmtpSettings: (command: SmtpSettingsCommand) =>
+    send<SmtpSettingsView>('PUT', '/api/email/settings', command),
+  testSmtpSettings: (command: TestEmailCommand) =>
+    post<MailTestView>('/api/email/test', command),
+
+  reportSubscriptions: () => get<ReportSubscriptionView[]>('/api/reports/subscriptions'),
+  addReportSubscription: (command: ReportSubscriptionCommand) =>
+    post<ReportSubscriptionView>('/api/reports/subscriptions', command),
+  updateReportSubscription: (id: string, command: ReportSubscriptionCommand) =>
+    send<ReportSubscriptionView>('PUT', `/api/reports/subscriptions/${encodeURIComponent(id)}`, command),
+  removeReportSubscription: (id: string) =>
+    send<null>('DELETE', `/api/reports/subscriptions/${encodeURIComponent(id)}`),
 }

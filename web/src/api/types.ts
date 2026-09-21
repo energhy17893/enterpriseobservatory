@@ -519,3 +519,74 @@ export interface AddExceptionCommand {
   owner: string
   expiresUtc: string
 }
+
+// --- scheduled email reports (M5.4) --------------------------------------------
+
+export type SmtpTlsMode = 'None' | 'StartTls' | 'Implicit'
+
+/**
+ * The installation's SMTP settings.
+ *
+ * There is no password field here and no endpoint that returns one.
+ * `passwordStatus` is the string 'set' or 'not set' — never the value.
+ */
+export interface SmtpSettingsView {
+  host: string
+  port: number
+  tlsMode: SmtpTlsMode
+  fromAddress: string
+  username: string
+  allowUnencrypted: boolean
+  passwordStatus: 'set' | 'not set'
+  passwordSetUtc: string | null
+  isConfigured: boolean
+}
+
+export interface SmtpSettingsCommand {
+  host: string
+  port: number
+  tlsMode: SmtpTlsMode
+  fromAddress: string
+  username: string
+  /** Empty means "keep the stored password". */
+  password: string
+  allowUnencrypted: boolean
+}
+
+export interface TestEmailCommand extends SmtpSettingsCommand {
+  to: string
+}
+
+export interface MailTestView {
+  succeeded: boolean
+  detail: string
+}
+
+export type ReportFrequency = 'Daily' | 'Weekly'
+
+export type ReportKind = 'Alerts'
+
+export interface ReportSubscriptionView {
+  id: string
+  recipients: string[]
+  frequency: ReportFrequency
+  dayOfWeek: string
+  hourLocal: number
+  timeZoneId: string
+  kind: ReportKind
+  isEnabled: boolean
+  lastSentUtc: string | null
+  lastError: string | null
+  createdBy: string
+  createdUtc: string
+}
+
+export interface ReportSubscriptionCommand {
+  recipients: string[]
+  frequency: ReportFrequency
+  dayOfWeek: string
+  hourLocal: number
+  timeZoneId: string
+  kind: ReportKind
+  isEnabled: boolean
+}
