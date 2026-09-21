@@ -135,6 +135,17 @@ public class VsphereObservationSourceTests
                 {
                     EntityMoRef = moRef,
                     Values = [.. counters.SelectMany(c => Series(c))],
+                    SampledAtUtc = SampledAtUtc,
+                    Earlier = SampledAtUtc is { } latest
+                        ?
+                        [
+                            new PerfSampleSet
+                            {
+                                SampledAtUtc = latest.AddSeconds(-20),
+                                Values = [.. counters.SelectMany(c => Series(c))],
+                            },
+                        ]
+                        : [],
                 }),
             ]);
         }
@@ -167,6 +178,12 @@ public class VsphereObservationSourceTests
                 };
             }
         }
+
+        /// <summary>
+        /// When vCenter says it took the latest sample. With it, the reply also
+        /// carries the sample before, as a real one does.
+        /// </summary>
+        public DateTimeOffset? SampledAtUtc { get; init; }
 
         /// <summary>Volume identifiers this host reports datastore counters for.</summary>
         public List<string> Volumes { get; init; } = [];
@@ -213,6 +230,48 @@ public class VsphereObservationSourceTests
 
     /// <summary>A vCenter that admits to nothing, whatever it actually holds.</summary>
     private static FakeApi SilentProbe() => new() { Available = [] };
+
+    [Fact]
+    public async Task A_sample_is_filed_under_the_time_vcenter_took_it_not_when_we_asked()
+    {
+        // Stamped with the local clock, a five-minute-old datastore sample
+        // claimed to be current, and the same sample read twice became two
+        // rows a few seconds apart — which for a summation is counting twice.
+        var takenAt = new DateTimeOffset(2026, 9, 21, 11, 59, 40, TimeSpan.Zero);
+        var batch = await Source(new FakeApi { SampledAtUtc = takenAt }, new Targets("host-1"))
+            .ReadAsync(CancellationToken.None);
+
+        Assert.NotEmpty(batch.Observations);
+        Assert.All(batch.Observations, o => Assert.Equal(takenAt, o.SampledAtUtc));
+    }
+
+    [Fact]
+    public async Task Earlier_samples_are_kept_for_the_store_and_kept_away_from_the_rules()
+    {
+        var takenAt = new DateTimeOffset(2026, 9, 21, 11, 59, 40, TimeSpan.Zero);
+        var batch = await Source(new FakeApi { SampledAtUtc = takenAt }, new Targets("host-1"))
+            .ReadAsync(CancellationToken.None);
+
+        // One value per series is still what a rule sees.
+        Assert.Equal(
+            batch.Observations.Count,
+            batch.Observations.Select(o => (o.Entity, o.Value.CounterName, o.Value.Instance)).Distinct().Count());
+
+        Assert.Equal(batch.Observations.Count, batch.Backfill.Count);
+        Assert.All(batch.Backfill, o => Assert.Equal(takenAt.AddSeconds(-20), o.SampledAtUtc));
+        Assert.All(batch.Backfill, o => Assert.Equal(new EntityId("host-1"), o.Entity));
+    }
+
+    [Fact]
+    public async Task A_reply_without_sample_times_falls_back_to_the_local_clock_and_keeps_nothing_earlier()
+    {
+        var clock = new FixedClock();
+        var batch = await Source(new FakeApi(), new Targets("host-1"), clock)
+            .ReadAsync(CancellationToken.None);
+
+        Assert.All(batch.Observations, o => Assert.Equal(clock.UtcNow, o.SampledAtUtc));
+        Assert.Empty(batch.Backfill);
+    }
 
     [Fact]
     public async Task Samples_are_attributed_to_the_entity_they_belong_to()

@@ -280,7 +280,9 @@ public sealed class MonitoringCycle(
             "the collectors' health",
             () => _healthStore.Merge(cycle.Health));
 
-        StoreObservations(cycle.Observations);
+        // The earlier samples go to the store and nowhere else. One append, so
+        // they are kept or lost together with the values they came with.
+        StoreObservations([.. cycle.Observations, .. cycle.Backfill]);
 
         // What the collectors could not read, and what the numbers themselves
         // say. Both belong to this scope because both are decided by this
