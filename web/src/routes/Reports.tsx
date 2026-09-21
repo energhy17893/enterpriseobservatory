@@ -19,6 +19,14 @@ export function Reports() {
       </p>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <Link to="/reports/scheduled">
+          <Card className="h-full p-4 hover:border-primary">
+            <div className="font-medium">Scheduled reports</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              Send a report by email on a daily or weekly schedule.
+            </div>
+          </Card>
+        </Link>
         <Link to="/reports/alerts">
           <Card className="h-full p-4 hover:border-primary">
             <div className="font-medium">Alert / finding report</div>

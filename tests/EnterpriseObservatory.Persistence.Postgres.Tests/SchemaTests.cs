@@ -66,13 +66,13 @@ public class SchemaTests : IDisposable
         // says it is", which passes even if the migration list were truncated
         // by accident. The literal makes adding a migration an event somebody
         // has to acknowledge here -- which is exactly what it did when the
-        // coverage table arrived as migration 3, again when the event tables arrived as 4, when the event read indexes arrived as 5, when the compliance tables arrived as 6, and when compliance history, staleness and exception withdrawal arrived as 7.
-        Assert.Equal(7, Version());
+        // coverage table arrived as migration 3, again when the event tables arrived as 4, when the event read indexes arrived as 5, when the compliance tables arrived as 6, when compliance history, staleness and exception withdrawal arrived as 7, and when the scheduled email report tables arrived as 8.
+        Assert.Equal(8, Version());
 
         // Measurements and state both, from the same open. The two used to be
         // separate SQLite files and a half-applied schema would now be a
         // service that starts and then cannot store what it collects.
-        Assert.True(TableCount() >= 22, $"Only {TableCount()} tables were created.");
+        Assert.True(TableCount() >= 24, $"Only {TableCount()} tables were created.");
     }
 
     [SkippableFact]
@@ -127,7 +127,7 @@ public class SchemaTests : IDisposable
 
         _live.Restart();
 
-        Assert.Equal(7, Version());
+        Assert.Equal(8, Version());
         Assert.Equal(tablesBefore, TableCount());
         Assert.NotNull(new PostgresUserAccountStore(_live.Database).Find("ertugrul"));
     }
