@@ -168,7 +168,7 @@ public static class PerfResponseParser
             results.Add(new PerfEntitySamples
             {
                 EntityMoRef = entity.Trim(),
-                Values = Aggregate([.. allSeries.Select(s => s.Latest()).OfType<CounterValue>()]),
+                Values = Aggregate([.. allSeries.Select(s => s.Latest(times.Count)).OfType<CounterValue>()]),
                 SampledAtUtc = times.Count > 0 ? times[^1] : null,
                 Earlier = ReadEarlier(allSeries, times),
             });
@@ -299,8 +299,33 @@ public static class PerfResponseParser
     /// <summary>One series as it arrived: what it measures, and a point per slot.</summary>
     private sealed record SeriesPoints(CounterValue Shape, string WireUnit, IReadOnlyList<double?> Points)
     {
-        /// <summary>The most recent point that parsed, as before.</summary>
-        public CounterValue? Latest() => Reading(Points.LastOrDefault(p => p is not null));
+        /// <summary>The reading for the last sample time, if there is one.</summary>
+        /// <remarks>
+        /// <para>
+        /// The last slot and nothing else. This was "the most recent point that
+        /// parsed", which looks backwards when the last slot is unreadable —
+        /// and the caller files whatever comes back under the <em>last</em>
+        /// sample time. So the 12:00:20 value was written at 12:00:40, and
+        /// again at 12:00:20 where <c>ReadEarlier</c> puts it: one reading,
+        /// two moments, and for a summation one event counted twice. Found in
+        /// review after it had reached main.
+        /// </para>
+        /// <para>
+        /// A series that does not have a point per sample time says nothing at
+        /// all, for the same reason seen from the other side: its last point
+        /// cannot be tied to the last time, and the next read returns that
+        /// same sample lined up under its real one.
+        /// </para>
+        /// <para>
+        /// Only a reply with no sample times keeps the old rule. Nothing there
+        /// is filed under vCenter's clock, <c>Earlier</c> is empty, and so
+        /// there is no second moment for the value to be repeated at.
+        /// </para>
+        /// </remarks>
+        public CounterValue? Latest(int sampleTimes) =>
+            sampleTimes == 0
+                ? Reading(Points.LastOrDefault(p => p is not null))
+                : Points.Count == sampleTimes ? Reading(Points[^1]) : null;
 
         public CounterValue? At(int slot) => Reading(Points[slot]);
 
