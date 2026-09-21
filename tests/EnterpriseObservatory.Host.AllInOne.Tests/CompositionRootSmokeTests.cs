@@ -171,6 +171,19 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_viewer_can_read_the_vcenter_event_feed()
+    {
+        // The positive for the event feed's anonymous 401 above, and proof the
+        // event store is wired: an unregistered one answers 500 here.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/vcenter-events");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task A_viewer_who_tries_to_change_something_is_refused_with_403()
     {
         Account("viewer", Role.Viewer);
@@ -282,6 +295,7 @@ internal sealed class ObservatoryHost : WebApplicationFactory<Program>
             Replace<IAlertStateStore>(services, new InMemoryAlertStateStore());
             Replace<ICollectorHealthStore>(services, new InMemoryCollectorHealthStore());
             Replace<ICoverageStore>(services, new InMemoryCoverageStore());
+            Replace<IEventStore>(services, new InMemoryEventStore());
             Replace<IObservationStore>(services, new InMemoryObservationStore());
             Replace<IMaintenanceWindowStore>(services, new InMemoryMaintenanceWindowStore());
             Replace<ISourceConnectionStore>(services, new TestConnectionStore());

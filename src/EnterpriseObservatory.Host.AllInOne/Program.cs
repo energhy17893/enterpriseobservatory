@@ -93,6 +93,8 @@ builder.Services.AddSingleton<IAlertStateStore, PostgresAlertStateStore>();
 builder.Services.AddSingleton<ICollectorHealthStore, PostgresCollectorHealthStore>();
 builder.Services.AddSingleton<ICoverageStore, PostgresCoverageStore>();
 builder.Services.AddSingleton<IObservationStore, PostgresObservationStore>();
+builder.Services.AddSingleton<IEventStore, PostgresEventStore>();
+builder.Services.AddSingleton<EventCollectionPipeline>();
 builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();

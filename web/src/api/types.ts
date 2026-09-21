@@ -364,3 +364,53 @@ export interface CoveragePropertyView {
   /** Computed on the server so the screen cannot drift from the rule that alerts. */
   isBlind: boolean
 }
+
+/** An object a vCenter event names. */
+export interface EventObjectView {
+  name: string
+  /** The entity page it would be on; null when no id can be formed. */
+  entityId: string | null
+}
+
+/**
+ * One event, as vCenter reported it.
+ *
+ * `typeId` is what it really is; `eventClass` is only the class it arrived as.
+ * Every `esx.problem.*` arrives as the one class `EventEx`, so anything that
+ * groups or filters must use `typeId`.
+ */
+export interface SourceEventView {
+  sourceInstanceId: string
+  key: number
+  createdAtUtc: string
+  eventClass: string
+  typeId: string
+  /** info, warning, error or user — when the event carried one. */
+  severity: string | null
+  message: string
+  userName: string | null
+  datacenterName: string | null
+  computeResource: EventObjectView | null
+  host: EventObjectView | null
+  virtualMachine: EventObjectView | null
+  datastore: EventObjectView | null
+}
+
+/** Where one source's event stream stands. */
+export interface EventStreamView {
+  sourceInstanceId: string
+  lastAttemptUtc: string | null
+  lastSuccessUtc: string | null
+  /** Why the last attempt could not read; null when it could. */
+  lastFailure: string | null
+  /** When a read last stopped short, leaving events unread. */
+  lastGapUtc: string | null
+}
+
+/** Recent vCenter events, with the state of the streams they came from. */
+export interface EventFeedView {
+  /** Newest first. */
+  events: SourceEventView[]
+  streams: EventStreamView[]
+  retentionDays: number
+}

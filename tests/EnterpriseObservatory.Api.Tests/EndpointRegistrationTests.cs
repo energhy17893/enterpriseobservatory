@@ -72,6 +72,7 @@ public class EndpointRegistrationTests
             typeof(IAlertStateStore),
             typeof(ICollectorHealthStore),
             typeof(ICoverageStore),
+            typeof(IEventStore),
             typeof(IEntityGraphStore),
             typeof(IObservationStore),
             typeof(IMaintenanceWindowStore),

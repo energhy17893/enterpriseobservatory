@@ -129,6 +129,32 @@ internal static partial class HostLog
     public static partial void StorageFailed(ILogger logger, string detail);
 
     [LoggerMessage(
+        EventId = 1017,
+        Level = LogLevel.Debug,
+        Message = "Event collection: {Recorded} events recorded, {Pruned} aged out.")]
+    public static partial void EventCycle(ILogger logger, int recorded, int pruned);
+
+    /// <summary>A source's events could not be read, or could not be kept.</summary>
+    /// <remarks>
+    /// Its own id rather than 1013, because this is not a cycle failing: the
+    /// inventory went on, and the mark did not move, so the next read asks for
+    /// the same window again.
+    /// </remarks>
+    [LoggerMessage(
+        EventId = 1018,
+        Level = LogLevel.Warning,
+        Message = "Events from {Source} were not recorded: {Detail}. The next cycle asks for the " +
+                  "same window again.")]
+    public static partial void EventsNotRead(ILogger logger, string source, string detail);
+
+    [LoggerMessage(
+        EventId = 1019,
+        Level = LogLevel.Warning,
+        Message = "Event read for {Sources} stopped before reaching the last recorded event. The " +
+                  "newest events were kept; some between them and the previous read are missing.")]
+    public static partial void EventGap(ILogger logger, string sources);
+
+    [LoggerMessage(
         EventId = 1020,
         Message = "[{Kind}] {Severity} {Title}: {Description}")]
     public static partial void AlertNotification(

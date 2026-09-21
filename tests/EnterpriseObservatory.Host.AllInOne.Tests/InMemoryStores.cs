@@ -504,3 +504,97 @@ internal sealed class InMemoryCoverageStore : ICoverageStore
             Properties = [.. coverage],
         };
 }
+
+/// <summary>Events, in memory.</summary>
+/// <remarks>
+/// The same rules as the Postgres store where they decide behaviour: a
+/// duplicate is ignored rather than stored twice, the mark moves only with a
+/// successful read and to the batch's highest key, and a failure leaves the
+/// mark alone.
+/// </remarks>
+internal sealed class InMemoryEventStore : IEventStore
+{
+    private readonly Lock _gate = new();
+    private readonly Dictionary<(string, long, DateTimeOffset), SourceEvent> _events = [];
+    private readonly Dictionary<string, EventCursor> _cursors = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<EventCursor> Cursors
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _cursors.Values];
+            }
+        }
+    }
+
+    public void Record(
+        string sourceInstanceId,
+        IReadOnlyList<SourceEvent> events,
+        bool complete,
+        DateTimeOffset readAtUtc)
+    {
+        lock (_gate)
+        {
+            foreach (var e in events)
+            {
+                _events.TryAdd((sourceInstanceId, e.Key, e.CreatedAtUtc), e with { SourceInstanceId = sourceInstanceId });
+            }
+
+            var previous = _cursors.GetValueOrDefault(sourceInstanceId);
+            var newest = events.Count == 0 ? null : events.MaxBy(e => e.Key);
+
+            _cursors[sourceInstanceId] = new EventCursor
+            {
+                SourceInstanceId = sourceInstanceId,
+                Mark = newest is null
+                    ? previous?.Mark
+                    : new EventMark { Key = newest.Key, CreatedAtUtc = newest.CreatedAtUtc },
+                LastAttemptUtc = readAtUtc,
+                LastSuccessUtc = readAtUtc,
+                LastGapUtc = complete ? previous?.LastGapUtc : readAtUtc,
+            };
+        }
+    }
+
+    public void RecordFailure(string sourceInstanceId, string detail, DateTimeOffset attemptedAtUtc)
+    {
+        lock (_gate)
+        {
+            _cursors[sourceInstanceId] =
+                (_cursors.GetValueOrDefault(sourceInstanceId) ?? new EventCursor { SourceInstanceId = sourceInstanceId })
+                with { LastAttemptUtc = attemptedAtUtc, LastFailure = detail };
+        }
+    }
+
+    public IReadOnlyList<SourceEvent> Recent(int limit, string? sourceInstanceId = null)
+    {
+        lock (_gate)
+        {
+            return
+            [
+                .. _events.Values
+                    .Where(e => sourceInstanceId is null || e.SourceInstanceId == sourceInstanceId)
+                    .OrderByDescending(e => e.CreatedAtUtc)
+                    .ThenByDescending(e => e.Key)
+                    .Take(Math.Clamp(limit, 1, EventCollectionPipeline.MaxRecent)),
+            ];
+        }
+    }
+
+    public int Prune(DateTimeOffset createdBeforeUtc)
+    {
+        lock (_gate)
+        {
+            var old = _events.Where(p => p.Value.CreatedAtUtc < createdBeforeUtc).Select(p => p.Key).ToList();
+
+            foreach (var key in old)
+            {
+                _events.Remove(key);
+            }
+
+            return old.Count;
+        }
+    }
+}

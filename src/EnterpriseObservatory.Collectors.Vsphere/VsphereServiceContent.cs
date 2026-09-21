@@ -33,6 +33,16 @@ public sealed record VsphereServiceContent
     /// </remarks>
     public string? SettingManager { get; init; }
 
+    /// <summary>
+    /// The event manager, or null when it was not offered.
+    /// </summary>
+    /// <remarks>
+    /// Null costs event collection only, and is reported as "could not ask"
+    /// rather than as an empty stream — a vCenter we cannot read events from is
+    /// not a vCenter where nothing happened.
+    /// </remarks>
+    public string? EventManager { get; init; }
+
     /// <summary>The API version the server reports, e.g. <c>8.0.3.0</c>.</summary>
     public string ApiVersion { get; init; } = string.Empty;
 
@@ -91,6 +101,7 @@ public static class VsphereServiceContentParser
             SessionManager = sessionManager,
             PerformanceManager = perfManager,
             SettingManager = Child(returnVal, "setting"),
+            EventManager = Child(returnVal, "eventManager"),
             ApiVersion = about is null ? string.Empty : Child(about, "apiVersion") ?? string.Empty,
             Name = about is null ? string.Empty : Child(about, "name") ?? string.Empty,
         };
