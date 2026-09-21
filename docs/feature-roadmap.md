@@ -38,9 +38,9 @@ vCenter event stream (`CreateCollectorForEvents`, en yeni sayfa).
 | ✅ M2.3 | NFS/depolama bağlantı kaybı, pNIC flapping | canlıda alarm |
 | ✅ M2.4 | Snapshot'ı kimin aldığı (snapshot bulgusuna eklenir) | bulguda kullanıcı adı |
 
-**▶ Mimari kontrol #1** (M1 + M2 sonrası) *(sürüyor)*
+**✅ Mimari kontrol #1** *(tamam: olay okumasına sınır, olay sorgusu düzeltmeleri, vCenter yanıt/DTD/log sertleştirmesi, 13 kural tek IAnalysisRule arayüzünde)*
 
-## M3 — Uygunluk motoru
+## ▶ M3 — Uygunluk motoru *(sürüyor)*
 
 Broadcom SCG CSV'si **veri olarak** yutulur; kod içine kontrol gömülmez.
 
