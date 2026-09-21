@@ -282,7 +282,7 @@ public static class StorageNoisyNeighbour
     /// </para>
     /// </remarks>
     public static Func<SeriesKey, double?> TypicalRateFrom(
-        IObservationStore store,
+        ISeriesReader store,
         DateTimeOffset nowUtc,
         StorageNoisyNeighbourPolicy? policy = null)
     {

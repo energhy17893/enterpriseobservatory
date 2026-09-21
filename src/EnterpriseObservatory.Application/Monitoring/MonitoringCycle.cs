@@ -1,4 +1,5 @@
 using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -68,17 +69,14 @@ public sealed class MonitoringCycle(
     IObservationStore observations,
     IMaintenanceWindowStore maintenance,
     IClock clock,
-    IEventStore? events = null)
+    IEventStore events)
 {
     /// <summary>
-    /// Where collected vCenter events are read from, for the event rule.
+    /// Where collected vCenter events are read from, for the rules. Handed
+    /// on only as its read side.
     /// </summary>
-    /// <remarks>
-    /// Optional, and last, so that a cycle composed without events — the
-    /// tests that predate M2.2 — is unchanged. The host registers one; a cycle
-    /// composed without it simply has no event rule.
-    /// </remarks>
-    private readonly IEventStore? _events = events;
+    private readonly IEventReader _events =
+        events ?? throw new ArgumentNullException(nameof(events));
 
     private readonly InventoryCollectionPipeline _inventory =
         inventoryPipeline ?? throw new ArgumentNullException(nameof(inventoryPipeline));
@@ -180,61 +178,20 @@ public sealed class MonitoringCycle(
             .. healthFailure,
             .. graphFailure,
 
-            // The one rule that belongs to this cycle rather than the metric
-            // one, and the scope is the argument. It judges the path table,
-            // which is read on the inventory rhythm and changes on it; running
-            // it beside the counters would have the faster cycle re-deciding a
-            // fact nothing had re-read, and — because reconciliation treats
-            // what it is given as the whole truth — each cycle resolving the
-            // other's findings.
-            //
             // Guarded like every other rule: a bug in counting paths must cost
             // the path count and not this cycle's "Collector unreachable".
             // Given the graph as this cycle merged it rather than the store's
-            // copy, so that a failed write leaves the rule reasoning about
+            // copy, so that a failed write leaves the rules reasoning about
             // what was actually just read.
-            .. Analysis.GuardedRule.Run(
-                Analysis.StoragePathRedundancy.RuleId,
-                () => Analysis.StoragePathRedundancy.Evaluate(
-                    [.. graph.Active], options.StoragePathRedundancy)),
-
-            // The first rule that reads configuration rather than measurement.
-            // It rides the inventory rhythm because that is when the setting
-            // is read: a value that changes when somebody changes it has
-            // nothing to say every twenty seconds.
-            .. Analysis.GuardedRule.Run(
-                Analysis.RemoteLogging.RuleId,
-                () => Analysis.RemoteLogging.Evaluate(
-                    [.. graph.Active], options.RemoteLogging)),
-
-            // vCenter's own announcements — HA, storage connectivity, uplinks.
-            // On this rhythm because events are collected on it, and in this
-            // scope because the rule re-derives every open condition from the
-            // stored events each time: reconciliation then holds one alert per
-            // fingerprint instead of one per cycle. The worker collects events
-            // after this cycle, so what is read here is the previous read's —
-            // one inventory interval of latency, until the worker reads events
-            // before inventory rather than after it.
-            .. Analysis.GuardedRule.Run(
-                Analysis.EventAlerts.RuleId,
-                () => _events is null
-                    ? []
-                    : Analysis.EventAlerts.Evaluate(
-                        Analysis.EventAlerts.Read(_events, now, options.EventAlerts),
-                        now,
-                        options.EventAlerts)),
-
-            // Not a rule about the estate but a rule about this product: what
-            // it managed to read. It goes last because everything above it is
-            // entitled to be silent, and this is the only thing that can tell
-            // an operator whether a silence was a verdict or a gap.
-            .. Analysis.GuardedRule.Run(
-                Analysis.CollectionCoverage.RuleId,
-                () => Analysis.CollectionCoverage.Evaluate(
-                    cycle.Snapshots.ToDictionary(
-                        s => s.SourceInstanceId,
-                        s => s.Coverage,
-                        StringComparer.Ordinal))),
+            .. Analyse(RuleScope.Inventory, new RuleContext
+            {
+                Snapshots = cycle.Snapshots,
+                ReadGraph = () => graph,
+                NowUtc = now,
+                Options = options,
+                Series = _observationStore,
+                Events = _events,
+            }),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Inventory, observed, options, now);
@@ -292,56 +249,18 @@ public sealed class MonitoringCycle(
         [
             .. cycle.CollectionAlerts,
             .. healthFailure,
-            .. Analysis.GuardedRule.Run(
-                Analysis.FaultCounters.RuleId,
-                () => Analysis.FaultCounters.Evaluate(cycle.Observations)),
-            .. Analysis.GuardedRule.Run(
-                Analysis.PeerOutliers.RuleId,
-                () => Analysis.PeerOutliers.Evaluate(cycle.Observations, options.PeerOutliers)),
-            .. Analysis.GuardedRule.Run(
-                Analysis.CpuContention.RuleId,
-                () => Analysis.CpuContention.Evaluate(
-                    cycle.Observations, _graphStore.Current, options.CpuContention)),
-            .. Analysis.GuardedRule.Run(
-                Analysis.MemoryPressure.RuleId,
-                () => Analysis.MemoryPressure.Evaluate(
-                    cycle.Observations, _graphStore.Current, options.MemoryPressure)),
-            .. Analysis.GuardedRule.Run(
-                Analysis.StorageLayerSplit.RuleId,
-                () => Analysis.StorageLayerSplit.Evaluate(
-                    cycle.Observations, options.StorageLayers)),
 
-            // Its peer policy is forced to the one PeerOutliers was given, not
-            // merely defaulted to the same value. The two rules are mutually
-            // exclusive by recomputing each other's test, and two copies that
-            // drifted apart would open a band where both fire, or neither
-            // does, with nothing to say so.
-            .. Analysis.GuardedRule.Run(
-                Analysis.SharedVolumeLatency.RuleId,
-                () => Analysis.SharedVolumeLatency.Evaluate(
-                    cycle.Observations,
-                    options.SharedVolumes with { Peers = options.PeerOutliers })),
-            .. Analysis.GuardedRule.Run(
-                Analysis.StorageLatencyBlindSpot.RuleId,
-                () => Analysis.StorageLatencyBlindSpot.Evaluate(
-                    cycle.Observations, options.StorageLatencyBlindSpot)),
-            .. Analysis.GuardedRule.Run(
-                Analysis.DroppedPackets.RuleId,
-                () => Analysis.DroppedPackets.Evaluate(
-                    cycle.Observations, options.DroppedPackets)),
-
-            // Given the graph for VM BackedBy Datastore, and the sample store
-            // for the one question a single cycle cannot answer: whether the
-            // volume's load rose. The store is read only for a volume that has
-            // already passed every other gate.
-            .. Analysis.GuardedRule.Run(
-                Analysis.StorageNoisyNeighbour.RuleId,
-                () => Analysis.StorageNoisyNeighbour.Evaluate(
-                    cycle.Observations,
-                    _graphStore.Current,
-                    Analysis.StorageNoisyNeighbour.TypicalRateFrom(
-                        _observationStore, now, options.StorageNoisyNeighbour),
-                    options.StorageNoisyNeighbour with { Peers = options.PeerOutliers })),
+            // The store's graph, read by each rule that asks for it inside
+            // that rule's guard: this cycle merged nothing.
+            .. Analyse(RuleScope.Metric, new RuleContext
+            {
+                Observations = cycle.Observations,
+                ReadGraph = () => _graphStore.Current,
+                NowUtc = now,
+                Options = options,
+                Series = _observationStore,
+                Events = _events,
+            }),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
@@ -368,6 +287,22 @@ public sealed class MonitoringCycle(
             ],
         };
     }
+
+    /// <summary>
+    /// Runs every registered rule of one scope, each so that its failure costs
+    /// only that rule.
+    /// </summary>
+    /// <remarks>
+    /// Collection sources and storage have always been isolated this way;
+    /// rules were the one part of the cycle that could still take the whole
+    /// thing down with them. Order is registration order — see
+    /// <see cref="AnalysisRules"/>.
+    /// </remarks>
+    private static IReadOnlyList<AlertDefinition> Analyse(RuleScope scope, RuleContext context) =>
+    [
+        .. AnalysisRules.For(scope).SelectMany(rule =>
+            GuardedRule.Run(rule.RuleId, () => rule.Evaluate(context))),
+    ];
 
     /// <summary>
     /// Dispatches this cycle's notifications and records that it did.

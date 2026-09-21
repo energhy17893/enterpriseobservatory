@@ -171,7 +171,7 @@ public sealed record EventCursor
 }
 
 /// <summary>Where collected events are kept.</summary>
-public interface IEventStore
+public interface IEventStore : IEventReader
 {
     /// <summary>Every source's position, including sources that have only ever failed.</summary>
     IReadOnlyList<EventCursor> Cursors { get; }
@@ -194,7 +194,18 @@ public interface IEventStore
 
     /// <summary>Removes events created before the cutoff; returns how many.</summary>
     int Prune(DateTimeOffset createdBeforeUtc);
+}
 
+/// <summary>
+/// The read side of <see cref="IEventStore"/> that analysis rules are given.
+/// </summary>
+/// <remarks>
+/// Separate so that a rule is handed something that cannot record, prune or
+/// move a cursor. <see cref="IEventHistory"/> is the same idea for snapshot
+/// attribution, and asks different questions.
+/// </remarks>
+public interface IEventReader
+{
     /// <summary>
     /// Every source's events of the given types created at or after
     /// <paramref name="createdSinceUtc"/>, newest first, at most
@@ -203,7 +214,7 @@ public interface IEventStore
     /// <remarks>
     /// <para>
     /// For rules that turn events into alerts (roadmap M2.2). They cannot use
-    /// <see cref="Recent"/>: that is a page for a screen, capped at
+    /// <see cref="IEventStore.Recent"/>: that is a page for a screen, capped at
     /// <see cref="EventCollectionPipeline.MaxRecent"/>, and a busy vCenter
     /// writes that many task and login events in well under an hour — the one
     /// "host isolated" event a rule needs would fall off the page while it was
@@ -278,7 +289,7 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
     public const int MaxRecent = 500;
 
     /// <summary>
-    /// The most events one <see cref="IEventStore.OfTypes"/> or
+    /// The most events one <see cref="IEventReader.OfTypes"/> or
     /// <see cref="IEventHistory.Find"/> read may return.
     /// </summary>
     /// <remarks>
@@ -290,7 +301,7 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
     public const int MaxMatching = 5000;
 
     /// <summary>
-    /// The bounding rule of <see cref="IEventStore.OfTypes"/>, over events
+    /// The bounding rule of <see cref="IEventReader.OfTypes"/>, over events
     /// already filtered by type and time: at most <paramref name="cap"/> of
     /// them, every group's newest before any group's second, returned newest
     /// first.

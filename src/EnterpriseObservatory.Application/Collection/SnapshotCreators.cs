@@ -49,7 +49,7 @@ public interface IEventHistory
     /// </summary>
     /// <remarks>
     /// Type ids are matched without regard to case, as
-    /// <see cref="IEventStore.OfTypes"/> matches them.
+    /// <see cref="IEventReader.OfTypes"/> matches them.
     /// </remarks>
     IReadOnlyList<SourceEvent> Find(
         string sourceInstanceId,

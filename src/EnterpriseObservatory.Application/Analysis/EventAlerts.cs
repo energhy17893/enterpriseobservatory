@@ -400,7 +400,7 @@ public static class EventAlerts
     /// open, and a clear older than that has nothing left to close.
     /// </remarks>
     public static IReadOnlyList<SourceEvent> Read(
-        IEventStore store, DateTimeOffset nowUtc, EventAlertPolicy? policy = null)
+        IEventReader store, DateTimeOffset nowUtc, EventAlertPolicy? policy = null)
     {
         ArgumentNullException.ThrowIfNull(store);
 
