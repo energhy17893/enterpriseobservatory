@@ -75,7 +75,7 @@ public sealed record VsphereAvailableMetric
 /// handling are the kind of thing that only a real server settles.
 /// </para>
 /// </remarks>
-public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposable
+public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi, IDisposable
 {
     /// <summary>Samples per series; see <see cref="VsphereSoapRequests.QueryPerf"/>.</summary>
     private const int MaxSample = 3;
@@ -1261,6 +1261,175 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
         Accessible = PropertyCollectorParser.ReadBoolean(o.Values, "summary.accessible"),
         Type = PropertyCollectorParser.ReadString(o.Values, "summary.type"),
     };
+
+    // --- IVsphereEventApi -------------------------------------------------
+
+    /// <summary>Events per page, for the latest page and each backwards read.</summary>
+    public const int EventPageSize = 200;
+
+    /// <summary>
+    /// The most pages one read will walk before stopping short of the mark.
+    /// </summary>
+    /// <remarks>
+    /// Ten thousand events per vCenter per cycle, <strong>this product's
+    /// choice</strong>. It exists for an event storm or a first contact with a
+    /// busy estate; stopping keeps the newest events and reports the gap,
+    /// which is the opposite of what QueryEvents does under the same load.
+    /// </remarks>
+    public const int MaxEventPages = 50;
+
+    /// <summary>How far back the first read of a vCenter looks. This product's choice.</summary>
+    public static readonly TimeSpan FirstEventLookBack = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// How far before the mark each window starts.
+    /// </summary>
+    /// <remarks>
+    /// Events are filtered by key afterwards, so the overlap costs a few
+    /// re-read events and buys safety against same-second events and a vCenter
+    /// clock that stepped backwards a little.
+    /// </remarks>
+    public static readonly TimeSpan EventWindowOverlap = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Reads the events written since the mark.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The collector pattern, and never <c>QueryEvents</c>: that call returns
+    /// the <em>oldest</em> thousand events of its window, so on a busy vCenter
+    /// it silently misses the most recent hours. Here a collector is opened
+    /// over a window starting just before the mark, its <c>latestPage</c> read
+    /// first, and <c>ReadPreviousEvents</c> walked backwards until the mark is
+    /// reached or the window runs out. The collector is destroyed whatever
+    /// happens: vCenter bounds how many one session may hold, and a leaked one
+    /// per cycle eventually stops every read on the session.
+    /// </para>
+    /// <para>
+    /// A vCenter whose keys have gone backwards — rebuilt, or its database
+    /// reset — is recognised by the newest key being below the mark; "newer"
+    /// then falls back to creation time, because the alternative is ignoring
+    /// every event it will ever write again.
+    /// </para>
+    /// <para>
+    /// <strong>Not yet verified against a live vCenter.</strong> The request
+    /// shapes follow the published schema; the initial position of the
+    /// scrollable view and the order of events within a page are handled
+    /// defensively (merged by key, sorted) rather than assumed.
+    /// </para>
+    /// </remarks>
+    public async Task<EventRead> ReadEventsAsync(
+        EventMark? since,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+
+        if (content.EventManager is not { } eventManager)
+        {
+            return EventRead.CouldNotAsk(
+                "vCenter did not offer an event manager, so its events cannot be read.");
+        }
+
+        var begin = since is null ? nowUtc - FirstEventLookBack : since.CreatedAtUtc - EventWindowOverlap;
+
+        var created = await SendAsync(
+            VsphereSoapRequests.CreateCollectorForEvents(eventManager, begin),
+            cancellationToken).ConfigureAwait(false);
+
+        var collector = VsphereEventParser.ParseCollector(created)
+            ?? throw new VsphereApiException("vCenter did not return an event collector.");
+
+        try
+        {
+            await SendAsync(
+                VsphereSoapRequests.SetCollectorPageSize(collector, EventPageSize),
+                cancellationToken).ConfigureAwait(false);
+
+            var latest = VsphereEventParser.ParseLatestPage(await SendAsync(
+                    VsphereSoapRequests.RetrieveLatestEventPage(content.PropertyCollector, collector),
+                    cancellationToken).ConfigureAwait(false))
+                ?? throw new VsphereApiException("The latest page of events could not be read.");
+
+            var reset = since is not null && latest.Count > 0 && latest.Max(e => e.Key) < since.Key;
+
+            bool IsNew(SourceEvent e) =>
+                since is null || (reset ? e.CreatedAtUtc > since.CreatedAtUtc : e.Key > since.Key);
+
+            var byKey = new Dictionary<long, SourceEvent>();
+            foreach (var e in latest)
+            {
+                byKey.TryAdd(e.Key, e);
+            }
+
+            // A latest page that is not full holds everything the window has.
+            var exhausted = latest.Count < EventPageSize;
+            var reached = since is not null && latest.Any(e => !IsNew(e));
+            var pages = 1;
+
+            while (!reached && !exhausted && pages < MaxEventPages)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var older = VsphereEventParser.ParseEvents(await SendAsync(
+                        VsphereSoapRequests.ReadPreviousEvents(collector, EventPageSize),
+                        cancellationToken).ConfigureAwait(false))
+                    ?? throw new VsphereApiException("A page of older events could not be read.");
+
+                pages++;
+
+                if (older.Count == 0)
+                {
+                    exhausted = true;
+                    break;
+                }
+
+                foreach (var e in older)
+                {
+                    byKey.TryAdd(e.Key, e);
+                }
+
+                reached = since is not null && older.Any(e => !IsNew(e));
+            }
+
+            return new EventRead
+            {
+                Events = [.. byKey.Values.Where(IsNew).OrderBy(e => e.Key)],
+                Complete = reached || exhausted,
+            };
+        }
+        finally
+        {
+            await TryDestroyCollectorAsync(collector, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task TryDestroyCollectorAsync(string collector, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Not the caller's token alone: a read cancelled at shutdown still
+            // owes the server its collector back, and a short grace is cheaper
+            // than a leaked one.
+            using var grace = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+            await SendAsync(
+                VsphereSoapRequests.DestroyCollector(collector),
+                cancellationToken.IsCancellationRequested ? grace.Token : cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (VsphereApiException)
+        {
+            // Cleanup only. The session ending collects it anyway, and failing
+            // a read that succeeded over a tidy-up would lose its events.
+        }
+        catch (HttpRequestException)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
 
     // --- session ----------------------------------------------------------
 

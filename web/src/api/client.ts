@@ -19,6 +19,7 @@ import type {
   BulkActionView,
   DeclareWindowCommand,
   EventBoardView,
+  EventFeedView,
   MaintenanceWindowView,
   Role,
 } from './types'
@@ -185,6 +186,8 @@ export const api = {
   bootstrap: (token: string, username: string, password: string) =>
     post<AuthStateView>('/api/auth/bootstrap', { token, username, password }),
   events: () => get<EventBoardView>('/api/events'),
+  vcenterEvents: (source?: string) =>
+    get<EventFeedView>('/api/vcenter-events', { source, limit: 200 }),
   maintenanceWindows: () => get<MaintenanceWindowView[]>('/api/maintenance'),
   declareMaintenanceWindow: (command: DeclareWindowCommand) =>
     post<MaintenanceWindowView>('/api/maintenance/declare', command),

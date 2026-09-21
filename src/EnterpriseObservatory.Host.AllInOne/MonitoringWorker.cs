@@ -24,8 +24,10 @@ public sealed class MonitoringWorker(
     MonitoringCycle cycle,
     ISourceRegistry sources,
     MonitoringOptions options,
+    EventCollectionPipeline events,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
+    private readonly EventCollectionPipeline _events = events ?? throw new ArgumentNullException(nameof(events));
     private readonly MonitoringCycle _cycle = cycle ?? throw new ArgumentNullException(nameof(cycle));
     private readonly ISourceRegistry _sources = sources ?? throw new ArgumentNullException(nameof(sources));
     private readonly MonitoringOptions _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -60,6 +62,25 @@ public sealed class MonitoringWorker(
                     _logger, result.ActiveEntities, result.VanishedEntities, result.Visible.Count);
 
                 WarnAboutSilence(result);
+
+                // Same rhythm, after the inventory: the stream is read from a
+                // mark, so a five-minute cadence loses nothing, and the event
+                // collection never throws into this loop — a vCenter whose
+                // events cannot be read must not be logged as the inventory
+                // cycle failing.
+                var events = await _events.RunAsync(_sources.Events, token).ConfigureAwait(false);
+
+                HostLog.EventCycle(_logger, events.Recorded, events.Pruned);
+
+                foreach (var (source, detail) in events.Failures)
+                {
+                    HostLog.EventsNotRead(_logger, source, detail);
+                }
+
+                if (events.Gaps.Count > 0)
+                {
+                    HostLog.EventGap(_logger, string.Join(", ", events.Gaps));
+                }
             },
             stoppingToken);
 
