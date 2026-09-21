@@ -523,6 +523,21 @@ internal static class PostgresSchema
             created_utc    timestamptz NOT NULL
         );
         """,
+
+        // --- 9: re-folding late samples (architecture review 3) ---------------
+        //
+        // The earliest bucket of each tier whose source changed below its
+        // watermark after that bucket had been folded. Samples are stamped with
+        // vCenter's own sample time and datastores arrive as historical 300 s
+        // data up to twenty minutes old, so a sample landing in a bucket that
+        // was already summarised is normal operation, not an edge case.
+        // Without this the sample stayed in raw for two days and never reached
+        // the tiers kept for a month and a quarter. NULL means nothing is
+        // waiting; the rows already there were written by a store that could
+        // not tell. See PostgresObservationStore.Fold.
+        """
+        ALTER TABLE compaction ADD COLUMN dirty_from_utc bigint NULL;
+        """,
     ];
 
     public static int Current => Migrations.Length;
