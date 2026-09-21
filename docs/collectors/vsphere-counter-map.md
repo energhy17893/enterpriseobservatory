@@ -186,6 +186,57 @@ turda ağ üzerinden çekiliyor ve `AddDatastores` içinde sessizce düşüyor.
 Aynısı VM için de geçerli olabilir; kontrol edilmedi. Bu belgenin bir sonraki
 sürümünde "okunan ama kullanılmayan özellikler" ayrı bir bölüm olmalı.
 
+### Kapasite zaman serisi — 21 Eylül 2026 (M4.1)
+
+Yukarıdaki iki değer (ve sonradan eklenen `summary.uncommitted`) önce doluluk
+ve aşırı taahhüt alarmlarına bağlandı; şimdi **seri olarak da saklanıyor.**
+Kaynak performans sayacı **değil**, envanter özelliği: her envanter turunda
+zaten okunuyorlar, yani **sıfır ek vCenter çağrısı** ve "tanımlı ama değer
+dönmüyor" riski yok. `disk.*.latest` sayaçları bilerek kullanılmadı.
+
+| Seri (ürünün adı) | Kaynak | Birim | Rollup |
+|---|---|---|---|
+| `datastore.capacity.bytes` | `summary.capacity` | bytes | Latest |
+| `datastore.free.bytes` | `summary.freeSpace` | bytes | Latest |
+| `datastore.used.bytes` | capacity − free | bytes | Latest |
+| `datastore.uncommitted.bytes` | `summary.uncommitted` | bytes | Latest |
+| `datastore.provisioned.bytes` | capacity − free + uncommitted | bytes | Latest |
+
+- **Adlar ürünündür, vSphere'in değil.** Her vSphere sayacı rollup ile biter
+  (`.latest`, `.average` …); bunlar birimle (`.bytes`) biter, karışmaz. Sabitler
+  `Application/Collection/CapacityCounters.cs` içinde — M4.3'teki tahmin
+  kuralı onları adıyla okuyacak ve bir kural satıcı sayacı adı anamaz.
+- **Latest, Average değil.** Kapasite bir seviyedir, oran değil; bir saatin
+  ortalama boş alanı kimsenin sorduğu bir sayı değil, son değer öyle.
+  `AggregatedSample.Last` tam bunun için tutuluyor. Kovanın min/max'ı da
+  kalıyor, yani saatlik katman "saat içinde en çok ne kadar doldu"yu da söyler.
+- **Varlık:** Datastore; instance boş (toplam). Yazan: envanter turu
+  (`InventorySnapshot.Observations` → `MonitoringCycle.RunInventoryAsync` →
+  aynı `IObservationStore`), kural analizinden önce.
+- **Okunamayan değer sıfır yazılmaz, boşluk kalır.** Kapasite yok ya da 0 ise
+  hiçbir seri yazılmaz; boş alan yok ya da kapasiteden büyükse yalnız
+  capacity; uncommitted yoksa (okunamadı *veya* hiç thin disk yok — ayırt
+  edilemiyor) uncommitted ve provisioned yazılmaz. Erişilemeyen datastore'un
+  hiçbir serisi yazılmaz: vCenter o durumda son bildiğini ya da sıfır döner.
+- **Çözünürlük envanter aralığıdır** (varsayılan 5 dakika). Kapasite için
+  yeterli.
+
+**Maliyet (41 datastore × 5 seri = 205 seri),** `docs/live-verification.md` §7'deki ölçülmüş satır
+boyutlarıyla (`sample` 92,2 B, `bucket` 173,1 B), 5 dakikada bir örnekle:
+
+| Katman | Seri başına satır | Toplam satır | Boyut |
+|---|---|---|---|
+| Ham (2 gün) | 576 | 118 080 | ≈ 10,9 MB |
+| 5 dakika (30 gün) | 8 640 | 1 771 200 | ≈ 306,6 MB |
+| Saatlik (90 gün) | 2 160 | 442 800 | ≈ 76,6 MB |
+| **Toplam** | | | **≈ 394 MB** |
+
+Ham katman metrik serilerine göre on kat ucuz (30 s yerine 5 dk), ama 5 dakika
+katmanı değil: örnekleme aralığı kova genişliğine eşit, yani her kova tek bir
+örnek taşır ve 30 gün boyunca ham örneğin 173 baytlık bir kopyası olur. Bu,
+13,6 GB'lık projeksiyonun yaklaşık %3'ü ve kabul edilebilir; ama bu seriler
+çoğalırsa (VM başına kapasite gibi) ilk kısılacak yer burası.
+
 ---
 
 ## 5. Instance kimlikleri — neyle eşleştirilecek

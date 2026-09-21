@@ -204,6 +204,27 @@ public sealed record InventorySnapshot
     /// </summary>
     /// <remarks>See <see cref="SnapshotCreators"/>.</remarks>
     public IReadOnlyList<SnapshotFinding> SnapshotFindings { get; init; } = [];
+
+    /// <summary>
+    /// Measurements the inventory read carried anyway, to be kept as series.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not a second metric path. <see cref="ObservationBatch"/> is still where
+    /// performance counters go; this is for the handful of figures that are
+    /// inventory <em>properties</em> — a datastore's capacity and free space —
+    /// and so arrive with every inventory read whether or not anybody keeps
+    /// them. They were read, used for one alert and dropped, which left the
+    /// product able to say "95% full" and unable to say "and it was 80% last
+    /// month". See <see cref="CapacityCounters"/>.
+    /// </para>
+    /// <para>
+    /// Stored through the same observation store under the same series
+    /// identity, so a reader cannot tell which cycle wrote a series and does
+    /// not need to. The resolution is the inventory interval.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<Observation> Observations { get; init; } = [];
 }
 
 /// <summary>Metric samples from one source for one cycle.</summary>
