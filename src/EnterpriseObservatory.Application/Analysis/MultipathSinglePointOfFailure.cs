@@ -52,19 +52,12 @@ public sealed record MultipathSinglePointOfFailurePolicy
 /// expected fact about a boot drive.
 /// </para>
 /// <para>
-/// <strong>Local VMFS is the gap left open, and it is left open rather than
-/// guessed at.</strong> vim25's <c>HostScsiDisk</c> (part of
-/// <c>config.storageDevice.scsiLun</c>) carries a <c>localDisk</c> flag that
-/// would settle this outright, but this collector's
-/// <c>ReadScsiLunNames</c> in <c>VsphereClient.cs</c> reads only <c>key</c>
-/// and <c>canonicalName</c> from that table today, and <c>VsphereClient.cs</c>
-/// is owned by a parallel session for the duration of this change — see the
-/// roadmap note on M8.6. A host with a local VMFS datastore (some estates put
-/// the scratch partition or a boot bank there) will still show as a
-/// single-path or single-HBA finding here until that flag is read. Recorded
-/// as a known gap rather than silently worked around with a naming guess,
-/// which would be exactly the kind of confident wrong answer this codebase
-/// treats as worse than silence.
+/// <strong>Local VMFS is excluded by sharing, not by name.</strong> A device is
+/// judged only when two or more active hosts have a path to it. A host's own
+/// local VMFS datastore is seen by that host alone, so it never qualifies.
+/// The first live run (21 September 2026) opened 12 single-path alerts before
+/// this gate existed. vim25's <c>HostScsiDisk.localDisk</c> would say the
+/// same thing directly, but the collector does not read it yet.
 /// </para>
 /// <para>
 /// <strong>The target-port finding this rule does not produce.</strong> The
@@ -129,9 +122,11 @@ public static class MultipathSinglePointOfFailure
 
         var rules = policy ?? MultipathSinglePointOfFailurePolicy.Default;
         var sharedDevices = SharedVmfsDevices(entities);
+        var hosts = entities.Where(Judgeable).ToList();
+        var seenBy = HostsSeeingEachDevice(hosts);
         var alerts = new List<AlertDefinition>();
 
-        foreach (var host in entities.Where(Judgeable))
+        foreach (var host in hosts)
         {
             var devices = host.StoragePaths
                 .Where(p => Identify(p).Length > 0)
@@ -139,11 +134,19 @@ public static class MultipathSinglePointOfFailure
 
             foreach (var device in devices)
             {
-                // Local disks, boot devices, NFS and vSAN all fall out here:
-                // nothing marked a VMFS datastore with this NAA, so nothing
-                // names this a shared LUN. See the type's remarks on why that
-                // is the right gate rather than a path count on its own.
+                // NFS, vSAN and devices with no datastore on them fall out
+                // here: nothing marked a VMFS datastore with this NAA, so
+                // nothing names this a shared LUN.
                 if (!sharedDevices.TryGetValue(device.Key, out var datastoreName))
+                {
+                    continue;
+                }
+
+                // Local VMFS (a host's own datastore1) falls out here: its
+                // NAA is in exactly one host's path table. A LUN presented to
+                // one host only is skipped with it -- nothing else could
+                // fail over to it either, so path redundancy is moot there.
+                if (seenBy.GetValueOrDefault(device.Key) < 2)
                 {
                     continue;
                 }
@@ -189,6 +192,23 @@ public static class MultipathSinglePointOfFailure
         }
 
         return byNaa;
+    }
+
+    /// <summary>How many active hosts have at least one path to each device.</summary>
+    private static Dictionary<string, int> HostsSeeingEachDevice(IReadOnlyList<Entity> hosts)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var host in hosts)
+        {
+            foreach (var id in host.StoragePaths.Select(Identify).Where(id => id.Length > 0)
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                counts[id] = counts.GetValueOrDefault(id) + 1;
+            }
+        }
+
+        return counts;
     }
 
     private static bool IsVmfsDatastore(Entity entity) =>
