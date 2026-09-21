@@ -515,6 +515,15 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             "name",
             "configuration.dasConfig.enabled",
             "configuration.drsConfig.enabled",
+
+            // Whole, because it cannot be asked for in parts. Measured against
+            // a live vCenter: "configurationEx.dasConfig" is refused as
+            // InvalidProperty, and that fault fails the entire retrieval, not
+            // one property. The property is declared as the base
+            // ComputeResourceConfigInfo; dasConfig, rule and group belong to
+            // the ClusterConfigInfoEx it actually holds, and a property path
+            // can only walk declared types.
+            "configurationEx",
             "triggeredAlarmState",
         ],
         ["Datastore"] =
@@ -994,6 +1003,71 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         }
 
         return kept;
+    }
+
+    /// <summary>
+    /// What this vCenter actually returned, by name only: which keys arrived as
+    /// values, which as structures and which were refused, and what a storage
+    /// path's transport looks like.
+    /// </summary>
+    /// <remarks>
+    /// For the probe. Several readers here were written from the published
+    /// schema and say so; this is how they get pointed at a server. It reports
+    /// names and counts, never a value.
+    /// </remarks>
+    public async Task<IReadOnlyList<string>> DescribeInventoryShapeAsync(CancellationToken cancellationToken)
+    {
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var viewMoRef = await CreateViewAsync(content, cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var (objects, _) = await RetrieveAllPagesAsync(content, viewMoRef, cancellationToken)
+                .ConfigureAwait(false);
+
+            var lines = new List<string>();
+
+            foreach (var byType in objects.GroupBy(o => o.Type, StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal))
+            {
+                var total = byType.Count();
+                lines.Add($"{byType.Key} ({total})");
+
+                var keys = byType
+                    .SelectMany(o => o.Values.Keys.Select(k => (Key: k, As: "value"))
+                        .Concat(o.Structures.Keys.Select(k => (Key: k, As: "structure")))
+                        .Concat(o.Missing.Select(m => (Key: m.Path, As: "MISSING " + m.FaultType))))
+                    .GroupBy(k => k)
+                    .OrderBy(g => g.Key.Key, StringComparer.Ordinal);
+
+                foreach (var key in keys)
+                {
+                    lines.Add($"  {key.Key.Key,-44} {key.Key.As,-22} {key.Count()}/{total}");
+                }
+            }
+
+            var transports = objects
+                .Where(o => o.Structures.ContainsKey("config.storageDevice.multipathInfo"))
+                .SelectMany(o => o.Structures["config.storageDevice.multipathInfo"])
+                .Where(n => string.Equals(n.Name, "lun", StringComparison.Ordinal))
+                .SelectMany(lun => lun.All("path"))
+                .Select(path => path.Child("transport"))
+                .GroupBy(t => t is null
+                    ? "(no transport element)"
+                    : $"{(t.Type.Length == 0 ? "(untyped)" : t.Type)}: {string.Join(", ", t.Children.Select(c => c.Name).Distinct(StringComparer.Ordinal))}")
+                .OrderByDescending(g => g.Count());
+
+            lines.Add("path.transport");
+            foreach (var transport in transports)
+            {
+                lines.Add($"  {transport.Count(),5} x {transport.Key}");
+            }
+
+            return lines;
+        }
+        finally
+        {
+            await TryDestroyViewAsync(viewMoRef, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public static IReadOnlyList<VsphereStoragePath> ReadStoragePaths(PropertyObject host)
