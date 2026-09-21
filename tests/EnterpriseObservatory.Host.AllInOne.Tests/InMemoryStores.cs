@@ -709,6 +709,14 @@ internal sealed class InMemoryComplianceStore : IComplianceStore
         string catalogueRelease,
         string controlId,
         EntityId entity,
+        Func<ComplianceFinding, ComplianceFinding> change) =>
+        Mutate(catalogueRelease, controlId, entity, string.Empty, change);
+
+    public ComplianceFinding? Mutate(
+        string catalogueRelease,
+        string controlId,
+        EntityId entity,
+        string subject,
         Func<ComplianceFinding, ComplianceFinding> change)
     {
         ArgumentNullException.ThrowIfNull(change);
@@ -716,7 +724,8 @@ internal sealed class InMemoryComplianceStore : IComplianceStore
         lock (_gate)
         {
             var index = _findings.FindIndex(f =>
-                f.CatalogueRelease == catalogueRelease && f.ControlId == controlId && f.Entity == entity);
+                f.CatalogueRelease == catalogueRelease && f.ControlId == controlId && f.Entity == entity &&
+                f.Subject == (subject ?? string.Empty));
 
             if (index < 0)
             {
