@@ -12,16 +12,16 @@ import type { ContinuityReportRow, ContinuityReportView } from '@/api/types'
  * never disagree. See routes/reports/CapacityReport.tsx.
  *
  * One row per cluster: HA (M8.1) and DRS (M8.3) findings on the cluster
- * itself, storage-path redundancy findings rolled up from the hosts under
- * it, and a placeholder pair of columns for the N+1 rule a parallel change
- * is still building -- present here from day one so this report needs no
- * change the day that rule ships.
+ * itself, storage-path redundancy and multipathing findings rolled up from
+ * the hosts under it, and the N+1 what-if capacity findings (M8.2).
  *
  * The one thing this page must not do is say "all clear" where the input was
- * never read: HA and DRS depend on cluster inventory settings this estate's
- * collector has not wired up yet in some deployments, and a row of zeros
- * would otherwise look identical to a cluster that was actually checked and
- * found healthy. See summary.note, which is set only when that gap is real.
+ * never read: HA and DRS depend on cluster HA configuration that has not
+ * been read yet in some deployments -- not collected by this version, not
+ * yet read since startup, or not permitted for the service account -- and a
+ * row of zeros would otherwise look identical to a cluster that was actually
+ * checked and found healthy. See summary.note, which is set only when that
+ * gap is real.
  */
 export function ContinuityReport() {
   const { data, isPending, isError, error } = useQuery({
