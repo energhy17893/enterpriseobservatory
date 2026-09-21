@@ -228,6 +228,76 @@ public class PerfResponseParserTests
     }
 
     [Fact]
+    public void A_latest_slot_with_no_reading_does_not_borrow_the_one_before_it()
+    {
+        // Found in review, in code that was already on main. The latest value
+        // was "the last point that parsed", filed under the LAST sample time.
+        // When the last slot is the unreadable one, that is the 12:00:20 value
+        // written at 12:00:40 — and again at 12:00:20, where it belongs. For a
+        // summation that is one bus reset counted twice.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><timestamp>2026-09-21T12:00:00Z</timestamp><interval>20</interval></sampleInfo>
+                <sampleInfo><timestamp>2026-09-21T12:00:20Z</timestamp><interval>20</interval></sampleInfo>
+                <sampleInfo><timestamp>2026-09-21T12:00:40Z</timestamp><interval>20</interval></sampleInfo>
+                <value>
+                  <id><counterId>180</counterId><instance></instance></id>
+                  <value>10</value><value>20</value><value></value>
+                </value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var entity = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20)));
+
+        // An empty slot, not a -1: a -1 parses, and is refused for being
+        // negative without anything being borrowed. Only a slot that does not
+        // parse at all sent "the last point that parsed" looking backwards.
+        //
+        // Nothing is known about 12:00:40, so nothing is said about it.
+        Assert.Empty(entity.Values);
+
+        // And each earlier reading appears once, at its own time.
+        Assert.Equal(
+            [(new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero), 10d),
+             (new DateTimeOffset(2026, 9, 21, 12, 0, 20, TimeSpan.Zero), 20d)],
+            entity.Earlier.Select(e => (e.SampledAtUtc, Assert.Single(e.Values).Raw)));
+    }
+
+    [Fact]
+    public void A_series_that_does_not_line_up_with_the_sample_times_says_nothing()
+    {
+        // Two points for three times: which slot each belongs to cannot be
+        // known. Filing the last one under the last time is a guess, and a
+        // costly one — the next read returns the same sample lined up, under
+        // its real time, and the store then holds it twice. A number that
+        // cannot say when it was true is not kept.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><timestamp>2026-09-21T12:00:00Z</timestamp><interval>20</interval></sampleInfo>
+                <sampleInfo><timestamp>2026-09-21T12:00:20Z</timestamp><interval>20</interval></sampleInfo>
+                <sampleInfo><timestamp>2026-09-21T12:00:40Z</timestamp><interval>20</interval></sampleInfo>
+                <value>
+                  <id><counterId>180</counterId><instance></instance></id>
+                  <value>10</value><value>20</value>
+                </value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var entity = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20)));
+
+        Assert.Empty(entity.Values);
+        Assert.Empty(entity.Earlier);
+    }
+
+    [Fact]
     public void Without_sample_times_nothing_earlier_is_claimed()
     {
         // No timestamp, no way to say when. Filing them under a guessed time
