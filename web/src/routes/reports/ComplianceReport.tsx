@@ -238,6 +238,12 @@ function ReportBody({ data }: { data: ComplianceReportView }) {
         title="Change history"
         subtitle={`${new Date(data.historyFromUtc).toISOString()} to ${new Date(data.historyToUtc).toISOString()}`}
       >
+        {data.historyTruncated && (
+          <div className="mb-2 text-xs text-status-warning-text">
+            More transitions matched this scope and period than this report shows below — narrow the
+            control, entity or date range to see the rest.
+          </div>
+        )}
         {data.history.length === 0 ? (
           <Empty>No verdict changed in this period.</Empty>
         ) : (

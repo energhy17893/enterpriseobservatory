@@ -62,15 +62,34 @@ public interface IComplianceStore
     bool RemoveException(string id, string removedBy, DateTimeOffset removedAtUtc);
 
     /// <summary>
-    /// Every verdict change recorded at or after <paramref name="sinceUtc"/>,
+    /// Verdict changes in [<paramref name="sinceUtc"/>, <paramref name="toUtc"/>],
     /// oldest first — the audit trail M5.2's compliance report reads.
     /// </summary>
+    /// <param name="toUtc">
+    /// The end of the window; null reads through to whatever the store's
+    /// newest row is, which is every row a caller who never names an end
+    /// still expects.
+    /// </param>
     /// <param name="catalogueRelease">
     /// Limits the history to one release; null reads every release, which is
     /// what a report spanning a catalogue upgrade needs.
     /// </param>
-    IReadOnlyList<ComplianceTransition> TransitionsSince(
-        DateTimeOffset sinceUtc, string? catalogueRelease = null);
+    /// <param name="controlId">Limits the history to one control; null reads every control.</param>
+    /// <param name="entity">Limits the history to one entity; null reads every entity.</param>
+    /// <remarks>
+    /// Capped at <see cref="ComplianceTransitionsPage.MaxRows"/>; a scope wide
+    /// enough to hit it comes back with <see cref="ComplianceTransitionsPage.Truncated"/>
+    /// set rather than the whole match, which is what makes an unbounded
+    /// scan of <c>compliance_transition</c> for a wide-enough period or a
+    /// large-enough estate a bounded query instead of one the database or a
+    /// report page has to absorb in full.
+    /// </remarks>
+    ComplianceTransitionsPage TransitionsSince(
+        DateTimeOffset sinceUtc,
+        DateTimeOffset? toUtc = null,
+        string? catalogueRelease = null,
+        string? controlId = null,
+        EntityId? entity = null);
 }
 
 /// <summary>Why a compliance command was refused.</summary>
@@ -178,9 +197,13 @@ public sealed class ComplianceService(
     /// <summary>Every exception, standing or withdrawn.</summary>
     public IReadOnlyList<ComplianceWaiver> Exceptions() => _store.Exceptions;
 
-    /// <summary>Verdict changes at or after <paramref name="sinceUtc"/>, for the loaded catalogue release.</summary>
-    public IReadOnlyList<ComplianceTransition> TransitionsSince(DateTimeOffset sinceUtc) =>
-        _store.TransitionsSince(sinceUtc, Catalogue.Release);
+    /// <summary>
+    /// Verdict changes in [<paramref name="sinceUtc"/>, <paramref name="toUtc"/>],
+    /// for the loaded catalogue release, optionally narrowed further.
+    /// </summary>
+    public ComplianceTransitionsPage TransitionsSince(
+        DateTimeOffset sinceUtc, DateTimeOffset toUtc, string? controlId = null, EntityId? entity = null) =>
+        _store.TransitionsSince(sinceUtc, toUtc, Catalogue.Release, controlId, entity);
 
     public DateTimeOffset Now => _clock.UtcNow;
 

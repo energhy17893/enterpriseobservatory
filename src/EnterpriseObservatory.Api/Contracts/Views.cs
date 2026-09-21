@@ -920,6 +920,14 @@ public sealed record ComplianceReportView
 
     /// <summary>Verdict changes in [<see cref="HistoryFromUtc"/>, <see cref="HistoryToUtc"/>], oldest first.</summary>
     public required IReadOnlyList<ComplianceReportTransitionRow> History { get; init; }
+
+    /// <summary>
+    /// Whether more transitions matched [<see cref="HistoryFromUtc"/>,
+    /// <see cref="HistoryToUtc"/>] than the store returns in one query --
+    /// see <c>ComplianceTransitionsPage.MaxRows</c>. <see cref="History"/> is
+    /// the oldest rows of the match, not the whole of it, when this is true.
+    /// </summary>
+    public required bool HistoryTruncated { get; init; }
 }
 
 /// <summary>

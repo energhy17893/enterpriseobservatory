@@ -296,7 +296,7 @@ public static class ComplianceApi
             var isHistory = string.Equals(section, "history", StringComparison.OrdinalIgnoreCase);
 
             var csv = isHistory
-                ? ComplianceHistoryReportCsv.Write(report.History)
+                ? ComplianceHistoryReportCsv.Write(report.History, report.HistoryTruncated)
                 : ComplianceFindingsReportCsv.Write(report.Findings);
 
             var name = isHistory ? "compliance-history" : "compliance";
@@ -367,10 +367,13 @@ public static class ComplianceApi
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var history = service.TransitionsSince(from)
-            .Where(t => t.AtUtc <= to)
-            .Where(t => control is null || string.Equals(t.ControlId, control, StringComparison.Ordinal))
-            .Where(t => entity is null || string.Equals(t.Entity.Value, entity, StringComparison.Ordinal))
+        // Release, control, entity, the end of the window and the row cap are
+        // all the store's to apply in SQL now -- see IComplianceStore.TransitionsSince
+        // -- so this handler only shapes what came back into report rows.
+        var historyPage = service.TransitionsSince(
+            from, to, control, string.IsNullOrEmpty(entity) ? null : new EntityId(entity));
+
+        var history = historyPage.Transitions
             .Select(t => new ComplianceReportTransitionRow
             {
                 ControlId = t.ControlId,
@@ -438,6 +441,7 @@ public static class ComplianceApi
             HistoryFromUtc = from,
             HistoryToUtc = to,
             History = history,
+            HistoryTruncated = historyPage.Truncated,
         };
     }
 

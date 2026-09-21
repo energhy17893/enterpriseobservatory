@@ -133,6 +133,23 @@ public sealed record ReportSubscription
 
     public required DateTimeOffset CreatedUtc { get; init; }
 
+    /// <summary>Who last changed it; null for one nobody has edited since it was created.</summary>
+    public string? LastModifiedBy { get; init; }
+
+    public DateTimeOffset? LastModifiedUtc { get; init; }
+
+    /// <summary>
+    /// The most recipients a subscription may name.
+    /// </summary>
+    /// <remarks>
+    /// Any operator who can reach this endpoint can point a subscription at
+    /// an address outside the estate; a cap does not stop that, but it stops
+    /// the same edit from quietly turning into a mail bomb against however
+    /// many inboxes fit in the field, and it keeps one subscription from
+    /// dominating a relay's rate limit for every other one behind it.
+    /// </remarks>
+    public const int MaxRecipients = 20;
+
     public IReadOnlyList<string> Validate()
     {
         var problems = new List<string>();
@@ -140,6 +157,11 @@ public sealed record ReportSubscription
         if (Recipients.Count == 0)
         {
             problems.Add("At least one recipient is required.");
+        }
+
+        if (Recipients.Count > MaxRecipients)
+        {
+            problems.Add($"A subscription may name at most {MaxRecipients} recipients.");
         }
 
         foreach (var recipient in Recipients)
@@ -166,6 +188,19 @@ public interface IReportSubscriptionStore
     /// <returns>False if the id is already taken.</returns>
     bool Add(ReportSubscription subscription);
 
+    /// <summary>
+    /// Replaces a subscription's editable fields.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ReportSubscription.LastSentUtc"/> and
+    /// <see cref="ReportSubscription.LastError"/> on <paramref name="subscription"/>
+    /// are ignored; the store keeps whatever it currently holds for them,
+    /// read and written under the same hold as the rest of the update. A
+    /// caller that read the record before calling this cannot know whether
+    /// <see cref="MarkDispatched"/> claimed it in between, and trusting the
+    /// caller's copy would let that edit silently undo the claim and cause a
+    /// duplicate send.
+    /// </remarks>
     /// <returns>False if no subscription has that id.</returns>
     bool Update(ReportSubscription subscription);
 

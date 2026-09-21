@@ -83,8 +83,23 @@ public class ComplianceServiceTests
         /// <summary>Puts a finding of another release beside the evaluated ones.</summary>
         public void Seed(ComplianceFinding finding) => _findings.Add(finding);
 
-        public IReadOnlyList<ComplianceTransition> TransitionsSince(
-            DateTimeOffset sinceUtc, string? catalogueRelease = null) => [];
+        /// <summary>What the last call to <see cref="TransitionsSince"/> was asked, for the test to inspect.</summary>
+        public (DateTimeOffset Since, DateTimeOffset? To, string? Release, string? Control, EntityId? Entity)?
+            LastTransitionsQuery
+        { get; private set; }
+
+        public ComplianceTransitionsPage TransitionsToReturn { get; set; } = ComplianceTransitionsPage.Empty;
+
+        public ComplianceTransitionsPage TransitionsSince(
+            DateTimeOffset sinceUtc,
+            DateTimeOffset? toUtc = null,
+            string? catalogueRelease = null,
+            string? controlId = null,
+            EntityId? entity = null)
+        {
+            LastTransitionsQuery = (sinceUtc, toUtc, catalogueRelease, controlId, entity);
+            return TransitionsToReturn;
+        }
     }
 
     private readonly Clock _clock = new(T0);
@@ -379,5 +394,39 @@ public class ComplianceServiceTests
         var covering = _service.Findings()[0].CoveringException(_service.Exceptions(), _clock.UtcNow);
 
         Assert.Equal(narrow.Exception!.Id, covering!.Id);
+    }
+
+    // --- history (architecture review 3: bounded and scoped) ---------------
+
+    [Fact]
+    public void TransitionsSince_forwards_the_window_the_catalogue_release_and_the_scope_to_the_store()
+    {
+        var since = T0.AddDays(-30);
+        var to = T0;
+
+        _service.TransitionsSince(since, to, "esx-9.log-forwarding", Host1);
+
+        var query = _store.LastTransitionsQuery;
+
+        Assert.NotNull(query);
+        Assert.Equal(since, query!.Value.Since);
+        Assert.Equal(to, query.Value.To);
+        Assert.Equal(Catalogue(LogForwarding).Release, query.Value.Release);
+        Assert.Equal("esx-9.log-forwarding", query.Value.Control);
+        Assert.Equal(Host1, query.Value.Entity);
+    }
+
+    [Fact]
+    public void TransitionsSince_hands_back_the_stores_truncated_flag_unchanged()
+    {
+        _store.TransitionsToReturn = new ComplianceTransitionsPage
+        {
+            Transitions = [],
+            Truncated = true,
+        };
+
+        var page = _service.TransitionsSince(T0.AddDays(-1), T0);
+
+        Assert.True(page.Truncated);
     }
 }

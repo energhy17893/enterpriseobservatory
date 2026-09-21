@@ -303,4 +303,87 @@ public class ComplianceStoreTests : IDisposable
         Assert.Equal(T0.AddDays(1), withdrawn.RemovedAtUtc);
         Assert.False(withdrawn.Covers("esxi-8.logs-remote", new EntityId("vc-1:host-1"), T0.AddDays(1)));
     }
+
+    // --- history: filters and the row cap (architecture review 3) ----------
+
+    [SkippableFact]
+    public void TransitionsSince_narrows_by_control_and_entity_in_sql_not_after_the_read()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+
+        // Two controls, two entities each -- the release's whole first
+        // evaluation writes one "new finding" transition per row.
+        store.Evaluate(Release, T0, _ =>
+        [
+            Finding("vc-1:host-1"),
+            Finding("vc-1:host-2"),
+            Finding("vc-1:host-1") with { ControlId = "esxi-8.other-control" },
+            Finding("vc-1:host-2") with { ControlId = "esxi-8.other-control" },
+        ]);
+
+        var byControl = store.TransitionsSince(T0.AddDays(-1), controlId: "esxi-8.logs-remote");
+        Assert.All(byControl.Transitions, t => Assert.Equal("esxi-8.logs-remote", t.ControlId));
+        Assert.Equal(2, byControl.Transitions.Count);
+
+        var byEntity = store.TransitionsSince(T0.AddDays(-1), entity: new EntityId("vc-1:host-1"));
+        Assert.All(byEntity.Transitions, t => Assert.Equal("vc-1:host-1", t.Entity.Value));
+        Assert.Equal(2, byEntity.Transitions.Count);
+
+        var byBoth = store.TransitionsSince(
+            T0.AddDays(-1), controlId: "esxi-8.other-control", entity: new EntityId("vc-1:host-2"));
+        var only = Assert.Single(byBoth.Transitions);
+        Assert.Equal("esxi-8.other-control", only.ControlId);
+        Assert.Equal("vc-1:host-2", only.Entity.Value);
+    }
+
+    [SkippableFact]
+    public void TransitionsSince_excludes_transitions_after_the_end_of_the_window()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+
+        store.Evaluate(Release, T0, _ => [Finding()]);
+        store.Evaluate(Release, T0.AddDays(1), _ => [Finding() with { Verdict = ComplianceVerdict.Passing }]);
+
+        var upToCreation = store.TransitionsSince(T0.AddDays(-1), toUtc: T0.AddHours(1));
+        Assert.Single(upToCreation.Transitions);
+
+        var both = store.TransitionsSince(T0.AddDays(-1), toUtc: T0.AddDays(2));
+        Assert.Equal(2, both.Transitions.Count);
+    }
+
+    [SkippableFact]
+    public void A_history_wider_than_the_row_cap_comes_back_truncated_rather_than_whole()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+
+        // Bulk-inserted directly: one row past the cap through
+        // PostgresComplianceStore.Evaluate would be one evaluation per row,
+        // far too slow for a test that only needs the row count to exist.
+        _live.Database.Write(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO compliance_transition
+                    (catalogue_release, control_id, entity_id, from_verdict, to_verdict, at_utc)
+                SELECT @release, 'esxi-8.logs-remote', 'vc-1:host-1', NULL, 'Failing',
+                       @base + (n || ' seconds')::interval
+                FROM generate_series(1, @count) AS n;
+                """;
+            command.Parameters.AddWithValue("release", Release);
+            command.Parameters.AddWithValue("base", T0.UtcDateTime);
+            command.Parameters.AddWithValue("count", ComplianceTransitionsPage.MaxRows + 1);
+            command.ExecuteNonQuery();
+        });
+
+        var page = store.TransitionsSince(T0.AddDays(-1), catalogueRelease: Release);
+
+        Assert.True(page.Truncated);
+        Assert.Equal(ComplianceTransitionsPage.MaxRows, page.Transitions.Count);
+    }
 }
