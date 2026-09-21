@@ -62,16 +62,16 @@ Broadcom SCG CSV'si **veri olarak** yutulur; kod içine kontrol gömülmez.
 
 **✅ Mimari kontrol #2** *(tamam: sessiz kaynağın alarmları korunuyor, yalnızca değişen uygunluk bulguları yazılıyor + geçiş geçmişi, istisna denetim izi, Theil-Sen bellek yükü düşürüldü; şema 7)*
 
-## ▶ M5 — Raporlama *(sürüyor)*
+## ✅ M5 — Raporlama *(tamam, 21 Eylül 2026 — PDF yerine yazdırılabilir sayfa, lisans riski yok)*
 
 Pazar araştırmasında alıcının ilk baktığı şey.
 
 | Adım | Feature | Bitti = |
 |---|---|---|
-| M5.1 | Alarm/bulgu raporu — CSV ve PDF dışa aktarım | indirilebilir |
-| M5.2 | Uygunluk raporu (denetçi formatı) | indirilebilir |
-| M5.3 | Kapasite raporu | indirilebilir |
-| M5.4 | Zamanlanmış e-posta raporu | posta kutusunda |
+| ✅ M5.1 | Alarm/bulgu raporu — CSV ve yazdırılabilir sayfa | indirilebilir |
+| ✅ M5.2 | Uygunluk raporu (denetçi formatı) | indirilebilir |
+| ✅ M5.3 | Kapasite raporu | indirilebilir |
+| ✅ M5.4 | Zamanlanmış e-posta raporu (alarm, uygunluk, kapasite; SMTP ayarı yönetici ekranında) | posta kutusunda |
 
 ## M6 — İkinci satıcı: iLO / iDRAC (Redfish)
 

@@ -6,6 +6,7 @@ using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
+using EnterpriseObservatory.Application.Reporting;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Host.AllInOne;
 using EnterpriseObservatory.Persistence.Postgres;
@@ -187,6 +188,53 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_viewer_can_read_the_alert_report_as_csv()
+    {
+        // Reads are for any signed-in user, same as the alert list this
+        // report is a slice of -- printing or exporting it is not a more
+        // sensitive act than reading the inbox.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/alerts.csv");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_the_alert_report_csv_with_401()
+    {
+        // The report endpoints are covered by the sweep above too, but this
+        // one is named: it is the export an operator prints to PDF from, and
+        // it carries the estate's alert history, not only its inventory.
+        var response = await Client().GetAsync("/api/reports/alerts.csv");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_viewer_can_read_the_capacity_report_as_csv()
+    {
+        // M5.3, the same read-for-any-signed-in-user rule as the alert report.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/capacity.csv");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_the_capacity_report_csv_with_401()
+    {
+        var response = await Client().GetAsync("/api/reports/capacity.csv");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task A_viewer_who_tries_to_change_something_is_refused_with_403()
     {
         Account("viewer", Role.Viewer);
@@ -297,6 +345,64 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Assert.Equal(HttpStatusCode.Forbidden, (await AcceptFinding(client)).StatusCode);
     }
 
+    // --- compliance report (M5.2) -------------------------------------------
+
+    [Fact]
+    public async Task A_viewer_can_read_the_compliance_report()
+    {
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/compliance");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<Api.Contracts.ComplianceReportView>(Json);
+
+        Assert.NotNull(body);
+        Assert.Equal("All hosts", body.Scope);
+    }
+
+    [Fact]
+    public async Task A_viewer_can_read_the_compliance_report_as_csv()
+    {
+        // Reads are for any signed-in user, the same line the compliance
+        // screen and the alert report both draw: exporting a finding for an
+        // auditor is not a more sensitive act than reading it.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/compliance.csv");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task A_viewer_can_read_the_compliance_report_history_as_csv()
+    {
+        // The report's other CSV section -- see ComplianceApi.cs for why it
+        // is a query param on the same endpoint rather than a second one.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/compliance.csv?section=history");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_the_compliance_report_csv_with_401()
+    {
+        // Covered by the sweep above too, but named: it is the export an
+        // auditor is handed, and it carries the estate's compliance history,
+        // not only its current state.
+        var response = await Client().GetAsync("/api/reports/compliance.csv");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
     [Fact]
     public async Task An_operator_can_accept_a_failing_finding_and_it_is_attributed()
     {
@@ -393,6 +499,90 @@ public sealed class CompositionRootSmokeTests : IDisposable
             StringComparison.Ordinal);
     }
 
+    // --- scheduled email reports (M5.4) -------------------------------------
+
+    [Fact]
+    public async Task A_viewer_is_refused_the_smtp_settings_with_403()
+    {
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/email/settings");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task An_administrator_can_read_and_update_smtp_settings_and_the_password_never_comes_back()
+    {
+        Account("root", Role.Administrator);
+        var client = await SignedIn(Client(), "root");
+
+        var initial = await client.GetFromJsonAsync<Api.SmtpSettingsView>("/api/email/settings", Json);
+        Assert.NotNull(initial);
+        Assert.Equal("not set", initial.PasswordStatus);
+
+        var update = await client.PutAsJsonAsync("/api/email/settings", new
+        {
+            host = "smtp.example.com",
+            port = 587,
+            tlsMode = "StartTls",
+            fromAddress = "observatory@example.com",
+            username = "observatory",
+            password = "hunter2-hunter2-hunter2",
+            allowUnencrypted = false,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+
+        var body = await update.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("hunter2", body, StringComparison.Ordinal);
+
+        var saved = await update.Content.ReadFromJsonAsync<Api.SmtpSettingsView>(Json);
+        Assert.Equal("set", saved!.PasswordStatus);
+        Assert.True(saved.IsConfigured);
+
+        // An operator neither reads nor sets these -- Administrator only, both
+        // verbs, like ConnectionsApi.
+        Account("op", Role.Operator);
+        var opClient = await SignedIn(Client(), "op");
+        Assert.Equal(HttpStatusCode.Forbidden, (await opClient.GetAsync("/api/email/settings")).StatusCode);
+    }
+
+    [Fact]
+    public async Task An_operator_can_manage_report_subscriptions_but_a_viewer_cannot()
+    {
+        Account("viewer", Role.Viewer);
+        var viewer = await SignedIn(Client(), "viewer");
+        Assert.Equal(HttpStatusCode.Forbidden, (await viewer.GetAsync("/api/reports/subscriptions")).StatusCode);
+
+        Account("op", Role.Operator);
+        var client = await SignedIn(Client(), "op");
+
+        string[] recipients = ["team@example.com"];
+
+        var created = await client.PostAsJsonAsync("/api/reports/subscriptions", new
+        {
+            recipients,
+            frequency = "Daily",
+            dayOfWeek = "Monday",
+            hourLocal = 7,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        var subscription = await created.Content.ReadFromJsonAsync<Api.ReportSubscriptionView>(Json);
+        Assert.Equal("op", subscription!.CreatedBy);
+        Assert.Null(subscription.LastSentUtc);
+
+        var removed = await client.DeleteAsync($"/api/reports/subscriptions/{subscription.Id}");
+        Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
+    }
+
     // --- the host itself ----------------------------------------------------
 
     [Fact]
@@ -448,12 +638,16 @@ internal sealed class ObservatoryHost : WebApplicationFactory<Program>
             Replace<IMaintenanceWindowStore>(services, new InMemoryMaintenanceWindowStore());
             Replace<IComplianceStore>(services, Compliance);
             Replace<ISourceConnectionStore>(services, new TestConnectionStore());
+            Replace<ISmtpSettingsStore>(services, new InMemorySmtpSettingsStore());
+            Replace<IReportSubscriptionStore>(services, new InMemoryReportSubscriptionStore());
+            Replace<IMailSender>(services, new NeverSendMailSender());
 
             // Only the product's own workers. Removing every IHostedService
             // would take the test server with it.
             foreach (var worker in services
                          .Where(d => d.ImplementationType == typeof(MonitoringWorker) ||
-                                     d.ImplementationType == typeof(CompactionWorker))
+                                     d.ImplementationType == typeof(CompactionWorker) ||
+                                     d.ImplementationType == typeof(ReportSchedulerWorker))
                          .ToList())
             {
                 services.Remove(worker);
@@ -474,6 +668,18 @@ internal sealed class ObservatoryHost : WebApplicationFactory<Program>
     {
         services.RemoveAll<T>();
         services.AddSingleton(instance);
+    }
+
+    /// <summary>
+    /// The one IMailSender in this suite. Deliberately never reaches a network:
+    /// a smoke suite that could actually send mail would be a smoke suite that
+    /// occasionally does.
+    /// </summary>
+    private sealed class NeverSendMailSender : IMailSender
+    {
+        public Task<MailSendResult> SendAsync(
+            SmtpSettings settings, OutgoingMail mail, CancellationToken cancellationToken) =>
+            Task.FromResult(MailSendResult.Failed("No mail server is reachable from this test suite."));
     }
 
     protected override void Dispose(bool disposing)

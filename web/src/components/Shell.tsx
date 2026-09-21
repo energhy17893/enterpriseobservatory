@@ -46,12 +46,21 @@ const GROUPS = [
     items: [{ to: '/compliance', label: 'Compliance' }],
   },
   {
+    // What the market research says the buyer looks at first. M5.2
+    // (compliance) and M5.3 (capacity) land here beside the alert report.
+    label: 'Reports',
+    question: 'What do I hand someone else?',
+    items: [{ to: '/reports', label: 'Reports' }],
+  },
+  {
     label: 'Configure',
     question: 'How do I set this up?',
     items: [
       { to: '/connections', label: 'Connections' },
       { to: '/maintenance', label: 'Maintenance' },
       { to: '/collectors', label: 'Collectors' },
+      { to: '/reports/scheduled', label: 'Scheduled reports' },
+      { to: '/email', label: 'Email' },
       { to: '/accounts', label: 'Accounts' },
     ],
   },
@@ -61,7 +70,11 @@ export function Shell({ identity }: { identity: AuthStateView }) {
   return (
     <div className="flex min-h-screen">
       <nav
-        className="w-60 shrink-0 border-r border-border bg-card px-3 py-4"
+        // Hidden for every screen when printing, not only the report pages:
+        // an operator who hits Ctrl+P from any screen should not get the
+        // sidebar in the PDF. See the roadmap's decision against a PDF
+        // library -- this is half of what stands in for one.
+        className="w-60 shrink-0 border-r border-border bg-card px-3 py-4 print:hidden"
         aria-label="Main"
       >
         <div className="px-2 pb-4">
@@ -90,11 +103,11 @@ export function Shell({ identity }: { identity: AuthStateView }) {
       </nav>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between gap-4 border-b border-border px-6 py-2 text-xs">
+        <div className="flex items-center justify-between gap-4 border-b border-border px-6 py-2 text-xs print:hidden">
           <Identity identity={identity} />
           <Freshness />
         </div>
-        <main className="min-w-0 flex-1 p-6">
+        <main className="min-w-0 flex-1 p-6 print:p-0">
           <Outlet />
         </main>
       </div>

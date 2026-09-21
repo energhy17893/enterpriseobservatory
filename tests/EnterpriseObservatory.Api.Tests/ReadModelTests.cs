@@ -192,6 +192,164 @@ public class ReadModelTests
         Assert.Equal(ReadModel.MaxLimit, Model().Alerts(limit: 100_000).Limit);
     }
 
+    // --- alert report (M5.1) -----------------------------------------------
+
+    [Fact]
+    public void The_report_includes_open_alerts_regardless_of_the_range()
+    {
+        GivenAlerts(Alert("a", AlertSeverity.Critical) with { FirstSeenUtc = T0.AddDays(-90) });
+
+        var report = Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0);
+
+        Assert.Single(report.Rows);
+    }
+
+    [Fact]
+    public void The_report_includes_an_alert_resolved_inside_the_range()
+    {
+        var resolvedAt = T0.AddHours(-2);
+        GivenAlerts(Resolved("a", AlertSeverity.Warning, resolvedAt));
+
+        var report = Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0);
+
+        Assert.Single(report.Rows);
+    }
+
+    [Fact]
+    public void The_report_excludes_an_alert_resolved_outside_the_range()
+    {
+        var resolvedAt = T0.AddDays(-30);
+        GivenAlerts(Resolved("a", AlertSeverity.Warning, resolvedAt));
+
+        var report = Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0);
+
+        Assert.Empty(report.Rows);
+    }
+
+    [Fact]
+    public void An_unconfirmed_alert_never_reaches_the_report()
+    {
+        GivenAlerts(Alert("a", AlertSeverity.Critical) with { IsConfirmed = false });
+
+        Assert.Empty(Model().AlertsReport().Rows);
+    }
+
+    [Fact]
+    public void The_report_defaults_to_the_last_seven_days_when_no_range_is_given()
+    {
+        GivenAlerts(Resolved("recent", AlertSeverity.Warning, T0.AddDays(-1)));
+        GivenAlerts(Resolved("old", AlertSeverity.Warning, T0.AddDays(-10)));
+
+        var report = Model().AlertsReport();
+
+        Assert.Equal(T0.AddDays(-7), report.FromUtc);
+        Assert.Equal(T0, report.ToUtc);
+    }
+
+    [Fact]
+    public void The_report_carries_the_entity_name_and_kind()
+    {
+        GivenEntities(Host("h1", HealthState.Critical));
+        GivenAlerts(Alert("a", AlertSeverity.Critical) with { Entity = new EntityId("h1") });
+
+        var row = Assert.Single(Model().AlertsReport().Rows);
+
+        Assert.Equal("h1.corp.local", row.EntityName);
+        Assert.Equal(EntityKind.EsxiHost, row.EntityKind);
+    }
+
+    [Fact]
+    public void The_report_names_who_acknowledged_and_who_cleared_it_and_when()
+    {
+        var alert = Alert("a", AlertSeverity.Critical) with
+        {
+            State = AlertLifecycleState.Resolved,
+            History =
+            [
+                new AlertTransition
+                {
+                    From = AlertLifecycleState.Open,
+                    To = AlertLifecycleState.Acknowledged,
+                    Reason = AlertTransitionReason.OperatorAcknowledged,
+                    AtUtc = T0.AddHours(-3),
+                    Actor = "alice",
+                },
+                new AlertTransition
+                {
+                    From = AlertLifecycleState.Acknowledged,
+                    To = AlertLifecycleState.Resolved,
+                    Reason = AlertTransitionReason.OperatorCleared,
+                    AtUtc = T0.AddHours(-1),
+                    Actor = "bob",
+                },
+            ],
+        };
+        GivenAlerts(alert);
+
+        var row = Assert.Single(Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0).Rows);
+
+        Assert.Equal("alice", row.AcknowledgedBy);
+        Assert.Equal(T0.AddHours(-3), row.AcknowledgedAtUtc);
+        Assert.Equal("bob", row.ClearedBy);
+        Assert.Equal(T0.AddHours(-1), row.ClearedAtUtc);
+    }
+
+    [Fact]
+    public void A_condition_that_cleared_itself_names_nobody()
+    {
+        // Only an operator's own clear is attributed. The condition simply
+        // going away is not something a person did.
+        var alert = Alert("a", AlertSeverity.Warning) with
+        {
+            State = AlertLifecycleState.Resolved,
+            History =
+            [
+                new AlertTransition
+                {
+                    From = AlertLifecycleState.Open,
+                    To = AlertLifecycleState.Resolved,
+                    Reason = AlertTransitionReason.ConditionCleared,
+                    AtUtc = T0.AddHours(-1),
+                },
+            ],
+        };
+        GivenAlerts(alert);
+
+        var row = Assert.Single(Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0).Rows);
+
+        Assert.Null(row.ClearedBy);
+    }
+
+    [Fact]
+    public void The_report_summarizes_counts_by_severity_and_state()
+    {
+        GivenAlerts(
+            Alert("a", AlertSeverity.Critical),
+            Alert("b", AlertSeverity.Warning),
+            Alert("c", AlertSeverity.Warning) with { State = AlertLifecycleState.Acknowledged });
+
+        var summary = Model().AlertsReport().Summary;
+
+        Assert.Equal(3, summary.Total);
+        Assert.Equal(1, summary.BySeverity[nameof(AlertSeverity.Critical)]);
+        Assert.Equal(2, summary.BySeverity[nameof(AlertSeverity.Warning)]);
+        Assert.Equal(0, summary.BySeverity[nameof(AlertSeverity.Info)]);
+        Assert.Equal(2, summary.ByState[nameof(AlertLifecycleState.Open)]);
+        Assert.Equal(1, summary.ByState[nameof(AlertLifecycleState.Acknowledged)]);
+        Assert.Equal(0, summary.ByState[nameof(AlertLifecycleState.Resolved)]);
+    }
+
+    [Fact]
+    public void The_report_honours_the_same_filters_as_the_alert_list()
+    {
+        GivenAlerts(
+            Alert("a", AlertSeverity.Critical) with { Category = "Hardware", Source = "ilo-1" },
+            Alert("b", AlertSeverity.Critical) with { Category = "Configuration", Source = "vc-1" });
+
+        Assert.Single(Model().AlertsReport(category: "Hardware").Rows);
+        Assert.Single(Model().AlertsReport(source: "vc-1").Rows);
+    }
+
     // --- the explorer -----------------------------------------------------
 
     [Fact]
@@ -460,6 +618,23 @@ public class ReadModelTests
         LastSeenUtc = T0,
     };
 
+    /// <summary>A resolved instance, with the transition that resolved it -- what the report windows by.</summary>
+    private static AlertInstance Resolved(string id, AlertSeverity severity, DateTimeOffset resolvedAtUtc) =>
+        Alert(id, severity) with
+        {
+            State = AlertLifecycleState.Resolved,
+            History =
+            [
+                new AlertTransition
+                {
+                    From = AlertLifecycleState.Open,
+                    To = AlertLifecycleState.Resolved,
+                    Reason = AlertTransitionReason.ConditionCleared,
+                    AtUtc = resolvedAtUtc,
+                },
+            ],
+        };
+
     private static CollectorHealth Health(string id, CollectorRole role, DateTimeOffset lastSuccess) => new()
     {
         InstanceId = id,
@@ -642,6 +817,72 @@ public class ReadModelTests
 
         Assert.Null(Model().Entity("h1")!.TimeToFull);
         Assert.Empty(_observations.Queries);
+    }
+
+    // --- capacity report (M5.3) --------------------------------------------
+
+    private void GivenFree(double bytes) =>
+        _observations.Recorded[CapacityCounters.DatastoreFree] = [Bucket(T0.AddMinutes(-5), bytes)];
+
+    private void GivenProvisioned(double bytes) =>
+        _observations.Recorded[CapacityCounters.DatastoreProvisioned] = [Bucket(T0.AddMinutes(-5), bytes)];
+
+    [Fact]
+    public void A_datastore_with_no_capacity_reading_is_a_refusal_row_not_a_blank_one()
+    {
+        GivenEntities(Datastore("vc-1:ds-1"));
+
+        var row = Assert.Single(Model().CapacityReport().Rows);
+
+        Assert.False(row.TimeToFull.IsForecast);
+        Assert.Equal("NoCapacity", row.TimeToFull.Reason);
+        Assert.StartsWith("Cannot estimate", row.TimeToFull.Summary, StringComparison.Ordinal);
+        Assert.Null(row.CapacityBytes);
+        Assert.Equal(1, Model().CapacityReport().Summary.NoEstimateCount);
+        Assert.Equal(1, Model().CapacityReport().Summary.NoEstimateByReason["NoCapacity"]);
+    }
+
+    [Fact]
+    public void The_capacity_report_computes_used_percent_and_overcommit_ratio()
+    {
+        GivenEntities(Datastore("vc-1:ds-1"));
+        GivenCapacity(100 * Gb);
+        GivenFree(20 * Gb);
+        GivenProvisioned(120 * Gb);
+
+        var row = Assert.Single(Model().CapacityReport().Rows);
+
+        Assert.Equal(80 * Gb, row.UsedBytes);
+        Assert.Equal(80d, row.PercentUsed);
+        Assert.Equal(1.2d, row.OvercommitRatio);
+        Assert.Equal(1, Model().CapacityReport().Summary.OvercommittedCount);
+    }
+
+    [Fact]
+    public void The_capacity_report_counts_datastores_filling_soon()
+    {
+        // 1 GB a day for twenty days, ninety of a hundred now: ten days left --
+        // inside the 30-day warning window, outside the 7-day critical one.
+        GivenEntities(Datastore("vc-1:ds-1"));
+        GivenCapacity(100 * Gb);
+        _observations.Recorded[CapacityCounters.DatastoreUsed] =
+        [
+            .. Enumerable.Range(0, 21).Select(i => Bucket(T0.AddDays(i - 21), (70 + i) * Gb)),
+        ];
+
+        var summary = Model().CapacityReport().Summary;
+
+        Assert.Equal(1, summary.FillingWithin30Days);
+        Assert.Equal(0, summary.FillingWithin7Days);
+    }
+
+    [Fact]
+    public void A_vanished_datastore_is_not_on_the_capacity_report()
+    {
+        GivenEntities(Datastore("vc-1:ds-1") with { ObservationState = ObservationState.Vanished });
+        GivenCapacity(100 * Gb);
+
+        Assert.Empty(Model().CapacityReport().Rows);
     }
 
     /// <summary>

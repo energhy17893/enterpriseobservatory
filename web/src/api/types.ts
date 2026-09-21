@@ -511,6 +511,151 @@ export interface ComplianceFindingView {
   exceptionId: string | null
 }
 
+// --- reports --------------------------------------------------------------
+//
+// M5.1's shape: JSON for the SPA's own printable page, CSV (built server
+// side, fetched as a plain download) for a spreadsheet. M5.2 and M5.3 are
+// expected to add a sibling *ReportRow/*ReportView pair here.
+
+export interface AlertReportRow {
+  severity: AlertSeverity
+  title: string
+  entityName: string | null
+  entityKind: EntityKind | null
+  category: string
+  source: string
+  state: AlertLifecycleState
+  firstSeenUtc: string
+  lastSeenUtc: string
+  acknowledgedBy: string | null
+  acknowledgedAtUtc: string | null
+  /** Only set for an operator's own clear, not a condition going away on its own. */
+  clearedBy: string | null
+  clearedAtUtc: string | null
+  isDerived: boolean
+}
+
+export interface AlertReportSummary {
+  bySeverity: Record<string, number>
+  byState: Record<string, number>
+  total: number
+}
+
+export interface AlertReportView {
+  generatedAtUtc: string
+  fromUtc: string
+  toUtc: string
+  summary: AlertReportSummary
+  rows: AlertReportRow[]
+}
+
+// --- compliance report (M5.2) ----------------------------------------------
+//
+// The auditor-facing sibling of the alert report. Every finding carries the
+// exception or acceptance that covers it in full -- a report stands alone,
+// printed or read a year later, so a bare id into a list it does not carry
+// would not do.
+
+export interface ComplianceReportFindingRow {
+  controlId: string
+  controlTitle: string
+  priority: string
+  entityId: string
+  entityName: string
+  state: FindingState
+  /** Set only when state is NotEvaluated. */
+  notEvaluatedReason: string | null
+  observed: string | null
+  expected: string
+  firstSeenUtc: string
+  lastEvaluatedUtc: string
+  stale: boolean
+  acceptedBy: string | null
+  acceptedAtUtc: string | null
+  acceptedReason: string | null
+  exceptionId: string | null
+  exceptionOwner: string | null
+  exceptionReason: string | null
+  exceptionCreatedBy: string | null
+  exceptionCreatedAtUtc: string | null
+  exceptionExpiresUtc: string | null
+}
+
+export interface ComplianceReportTransitionRow {
+  controlId: string
+  /** The finding may since have left the evaluation, so this is not always resolvable to a name. */
+  entityId: string
+  /** Null when the finding was new at this change. */
+  from: 'Failing' | 'Passing' | 'NotEvaluated' | null
+  /** Null when the finding left the evaluation at this change. */
+  to: 'Failing' | 'Passing' | 'NotEvaluated' | null
+  observed: string | null
+  atUtc: string
+}
+
+export interface ComplianceReportView {
+  generatedAtUtc: string
+  catalogueName: string
+  catalogueRelease: string
+  /** "All hosts", or what the caller scoped the report to. */
+  scope: string
+  lastEvaluatedUtc: string | null
+  staleCount: number
+  /** The hosts behind staleCount, by name. */
+  staleEntityNames: string[]
+  /** Every control the catalogue names, evaluated or not -- filter by !evaluated for the "not evaluated" section. */
+  controls: ComplianceControlView[]
+  totals: FindingCountsView
+  findings: ComplianceReportFindingRow[]
+  /** The exceptions standing now, in scope. */
+  exceptions: ComplianceExceptionView[]
+  /** Withdrawn exceptions -- audit evidence in their own right. */
+  removedExceptions: ComplianceExceptionView[]
+  historyFromUtc: string
+  historyToUtc: string
+  history: ComplianceReportTransitionRow[]
+}
+
+/** One datastore on the capacity report (M5.3): its latest reading and the same fill-date answer its own page shows. */
+export interface CapacityReportRow {
+  name: string
+  /** VMFS, NFS, vsan and so on. Null when not read. */
+  datastoreType: string | null
+  source: string
+  /** The latest reading of each, or null when never recorded -- never a zero standing in for "not looked". */
+  capacityBytes: number | null
+  usedBytes: number | null
+  freeBytes: number | null
+  percentUsed: number | null
+  /** Used plus what has been promised to thin disks. Null when uncommitted space was never read. */
+  provisionedBytes: number | null
+  /** provisionedBytes over capacityBytes. Above 1 is over-committed. */
+  overcommitRatio: number | null
+  timeToFull: TimeToFullView
+}
+
+export interface CapacityReportSummary {
+  totalDatastores: number
+  totalCapacityBytes: number
+  totalUsedBytes: number
+  totalFreeBytes: number
+  /** Filling inside 30 days, the product's warning threshold. */
+  fillingWithin30Days: number
+  /** Filling inside 7 days, the product's critical threshold. */
+  fillingWithin7Days: number
+  overcommittedCount: number
+  /** No fill-date estimate yet -- a refusal is counted here, never left out. */
+  noEstimateCount: number
+  /** Why, keyed by the machine-readable reason, e.g. WindowTooShort. */
+  noEstimateByReason: Record<string, number>
+}
+
+export interface CapacityReportView {
+  generatedAtUtc: string
+  summary: CapacityReportSummary
+  rows: CapacityReportRow[]
+}
+
 export interface AddExceptionCommand {
   controlId: string
   /** Null for every entity the control applies to. */
@@ -518,4 +663,75 @@ export interface AddExceptionCommand {
   reason: string
   owner: string
   expiresUtc: string
+}
+
+// --- scheduled email reports (M5.4) --------------------------------------------
+
+export type SmtpTlsMode = 'None' | 'StartTls' | 'Implicit'
+
+/**
+ * The installation's SMTP settings.
+ *
+ * There is no password field here and no endpoint that returns one.
+ * `passwordStatus` is the string 'set' or 'not set' — never the value.
+ */
+export interface SmtpSettingsView {
+  host: string
+  port: number
+  tlsMode: SmtpTlsMode
+  fromAddress: string
+  username: string
+  allowUnencrypted: boolean
+  passwordStatus: 'set' | 'not set'
+  passwordSetUtc: string | null
+  isConfigured: boolean
+}
+
+export interface SmtpSettingsCommand {
+  host: string
+  port: number
+  tlsMode: SmtpTlsMode
+  fromAddress: string
+  username: string
+  /** Empty means "keep the stored password". */
+  password: string
+  allowUnencrypted: boolean
+}
+
+export interface TestEmailCommand extends SmtpSettingsCommand {
+  to: string
+}
+
+export interface MailTestView {
+  succeeded: boolean
+  detail: string
+}
+
+export type ReportFrequency = 'Daily' | 'Weekly'
+
+export type ReportKind = 'Alerts' | 'Compliance' | 'Capacity'
+
+export interface ReportSubscriptionView {
+  id: string
+  recipients: string[]
+  frequency: ReportFrequency
+  dayOfWeek: string
+  hourLocal: number
+  timeZoneId: string
+  kind: ReportKind
+  isEnabled: boolean
+  lastSentUtc: string | null
+  lastError: string | null
+  createdBy: string
+  createdUtc: string
+}
+
+export interface ReportSubscriptionCommand {
+  recipients: string[]
+  frequency: ReportFrequency
+  dayOfWeek: string
+  hourLocal: number
+  timeZoneId: string
+  kind: ReportKind
+  isEnabled: boolean
 }

@@ -258,6 +258,62 @@ public sealed class PostgresComplianceStore : IComplianceStore
             return transitions;
         });
 
+    /// <summary>
+    /// Every verdict change at or after <paramref name="sinceUtc"/>, across
+    /// every finding.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="Transitions"/>, this is one finding's history: a
+    /// report reads a whole estate's history for a period, and asking for it
+    /// one finding at a time would be one round trip per finding. The index
+    /// on <c>at_utc</c> is what makes the scan by date cheap.
+    /// </remarks>
+    public IReadOnlyList<ComplianceTransition> TransitionsSince(
+        DateTimeOffset sinceUtc, string? catalogueRelease = null) =>
+        _database.Read(connection =>
+        {
+            // Built conditionally rather than with "@release IS NULL OR ..."
+            // -- binding DBNull for an omitted release leaves Npgsql to guess
+            // its type against a text column, and a parameter Postgres cannot
+            // type is a query that never runs rather than one that runs wide.
+            var releaseFilter = catalogueRelease is null ? string.Empty : "AND catalogue_release = @release";
+
+            using var command = Command(connection, $"""
+                SELECT catalogue_release, control_id, entity_id, from_verdict, to_verdict, observed,
+                       evidence_utc, at_utc
+                FROM compliance_transition
+                WHERE at_utc >= @since {releaseFilter}
+                ORDER BY at_utc, id;
+                """);
+
+            command.BindTime("@since", sinceUtc);
+
+            if (catalogueRelease is not null)
+            {
+                command.Bind("@release", catalogueRelease);
+            }
+
+            using var reader = command.ExecuteReader();
+            var transitions = new List<ComplianceTransition>();
+
+            while (reader.Read())
+            {
+                transitions.Add(new ComplianceTransition
+                {
+                    CatalogueRelease = reader.GetString(0),
+                    ControlId = reader.GetString(1),
+                    Entity = new EntityId(reader.GetString(2)),
+                    From = ReadEnumOrNull<ComplianceVerdict>(reader, 3),
+                    To = ReadEnumOrNull<ComplianceVerdict>(reader, 4),
+                    Observed = ReadTextOrNull(reader, 5),
+                    EvidenceUtc = ReadTimeOrNull(reader, 6),
+                    AtUtc = ReadTime(reader, 7),
+                });
+            }
+
+            return transitions;
+        });
+
     private static bool InRelease(ComplianceFinding finding, string release) =>
         string.Equals(finding.CatalogueRelease, release, StringComparison.Ordinal);
 

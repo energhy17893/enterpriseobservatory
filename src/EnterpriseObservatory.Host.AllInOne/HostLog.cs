@@ -256,4 +256,23 @@ internal static partial class HostLog
                   "controls, {Evaluated} of them evaluated by this build.")]
     public static partial void ComplianceCatalogueLoaded(
         ILogger logger, string catalogue, string release, int controls, int evaluated);
+
+    [LoggerMessage(
+        EventId = 1030,
+        Level = LogLevel.Information,
+        Message = "Scheduled reports: {Due} due, {Sent} sent, {Failed} failed.")]
+    public static partial void ReportsDispatched(ILogger logger, int due, int sent, int failed);
+
+    [LoggerMessage(
+        EventId = 1031,
+        Level = LogLevel.Warning,
+        Message = "Scheduled report {SubscriptionId} was not sent: {Detail}")]
+    public static partial void ReportFailed(ILogger logger, string subscriptionId, string detail);
+
+    [LoggerMessage(
+        EventId = 1032,
+        Level = LogLevel.Error,
+        Message = "A scheduled-report dispatch pass threw; the next pass, one minute from now, " +
+                  "will try again.")]
+    public static partial void ReportDispatchPassFailed(ILogger logger, Exception exception);
 }

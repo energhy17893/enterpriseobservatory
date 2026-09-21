@@ -4,6 +4,7 @@ using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
+using EnterpriseObservatory.Application.Reporting;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Domain.Compliance;
 using Microsoft.AspNetCore.Builder;
@@ -83,6 +84,9 @@ public class EndpointRegistrationTests
             typeof(IComplianceStore),
             typeof(ISecretProtector),
             typeof(IUserAccountStore),
+            typeof(ISmtpSettingsStore),
+            typeof(IReportSubscriptionStore),
+            typeof(IMailSender),
         })
         {
             builder.Services.AddSingleton(type, _ => throw new InvalidOperationException(
@@ -96,6 +100,8 @@ public class EndpointRegistrationTests
         app.MapConnections();
         app.MapMaintenanceApi();
         app.MapComplianceApi();
+        app.MapEmailApi();
+        app.MapReportsApi();
         app.MapObservatoryApi();
 
         return [.. ((IEndpointRouteBuilder)app).DataSources.SelectMany(s => s.Endpoints)];

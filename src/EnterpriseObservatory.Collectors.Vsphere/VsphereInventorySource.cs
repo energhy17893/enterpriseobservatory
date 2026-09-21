@@ -247,6 +247,13 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // path has errors" as two facts about the same LUN that cannot
                 // be put together.
                 Marks = Marks(datastore),
+                // The capacity report's "type" column. vSphere's own word
+                // (VMFS, NFS, vsan, ...), not translated — the same choice
+                // Settings makes everywhere else. Absent from the dictionary,
+                // not written empty, when vCenter did not report one.
+                Settings = datastore.Type is { Length: > 0 } type
+                    ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["type"] = type }
+                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
             });
 
             relationships.Add(Edge(id(datastore.MoRef), id("vcenter"), RelationshipKind.ManagedBy, now));

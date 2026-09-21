@@ -60,6 +60,17 @@ public interface IComplianceStore
     /// and when; false when there is no standing exception with that id.
     /// </summary>
     bool RemoveException(string id, string removedBy, DateTimeOffset removedAtUtc);
+
+    /// <summary>
+    /// Every verdict change recorded at or after <paramref name="sinceUtc"/>,
+    /// oldest first — the audit trail M5.2's compliance report reads.
+    /// </summary>
+    /// <param name="catalogueRelease">
+    /// Limits the history to one release; null reads every release, which is
+    /// what a report spanning a catalogue upgrade needs.
+    /// </param>
+    IReadOnlyList<ComplianceTransition> TransitionsSince(
+        DateTimeOffset sinceUtc, string? catalogueRelease = null);
 }
 
 /// <summary>Why a compliance command was refused.</summary>
@@ -166,6 +177,10 @@ public sealed class ComplianceService(
 
     /// <summary>Every exception, standing or withdrawn.</summary>
     public IReadOnlyList<ComplianceWaiver> Exceptions() => _store.Exceptions;
+
+    /// <summary>Verdict changes at or after <paramref name="sinceUtc"/>, for the loaded catalogue release.</summary>
+    public IReadOnlyList<ComplianceTransition> TransitionsSince(DateTimeOffset sinceUtc) =>
+        _store.TransitionsSince(sinceUtc, Catalogue.Release);
 
     public DateTimeOffset Now => _clock.UtcNow;
 

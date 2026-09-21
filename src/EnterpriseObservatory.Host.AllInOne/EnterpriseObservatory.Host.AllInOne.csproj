@@ -20,6 +20,18 @@
   </ItemGroup>
 
   <!--
+    MailKit rather than the framework's own System.Net.Mail.SmtpClient
+    (roadmap M5.4). The built-in client's SslMode support does not cover
+    implicit TLS on connect (the historic port-465 case) — Microsoft's own
+    docs point away from it for anything but the simplest STARTTLS use — and
+    this product has to offer all three modes an estate's relay might expect.
+    MIT-licensed, same family as MimeKit which it depends on.
+  -->
+  <ItemGroup>
+    <PackageReference Include="MailKit" Version="4.18.0" />
+  </ItemGroup>
+
+  <!--
     The compliance catalogues, as Broadcom published them, with their VERSION
     and LICENSE beside each. Copied next to the binary rather than embedded, so
     an operator can see exactly which file the product judges against.
