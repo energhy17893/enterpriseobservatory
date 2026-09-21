@@ -339,3 +339,28 @@ export interface PartialFailureView {
   target: string
   detail: string
 }
+
+/**
+ * What one source managed to read.
+ *
+ * Beside the collectors rather than on a screen of its own, because it answers
+ * the same question from the other side: health says whether a source
+ * answered, this says what was in the answer. A perfectly healthy collector
+ * can be blind to half of what the product reasons about without anything
+ * appearing to go wrong.
+ */
+export interface CoverageView {
+  instanceId: string
+  /** Carried rather than implied: a stale number without a timestamp reads as current. */
+  measuredAtUtc: string
+  properties: CoveragePropertyView[]
+}
+
+export interface CoveragePropertyView {
+  objectType: string
+  property: string
+  asked: number
+  answered: number
+  /** Computed on the server so the screen cannot drift from the rule that alerts. */
+  isBlind: boolean
+}

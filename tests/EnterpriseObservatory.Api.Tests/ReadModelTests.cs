@@ -18,10 +18,11 @@ public class ReadModelTests
     private readonly StubGraphStore _graphs = new();
     private readonly StubAlertStore _alerts = new();
     private readonly StubHealthStore _collectors = new();
+    private readonly StubCoverageStore _coverage = new();
     private readonly StubObservationStore _observations = new();
 
     private ReadModel Model() =>
-        new(_graphs, _alerts, _collectors, _observations, MonitoringOptions.Default, new StubClock(T0));
+        new(_graphs, _alerts, _collectors, _coverage, _observations, MonitoringOptions.Default, new StubClock(T0));
 
     // --- overview ---------------------------------------------------------
 
@@ -581,6 +582,82 @@ public class ReadModelTests
         public CompactionReport Compact(DateTimeOffset nowUtc, SeriesRetentionPolicy policy) => new();
     }
 
+    // --- coverage ---------------------------------------------------------
+
+    [Fact]
+    public void Coverage_puts_the_blind_rows_first()
+    {
+        // A report of forty rows in which two matter is read by nobody if the
+        // two are in the middle.
+        _coverage.Replace("vc-1",
+            [
+                Cover("name", asked: 10, answered: 10),
+                Cover("config.option", asked: 10, answered: 0),
+                Cover("hardware.systemInfo.uuid", asked: 10, answered: 7),
+            ],
+            T0);
+
+        var properties = Assert.Single(Model().Coverage()).Properties;
+
+        Assert.Equal("config.option", properties[0].Property);
+        Assert.True(properties[0].IsBlind);
+        Assert.Equal("hardware.systemInfo.uuid", properties[1].Property);
+        Assert.Equal("name", properties[2].Property);
+    }
+
+    [Fact]
+    public void Coverage_keeps_the_complete_rows()
+    {
+        // "This was checked and it is fine" is what makes the blind rows
+        // trustworthy. A panel that only ever showed problems could not tell a
+        // healthy estate from a report that stopped running.
+        _coverage.Replace("vc-1", [Cover("name", asked: 10, answered: 10)], T0);
+
+        var row = Assert.Single(Assert.Single(Model().Coverage()).Properties);
+
+        Assert.False(row.IsBlind);
+        Assert.Equal(10, row.Answered);
+    }
+
+    [Fact]
+    public void Coverage_carries_when_it_was_measured()
+    {
+        // A stale number presented without a timestamp reads as current, which
+        // is worse than a blank page.
+        _coverage.Replace("vc-1", [Cover("name", asked: 1, answered: 1)], T0);
+
+        Assert.Equal(T0, Assert.Single(Model().Coverage()).MeasuredAtUtc);
+    }
+
+    [Fact]
+    public void Coverage_from_several_sources_is_ordered_and_kept_apart()
+    {
+        _coverage.Replace("vc-2", [Cover("name", asked: 4, answered: 0)], T0);
+        _coverage.Replace("vc-1", [Cover("name", asked: 10, answered: 10)], T0);
+
+        var sources = Model().Coverage();
+
+        Assert.Equal(["vc-1", "vc-2"], sources.Select(c => c.InstanceId));
+    }
+
+    [Fact]
+    public void A_source_that_measured_nothing_is_still_listed()
+    {
+        // "Reported and measured no coverage" is not "never heard from", and
+        // dropping the row would make the two look the same.
+        _coverage.Replace("vc-1", [], T0);
+
+        Assert.Empty(Assert.Single(Model().Coverage()).Properties);
+    }
+
+    private static PropertyCoverage Cover(string property, int asked, int answered) => new()
+    {
+        ObjectType = "HostSystem",
+        Property = property,
+        Asked = asked,
+        Answered = answered,
+    };
+
     private sealed class StubHealthStore : ICollectorHealthStore
     {
         private readonly List<CollectorHealth> _health = [];
@@ -588,5 +665,23 @@ public class ReadModelTests
         public IReadOnlyList<CollectorHealth> Current => _health;
 
         public void Merge(IReadOnlyList<CollectorHealth> health) => _health.AddRange(health);
+    }
+
+    private sealed class StubCoverageStore : ICoverageStore
+    {
+        private readonly Dictionary<string, SourceCoverage> _coverage = new(StringComparer.Ordinal);
+
+        public IReadOnlyList<SourceCoverage> Current => [.. _coverage.Values];
+
+        public void Replace(
+            string sourceInstanceId,
+            IReadOnlyList<PropertyCoverage> coverage,
+            DateTimeOffset measuredAtUtc) =>
+            _coverage[sourceInstanceId] = new SourceCoverage
+            {
+                SourceInstanceId = sourceInstanceId,
+                MeasuredAtUtc = measuredAtUtc,
+                Properties = [.. coverage],
+            };
     }
 }

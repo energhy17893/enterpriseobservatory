@@ -52,6 +52,7 @@ public class MaintenanceTests : IDisposable
         new InMemoryEntityGraphStore(),
         _alerts,
         new InMemoryCollectorHealthStore(),
+        new InMemoryCoverageStore(),
         _notifier,
         new InMemoryObservationStore(),
         _windows,

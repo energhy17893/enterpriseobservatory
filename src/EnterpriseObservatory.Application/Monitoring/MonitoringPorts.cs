@@ -121,6 +121,44 @@ public interface IAlertStateStore
 /// Keyed by source <em>and</em> role: one vCenter is read by two collectors
 /// that fail independently. See <see cref="CollectorRole"/>.
 /// </remarks>
+/// <summary>
+/// What each source managed to read, kept so it can be shown.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Separate from <see cref="ICollectorHealthStore"/> although both answer "is
+/// the monitoring working", because they fail differently. Health is about
+/// whether a source answered at all; coverage is about what was in the answer,
+/// and a perfectly healthy collector can be blind to half of what the product
+/// reasons about without anything going wrong.
+/// </para>
+/// <para>
+/// Replaced per source rather than merged into. A property that stopped being
+/// asked for should stop being reported, and a row nobody refreshes would
+/// otherwise claim a gap that no longer exists — the same trap
+/// <see cref="Domain.EntityGraph"/> avoids by letting only reporting sources
+/// retire their own entities.
+/// </para>
+/// </remarks>
+public interface ICoverageStore
+{
+    /// <summary>The last coverage measured, by source.</summary>
+    IReadOnlyList<SourceCoverage> Current { get; }
+
+    /// <summary>Replaces one source's coverage with what it just measured.</summary>
+    void Replace(string sourceInstanceId, IReadOnlyList<Collection.PropertyCoverage> coverage, DateTimeOffset measuredAtUtc);
+}
+
+/// <summary>One source's coverage, and when it was taken.</summary>
+public sealed record SourceCoverage
+{
+    public required string SourceInstanceId { get; init; }
+
+    public required DateTimeOffset MeasuredAtUtc { get; init; }
+
+    public IReadOnlyList<Collection.PropertyCoverage> Properties { get; init; } = [];
+}
+
 public interface ICollectorHealthStore
 {
     IReadOnlyList<CollectorHealth> Current { get; }

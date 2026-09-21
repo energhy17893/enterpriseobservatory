@@ -31,6 +31,7 @@ public class MonitoringCycleTests : IDisposable
     private readonly InMemoryEntityGraphStore _graphs;
     private readonly InMemoryAlertStateStore _alerts;
     private readonly InMemoryCollectorHealthStore _health;
+    private readonly InMemoryCoverageStore _coverage = new();
     private readonly InMemoryObservationStore _observations;
     private readonly InMemoryMaintenanceWindowStore _maintenance;
     private readonly RecordingNotifier _notifier = new();
@@ -59,12 +60,14 @@ public class MonitoringCycleTests : IDisposable
         IObservationStore? observations = null,
         ICollectorHealthStore? health = null,
         IEntityGraphStore? graphs = null,
-        IAlertStateStore? alerts = null) => new(
+        IAlertStateStore? alerts = null,
+        ICoverageStore? coverage = null) => new(
         new InventoryCollectionPipeline(_clock),
         new ObservationCollectionPipeline(_clock),
         graphs ?? _graphs,
         alerts ?? _alerts,
         health ?? _health,
+        coverage ?? _coverage,
         notifier ?? _notifier,
         observations ?? _observations,
         _maintenance,
@@ -312,6 +315,7 @@ public class MonitoringCycleTests : IDisposable
             _graphs,
             _alerts,
             _health,
+            _coverage,
             _notifier,
             new FailingObservationStore(),
             _maintenance,

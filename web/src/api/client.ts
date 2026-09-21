@@ -1,6 +1,7 @@
 import type {
   AlertView,
   CollectorView,
+  CoverageView,
   EntityDetailView,
   EntityView,
   OverviewView,
@@ -174,6 +175,7 @@ export const api = {
   entities: (query: EntityQuery = {}) => get<Page<EntityView>>('/api/entities', query),
   entity: (id: string) => get<EntityDetailView>(`/api/entities/${encodeURIComponent(id)}`),
   collectors: () => get<CollectorView[]>('/api/collectors'),
+  coverage: () => get<CoverageView[]>('/api/coverage'),
   seriesFor: (entityId: string) =>
     get<SeriesOptionView[]>(`/api/entities/${encodeURIComponent(entityId)}/series`),
   authState: () => get<AuthStateView>('/api/auth/state'),

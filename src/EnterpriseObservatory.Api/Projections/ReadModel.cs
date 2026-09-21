@@ -27,12 +27,16 @@ public sealed class ReadModel(
     IEntityGraphStore graphs,
     IAlertStateStore alerts,
     ICollectorHealthStore collectors,
+    ICoverageStore coverage,
     IObservationStore observations,
     MonitoringOptions options,
     IClock clock)
 {
     private readonly IEntityGraphStore _graphs = graphs ?? throw new ArgumentNullException(nameof(graphs));
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
+
+    private readonly ICoverageStore _coverage =
+        coverage ?? throw new ArgumentNullException(nameof(coverage));
 
     private readonly ICollectorHealthStore _collectors =
         collectors ?? throw new ArgumentNullException(nameof(collectors));
@@ -214,6 +218,43 @@ public sealed class ReadModel(
     /// must be answerable from inside the product; in the previous one it was
     /// answerable only by reading logs on the server. See ADR-0005.
     /// </remarks>
+    /// <summary>
+    /// What each source could read, worst first.
+    /// </summary>
+    /// <remarks>
+    /// Ordered so the blind rows are at the top and the complete ones at the
+    /// bottom, because a report of forty rows in which two matter is read by
+    /// nobody if the two are in the middle. Complete rows are kept rather than
+    /// filtered out: "this was checked and it is fine" is the half that makes
+    /// the other half trustworthy, and a screen that only ever shows problems
+    /// cannot distinguish a healthy estate from a report that stopped running.
+    /// </remarks>
+    public IReadOnlyList<CoverageView> Coverage() =>
+    [
+        .. _coverage.Current
+            .OrderBy(c => c.SourceInstanceId, StringComparer.Ordinal)
+            .Select(c => new CoverageView
+            {
+                InstanceId = c.SourceInstanceId,
+                MeasuredAtUtc = c.MeasuredAtUtc,
+                Properties =
+                [
+                    .. c.Properties
+                        .OrderByDescending(p => p.IsBlind)
+                        .ThenBy(p => p.Answered - p.Asked)
+                        .ThenBy(p => p.ObjectType, StringComparer.Ordinal)
+                        .ThenBy(p => p.Property, StringComparer.Ordinal)
+                        .Select(p => new CoveragePropertyView
+                        {
+                            ObjectType = p.ObjectType,
+                            Property = p.Property,
+                            Asked = p.Asked,
+                            Answered = p.Answered,
+                        }),
+                ],
+            }),
+    ];
+
     public IReadOnlyList<CollectorView> Collectors() =>
     [
         .. _collectors.Current
