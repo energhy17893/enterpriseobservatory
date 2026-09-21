@@ -87,6 +87,9 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
     private VsphereServiceContent? _serviceContent;
     private IReadOnlyList<VsphereCounter>? _counterCatalog;
     private bool _loggedIn;
+
+    /// <summary>Which sign-in the current session came from; see <c>SendAsync</c>.</summary>
+    private int _sessionGeneration;
     private bool _disposed;
 
     public VsphereClient(HttpClient http, VsphereConnectionOptions options)
@@ -1678,9 +1681,16 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
 
     // --- session ----------------------------------------------------------
 
-    private async Task<VsphereServiceContent> EnsureSessionAsync(CancellationToken cancellationToken)
+    private Task<VsphereServiceContent> EnsureSessionAsync(CancellationToken cancellationToken) =>
+        EnsureSessionAsync(expired: null, cancellationToken);
+
+    /// <param name="expired">
+    /// The generation of a session the caller was just told is not
+    /// authenticated, or null when it is only asking for one.
+    /// </param>
+    private async Task<VsphereServiceContent> EnsureSessionAsync(int? expired, CancellationToken cancellationToken)
     {
-        if (_serviceContent is { } cached && _loggedIn)
+        if (expired is null && _serviceContent is { } cached && _loggedIn)
         {
             return cached;
         }
@@ -1688,6 +1698,16 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         await _sessionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Inside the lock, and only for the session the caller actually
+            // used. A refusal describes the session a call was sent on. By the
+            // time it arrives another call may already have replaced that
+            // session, and giving up the replacement on the strength of news
+            // about its predecessor is how one expiry became two logins.
+            if (expired == _sessionGeneration)
+            {
+                _loggedIn = false;
+            }
+
             if (_serviceContent is { } existing && _loggedIn)
             {
                 return existing;
@@ -1708,6 +1728,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                 cancellationToken).ConfigureAwait(false);
 
             _serviceContent = content;
+            _sessionGeneration++;
             _loggedIn = true;
             return content;
         }
@@ -1721,23 +1742,37 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
     /// Sends a request, logging in again once if the session has expired.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Only <c>NotAuthenticated</c> is retried, and only once. Repeating a
     /// rejected credential every cycle is how a monitoring account ends up
     /// locked out by its own retry loop.
+    /// </para>
+    /// <para>
+    /// The generation is read before the call goes out, because that is the
+    /// session the answer will be about. Inventory, metrics and events share
+    /// this client across separate loops, so two calls routinely learn of one
+    /// expiry together. Each used to clear the signed-in flag itself, outside
+    /// the lock: the slower could clear it after the faster had already signed
+    /// in again, and sign in a second time. That cost nothing while sessions
+    /// were never given back. Now that they are, the first replacement is left
+    /// on the vCenter with nobody holding it — the leak T0.5 closed, by
+    /// another door. Found in architecture review 3.
+    /// </para>
     /// </remarks>
     private async Task<string> SendAsync(
         string body,
         CancellationToken cancellationToken,
         VsphereCallContext context = VsphereCallContext.General)
     {
+        var sentOn = Volatile.Read(ref _sessionGeneration);
+
         try
         {
             return await PostAsync(body, cancellationToken, context).ConfigureAwait(false);
         }
         catch (VsphereApiException ex) when (ex.Kind == VsphereFaultKind.NotAuthenticated)
         {
-            _loggedIn = false;
-            await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSessionAsync(sentOn, cancellationToken).ConfigureAwait(false);
             return await PostAsync(body, cancellationToken, context).ConfigureAwait(false);
         }
     }
