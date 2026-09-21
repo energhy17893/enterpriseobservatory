@@ -438,6 +438,11 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         return coverage;
     }
 
+    // One invalid path here fails the entire inventory, not one property:
+    // vCenter answers InvalidProperty for the whole RetrievePropertiesEx
+    // (measured with "configurationEx.dasConfig"). A path must walk declared
+    // types only. TODO(T2.1): the collector contract suite needs an "unknown
+    // property path" case that pins this down.
     private static readonly Dictionary<string, IReadOnlyList<string>> InventoryProperties = new(StringComparer.Ordinal)
     {
         ["HostSystem"] =

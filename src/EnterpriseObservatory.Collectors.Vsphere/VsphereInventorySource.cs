@@ -756,6 +756,8 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         DeviceKey = path.DeviceKey,
         State = path.State,
         Adapter = path.Adapter,
+        Transport = path.TransportType,
+        Target = path.Target,
     };
 
     /// <summary>
