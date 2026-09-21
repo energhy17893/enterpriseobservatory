@@ -32,9 +32,23 @@ public sealed record CollectionCycleResult
 /// previous product and is kept; what is new is that the policy lives in
 /// <see cref="SourceRunner"/> rather than being re-decided by each collector.
 /// </remarks>
-public sealed class InventoryCollectionPipeline(IClock clock)
+public sealed class InventoryCollectionPipeline
 {
-    private readonly SourceRunner _runner = new(clock ?? throw new ArgumentNullException(nameof(clock)));
+    private readonly SourceRunner _runner;
+    private readonly IEventHistory? _events;
+
+    /// <summary>A pipeline with no event history: every snapshot's creator is reported unknown, and why.</summary>
+    public InventoryCollectionPipeline(IClock clock)
+    {
+        _runner = new(clock ?? throw new ArgumentNullException(nameof(clock)));
+    }
+
+    /// <summary>A pipeline that names who took each stale snapshot from the event history.</summary>
+    public InventoryCollectionPipeline(IClock clock, IEventHistory events)
+        : this(clock)
+    {
+        _events = events ?? throw new ArgumentNullException(nameof(events));
+    }
 
     public async Task<CollectionCycleResult> RunAsync(
         IReadOnlyList<IInventorySource> sources,
@@ -63,7 +77,12 @@ public sealed class InventoryCollectionPipeline(IClock clock)
         {
             Snapshots =
             [
-                .. outcomes.Select(o => o.Result).OfType<InventorySnapshot>().Select(Attribute),
+                // Who took a stale snapshot is joined here rather than in the
+                // collector, because the answer lives in stored event history
+                // and a collector reads its source, never the product's store.
+                .. outcomes.Select(o => o.Result).OfType<InventorySnapshot>()
+                    .Select(s => SnapshotCreators.Attribute(s, _events))
+                    .Select(Attribute),
             ],
             Health = [.. outcomes.Select(o => o.Health)],
             CollectionAlerts =

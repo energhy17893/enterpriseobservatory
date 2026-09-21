@@ -144,6 +144,41 @@ public class VsphereEventParserTests
     }
 
     [Fact]
+    public void A_task_event_is_filed_under_what_the_task_was()
+    {
+        // Every task arrives as the one class TaskEvent. What it was is
+        // info.descriptionId, and M2.4 needs exactly that to find the task that
+        // took a snapshot — the rendered message is localised and not safe to
+        // match on.
+        const string xml = """
+            <ReadPreviousEventsResponse xmlns="urn:vim25" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <returnval xsi:type="TaskEvent">
+                <key>501</key>
+                <chainId>501</chainId>
+                <createdTime>2026-09-01T10:00:00Z</createdTime>
+                <userName>CORP\alice</userName>
+                <vm><name>fileserver</name><vm type="VirtualMachine">vm-1</vm></vm>
+                <fullFormattedMessage>Task: Create virtual machine snapshot</fullFormattedMessage>
+                <info>
+                  <key>task-9001</key>
+                  <task type="Task">task-9001</task>
+                  <name>CreateSnapshot_Task</name>
+                  <descriptionId>VirtualMachine.createSnapshot</descriptionId>
+                  <state>queued</state>
+                </info>
+              </returnval>
+            </ReadPreviousEventsResponse>
+            """;
+
+        var task = Assert.Single(VsphereEventParser.ParseEvents(xml)!);
+
+        Assert.Equal("TaskEvent", task.EventClass);
+        Assert.Equal("VirtualMachine.createSnapshot", task.TypeId);
+        Assert.Equal(@"CORP\alice", task.UserName);
+        Assert.Equal("vm-1", task.VirtualMachine?.MoRef);
+    }
+
+    [Fact]
     public void A_ReadPreviousEvents_reply_is_one_event_per_returnval()
     {
         const string xml = """

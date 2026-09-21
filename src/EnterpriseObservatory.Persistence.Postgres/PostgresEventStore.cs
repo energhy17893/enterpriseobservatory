@@ -21,7 +21,7 @@ namespace EnterpriseObservatory.Persistence.Postgres;
 /// why the insert tolerates a conflict.
 /// </para>
 /// </remarks>
-public sealed class PostgresEventStore : IEventStore
+public sealed class PostgresEventStore : IEventStore, IEventHistory
 {
     private readonly PostgresDatabase _database;
     private readonly Lock _gate = new();
@@ -167,32 +167,104 @@ public sealed class PostgresEventStore : IEventStore
 
             command.Bind("limit", bounded);
 
-            using var reader = command.ExecuteReader();
-            var events = new List<SourceEvent>();
-
-            while (reader.Read())
-            {
-                events.Add(new SourceEvent
-                {
-                    SourceInstanceId = reader.GetString(0),
-                    Key = reader.GetInt64(1),
-                    CreatedAtUtc = PgValues.ReadTime(reader, 2),
-                    ChainId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
-                    EventClass = reader.GetString(4),
-                    TypeId = reader.GetString(5),
-                    Severity = PgValues.ReadTextOrNull(reader, 6),
-                    Message = reader.GetString(7),
-                    UserName = PgValues.ReadTextOrNull(reader, 8),
-                    DatacenterName = PgValues.ReadTextOrNull(reader, 9),
-                    ComputeResource = Ref(reader, 10),
-                    Host = Ref(reader, 12),
-                    VirtualMachine = Ref(reader, 14),
-                    Datastore = Ref(reader, 16),
-                });
-            }
-
-            return events;
+            return ReadEvents(command);
         });
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Served by <c>ix_source_event_created</c>: the window is bounded by the
+    /// snapshots being explained and the type list is short, so the rows the
+    /// index yields are filtered rather than needing an index of their own.
+    /// </remarks>
+    public IReadOnlyList<SourceEvent> Find(
+        string sourceInstanceId,
+        IReadOnlyCollection<string> typeIds,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceInstanceId);
+        ArgumentNullException.ThrowIfNull(typeIds);
+
+        if (typeIds.Count == 0 || toUtc < fromUtc)
+        {
+            return [];
+        }
+
+        return _database.Read(connection =>
+        {
+            using var command = PgValues.Command(connection, """
+                SELECT source_instance_id, event_key, created_at_utc, chain_id,
+                       event_class, type_id, severity, message, user_name, datacenter_name,
+                       compute_resource_ref, compute_resource_name, host_ref, host_name,
+                       vm_ref, vm_name, datastore_ref, datastore_name
+                FROM source_event
+                WHERE source_instance_id = @source
+                  AND type_id = ANY(@types)
+                  AND created_at_utc BETWEEN @from AND @to;
+                """);
+
+            command.Bind("source", sourceInstanceId);
+            command.Parameters.AddWithValue("types", typeIds.ToArray());
+            command.BindTime("from", fromUtc);
+            command.BindTime("to", toUtc);
+
+            return ReadEvents(command);
+        });
+    }
+
+    /// <inheritdoc />
+    public DateTimeOffset? EarliestHeld(string sourceInstanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceInstanceId);
+
+        return _database.Read(connection =>
+        {
+            using var command = PgValues.Command(
+                connection, "SELECT min(created_at_utc) FROM source_event WHERE source_instance_id = @source;");
+            command.Bind("source", sourceInstanceId);
+
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? PgValues.ReadTimeOrNull(reader, 0) : null;
+        });
+    }
+
+    /// <inheritdoc />
+    public EventCursor? Cursor(string sourceInstanceId)
+    {
+        lock (_gate)
+        {
+            return _cursors.GetValueOrDefault(sourceInstanceId);
+        }
+    }
+
+    private static List<SourceEvent> ReadEvents(NpgsqlCommand command)
+    {
+        using var reader = command.ExecuteReader();
+        var events = new List<SourceEvent>();
+
+        while (reader.Read())
+        {
+            events.Add(new SourceEvent
+            {
+                SourceInstanceId = reader.GetString(0),
+                Key = reader.GetInt64(1),
+                CreatedAtUtc = PgValues.ReadTime(reader, 2),
+                ChainId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
+                EventClass = reader.GetString(4),
+                TypeId = reader.GetString(5),
+                Severity = PgValues.ReadTextOrNull(reader, 6),
+                Message = reader.GetString(7),
+                UserName = PgValues.ReadTextOrNull(reader, 8),
+                DatacenterName = PgValues.ReadTextOrNull(reader, 9),
+                ComputeResource = Ref(reader, 10),
+                Host = Ref(reader, 12),
+                VirtualMachine = Ref(reader, 14),
+                Datastore = Ref(reader, 16),
+            });
+        }
+
+        return events;
     }
 
     public int Prune(DateTimeOffset createdBeforeUtc) =>

@@ -38,6 +38,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         var entities = new List<Entity>();
         var relationships = new List<Relationship>();
         var alerts = new List<AlertDefinition>();
+        var snapshotFindings = new List<SnapshotFinding>();
 
         // Managed-object references are unique within a vCenter but not between
         // them, so they are qualified before becoming entity ids.
@@ -57,7 +58,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         AddClusters(payload, Id, now, entities, relationships, alerts);
         AddHosts(payload, Id, now, vCenter.Id, entities, relationships, alerts);
         AddDatastores(payload, Id, now, entities, relationships, alerts);
-        AddVirtualMachines(payload, Id, now, entities, relationships, alerts);
+        AddVirtualMachines(payload, Id, now, entities, relationships, alerts, snapshotFindings);
         AddTriggeredAlarms(payload, Id, entities, alerts);
 
         return new InventorySnapshot
@@ -69,6 +70,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             Alerts = alerts,
             Failures = [.. payload.Failures.Select(ToFailure)],
             Coverage = payload.Coverage,
+            SnapshotFindings = snapshotFindings,
         };
     }
 
@@ -536,7 +538,8 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         DateTimeOffset now,
         List<Entity> entities,
         List<Relationship> relationships,
-        List<AlertDefinition> alerts)
+        List<AlertDefinition> alerts,
+        List<SnapshotFinding> snapshotFindings)
     {
         var knownHosts = payload.Hosts.Select(h => h.MoRef).ToHashSet(StringComparer.Ordinal);
         var knownDatastores = payload.Datastores.Select(d => d.MoRef).ToHashSet(StringComparer.Ordinal);
@@ -566,7 +569,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 Sizing = SizingOf(vm),
             });
 
-            AddSnapshotAlert(vm, datastores, id(vm.MoRef), now, alerts);
+            AddSnapshotAlert(vm, datastores, id(vm.MoRef), now, alerts, snapshotFindings);
 
             // Only edges to things we actually saw. A reference to a host in
             // another vCenter, or one we failed to read, would otherwise become
@@ -647,7 +650,8 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         Dictionary<string, VsphereDatastore> datastores,
         EntityId entity,
         DateTimeOffset now,
-        List<AlertDefinition> alerts)
+        List<AlertDefinition> alerts,
+        List<SnapshotFinding> snapshotFindings)
     {
         if (vm.Snapshots.Count == 0)
         {
@@ -674,14 +678,31 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             return;
         }
 
+        // One fingerprint per machine rather than per snapshot. A chain that
+        // grows a second link is the same problem getting worse, and an inbox
+        // that gained a row every time somebody took another snapshot would be
+        // teaching people to ignore it.
+        var fingerprint = AlertFingerprint.Create(
+            InstanceId, "Snapshot left behind", "Capacity", vm.Name, "vm-stale-snapshot");
+
+        // Who took them is not known here and is not looked up here: the
+        // answer is in the event history the product has stored, and a
+        // collector reads its source, never the product's store. The facts
+        // travel structured so the application can join them — see
+        // SnapshotCreators.
+        snapshotFindings.Add(new SnapshotFinding
+        {
+            Fingerprint = fingerprint,
+            VmMoRef = vm.MoRef,
+            Snapshots =
+            [
+                .. vm.Snapshots.Select(s => new SnapshotTaken { Name = s.Name, CreatedAtUtc = s.CreatedAtUtc }),
+            ],
+        });
+
         alerts.Add(new AlertDefinition
         {
-            // One fingerprint per machine rather than per snapshot. A chain
-            // that grows a second link is the same problem getting worse, and
-            // an inbox that gained a row every time somebody took another
-            // snapshot would be teaching people to ignore it.
-            Fingerprint = AlertFingerprint.Create(
-                InstanceId, "Snapshot left behind", "Capacity", vm.Name, "vm-stale-snapshot"),
+            Fingerprint = fingerprint,
             Severity = level,
             Title = "Snapshot left behind",
             Description = DescribeSnapshots(vm, oldest, age, willFill),

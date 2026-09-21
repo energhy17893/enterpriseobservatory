@@ -1042,5 +1042,30 @@ public class VsphereInventorySourceTests
         var snapshot = await Read(Payload(vms: [SizedVm()]));
 
         Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Snapshot left behind");
+        Assert.Empty(snapshot.SnapshotFindings);
+    }
+
+    [Fact]
+    public async Task A_stale_snapshot_carries_what_is_needed_to_name_its_creator()
+    {
+        // The collector does not look the creator up — that is stored history,
+        // and a collector reads its source, not the product's store. It hands
+        // over the machine and each snapshot's time, tied to the alert.
+        var snapshot = await Read(Payload(vms: [WithSnapshot(T0.AddDays(-20), count: 2)]));
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Snapshot left behind");
+        var finding = Assert.Single(snapshot.SnapshotFindings);
+        Assert.Equal(alert.Fingerprint, finding.Fingerprint);
+        Assert.Equal("vm-1", finding.VmMoRef);
+        Assert.Equal(2, finding.Snapshots.Count);
+        Assert.All(finding.Snapshots, s => Assert.Equal(T0.AddDays(-20), s.CreatedAtUtc));
+    }
+
+    [Fact]
+    public async Task A_snapshot_too_young_to_report_carries_no_finding()
+    {
+        var snapshot = await Read(Payload(vms: [WithSnapshot(T0.AddHours(-4))]));
+
+        Assert.Empty(snapshot.SnapshotFindings);
     }
 }

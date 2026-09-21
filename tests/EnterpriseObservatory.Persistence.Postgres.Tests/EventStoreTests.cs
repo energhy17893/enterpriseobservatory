@@ -42,6 +42,35 @@ public class EventStoreTests : IDisposable
     };
 
     [SkippableFact]
+    public void History_is_searched_by_source_type_and_window_and_knows_where_it_begins()
+    {
+        RequireDatabase();
+
+        var store = new PostgresEventStore(_live.Database);
+        var task = Event(3, T0.AddMinutes(-3)) with
+        {
+            EventClass = "TaskEvent",
+            TypeId = "VirtualMachine.createSnapshot",
+            UserName = @"CORP\alice",
+            VirtualMachine = new EventObjectRef { MoRef = "vm-1", Name = "fileserver" },
+        };
+
+        store.Record("vc-1", [Event(1, T0.AddHours(-5)), task], complete: true, T0);
+        store.Record("vc-2", [task with { Key = 9 }], complete: true, T0);
+
+        var history = store;
+        var found = Assert.Single(history.Find(
+            "vc-1", ["VirtualMachine.createSnapshot"], T0.AddMinutes(-4), T0));
+
+        Assert.Equal(@"CORP\alice", found.UserName);
+        Assert.Equal("vm-1", found.VirtualMachine?.MoRef);
+        Assert.Empty(history.Find("vc-1", ["VirtualMachine.createSnapshot"], T0.AddMinutes(-2), T0));
+        Assert.Equal(T0.AddHours(-5), history.EarliestHeld("vc-1"));
+        Assert.Null(history.EarliestHeld("vc-unknown"));
+        Assert.Equal(T0, history.Cursor("vc-1")?.LastSuccessUtc);
+    }
+
+    [SkippableFact]
     public void Events_and_the_mark_survive_a_restart_as_they_went_in()
     {
         RequireDatabase();
