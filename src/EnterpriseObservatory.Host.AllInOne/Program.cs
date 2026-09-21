@@ -4,6 +4,7 @@ using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Collectors.Vsphere;
 using EnterpriseObservatory.Domain;
@@ -109,6 +110,17 @@ builder.Services.AddSingleton<AlertOperations>();
 builder.Services.AddSingleton<IMaintenanceWindowStore, PostgresMaintenanceWindowStore>();
 builder.Services.AddSingleton<MaintenanceService>();
 builder.Services.AddSingleton<ReadModel>();
+
+// The compliance engine (roadmap M3). Its own store and its own screen, never
+// the alert inbox: a finding does not close itself and is expected by the
+// hundred on the first day. The catalogue is loaded once, as data, from the
+// edition Compliance:Catalogue names -- see ComplianceCatalogueSource. One
+// that cannot be loaded is carried with its reason rather than stopping the
+// service, so monitoring never goes dark over a compliance file.
+var complianceCatalogue = ComplianceCatalogueSource.Load(builder.Configuration);
+builder.Services.AddSingleton(complianceCatalogue);
+builder.Services.AddSingleton<IComplianceStore, PostgresComplianceStore>();
+builder.Services.AddSingleton<ComplianceService>();
 
 // --- who may do what -----------------------------------------------------
 //
@@ -284,6 +296,7 @@ host.MapAuthenticationApi(setupToken);
 host.MapAccountsApi();
 host.MapMaintenanceApi();
 host.MapConnections();
+host.MapComplianceApi();
 host.MapObservatoryApi();
 
 // The SPA's build output, when it has been built. Serving the interface from
@@ -339,6 +352,22 @@ var storedConnections = host.Services.GetRequiredService<ISourceConnectionStore>
 if (KeyRingDurabilityGuard.CredentialsAreUnrecoverable(keyRingLocation, storedConnections))
 {
     HostLog.KeyRingLostItsKeys(startupLog, keyRingLocation.Path, storedConnections);
+}
+
+if (complianceCatalogue.Problem is { } complianceProblem)
+{
+    HostLog.ComplianceCatalogueUnavailable(startupLog, complianceProblem);
+}
+else
+{
+    var evaluatedControls = ComplianceEvaluation.Bind(complianceCatalogue).Count(c => c.IsEvaluated);
+
+    HostLog.ComplianceCatalogueLoaded(
+        startupLog,
+        complianceCatalogue.Name,
+        complianceCatalogue.Release,
+        complianceCatalogue.Controls.Count,
+        evaluatedControls);
 }
 
 // Printed only while it is usable. A token in a log for an installation that

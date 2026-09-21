@@ -414,3 +414,84 @@ export interface EventFeedView {
   streams: EventStreamView[]
   retentionDays: number
 }
+// --- compliance ---------------------------------------------------------------
+
+/**
+ * A finding's state. Not an alert state: a finding never resolves itself. It
+ * passes when the setting is fixed, is accepted when somebody owns it (still
+ * non-compliant), or is excepted until a date.
+ */
+export type FindingState = 'Failing' | 'Passing' | 'NotEvaluated' | 'Accepted' | 'Excepted'
+
+export interface FindingCountsView {
+  failing: number
+  passing: number
+  notEvaluated: number
+  accepted: number
+  excepted: number
+}
+
+export interface ComplianceControlView {
+  controlId: string
+  title: string
+  component: string
+  priority: string
+  parameter: string
+  installationDefault: string
+  baselineValue: string
+  assessment: string
+  /** False when this product cannot judge the control at all. */
+  evaluated: boolean
+  notEvaluatedReason: string | null
+  counts: FindingCountsView
+}
+
+export interface ComplianceExceptionView {
+  id: string
+  controlId: string
+  /** Null means every entity the control applies to. */
+  entityId: string | null
+  reason: string
+  owner: string
+  createdBy: string
+  createdAtUtc: string
+  expiresUtc: string
+  expired: boolean
+}
+
+export interface ComplianceView {
+  catalogueName: string
+  catalogueRelease: string
+  catalogueProblem: string | null
+  defaultControlsSkipped: number
+  controls: ComplianceControlView[]
+  totals: FindingCountsView
+  exceptions: ComplianceExceptionView[]
+  lastEvaluatedUtc: string | null
+}
+
+export interface ComplianceFindingView {
+  controlId: string
+  catalogueRelease: string
+  entityId: string
+  entityName: string
+  state: FindingState
+  reason: string | null
+  observed: string | null
+  expected: string
+  firstSeenUtc: string
+  lastEvaluatedUtc: string
+  acceptedBy: string | null
+  acceptedAtUtc: string | null
+  acceptedReason: string | null
+  exceptionId: string | null
+}
+
+export interface AddExceptionCommand {
+  controlId: string
+  /** Null for every entity the control applies to. */
+  entityId: string | null
+  reason: string
+  owner: string
+  expiresUtc: string
+}

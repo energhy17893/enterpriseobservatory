@@ -18,4 +18,13 @@
     <ProjectReference Include="..\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
     <ProjectReference Include="..\EnterpriseObservatory.Persistence.Postgres\EnterpriseObservatory.Persistence.Postgres.csproj" />
   </ItemGroup>
+
+  <!--
+    The compliance catalogues, as Broadcom published them, with their VERSION
+    and LICENSE beside each. Copied next to the binary rather than embedded, so
+    an operator can see exactly which file the product judges against.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\catalogues\**\*" LinkBase="catalogues" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

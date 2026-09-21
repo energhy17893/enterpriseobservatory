@@ -22,6 +22,11 @@ import type {
   EventFeedView,
   MaintenanceWindowView,
   Role,
+  AddExceptionCommand,
+  ComplianceExceptionView,
+  ComplianceFindingView,
+  ComplianceView,
+  FindingState,
 } from './types'
 
 /**
@@ -227,6 +232,15 @@ export const api = {
   // finding out whether a password works before saving it.
   testConnection: (command: ConnectionCommand) =>
     post<ProbeView>('/api/connections/test', command),
+  compliance: () => get<ComplianceView>('/api/compliance'),
+  complianceFindings: (query: { control?: string; entity?: string; state?: FindingState } = {}) =>
+    get<ComplianceFindingView[]>('/api/compliance/findings', query),
+  acceptFinding: (controlId: string, entityId: string, reason: string) =>
+    post<ComplianceFindingView>('/api/compliance/accept', { controlId, entityId, reason }),
+  addComplianceException: (command: AddExceptionCommand) =>
+    post<ComplianceExceptionView>('/api/compliance/exceptions', command),
+  removeComplianceException: (id: string) =>
+    post<ComplianceExceptionView>('/api/compliance/exceptions/remove', { id }),
   series: (entityId: string, counter: string, query: SeriesQuery = {}) =>
     get<SeriesView>(
       `/api/entities/${encodeURIComponent(entityId)}/series/${encodeURIComponent(counter)}`,

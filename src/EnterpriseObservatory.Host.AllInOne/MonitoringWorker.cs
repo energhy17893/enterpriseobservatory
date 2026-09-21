@@ -1,4 +1,5 @@
 using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 
 namespace EnterpriseObservatory.Host.AllInOne;
@@ -25,8 +26,14 @@ public sealed class MonitoringWorker(
     ISourceRegistry sources,
     MonitoringOptions options,
     EventCollectionPipeline events,
+    ComplianceService compliance,
+    IEntityGraphStore graph,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
+    private readonly ComplianceService _compliance =
+        compliance ?? throw new ArgumentNullException(nameof(compliance));
+
+    private readonly IEntityGraphStore _graph = graph ?? throw new ArgumentNullException(nameof(graph));
     private readonly EventCollectionPipeline _events = events ?? throw new ArgumentNullException(nameof(events));
     private readonly MonitoringCycle _cycle = cycle ?? throw new ArgumentNullException(nameof(cycle));
     private readonly ISourceRegistry _sources = sources ?? throw new ArgumentNullException(nameof(sources));
@@ -62,6 +69,8 @@ public sealed class MonitoringWorker(
                     _logger, result.ActiveEntities, result.VanishedEntities, result.Visible.Count);
 
                 WarnAboutSilence(result);
+
+                EvaluateCompliance();
 
                 // Same rhythm, after the inventory: the stream is read from a
                 // mark, so a five-minute cadence loses nothing, and the event
@@ -112,6 +121,45 @@ public sealed class MonitoringWorker(
             stoppingToken);
 
         await Task.WhenAll(inventory, observations).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Judges the estate against the compliance catalogue, on the inventory rhythm.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// After the inventory cycle, over the graph it stored: settings are read
+    /// on that rhythm and change when somebody changes them, so judging them
+    /// any more often would re-decide a fact nothing had re-read.
+    /// </para>
+    /// <para>
+    /// Here rather than inside the cycle, because a finding is not an alert
+    /// and must not reach reconciliation (product-architecture §2). Guarded
+    /// on its own for the same reason the event read is: a compliance failure
+    /// is not the inventory cycle failing, and the findings already stored
+    /// stay on the screen until an evaluation succeeds.
+    /// </para>
+    /// </remarks>
+    private void EvaluateCompliance()
+    {
+        if (_compliance.Catalogue.Problem is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            var findings = _compliance.Evaluate([.. _graph.Current.Active]);
+
+            HostLog.ComplianceEvaluated(
+                _logger, findings, _compliance.Catalogue.Name, _compliance.Catalogue.Release);
+        }
+#pragma warning disable CA1031 // Justified: see the remarks above.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            HostLog.ComplianceFailed(_logger, ex);
+        }
     }
 
     /// <summary>Says so, once, when there is nothing to read.</summary>

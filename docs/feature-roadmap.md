@@ -46,8 +46,8 @@ Broadcom SCG CSV'si **veri olarak** yutulur; kod içine kontrol gömülmez.
 
 | Adım | Feature | Bitti = |
 |---|---|---|
-| M3.1 | SCG CSV içe alma (`Is the Default = NO` süzgeci), sürümlü | kontroller listelenir |
-| M3.2 | Bulgu yaşam döngüsü: kabul et, istisna, süre | ekranda kabul/istisna |
+| ✅ M3.1 | SCG CSV içe alma (`Is the Default = NO` süzgeci), sürümlü *(vSphere 8.0 `803-20260612-01` ve VCF 9.1 `910-20260612-01` `catalogues/scg/` altında, lisansıyla; varsayılan 8.0; ekranda görsel doğrulama bekliyor)* | kontroller listelenir |
+| ✅ M3.2 | Bulgu yaşam döngüsü: kabul et, istisna, süre *(şema 6; canlıda doğrulama bekliyor)* | ekranda kabul/istisna |
 | M3.3 | `config.option` ile cevaplanabilen ilk kontroller (syslog, shell timeout, audit) | uygunluk ekranı dolu |
 | M3.4 | vSwitch güvenlik politikası, NTP, SSH/Shell servisleri | ekranda bulgu |
 

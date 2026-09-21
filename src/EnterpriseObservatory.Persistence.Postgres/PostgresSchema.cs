@@ -386,6 +386,54 @@ internal static class PostgresSchema
         CREATE INDEX ix_source_event_type_upper_created
             ON source_event (upper(type_id), created_at_utc);
         """,
+
+        // --- 6: compliance (roadmap M3.2) -------------------------------------
+        //
+        // Findings in their own table, never in alert_instance: a finding does
+        // not close itself, is expected by the hundred on the first day, and is
+        // accepted rather than resolved. Keeping it apart is what keeps it out
+        // of the inbox (product-architecture §2).
+        //
+        // The verdict is stored and the state is not. Whether an exception
+        // still covers a finding depends on the clock, so it is worked out on
+        // every read and an expired exception needs no job to undo it.
+        //
+        // The catalogue release is part of the key: a finding that cannot say
+        // which edition of the guide it was judged against cannot be defended.
+        //
+        // Exceptions are keyed by control id, not release, so re-issuing the
+        // same edition keeps them; entity_id NULL means every entity the
+        // control applies to. expires_utc is NOT NULL on purpose — an
+        // exception with no end is the forgotten kind.
+        """
+        CREATE TABLE compliance_finding (
+            catalogue_release  text        NOT NULL,
+            control_id         text        NOT NULL,
+            entity_id          text        NOT NULL,
+            entity_name        text        NOT NULL,
+            verdict            text        NOT NULL,
+            reason             text        NULL,
+            observed           text        NULL,
+            expected           text        NOT NULL,
+            first_seen_utc     timestamptz NOT NULL,
+            last_evaluated_utc timestamptz NOT NULL,
+            accepted_by        text        NULL,
+            accepted_at_utc    timestamptz NULL,
+            accepted_reason    text        NULL,
+            PRIMARY KEY (catalogue_release, control_id, entity_id)
+        );
+
+        CREATE TABLE compliance_exception (
+            id             text        NOT NULL PRIMARY KEY,
+            control_id     text        NOT NULL,
+            entity_id      text        NULL,
+            reason         text        NOT NULL,
+            owner          text        NOT NULL,
+            created_by     text        NOT NULL,
+            created_at_utc timestamptz NOT NULL,
+            expires_utc    timestamptz NOT NULL
+        );
+        """,
     ];
 
     public static int Current => Migrations.Length;

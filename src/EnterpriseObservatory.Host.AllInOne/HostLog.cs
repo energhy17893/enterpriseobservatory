@@ -224,4 +224,36 @@ internal static partial class HostLog
         Level = LogLevel.Warning,
         Message = "Connection {InstanceId} is not being polled: {Reason}.")]
     public static partial void ConnectionNotPolled(ILogger logger, string instanceId, string reason);
+
+    [LoggerMessage(
+        EventId = 1021,
+        Level = LogLevel.Debug,
+        Message = "Compliance: {Findings} findings against {Catalogue} release {Release}.")]
+    public static partial void ComplianceEvaluated(
+        ILogger logger, int findings, string catalogue, string release);
+
+    /// <summary>
+    /// The compliance evaluation threw. Its own id, because the inventory cycle
+    /// that ran before it did not fail and must not be reported as if it had.
+    /// </summary>
+    [LoggerMessage(
+        EventId = 1022,
+        Level = LogLevel.Error,
+        Message = "Compliance evaluation failed; the findings shown are from the last evaluation " +
+                  "that succeeded.")]
+    public static partial void ComplianceFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        EventId = 1023,
+        Level = LogLevel.Warning,
+        Message = "No compliance catalogue is loaded: {Problem}")]
+    public static partial void ComplianceCatalogueUnavailable(ILogger logger, string problem);
+
+    [LoggerMessage(
+        EventId = 1024,
+        Level = LogLevel.Information,
+        Message = "Compliance catalogue {Catalogue} release {Release}: {Controls} non-default " +
+                  "controls, {Evaluated} of them evaluated by this build.")]
+    public static partial void ComplianceCatalogueLoaded(
+        ILogger logger, string catalogue, string release, int controls, int evaluated);
 }
