@@ -184,6 +184,25 @@ public sealed record VsphereHost
     public IReadOnlyDictionary<string, string> AdvancedSettings { get; init; } =
         Vsphere.AdvancedSettings.None;
 
+    // The configuration below is carried in the domain's own records rather
+    // than in wire-shaped twins. They hold the platform's words untranslated,
+    // exactly as a twin would, so a second copy would be a mapping with
+    // nothing to map. Null throughout means "not reported", never "none".
+
+    /// <summary>From <c>config.service</c>; null when not reported.</summary>
+    public IReadOnlyList<Domain.HostService>? Services { get; init; }
+
+    /// <summary>From <c>config.dateTimeInfo</c>; null when not reported.</summary>
+    public Domain.TimeConfiguration? TimeConfiguration { get; init; }
+
+    /// <summary>From <c>config.network.vswitch</c>; null when not reported.</summary>
+    public IReadOnlyList<Domain.NetworkSecurityPolicy>? VirtualSwitchSecurity { get; init; }
+
+    /// <summary>From <c>config.network.portgroup</c>; null when not reported.</summary>
+    public IReadOnlyList<Domain.NetworkSecurityPolicy>? PortGroupSecurity { get; init; }
+
+    /// <summary>From <c>config.lockdownMode</c>; null when not reported.</summary>
+    public string? LockdownMode { get; init; }
 }
 
 /// <summary>One entry of a host's multipath table, as vCenter reports it.</summary>

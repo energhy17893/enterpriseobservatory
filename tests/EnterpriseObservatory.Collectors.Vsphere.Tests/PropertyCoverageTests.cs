@@ -166,6 +166,22 @@ public class PropertyCoverageTests
     }
 
     [Fact]
+    public void Host_services_and_time_are_expected_but_switches_and_lockdown_are_not()
+    {
+        // Every host runs services and keeps a clock, so their absence can
+        // only be a failed read. A host moved wholly onto a distributed switch
+        // has no standard switch, and lockdownMode is optional in the schema,
+        // so counting those would call a correctly built host unreadable.
+        var rows = Measure(Host("host-1", Scalar("name", "esx01")));
+
+        Assert.True(Find(rows, "config.service").IsBlind);
+        Assert.True(Find(rows, "config.dateTimeInfo").IsBlind);
+        Assert.DoesNotContain(rows, r => r.Property == "config.network.vswitch");
+        Assert.DoesNotContain(rows, r => r.Property == "config.network.portgroup");
+        Assert.DoesNotContain(rows, r => r.Property == "config.lockdownMode");
+    }
+
+    [Fact]
     public void An_empty_reply_produces_no_rows_rather_than_total_blindness()
     {
         // A cycle that read nothing is a collection failure with its own

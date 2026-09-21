@@ -892,6 +892,59 @@ public class VsphereInventorySourceTests
             p => Assert.False(p.IsDead));
     }
 
+    // --- host hardening inputs -------------------------------------------
+
+    [Fact]
+    public async Task A_host_carries_its_services_time_switch_policy_and_lockdown_mode()
+    {
+        // Carried for the compliance engine, not judged here: no alert is
+        // raised about SSH or promiscuous mode by the inventory source.
+        var snapshot = await Read(Payload(hosts:
+        [
+            Host() with
+            {
+                Services = [new HostService { Key = "TSM-SSH", Running = true, Policy = "off" }],
+                TimeConfiguration = new TimeConfiguration { Protocol = "ntp", NtpServers = ["10.0.0.1"] },
+                VirtualSwitchSecurity =
+                [
+                    new NetworkSecurityPolicy
+                    {
+                        Scope = NetworkPolicyScope.VirtualSwitch,
+                        Name = "vSwitch0",
+                        Configured = new SecurityPolicyFlags { ForgedTransmits = true },
+                    },
+                ],
+                PortGroupSecurity = [],
+                LockdownMode = "lockdownDisabled",
+            },
+        ]));
+
+        var host = snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost);
+
+        Assert.Equal("TSM-SSH", Assert.Single(host.Services!).Key);
+        Assert.Equal(["10.0.0.1"], host.TimeConfiguration!.NtpServers);
+        Assert.True(Assert.Single(host.VirtualSwitchSecurity!).Configured.ForgedTransmits);
+        Assert.NotNull(host.PortGroupSecurity);
+        Assert.Empty(host.PortGroupSecurity);
+        Assert.Equal("lockdownDisabled", host.LockdownMode);
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Category == "Configuration" &&
+                                                    a.Entity == host.Id);
+    }
+
+    [Fact]
+    public async Task A_host_whose_configuration_was_not_read_passes_null_through_rather_than_empty()
+    {
+        var snapshot = await Read(Payload(hosts: [Host()]));
+
+        var host = snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost);
+
+        Assert.Null(host.Services);
+        Assert.Null(host.TimeConfiguration);
+        Assert.Null(host.VirtualSwitchSecurity);
+        Assert.Null(host.PortGroupSecurity);
+        Assert.Null(host.LockdownMode);
+    }
+
     // --- thin overcommit --------------------------------------------------
 
     [Fact]

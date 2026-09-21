@@ -343,6 +343,14 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             "runtime.inMaintenanceMode",
             "hardware.systemInfo.uuid",
             "config.option",
+
+            // Every host runs services and keeps a clock, so a connected host
+            // that answered neither was not read. Deliberately not listed:
+            // config.network.vswitch and .portgroup, because a host moved
+            // wholly onto a distributed switch has no standard switch at all,
+            // and config.lockdownMode, which the schema marks optional.
+            "config.service",
+            "config.dateTimeInfo",
         ],
         ["VirtualMachine"] =
         [
@@ -459,6 +467,22 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             // worse trade than one property that arrives with the rest of the
             // inventory. What is kept is decided in AdvancedSettingKeys.
             "config.option",
+
+            // Host hardening inputs for the compliance engine (roadmap M3.4),
+            // carried rather than judged. Each is asked for whole because the
+            // property collector cannot address inside an array: there is no
+            // path to "the security policy of every vSwitch" short of the
+            // switches themselves. Read in ReadServices, ReadTimeConfiguration
+            // and ReadSecurityPolicies. None of these shapes has yet been seen
+            // from a live vCenter; they follow the published vim25 schema.
+            "config.service",
+            "config.dateTimeInfo",
+            "config.network.vswitch",
+            "config.network.portgroup",
+
+            // The three-valued mode, not the legacy adminDisabled boolean,
+            // which cannot tell normal lockdown from strict.
+            "config.lockdownMode",
         ],
         ["VirtualMachine"] =
         [
@@ -1198,6 +1222,11 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             : null,
         StoragePaths = ReadStoragePaths(o),
         AdvancedSettings = ReadAdvancedSettings(o),
+        Services = HostConfigurationParser.ReadServices(o),
+        TimeConfiguration = HostConfigurationParser.ReadTimeConfiguration(o),
+        VirtualSwitchSecurity = HostConfigurationParser.ReadVirtualSwitchSecurity(o),
+        PortGroupSecurity = HostConfigurationParser.ReadPortGroupSecurity(o),
+        LockdownMode = HostConfigurationParser.ReadLockdownMode(o),
     };
 
     public static VsphereVirtualMachine ToVirtualMachine(PropertyObject o) => new()
