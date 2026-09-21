@@ -106,6 +106,40 @@ public sealed record ClusterNPlusOnePolicy
     /// <remarks>Thirty days, for the reason <see cref="DatastoreTimeToFullPolicy.Lookback"/> gives.</remarks>
     public TimeSpan Lookback { get; init; } = TimeSpan.FromDays(30);
 
+    /// <summary>
+    /// How often a live host is expected to report a fresh sample.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not this rule's own number: it is <c>MonitoringPorts.ObservationInterval</c>'s
+    /// default, held here as policy for the same reason every other
+    /// cross-layer figure on this record is -- the application layer must
+    /// not assume the host's own configured cadence.
+    /// </para>
+    /// <para>
+    /// <see cref="ClusterNPlusOne.LatestPercent"/> uses it to decide when a
+    /// host's "latest" sample is too old to still call current: the series
+    /// store's raw tier keeps points for up to
+    /// <see cref="SeriesRetentionPolicy.Raw"/> (two days by default), and
+    /// without a recency check the newest point inside that whole window
+    /// would be accepted as "now", silently counting a host that stopped
+    /// reporting two days ago as present-and-idle capacity.
+    /// </para>
+    /// </remarks>
+    public TimeSpan ObservationInterval { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How many missed <see cref="ObservationInterval"/>s a host's latest
+    /// sample may be behind before it is treated as missing rather than
+    /// current.
+    /// </summary>
+    /// <remarks>
+    /// Three -- <b>this product's choice</b>: one missed interval is
+    /// ordinary jitter, three in a row is a host that has actually stopped
+    /// answering.
+    /// </remarks>
+    public int StaleAfterIntervals { get; init; } = 3;
+
     /// <summary>Most points read per host series.</summary>
     /// <remarks>Same default as <see cref="DatastoreTimeToFullPolicy.MaxPoints"/> and for the same reason.</remarks>
     public int MaxPoints { get; init; } = 720;
@@ -219,7 +253,7 @@ public static class ClusterNPlusOne
 
         foreach (var edge in graph.Relationships.Where(r => r.Kind == RelationshipKind.PartOf))
         {
-            if (!IsLive(graph, edge.From, EntityKind.EsxiHost) || !IsLive(graph, edge.To, EntityKind.Cluster))
+            if (!IsLiveConnectedHost(graph, edge.From) || !IsLive(graph, edge.To, EntityKind.Cluster))
             {
                 continue;
             }
@@ -243,6 +277,31 @@ public static class ClusterNPlusOne
         graph.Entities.TryGetValue(id, out var entity) &&
         entity.Kind == kind &&
         entity.ObservationState != ObservationState.Vanished;
+
+    /// <summary>
+    /// A host that actually stands as N+1 capacity right now: seen this
+    /// cycle, not in maintenance, and reachable.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="IsLive"/> alone accepts <see cref="ObservationState.InMaintenance"/>,
+    /// which is correct for membership questions but wrong here: a host
+    /// deliberately pulled out of service, or one vCenter cannot currently
+    /// reach, holds none of the failover headroom this rule is checking for.
+    /// Only <see cref="ObservationState.Active"/> counts. Connectivity is not
+    /// its own <c>ObservationState</c> today -- <c>VsphereInventorySource</c>
+    /// reports an unreachable host as <see cref="HealthState.Unknown"/>
+    /// rather than a distinct disconnected state (see its <c>AddHosts</c>),
+    /// so <see cref="Entity.Health"/> is read as the next best signal: a
+    /// connected host with a genuinely unclassified overall status also
+    /// reads <c>Unknown</c>, so this is an approximation in the direction of
+    /// undercounting capacity rather than overcounting it, which is the
+    /// safer of the two errors for a failover guarantee.
+    /// </remarks>
+    private static bool IsLiveConnectedHost(EntityGraph graph, EntityId id) =>
+        graph.Entities.TryGetValue(id, out var entity) &&
+        entity.Kind == EntityKind.EsxiHost &&
+        entity.ObservationState == ObservationState.Active &&
+        entity.Health != HealthState.Unknown;
 
     /// <summary>
     /// Every eligible cluster's current demand, read from the series store's
@@ -277,8 +336,8 @@ public static class ClusterNPlusOne
                 continue;
             }
 
-            var cpu = SumLatestPercent(series, hosts, policy.CpuUsageCounter, nowUtc, retention);
-            var mem = SumLatestPercent(series, hosts, policy.MemoryUsageCounter, nowUtc, retention);
+            var cpu = SumLatestPercent(series, hosts, policy.CpuUsageCounter, nowUtc, policy, retention);
+            var mem = SumLatestPercent(series, hosts, policy.MemoryUsageCounter, nowUtc, policy, retention);
 
             states.Add(new ClusterFailoverState(
                 clusterId, cluster.DisplayName, Attribution(cluster), hosts, cpu, mem));
@@ -296,13 +355,14 @@ public static class ClusterNPlusOne
         IReadOnlyList<EntityId> hosts,
         string counter,
         DateTimeOffset nowUtc,
+        ClusterNPlusOnePolicy policy,
         SeriesRetentionPolicy retention)
     {
         var total = 0d;
 
         foreach (var host in hosts)
         {
-            if (LatestPercent(series, host, counter, nowUtc, retention) is not { } percent)
+            if (LatestPercent(series, host, counter, nowUtc, policy, retention) is not { } percent)
             {
                 return null;
             }
@@ -318,11 +378,21 @@ public static class ClusterNPlusOne
     /// newest point — the same pattern <see cref="DatastoreTimeToFull.LatestCapacity"/>
     /// uses for a datastore's capacity.
     /// </summary>
+    /// <remarks>
+    /// The raw tier keeps points for up to <see cref="SeriesRetentionPolicy.Raw"/>
+    /// (two days by default), which is a retention window, not a claim that a
+    /// two-day-old point is still "now". A point older than
+    /// <see cref="ClusterNPlusOnePolicy.StaleAfterIntervals"/> worth of
+    /// <see cref="ClusterNPlusOnePolicy.ObservationInterval"/> is treated the
+    /// same as no point at all: a host that stopped reporting is missing
+    /// capacity, not idle capacity.
+    /// </remarks>
     private static double? LatestPercent(
         ISeriesReader series,
         EntityId host,
         string counter,
         DateTimeOffset nowUtc,
+        ClusterNPlusOnePolicy policy,
         SeriesRetentionPolicy retention)
     {
         var result = series.Query(new SeriesQuery
@@ -334,7 +404,15 @@ public static class ClusterNPlusOne
             MaxPoints = 1,
         });
 
-        return result.Points.Count > 0 ? result.Points[^1].Last : null;
+        if (result.Points.Count == 0)
+        {
+            return null;
+        }
+
+        var latest = result.Points[^1];
+        var staleAfter = policy.ObservationInterval * policy.StaleAfterIntervals;
+
+        return nowUtc - latest.StartUtc <= staleAfter ? latest.Last : null;
     }
 
     /// <summary>One host's demand history query, aligned with the cluster's other hosts.</summary>
@@ -512,6 +590,40 @@ public static class ClusterNPlusOne
 
         foreach (var state in states)
         {
+            // "No answer" must not read as "no problem". A cluster with fewer
+            // than two live hosts, or a resource whose current demand could
+            // not be summed this cycle (see CurrentReadings), is not judged
+            // below -- and without this, an alert this rule raised on an
+            // earlier cycle would be silently resolved by reconciliation the
+            // moment this cycle simply had nothing to say, the same failure
+            // mode the catch block below already guards against for a
+            // history read that throws outright.
+            if (state.HostCount < 2)
+            {
+                foreach (var fingerprint in Fingerprints(state.Cluster))
+                {
+                    unevaluated.Add(fingerprint);
+                }
+
+                continue;
+            }
+
+            if (state.CpuDemandHosts is null)
+            {
+                foreach (var fingerprint in FingerprintsFor(state.Cluster, ClusterCapacityResource.Cpu))
+                {
+                    unevaluated.Add(fingerprint);
+                }
+            }
+
+            if (state.MemoryDemandHosts is null)
+            {
+                foreach (var fingerprint in FingerprintsFor(state.Cluster, ClusterCapacityResource.Memory))
+                {
+                    unevaluated.Add(fingerprint);
+                }
+            }
+
             try
             {
                 var available = AvailableAfterFailoverHosts(state.HostCount, rules);
@@ -607,11 +719,13 @@ public static class ClusterNPlusOne
 
     /// <summary>Every fingerprint this rule can raise for one cluster.</summary>
     public static IReadOnlyList<AlertFingerprint> Fingerprints(EntityId cluster) =>
+        [.. FingerprintsFor(cluster, ClusterCapacityResource.Cpu), .. FingerprintsFor(cluster, ClusterCapacityResource.Memory)];
+
+    /// <summary>Every fingerprint this rule can raise for one cluster's one resource.</summary>
+    private static IReadOnlyList<AlertFingerprint> FingerprintsFor(EntityId cluster, ClusterCapacityResource resource) =>
     [
-        FingerprintFor(cluster, ClusterCapacityResource.Cpu, AlreadyFailsTitle),
-        FingerprintFor(cluster, ClusterCapacityResource.Cpu, AtRiskTitle),
-        FingerprintFor(cluster, ClusterCapacityResource.Memory, AlreadyFailsTitle),
-        FingerprintFor(cluster, ClusterCapacityResource.Memory, AtRiskTitle),
+        FingerprintFor(cluster, resource, AlreadyFailsTitle),
+        FingerprintFor(cluster, resource, AtRiskTitle),
     ];
 
     private static AlertDefinition HistoryUnreadable(List<(ClusterFailoverState Cluster, Exception Error)> failed)
