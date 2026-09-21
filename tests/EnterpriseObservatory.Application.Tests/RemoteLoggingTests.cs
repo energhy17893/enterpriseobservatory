@@ -127,6 +127,40 @@ public class RemoteLoggingTests
     }
 
     [Fact]
+    public void A_directory_reported_as_empty_is_left_unsaid_too()
+    {
+        // The host answered about its log directory and its answer was
+        // nothing. Printing "under ''" would be worse than silence: it reads
+        // as a path and points at no path.
+        var alert = Assert.Single(RemoteLogging.Evaluate(
+            [Host(settings: [(Target, ""), (Directory, "   ")])]));
+
+        Assert.DoesNotContain("under '", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_directory_setting_name_is_policy_too()
+    {
+        // Same argument as the target name. A vendor that files this fact
+        // under a different key changes configuration, not code -- and if
+        // this were compiled in, the sentence would silently go missing.
+        var alert = Assert.Single(RemoteLogging.Evaluate(
+            [Host(settings: [(Target, ""), ("logging.local.path", "/var/log")])],
+            new RemoteLoggingPolicy { LocalDirectorySetting = "logging.local.path" }));
+
+        Assert.Contains("/var/log", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_missing_entity_list_is_a_programming_error_rather_than_an_empty_estate()
+    {
+        // Silence is this rule's most common correct answer, so a null list
+        // that quietly produced none would be indistinguishable from a
+        // healthy estate.
+        Assert.Throws<ArgumentNullException>(() => RemoteLogging.Evaluate(null!));
+    }
+
+    [Fact]
     public void Each_host_is_its_own_finding()
     {
         var alerts = RemoteLogging.Evaluate(
