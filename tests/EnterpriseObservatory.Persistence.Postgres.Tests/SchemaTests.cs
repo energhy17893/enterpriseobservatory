@@ -66,13 +66,44 @@ public class SchemaTests : IDisposable
         // says it is", which passes even if the migration list were truncated
         // by accident. The literal makes adding a migration an event somebody
         // has to acknowledge here -- which is exactly what it did when the
-        // coverage table arrived as migration 3, and again when the event tables arrived as 4.
-        Assert.Equal(4, Version());
+        // coverage table arrived as migration 3, again when the event tables arrived as 4, and when the event read indexes arrived as 5.
+        Assert.Equal(5, Version());
 
         // Measurements and state both, from the same open. The two used to be
         // separate SQLite files and a half-applied schema would now be a
         // service that starts and then cannot store what it collects.
         Assert.True(TableCount() >= 21, $"Only {TableCount()} tables were created.");
+    }
+
+    [SkippableFact]
+    public void The_event_table_has_an_index_for_each_way_it_is_read()
+    {
+        RequireDatabase();
+
+        var indexes = _live.Database.Read(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT indexname, indexdef FROM pg_indexes " +
+                "WHERE schemaname = current_schema() AND tablename = 'source_event';";
+            using var reader = command.ExecuteReader();
+            var found = new Dictionary<string, string>(StringComparer.Ordinal);
+            while (reader.Read())
+            {
+                found[reader.GetString(0)] = reader.GetString(1);
+            }
+
+            return found;
+        });
+
+        Assert.Contains(
+            "(source_instance_id, type_id, created_at_utc)",
+            indexes["ix_source_event_source_type_created"],
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "(upper(type_id), created_at_utc)",
+            indexes["ix_source_event_type_upper_created"],
+            StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -96,7 +127,7 @@ public class SchemaTests : IDisposable
 
         _live.Restart();
 
-        Assert.Equal(4, Version());
+        Assert.Equal(5, Version());
         Assert.Equal(tablesBefore, TableCount());
         Assert.NotNull(new PostgresUserAccountStore(_live.Database).Find("ertugrul"));
     }

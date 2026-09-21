@@ -509,8 +509,10 @@ internal sealed class InMemoryCoverageStore : ICoverageStore
 /// <remarks>
 /// The same rules as the Postgres store where they decide behaviour: a
 /// duplicate is ignored rather than stored twice, the mark moves only with a
-/// successful read and to the batch's highest key, and a failure leaves the
-/// mark alone.
+/// successful read and to the batch's highest key, a failure leaves the
+/// mark alone, type ids are matched without regard to case, and reads are
+/// capped the same way — <see cref="EventCollectionPipeline.KeepNewestPerGroup"/>
+/// for <see cref="OfTypes"/>, newest first for <see cref="Find"/>.
 /// </remarks>
 internal sealed class InMemoryEventStore : IEventStore, IEventHistory
 {
@@ -606,13 +608,19 @@ internal sealed class InMemoryEventStore : IEventStore, IEventHistory
     {
         lock (_gate)
         {
+            var wanted = new HashSet<string>(typeIds, StringComparer.OrdinalIgnoreCase);
+
             return
             [
-                .. _events.Values.Where(e =>
-                    e.SourceInstanceId == sourceInstanceId &&
-                    typeIds.Contains(e.TypeId) &&
-                    e.CreatedAtUtc >= fromUtc &&
-                    e.CreatedAtUtc <= toUtc),
+                .. _events.Values
+                    .Where(e =>
+                        e.SourceInstanceId == sourceInstanceId &&
+                        wanted.Contains(e.TypeId) &&
+                        e.CreatedAtUtc >= fromUtc &&
+                        e.CreatedAtUtc <= toUtc)
+                    .OrderByDescending(e => e.CreatedAtUtc)
+                    .ThenByDescending(e => e.Key)
+                    .Take(EventCollectionPipeline.MaxMatching),
             ];
         }
     }
@@ -623,14 +631,8 @@ internal sealed class InMemoryEventStore : IEventStore, IEventHistory
 
         lock (_gate)
         {
-            return
-            [
-                .. _events.Values
-                    .Where(e => e.CreatedAtUtc >= createdSinceUtc && wanted.Contains(e.TypeId))
-                    .OrderByDescending(e => e.CreatedAtUtc)
-                    .ThenByDescending(e => e.Key)
-                    .Take(EventCollectionPipeline.MaxMatching),
-            ];
+            return EventCollectionPipeline.KeepNewestPerGroup(
+                _events.Values.Where(e => e.CreatedAtUtc >= createdSinceUtc && wanted.Contains(e.TypeId)));
         }
     }
 

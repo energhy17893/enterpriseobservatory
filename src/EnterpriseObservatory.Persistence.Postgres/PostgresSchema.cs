@@ -365,6 +365,27 @@ internal static class PostgresSchema
             last_gap_utc       timestamptz NULL
         );
         """,
+
+        // --- 5: event read paths ---------------------------------------------
+        //
+        // One index per way the events are read, beside the time index the
+        // sweep and the listing use.
+        //
+        // IEventHistory.Find asks one source for a few types in a window, so
+        // (source, type, time) takes it straight to its rows instead of
+        // filtering every source's events in the window.
+        //
+        // IEventStore.OfTypes asks every source for a set of types, matched
+        // without regard to case, since a time. An expression index on the
+        // folded type is what lets upper(type_id) = ANY(...) use an index at
+        // all; the time column after it bounds each type's range.
+        """
+        CREATE INDEX ix_source_event_source_type_created
+            ON source_event (source_instance_id, type_id, created_at_utc);
+
+        CREATE INDEX ix_source_event_type_upper_created
+            ON source_event (upper(type_id), created_at_utc);
+        """,
     ];
 
     public static int Current => Migrations.Length;

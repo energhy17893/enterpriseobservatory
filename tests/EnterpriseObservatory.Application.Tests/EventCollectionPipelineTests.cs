@@ -185,6 +185,109 @@ public class EventCollectionPipelineTests
         Assert.Equal(Now, Assert.Single(store.Cursors).LastGapUtc);
     }
 
+    /// <summary>A source that never answers until it is cancelled.</summary>
+    private sealed class HangingSource(string id) : IEventSource
+    {
+        public string InstanceId => id;
+
+        public async Task<EventRead> ReadAsync(EventMark? since, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new EventRead { Events = [] };
+        }
+    }
+
+    [Fact]
+    public async Task A_read_past_the_deadline_is_cut_off_and_keeps_its_cursor()
+    {
+        // One stalled vCenter must not hold the inventory loop: the pass ends
+        // at the deadline, does not throw, and leaves the stalled source's
+        // cursor untouched so the next cycle asks for the same window again.
+        var store = new RecordingStore();
+        store.Record("vc-slow", [Event(7)], complete: true, Now.AddMinutes(-5));
+        var before = Assert.Single(store.Cursors);
+        var pipeline = new EventCollectionPipeline(store, new FixedClock(Now));
+
+        var run = pipeline.RunAsync(
+            [new HangingSource("vc-slow"), new ScriptedSource("vc-later", _ => new EventRead { Events = [Event(1)] })],
+            TimeSpan.FromMilliseconds(100),
+            CancellationToken.None);
+
+        var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(10)));
+        Assert.Same(run, finished);
+
+        var result = await run;
+        Assert.Equal(["vc-slow", "vc-later"], result.Failures.Select(f => f.Source));
+        Assert.Equal(before, store.Cursors.Single(c => c.SourceInstanceId == "vc-slow"));
+        Assert.DoesNotContain(store.Cursors, c => c.SourceInstanceId == "vc-later");
+    }
+
+    [Fact]
+    public async Task Shutdown_during_a_deadline_bounded_read_still_throws()
+    {
+        var store = new RecordingStore();
+        var pipeline = new EventCollectionPipeline(store, new FixedClock(Now));
+        using var shutdown = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pipeline.RunAsync(
+            [new HangingSource("vc-slow")], TimeSpan.FromMinutes(5), shutdown.Token));
+    }
+
+    [Fact]
+    public void The_default_event_deadline_is_well_inside_the_inventory_interval()
+    {
+        var options = Monitoring.MonitoringOptions.Default;
+
+        Assert.Equal(TimeSpan.FromSeconds(90), options.EventReadDeadline);
+        Assert.True(options.EventReadDeadline < options.InventoryInterval);
+    }
+
+    private static SourceEvent Typed(long key, string type, string host, DateTimeOffset at) => new()
+    {
+        SourceInstanceId = "vc-1",
+        Key = key,
+        CreatedAtUtc = at,
+        EventClass = "EventEx",
+        TypeId = type,
+        Message = type,
+        Host = new EventObjectRef { MoRef = host, Name = host },
+    };
+
+    [Fact]
+    public void A_storm_of_one_kind_cannot_push_out_the_newest_of_another()
+    {
+        // Twenty hours ago a host was isolated; since then another host's
+        // uplink has flapped far more often than the cap. The isolation is the
+        // one event that keeps its alert open and must survive the cap.
+        var isolation = Typed(1, "com.vmware.vc.HA.HostIsolatedEvent", "host-1", Now.AddHours(-20));
+        var storm = Enumerable.Range(0, 50)
+            .Select(i => Typed(100 + i, "esx.problem.net.redundancy.lost", "host-2", Now.AddMinutes(-i)));
+
+        var kept = EventCollectionPipeline.KeepNewestPerGroup([isolation, .. storm], cap: 10);
+
+        Assert.Equal(10, kept.Count);
+        Assert.Contains(isolation, kept);
+        Assert.Equal(100, kept[0].Key);
+        Assert.Equal(kept.OrderByDescending(e => e.CreatedAtUtc), kept);
+    }
+
+    [Fact]
+    public void Groups_fold_type_case_and_split_by_subject()
+    {
+        var at = Now.AddHours(-1);
+        var events = new[]
+        {
+            Typed(1, "com.vmware.vc.HA.X", "host-1", at),
+            Typed(2, "com.vmware.vc.ha.x", "host-1", at.AddMinutes(1)),
+            Typed(3, "com.vmware.vc.ha.x", "host-2", at),
+        };
+
+        // Keys 1 and 2 are one group; its older member is the one dropped.
+        var kept = EventCollectionPipeline.KeepNewestPerGroup(events, cap: 2);
+
+        Assert.Equal([2L, 3L], kept.Select(e => e.Key));
+    }
+
     [Fact]
     public async Task Events_older_than_the_retention_window_are_removed_every_pass()
     {

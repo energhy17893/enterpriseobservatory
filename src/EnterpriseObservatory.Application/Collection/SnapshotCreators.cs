@@ -44,8 +44,13 @@ public interface IEventHistory
 {
     /// <summary>
     /// Events of the given kinds from one source, created within the window
-    /// (both ends inclusive), in no particular order.
+    /// (both ends inclusive), newest first, at most
+    /// <see cref="EventCollectionPipeline.MaxMatching"/> of them.
     /// </summary>
+    /// <remarks>
+    /// Type ids are matched without regard to case, as
+    /// <see cref="IEventStore.OfTypes"/> matches them.
+    /// </remarks>
     IReadOnlyList<SourceEvent> Find(
         string sourceInstanceId,
         IReadOnlyCollection<string> typeIds,
@@ -251,7 +256,7 @@ public static class SnapshotCreators
     private static Dictionary<int, SourceEvent> Match(SnapshotFinding finding, Context context)
     {
         var candidates = context.Events
-            .Where(e => string.Equals(e.TypeId, CreateSnapshotTypeId, StringComparison.Ordinal) &&
+            .Where(e => string.Equals(e.TypeId, CreateSnapshotTypeId, StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(e.VirtualMachine?.MoRef, finding.VmMoRef, StringComparison.Ordinal))
             .ToList();
 
@@ -349,7 +354,7 @@ public static class SnapshotCreators
         // told apart from any other task on the machine. Said rather than
         // claimed as the creation, and rather than reported as no event at all.
         if (context.Events.Any(e =>
-                string.Equals(e.TypeId, TaskEventClass, StringComparison.Ordinal) &&
+                string.Equals(e.TypeId, TaskEventClass, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(e.VirtualMachine?.MoRef, vmMoRef, StringComparison.Ordinal) &&
                 Within(e.CreatedAtUtc, created)))
         {
