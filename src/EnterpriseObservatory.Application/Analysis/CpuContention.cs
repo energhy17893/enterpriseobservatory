@@ -1,4 +1,3 @@
-using System.Globalization;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -623,9 +622,9 @@ public static class CpuContention
             Severity = AlertSeverity.Warning,
             Title = HostTitle,
             Description =
-                $"This host is {Percent(usage)}% busy and {waiting.Count} of its virtual " +
-                $"machines are waiting for a physical core (worst {Percent(Worst(waiting, ready))}% " +
-                $"of the sample interval, threshold {Percent(rules.ReadyPercent)}%). Both halves " +
+                $"This host is {Readings.Number(usage)}% busy and {waiting.Count} of its virtual " +
+                $"machines are waiting for a physical core (worst {Readings.Number(Worst(waiting, ready))}% " +
+                $"of the sample interval, threshold {Readings.Number(rules.ReadyPercent)}%). Both halves " +
                 "matter: a busy host with nobody waiting is a host doing its job. Several " +
                 "machines waiting at once is the host rather than any one of them — move " +
                 "workload off it, or reduce what is placed here, before resizing any single " +
@@ -678,8 +677,8 @@ public static class CpuContention
             Severity = AlertSeverity.Warning,
             Title = LimitTitle,
             Description =
-                $"This virtual machine spent {Percent(ready)}% of the sample interval ready " +
-                $"to run without running, and {Percent(limited)}% of it was time its own " +
+                $"This virtual machine spent {Readings.Number(ready)}% of the sample interval ready " +
+                $"to run without running, and {Readings.Number(limited)}% of it was time its own " +
                 "configured CPU limit held it back rather than a shortage of physical cores. " +
                 "That distinction is the whole of this alert: the same waiting from a busy " +
                 "host would be somebody else's problem on somebody else's console. The host " +
@@ -722,7 +721,7 @@ public static class CpuContention
             // with itself — one bad reading among three would otherwise drag
             // the median up and hide behind it.
             var peers = measured.Where(g => g != guest).Select(g => ready[g]).ToList();
-            var median = Math.Max(Median(peers), rules.SiblingFloorPercent);
+            var median = Math.Max(Stats.Median(peers), rules.SiblingFloorPercent);
 
             if (ready[guest] < rules.SiblingMultiple * median)
             {
@@ -743,10 +742,10 @@ public static class CpuContention
                 Severity = AlertSeverity.Warning,
                 Title = VictimTitle,
                 Description =
-                    $"This virtual machine spent {Percent(ready[guest])}% of the sample " +
+                    $"This virtual machine spent {Readings.Number(ready[guest])}% of the sample " +
                     $"interval waiting for a physical core, against a median of " +
-                    $"{Percent(median)}% across the {peers.Count} other measured machine(s) on " +
-                    $"host '{host.Value}' (worst of them {Percent(peers.Count > 0 ? peers.Max() : 0d)}%). " +
+                    $"{Readings.Number(median)}% across the {peers.Count} other measured machine(s) on " +
+                    $"host '{host.Value}' (worst of them {Readings.Number(peers.Count > 0 ? peers.Max() : 0d)}%). " +
                     "The host is not reported as short of CPU, so this is about this machine " +
                     "rather than its neighbours: check its CPU limit and shares, its vCPU " +
                     "count, and whether it is pinned.",
@@ -802,12 +801,12 @@ public static class CpuContention
             Title = WidthTitle,
             Description =
                 $"This {(width is { } w ? $"{w}-vCPU " : string.Empty)}virtual machine lost " +
-                $"{Percent(costop)}% per vCPU to co-scheduling — its vCPUs stopped waiting for " +
-                $"each other — while spending only {Percent(ready)}% per vCPU waiting for a " +
+                $"{Readings.Number(costop)}% per vCPU to co-scheduling — its vCPUs stopped waiting for " +
+                $"each other — while spending only {Readings.Number(ready)}% per vCPU waiting for a " +
                 "physical core. That combination is a sizing problem rather than a busy host: " +
                 "the machine has more vCPUs than it can effectively use. Removing vCPUs will " +
                 "make it faster, which is the opposite of what the same symptom would call for " +
-                $"on a saturated host. Threshold: {Percent(rules.CoStopPercent)}% per vCPU, " +
+                $"on a saturated host. Threshold: {Readings.Number(rules.CoStopPercent)}% per vCPU, " +
                 "from Broadcom KB 438023.",
             Category = SizingCategory,
             Source = Platform,
@@ -837,6 +836,7 @@ public static class CpuContention
     /// </remarks>
     private static Dictionary<EntityId, List<EntityId>> GuestsByHost(EntityGraph graph)
     {
+        // Not shared with MemoryPressure's: that one keeps guest-less hosts, this one must not.
         var byHost = new Dictionary<EntityId, List<EntityId>>();
 
         foreach (var edge in graph.Relationships.Where(r => r.Kind == RelationshipKind.RunsOn))
@@ -909,10 +909,10 @@ public static class CpuContention
         {
             var value = observation.Value;
 
-            if (!Named(value.CounterName, counter) ||
+            if (!Readings.IsCounter(value.CounterName, counter) ||
                 !value.IsAggregateInstance ||
                 value.Rollup != RollupType.Summation ||
-                !IsMilliseconds(value.Unit) ||
+                !Readings.IsMilliseconds(value.Unit) ||
                 value.Interval <= TimeSpan.Zero)
             {
                 continue;
@@ -1059,7 +1059,7 @@ public static class CpuContention
         {
             var value = observation.Value;
 
-            if (!Named(value.CounterName, counter) ||
+            if (!Readings.IsCounter(value.CounterName, counter) ||
                 !value.IsAggregateInstance ||
                 !string.Equals(value.Unit, "percent", StringComparison.OrdinalIgnoreCase))
             {
@@ -1086,31 +1086,7 @@ public static class CpuContention
             ? Math.Max(existing, value)
             : value;
 
-    private static bool Named(string counterName, string wanted) =>
-        string.Equals(counterName, wanted, StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsMilliseconds(string unit) =>
-        string.Equals(unit, "millisecond", StringComparison.OrdinalIgnoreCase);
-
     private static double Worst(
         List<EntityId> guests, Dictionary<EntityId, double> ready) =>
         guests.Count == 0 ? 0d : guests.Max(g => ready[g]);
-
-    private static string Percent(double value) =>
-        value.ToString("0.##", CultureInfo.InvariantCulture);
-
-    private static double Median(List<double> values)
-    {
-        if (values.Count == 0)
-        {
-            return 0d;
-        }
-
-        var sorted = values.Order().ToList();
-        var middle = sorted.Count / 2;
-
-        return sorted.Count % 2 == 1
-            ? sorted[middle]
-            : (sorted[middle - 1] + sorted[middle]) / 2d;
-    }
 }

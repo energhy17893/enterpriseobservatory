@@ -1,4 +1,3 @@
-using System.Globalization;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -358,9 +357,9 @@ public static class StorageNoisyNeighbour
                 continue;
             }
 
-            var peerMedian = Median([.. measured.Where(m => m != machine).Select(m => rates[m])]);
+            var peerMedian = Stats.Median([.. measured.Where(m => m != machine).Select(m => rates[m])]);
 
-            if (rate >= rules.Multiple * Math.Max(peerMedian, 1d))
+            if (rate >= Stats.FlooredMultiple(rules.Multiple, peerMedian, 1d))
             {
                 culprits.Add((machine, rate, peerMedian));
             }
@@ -400,7 +399,7 @@ public static class StorageNoisyNeighbour
 
         var current = load.Sum(o => o.Value.Raw);
 
-        if (current < rules.RiseMultiple * Math.Max(typical, 1d))
+        if (current < Stats.FlooredMultiple(rules.RiseMultiple, typical, 1d))
         {
             return null;
         }
@@ -442,7 +441,7 @@ public static class StorageNoisyNeighbour
 
         return volume
             .Where(o => o.Value.InstanceIsVantagePoint &&
-                        string.Equals(o.Value.Unit, "millisecond", StringComparison.OrdinalIgnoreCase))
+                        Readings.IsMilliseconds(o.Value.Unit))
             .GroupBy(o => o.Value.CounterName)
             .Where(g => g.All(o => o.Value.Raw >= floor))
             .Select(g => g.MaxBy(o => o.Value.Raw)!)
@@ -554,8 +553,6 @@ public static class StorageNoisyNeighbour
         double current,
         double typical)
     {
-        static string N(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
-
         string Name(EntityId id) =>
             graph.Entities.TryGetValue(id, out var e) && !string.IsNullOrWhiteSpace(e.DisplayName)
                 ? e.DisplayName
@@ -566,9 +563,9 @@ public static class StorageNoisyNeighbour
             culprits
                 .OrderByDescending(c => c.Rate)
                 .Select(c =>
-                    $"'{Name(c.Machine)}' at {N(c.Rate)} operations a second, " +
-                    $"{N(c.Rate / Math.Max(c.PeerMedian, 1d))}x the median of its neighbours " +
-                    $"({N(c.PeerMedian)}), {N(current > 0 ? c.Rate / current * 100d : 0d)}% of " +
+                    $"'{Name(c.Machine)}' at {Readings.Number(c.Rate)} operations a second, " +
+                    $"{Readings.Number(c.Rate / Math.Max(c.PeerMedian, 1d))}x the median of its neighbours " +
+                    $"({Readings.Number(c.PeerMedian)}), {Readings.Number(current > 0 ? c.Rate / current * 100d : 0d)}% of " +
                     "the volume's load"));
 
         // Said, not hidden: which machines could not be judged at all, so an
@@ -581,26 +578,11 @@ public static class StorageNoisyNeighbour
 
         return
             $"'{Name(volume)}' is slow from every host that reads it — '{witness.Value.CounterName}' " +
-            $"up to {N(witness.Value.Raw)} ms — and is carrying {N(current)} operations a second " +
-            $"against a usual {N(typical)} over the past day. Of the {measured} measured machine(s) " +
+            $"up to {Readings.Number(witness.Value.Raw)} ms — and is carrying {Readings.Number(current)} operations a second " +
+            $"against a usual {Readings.Number(typical)} over the past day. Of the {measured} measured machine(s) " +
             $"stored only on this volume, these are carrying an outsized share: {named}.{unjudged} " +
             "Look at what these machines are doing — a backup, a batch job, a scan — before " +
             "looking at the array. This is a correlation in time, not proof: a machine that has " +
             "just moved onto this volume produces the same picture.";
-    }
-
-    private static double Median(List<double> values)
-    {
-        if (values.Count == 0)
-        {
-            return 0d;
-        }
-
-        var sorted = values.Order().ToList();
-        var middle = sorted.Count / 2;
-
-        return sorted.Count % 2 == 1
-            ? sorted[middle]
-            : (sorted[middle - 1] + sorted[middle]) / 2d;
     }
 }

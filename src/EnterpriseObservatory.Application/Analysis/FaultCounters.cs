@@ -133,7 +133,7 @@ public static class FaultCounters
         // "this many, during this interval", and without the interval the
         // number cannot be read: three resets in twenty seconds and three in
         // five minutes are different situations.
-        var count = value.Raw.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        var count = Readings.Number(value.Raw);
         var seconds = value.Interval.TotalSeconds
             .ToString("0", System.Globalization.CultureInfo.InvariantCulture);
 

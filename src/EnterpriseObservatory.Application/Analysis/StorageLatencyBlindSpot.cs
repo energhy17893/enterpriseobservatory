@@ -362,7 +362,7 @@ public static class StorageLatencyBlindSpot
     /// </remarks>
     private static bool IsLatency(CounterValue value) =>
         value.InstanceIsVantagePoint &&
-        string.Equals(value.Unit, "millisecond", StringComparison.OrdinalIgnoreCase);
+        Readings.IsMilliseconds(value.Unit);
 
     /// <summary>
     /// How much work this volume was asked for, or <c>null</c> if nobody looked.
@@ -414,9 +414,7 @@ public static class StorageLatencyBlindSpot
 
         foreach (var observation in volume)
         {
-            if (string.Equals(
-                observation.Value.CounterName, rules.SiocCounter,
-                StringComparison.OrdinalIgnoreCase))
+            if (Readings.IsCounter(observation.Value.CounterName, rules.SiocCounter))
             {
                 highest = Math.Max(highest ?? double.MinValue, observation.Value.Raw);
             }

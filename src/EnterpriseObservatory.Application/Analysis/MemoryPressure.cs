@@ -1,4 +1,3 @@
-using System.Globalization;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -391,7 +390,7 @@ public static class MemoryPressure
         {
             if (Active(rate, rules))
             {
-                parts.Add($"{name} {Number(rate!.Value)} KB/s");
+                parts.Add($"{name} {Readings.Number(rate!.Value)} KB/s");
             }
         }
 
@@ -438,19 +437,19 @@ public static class MemoryPressure
 
             // The worse of two readings, if a cycle ever carries two, so the
             // answer does not depend on collection order.
-            if (Named(value.CounterName, rules.SwapInCounter))
+            if (Readings.IsCounter(value.CounterName, rules.SwapInCounter))
             {
                 rates.SwapIn = Worse(rates.SwapIn, value.Raw);
             }
-            else if (Named(value.CounterName, rules.SwapOutCounter))
+            else if (Readings.IsCounter(value.CounterName, rules.SwapOutCounter))
             {
                 rates.SwapOut = Worse(rates.SwapOut, value.Raw);
             }
-            else if (Named(value.CounterName, rules.CompressionCounter))
+            else if (Readings.IsCounter(value.CounterName, rules.CompressionCounter))
             {
                 rates.Compression = Worse(rates.Compression, value.Raw);
             }
-            else if (Named(value.CounterName, rules.DecompressionCounter))
+            else if (Readings.IsCounter(value.CounterName, rules.DecompressionCounter))
             {
                 rates.Decompression = Worse(rates.Decompression, value.Raw);
             }
@@ -476,6 +475,7 @@ public static class MemoryPressure
     /// </remarks>
     private static Dictionary<EntityId, List<EntityId>> GuestsByHost(EntityGraph graph)
     {
+        // Not shared with CpuContention's: this one keeps guest-less hosts, that one must not.
         var byHost = graph.Entities.Values
             .Where(e => e.Kind == EntityKind.EsxiHost && e.ObservationState != ObservationState.Vanished)
             .ToDictionary(e => e.Id, _ => new List<EntityId>());
@@ -500,10 +500,4 @@ public static class MemoryPressure
 
     private static double Worse(double? existing, double value) =>
         existing is { } known ? Math.Max(known, value) : value;
-
-    private static bool Named(string counterName, string wanted) =>
-        string.Equals(counterName, wanted, StringComparison.OrdinalIgnoreCase);
-
-    private static string Number(double value) =>
-        value.ToString("0.##", CultureInfo.InvariantCulture);
 }

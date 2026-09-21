@@ -94,7 +94,7 @@ public static class PeerOutliers
         var alerts = new List<AlertDefinition>();
 
         var groups = observations
-            .Where(o => o.Value.InstanceIsVantagePoint && IsDuration(o.Value.Unit))
+            .Where(o => o.Value.InstanceIsVantagePoint && Readings.IsMilliseconds(o.Value.Unit))
             .GroupBy(o => (o.Entity, o.Value.CounterName));
 
         foreach (var group in groups)
@@ -129,12 +129,12 @@ public static class PeerOutliers
         // itself. With it included, one bad reading among three drags the
         // median up and hides behind it.
         var peers = ordered.Skip(1).Select(o => o.Value.Raw).ToList();
-        var median = Median(peers);
+        var median = Stats.Median(peers);
 
         // Floored at one before dividing: the usual median on an all-flash
         // estate is exactly zero, and dividing by it makes every reading an
         // infinite multiple.
-        if (worst.Value.Raw < rules.Multiple * Math.Max(median, 1d))
+        if (worst.Value.Raw < Stats.FlooredMultiple(rules.Multiple, median, 1d))
         {
             return null;
         }
@@ -165,36 +165,12 @@ public static class PeerOutliers
     {
         var value = worst.Value;
 
-        static string Ms(double v) =>
-            v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
-
         return
-            $"'{value.CounterName}' reads {Ms(value.Raw)} ms from '{value.Instance}' while the " +
-            $"other {peers.Count} host(s) that mount this see a median of {Ms(median)} ms " +
-            $"(worst peer {Ms(peers.Count > 0 ? peers.Max() : 0)} ms). A shared volume that is " +
+            $"'{value.CounterName}' reads {Readings.Number(value.Raw)} ms from '{value.Instance}' while the " +
+            $"other {peers.Count} host(s) that mount this see a median of {Readings.Number(median)} ms " +
+            $"(worst peer {Readings.Number(peers.Count > 0 ? peers.Max() : 0)} ms). A shared volume that is " +
             "slow from one host and not the rest is not the array: the difference is in the " +
             "path between that host and the storage. Check that host's HBA, its cable and " +
             "transceiver, and its zoning before looking at the array.";
-    }
-
-    /// <summary>
-    /// Milliseconds, and deliberately nothing else. See the type's remarks.
-    /// </summary>
-    private static bool IsDuration(string unit) =>
-        string.Equals(unit, "millisecond", StringComparison.OrdinalIgnoreCase);
-
-    private static double Median(List<double> values)
-    {
-        if (values.Count == 0)
-        {
-            return 0d;
-        }
-
-        var sorted = values.Order().ToList();
-        var middle = sorted.Count / 2;
-
-        return sorted.Count % 2 == 1
-            ? sorted[middle]
-            : (sorted[middle - 1] + sorted[middle]) / 2d;
     }
 }
