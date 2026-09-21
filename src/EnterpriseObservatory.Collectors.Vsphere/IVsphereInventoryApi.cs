@@ -165,6 +165,21 @@ public sealed record VsphereHost
     /// host that has lost every path.
     /// </remarks>
     public IReadOnlyList<VsphereStoragePath> StoragePaths { get; init; } = [];
+    /// <summary>
+    /// The host advanced settings this product carries, by their vSphere name.
+    /// </summary>
+    /// <remarks>
+    /// A filtered view rather than the whole table — see
+    /// <see cref="AdvancedSettings"/> for which names and why. Empty when the
+    /// host did not report <c>config.option</c> at all, and **a missing key is
+    /// not an empty value**: a syslog target nobody set arrives as an empty
+    /// string, while a host that refused the property arrives with no entry.
+    /// A rule that conflates them reports a finding against a host it could
+    /// not read.
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> AdvancedSettings { get; init; } =
+        Vsphere.AdvancedSettings.None;
+
 }
 
 /// <summary>One entry of a host's multipath table, as vCenter reports it.</summary>

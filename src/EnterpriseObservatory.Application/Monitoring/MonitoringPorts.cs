@@ -199,6 +199,10 @@ public sealed record MonitoringOptions
     public Analysis.StoragePathRedundancyPolicy StoragePathRedundancy { get; init; } =
         Analysis.StoragePathRedundancyPolicy.Default;
 
+    /// <summary>Which setting names the host's log target.</summary>
+    public Analysis.RemoteLoggingPolicy RemoteLogging { get; init; } =
+        Analysis.RemoteLoggingPolicy.Default;
+
     public FlapPolicy Flap { get; init; } = FlapPolicy.Default;
 
     public EntityRetentionPolicy EntityRetention { get; init; } = EntityRetentionPolicy.Default;

@@ -329,6 +329,15 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             // path states nobody can attribute or names nothing points at.
             "config.storageDevice.multipathInfo",
             "config.storageDevice.scsiLun",
+
+            // Every advanced setting the host has, which is over a thousand
+            // rows. Asking for the whole table and keeping a handful of it is
+            // deliberate: vSphere has no way to request individual advanced
+            // settings through the property collector, and the alternative —
+            // one QueryOptions round trip per setting per host — is a far
+            // worse trade than one property that arrives with the rest of the
+            // inventory. What is kept is decided in AdvancedSettingKeys.
+            "config.option",
         ],
         ["VirtualMachine"] =
         [
@@ -746,6 +755,54 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
     /// in exactly the case where something is already wrong.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// The advanced settings worth carrying, keyed by their vSphere name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An allowlist rather than the whole table, and the reason is volume: a
+    /// host reports over a thousand advanced settings, so keeping all of them
+    /// would write five figures of rows per cycle to answer a handful of
+    /// questions. Nothing here is a judgement about the values — that belongs
+    /// to a rule — only about which ones anything asks about.
+    /// </para>
+    /// <para>
+    /// A setting that is absent is absent; it is not recorded as empty. The
+    /// difference matters to every consumer: an unset <c>Syslog.global.logHost</c>
+    /// and a host that never reported the setting at all are different facts,
+    /// and only the first one is a finding.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyDictionary<string, string> ReadAdvancedSettings(PropertyObject host)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        if (!host.Structures.TryGetValue("config.option", out var options))
+        {
+            return AdvancedSettings.None;
+        }
+
+        var kept = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var option in options)
+        {
+            var key = option.TextOf("key");
+
+            if (key.Length == 0 || !AdvancedSettings.Wanted.Contains(key))
+            {
+                continue;
+            }
+
+            // Recorded even when empty, because an empty value is the answer
+            // to most of these: a syslog target nobody set reads as "". The
+            // absence that means "not reported" is the missing dictionary
+            // entry, not an empty string.
+            kept[key] = option.TextOf("value");
+        }
+
+        return kept;
+    }
+
     public static IReadOnlyList<VsphereStoragePath> ReadStoragePaths(PropertyObject host)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -1018,6 +1075,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
             ? parent
             : null,
         StoragePaths = ReadStoragePaths(o),
+        AdvancedSettings = ReadAdvancedSettings(o),
     };
 
     public static VsphereVirtualMachine ToVirtualMachine(PropertyObject o) => new()

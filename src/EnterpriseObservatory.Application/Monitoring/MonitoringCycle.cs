@@ -167,6 +167,15 @@ public sealed class MonitoringCycle(
                 Analysis.StoragePathRedundancy.RuleId,
                 () => Analysis.StoragePathRedundancy.Evaluate(
                     [.. graph.Active], options.StoragePathRedundancy)),
+
+            // The first rule that reads configuration rather than measurement.
+            // It rides the inventory rhythm because that is when the setting
+            // is read: a value that changes when somebody changes it has
+            // nothing to say every twenty seconds.
+            .. Analysis.GuardedRule.Run(
+                Analysis.RemoteLogging.RuleId,
+                () => Analysis.RemoteLogging.Evaluate(
+                    [.. graph.Active], options.RemoteLogging)),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Inventory, observed, options, now);
