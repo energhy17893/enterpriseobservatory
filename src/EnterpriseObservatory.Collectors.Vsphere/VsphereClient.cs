@@ -1730,6 +1730,72 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
     }
 
     /// <summary>
+    /// Who is signed in to this vCenter, as far as this account may see.
+    /// </summary>
+    /// <remarks>
+    /// For the probe, and for answering one question against a real server:
+    /// does this product leave sessions behind. Not called by collection.
+    /// </remarks>
+    public async Task<VsphereSessions> ReadSessionsAsync(CancellationToken cancellationToken)
+    {
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+
+        var response = await SendAsync(
+            VsphereSoapRequests.RetrieveSessions(content.PropertyCollector, content.SessionManager),
+            cancellationToken).ConfigureAwait(false);
+
+        return VsphereSessions.Parse(response);
+    }
+
+    /// <summary>
+    /// Logs out, then asks the vCenter whether it agrees.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For the probe. A read-only account cannot list sessions, so "did the
+    /// session end" cannot be read off a list; but the server will say so
+    /// itself. After a logout that worked, a call carrying the same session
+    /// cookie is refused as <c>NotAuthenticated</c>. After one that did not,
+    /// it is answered.
+    /// </para>
+    /// <para>
+    /// The second call is posted directly, because <c>SendAsync</c> would meet
+    /// that refusal by signing in again and hide the very answer being sought.
+    /// </para>
+    /// </remarks>
+    /// <returns>
+    /// True when the vCenter refused the old session; false when it still
+    /// honoured it; null when this client never had a session to end.
+    /// </returns>
+    public async Task<bool?> LogoutAndConfirmAsync(CancellationToken cancellationToken)
+    {
+        if (!_loggedIn || _serviceContent is not { } content)
+        {
+            return null;
+        }
+
+        await LogoutAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var reply = await PostAsync(
+                VsphereSoapRequests.RetrieveSessions(content.PropertyCollector, content.SessionManager),
+                cancellationToken).ConfigureAwait(false);
+
+            // Answered, but an answer is not yet "still signed in". The
+            // property collector can reply to a session it no longer knows
+            // and refuse each property instead of the call — so the only
+            // thing that proves the session survived is the session itself
+            // coming back.
+            return VsphereSessions.Parse(reply).Current is null;
+        }
+        catch (VsphereApiException ex) when (ex.Kind == VsphereFaultKind.NotAuthenticated)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Ends this client's session on the vCenter, if it has one.
     /// </summary>
     /// <remarks>

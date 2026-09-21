@@ -297,6 +297,31 @@ public static class VsphereSoapRequests
             """);
     }
 
+    /// <summary>Reads who is signed in to this vCenter, and which session is ours.</summary>
+    /// <remarks>
+    /// A read, like everything else here. <c>sessionList</c> needs a privilege a
+    /// read-only account usually lacks; when it does, the property comes back
+    /// in <c>missingSet</c> and <c>currentSession</c> still answers.
+    /// </remarks>
+    public static string RetrieveSessions(string propertyCollectorMoRef, string sessionManagerMoRef) => Envelope($"""
+            <vim25:RetrievePropertiesEx>
+              <vim25:_this type="PropertyCollector">{Escape(propertyCollectorMoRef)}</vim25:_this>
+              <vim25:specSet>
+                <vim25:propSet>
+                  <vim25:type>SessionManager</vim25:type>
+                  <vim25:all>false</vim25:all>
+                  <vim25:pathSet>sessionList</vim25:pathSet>
+                  <vim25:pathSet>currentSession</vim25:pathSet>
+                </vim25:propSet>
+                <vim25:objectSet>
+                  <vim25:obj type="SessionManager">{Escape(sessionManagerMoRef)}</vim25:obj>
+                  <vim25:skip>false</vim25:skip>
+                </vim25:objectSet>
+              </vim25:specSet>
+              <vim25:options />
+            </vim25:RetrievePropertiesEx>
+        """);
+
     /// <summary>Fetches the next page.</summary>
     /// <remarks>
     /// Not optional. Stopping at the first page truncates the inventory at
