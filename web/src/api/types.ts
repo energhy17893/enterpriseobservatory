@@ -665,6 +665,8 @@ export interface ComplianceReportView {
   historyFromUtc: string
   historyToUtc: string
   history: ComplianceReportTransitionRow[]
+  /** Whether more transitions matched the scope and period than the store returned; history is a prefix, not the whole match. */
+  historyTruncated: boolean
 }
 
 /** One datastore on the capacity report (M5.3): its latest reading and the same fill-date answer its own page shows. */
@@ -817,6 +819,8 @@ export interface ReportSubscriptionView {
   lastError: string | null
   createdBy: string
   createdUtc: string
+  lastModifiedBy: string | null
+  lastModifiedUtc: string | null
 }
 
 export interface ReportSubscriptionCommand {

@@ -1,5 +1,6 @@
 using System.Globalization;
 using EnterpriseObservatory.Api.Contracts;
+using EnterpriseObservatory.Domain.Compliance;
 
 namespace EnterpriseObservatory.Api.Reports;
 
@@ -27,8 +28,26 @@ public static class ComplianceHistoryReportCsv
         "At (UTC)",
     ];
 
-    public static string Write(IEnumerable<ComplianceReportTransitionRow> rows) =>
-        CsvWriter.Write(Header, rows.Select(ToCells).ToList());
+    /// <param name="rows">The history rows, oldest first.</param>
+    /// <param name="truncated">
+    /// Whether more transitions matched the report's scope than the store
+    /// returned -- <see cref="ComplianceTransitionsPage.MaxRows"/>.
+    /// Appended as a trailing note row rather than silently handing back a
+    /// list that looks complete but is a prefix of the period asked for.
+    /// </param>
+    public static string Write(IEnumerable<ComplianceReportTransitionRow> rows, bool truncated = false)
+    {
+        var csv = CsvWriter.Write(Header, rows.Select(ToCells).ToList());
+
+        return truncated
+            ? csv + CsvWriter.WriteRow(
+            [
+                "Truncated",
+                $"More than {ComplianceTransitionsPage.MaxRows:N0} transitions matched this report's " +
+                "scope and period; narrow the control, entity or date range to see the rest.",
+            ])
+            : csv;
+    }
 
     private static IReadOnlyList<string?> ToCells(ComplianceReportTransitionRow row) =>
     [

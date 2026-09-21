@@ -86,7 +86,7 @@ function Application() {
           <Route path="reports/continuity" element={<ContinuityReport />} />
           <Route path="maintenance" element={<Maintenance identity={data} />} />
           <Route path="connections" element={<Connections identity={data} />} />
-          <Route path="reports/scheduled" element={<ScheduledReports />} />
+          <Route path="reports/scheduled" element={<ScheduledReports identity={data} />} />
           <Route path="email" element={<Email identity={data} />} />
           <Route path="accounts" element={<Accounts identity={data} />} />
         </Route>
