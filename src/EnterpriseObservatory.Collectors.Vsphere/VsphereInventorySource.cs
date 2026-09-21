@@ -91,6 +91,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 Id = id(cluster.MoRef),
                 Kind = EntityKind.Cluster,
                 DisplayName = cluster.Name,
+                DrsRules = ResolveDrsRules(cluster, id),
                 // Unknown, and today that is where it stays. This said the
                 // health-propagation pass derives it from the members, which
                 // was not true: ADR-0004 settles which edges propagate and in
@@ -142,6 +143,66 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
 
             relationships.Add(Edge(id(cluster.MoRef), id("vcenter"), RelationshipKind.ManagedBy, now));
         }
+    }
+
+    // --- M8.3: DRS rule resolution -----------------------------------------
+    //
+    // A separate, self-contained method rather than inline in AddClusters, so
+    // that another collector-side change to cluster configuration (HA's
+    // dasConfig, read from the same configurationEx structure) touches
+    // neither this method's body nor its call site's surrounding lines.
+    //
+    // What this turns a wire-shaped VsphereDrsRule into is the one thing the
+    // wire shape deliberately does not carry: group names resolved to
+    // members. See VsphereDrsRule's remarks for why that split exists.
+
+    /// <summary>
+    /// Resolves a cluster's DRS rules' group references against its groups.
+    /// </summary>
+    /// <remarks>
+    /// A rule naming a group vCenter did not also report — a group deleted
+    /// between the two reads of a snapshot that is not transactional, or a
+    /// group this account could not see — resolves to no members rather than
+    /// throwing: the rule is then carried with an empty host or VM list,
+    /// which the analysis rule reads as "nothing to judge" rather than as
+    /// "the placement failed."
+    /// </remarks>
+    private static IReadOnlyList<Domain.DrsRule> ResolveDrsRules(
+        VsphereCluster cluster, Func<string, EntityId> id)
+    {
+        if (cluster.DrsRules.Count == 0)
+        {
+            return [];
+        }
+
+        var vmGroups = cluster.Groups
+            .Where(g => g.Kind == VsphereClusterGroupKind.VirtualMachine)
+            .ToDictionary(g => g.Name, g => g.MemberMoRefs, StringComparer.Ordinal);
+
+        var hostGroups = cluster.Groups
+            .Where(g => g.Kind == VsphereClusterGroupKind.Host)
+            .ToDictionary(g => g.Name, g => g.MemberMoRefs, StringComparer.Ordinal);
+
+        IReadOnlyList<string> MembersOf(
+            IReadOnlyDictionary<string, IReadOnlyList<string>> groups, string? name) =>
+            name is { Length: > 0 } key && groups.TryGetValue(key, out var members)
+                ? [.. members.Select(m => id(m).Value)]
+                : [];
+
+        return [.. cluster.DrsRules.Select(rule => new Domain.DrsRule
+        {
+            Name = rule.Name,
+            Kind = rule.Kind,
+            Enabled = rule.Enabled,
+            Mandatory = rule.Mandatory,
+            VCenterInCompliance = rule.InCompliance,
+            VirtualMachineEntityIds = rule.Kind is Domain.DrsRuleKind.Affinity or Domain.DrsRuleKind.AntiAffinity
+                ? [.. rule.VirtualMachineMoRefs.Select(m => id(m).Value)]
+                : MembersOf(vmGroups, rule.VmGroupName),
+            HostEntityIds = rule.Kind is Domain.DrsRuleKind.VmHostAffine or Domain.DrsRuleKind.VmHostAntiAffine
+                ? MembersOf(hostGroups, rule.HostGroupName)
+                : [],
+        })];
     }
 
     private void AddHosts(

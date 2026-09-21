@@ -59,6 +59,7 @@ public class AnalysisRulesTests
             [
                 StoragePathRedundancy.RuleId,
                 MultipathSinglePointOfFailure.RuleId,
+                DrsRuleViolations.RuleId,
                 RemoteLogging.RuleId,
                 ClusterHighAvailability.RuleId,
                 EventAlerts.RuleId,
