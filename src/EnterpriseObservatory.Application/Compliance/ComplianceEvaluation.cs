@@ -33,7 +33,9 @@ public sealed record BoundControl
 /// A control binds to a check by the setting the guide names, not by its id.
 /// Ids change between editions — <c>esxi-8.logs-remote</c> is
 /// <c>esx-9.log-forwarding</c> — and the setting does not, so the same check
-/// serves both editions and a new one with no code change.
+/// serves both editions and a new one with no code change. Only where the
+/// guide names no setting (<c>N/A</c>: services, time, switch security,
+/// lockdown) does a check list the ids it answers.
 /// </para>
 /// </remarks>
 public static class ComplianceEvaluation
@@ -60,8 +62,14 @@ public static class ComplianceEvaluation
     private static BoundControl BindOne(ComplianceControl control, IReadOnlyList<SettingCheck> checks)
     {
         var parameter = control.Parameter.Trim();
-        var check = checks.FirstOrDefault(c =>
-            string.Equals(c.Setting, parameter, StringComparison.OrdinalIgnoreCase));
+
+        // By the setting the guide names first; by id only for the controls
+        // whose guide row names none (see SettingCheck.ControlIds).
+        var check =
+            checks.FirstOrDefault(c =>
+                c.ReadsAdvancedSetting &&
+                string.Equals(c.Setting, parameter, StringComparison.OrdinalIgnoreCase)) ??
+            checks.FirstOrDefault(c => c.ControlIds.Contains(control.ControlId, StringComparer.Ordinal));
 
         if (check is null)
         {
@@ -156,27 +164,15 @@ public static class ComplianceEvaluation
             LastEvaluatedUtc = nowUtc,
         };
 
-        // Absent is unread, and unread is not a verdict. The setting arrives
-        // as an empty string when nobody configured it; it is missing only
-        // when the product never managed to read it — see Entity.Settings.
-        if (!host.Settings.TryGetValue(check.Setting, out var observed))
-        {
-            return finding with
-            {
-                Expected = bound.Control.BaselineValue,
-                Reason =
-                    $"The host did not report '{check.Setting}', so it was not read. That is a " +
-                    "collection gap, not a pass or a failure; see Collectors for what could be read.",
-            };
-        }
-
-        var judgement = SettingChecks.Judge(check, bound.Control, observed);
+        // Absent is unread, and unread is not a verdict: whatever the host did
+        // not report comes back not evaluated, with the reason.
+        var judgement = SettingChecks.Judge(check, bound.Control, host);
 
         return finding with
         {
             Verdict = judgement.Verdict,
             Expected = judgement.Expected,
-            Observed = observed,
+            Observed = judgement.Observed,
             Reason = judgement.Reason,
         };
     }

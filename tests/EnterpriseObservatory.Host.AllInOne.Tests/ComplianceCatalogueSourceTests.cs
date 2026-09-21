@@ -33,11 +33,18 @@ public class ComplianceCatalogueSourceTests
 
         Assert.Equal(
             [
+                "esxi-8.deactivate-cim",
+                "esxi-8.deactivate-snmp",
+                "esxi-8.lockdown-mode",
                 "esxi-8.logs-audit-local",
                 "esxi-8.logs-audit-remote",
                 "esxi-8.logs-remote",
+                "esxi-8.network-reject-forged-transmit-standardswitch",
+                "esxi-8.network-reject-mac-changes-standardswitch",
                 "esxi-8.shell-interactive-timeout",
                 "esxi-8.shell-timeout",
+                "esxi-8.timekeeping-services",
+                "esxi-8.timekeeping-sources",
             ],
             evaluated.Order(StringComparer.Ordinal));
     }
@@ -54,8 +61,21 @@ public class ComplianceCatalogueSourceTests
 
         var bound = ComplianceEvaluation.Bind(catalogue);
 
-        Assert.Equal(6, bound.Count(b => b.IsEvaluated));
-        Assert.Contains(bound, b => b.IsEvaluated && b.Control.ControlId == "esx-9.log-forwarding");
+        Assert.Equal(
+            [
+                "esx-9.ad-admin-group-name",
+                "esx-9.lockdown-mode",
+                "esx-9.log-audit-forwarding",
+                "esx-9.log-audit-local",
+                "esx-9.log-forwarding",
+                "esx-9.network-standard-reject-forged-transmit",
+                "esx-9.network-standard-reject-mac-changes",
+                "esx-9.shell-interactive-timeout",
+                "esx-9.shell-timeout",
+                "esx-9.snmp",
+                "esx-9.time",
+            ],
+            bound.Where(b => b.IsEvaluated).Select(b => b.Control.ControlId).Order(StringComparer.Ordinal));
 
         // Every other control is carried, with a reason, rather than dropped.
         Assert.All(
