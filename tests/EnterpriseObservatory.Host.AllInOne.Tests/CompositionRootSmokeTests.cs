@@ -214,6 +214,27 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_viewer_can_read_the_capacity_report_as_csv()
+    {
+        // M5.3, the same read-for-any-signed-in-user rule as the alert report.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/capacity.csv");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_the_capacity_report_csv_with_401()
+    {
+        var response = await Client().GetAsync("/api/reports/capacity.csv");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task A_viewer_who_tries_to_change_something_is_refused_with_403()
     {
         Account("viewer", Role.Viewer);

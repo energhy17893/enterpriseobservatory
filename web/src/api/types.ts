@@ -616,6 +616,46 @@ export interface ComplianceReportView {
   history: ComplianceReportTransitionRow[]
 }
 
+/** One datastore on the capacity report (M5.3): its latest reading and the same fill-date answer its own page shows. */
+export interface CapacityReportRow {
+  name: string
+  /** VMFS, NFS, vsan and so on. Null when not read. */
+  datastoreType: string | null
+  source: string
+  /** The latest reading of each, or null when never recorded -- never a zero standing in for "not looked". */
+  capacityBytes: number | null
+  usedBytes: number | null
+  freeBytes: number | null
+  percentUsed: number | null
+  /** Used plus what has been promised to thin disks. Null when uncommitted space was never read. */
+  provisionedBytes: number | null
+  /** provisionedBytes over capacityBytes. Above 1 is over-committed. */
+  overcommitRatio: number | null
+  timeToFull: TimeToFullView
+}
+
+export interface CapacityReportSummary {
+  totalDatastores: number
+  totalCapacityBytes: number
+  totalUsedBytes: number
+  totalFreeBytes: number
+  /** Filling inside 30 days, the product's warning threshold. */
+  fillingWithin30Days: number
+  /** Filling inside 7 days, the product's critical threshold. */
+  fillingWithin7Days: number
+  overcommittedCount: number
+  /** No fill-date estimate yet -- a refusal is counted here, never left out. */
+  noEstimateCount: number
+  /** Why, keyed by the machine-readable reason, e.g. WindowTooShort. */
+  noEstimateByReason: Record<string, number>
+}
+
+export interface CapacityReportView {
+  generatedAtUtc: string
+  summary: CapacityReportSummary
+  rows: CapacityReportRow[]
+}
+
 export interface AddExceptionCommand {
   controlId: string
   /** Null for every entity the control applies to. */

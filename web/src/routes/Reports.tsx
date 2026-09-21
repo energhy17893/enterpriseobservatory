@@ -45,10 +45,14 @@ export function Reports() {
           </Card>
         </Link>
 
-        <Card className="h-full p-4 text-muted-foreground">
-          <div className="font-medium">Capacity report</div>
-          <div className="mt-1 text-sm">Coming soon.</div>
-        </Card>
+        <Link to="/reports/capacity">
+          <Card className="h-full p-4 hover:border-primary">
+            <div className="font-medium">Capacity report</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              Every datastore, worst fill date first, with the over-commit and no-estimate counts. CSV and printable.
+            </div>
+          </Card>
+        </Link>
       </div>
     </div>
   )

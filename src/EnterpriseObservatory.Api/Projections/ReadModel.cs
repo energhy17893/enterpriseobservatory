@@ -285,6 +285,128 @@ public sealed class ReadModel(
         };
     }
 
+    /// <summary>
+    /// The capacity report: every live datastore, its latest reading and the
+    /// same fill-date estimate the datastore's own page shows.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The estimate is the expensive part -- a 720-point trend fit per
+    /// datastore -- and it is read through <see cref="TimeToFull"/>, the same
+    /// method the entity page calls, which goes through
+    /// <c>DatastoreTimeToFull.Read</c>'s process-wide cache. A report of forty
+    /// datastores costs one history query and, at most, one fresh fit each,
+    /// not forty because a page happened to load in between.
+    /// </para>
+    /// <para>
+    /// Vanished datastores are left off, the same choice the explorer makes by
+    /// default: a datastore nobody has seen this cycle has no current reading
+    /// to report.
+    /// </para>
+    /// </remarks>
+    public CapacityReportView CapacityReport()
+    {
+        var now = _clock.UtcNow;
+        var retention = _options.Retention;
+        var graph = _graphs.Current;
+
+        var rows = graph.Entities.Values
+            .Where(e => e.Kind == EntityKind.Datastore && e.ObservationState != ObservationState.Vanished)
+            .Select(e => ToCapacityReportRow(e, now, retention))
+            // Soonest fill date first; a refusal sorts after every forecast.
+            // Among the rest, worst (highest percent used) first.
+            .OrderBy(r => r.TimeToFull.FullAtUtc ?? DateTimeOffset.MaxValue)
+            .ThenByDescending(r => r.PercentUsed ?? -1)
+            .ToList();
+
+        return new CapacityReportView
+        {
+            GeneratedAtUtc = now,
+            Summary = SummarizeCapacity(rows),
+            Rows = rows,
+        };
+    }
+
+    private CapacityReportRow ToCapacityReportRow(
+        Entity datastore, DateTimeOffset now, SeriesRetentionPolicy retention)
+    {
+        var capacity = DatastoreTimeToFull.LatestCapacity(_observations, datastore.Id, now, retention);
+        var free = LatestReading(datastore.Id, CapacityCounters.DatastoreFree, now, retention);
+        var provisioned = LatestReading(datastore.Id, CapacityCounters.DatastoreProvisioned, now, retention);
+
+        var used = capacity is { } c && free is { } f ? c - f : (double?)null;
+        var percentUsed = used is { } u && capacity is > 0 ? u / capacity * 100 : (double?)null;
+        var overcommitRatio = provisioned is { } p && capacity is > 0 ? p / capacity : (double?)null;
+
+        return new CapacityReportRow
+        {
+            Name = datastore.DisplayName,
+            DatastoreType = datastore.Settings.TryGetValue("type", out var type) ? type : null,
+            Source = datastore.SourceInstanceId,
+            CapacityBytes = capacity,
+            UsedBytes = used,
+            FreeBytes = free,
+            PercentUsed = percentUsed,
+            ProvisionedBytes = provisioned,
+            OvercommitRatio = overcommitRatio,
+            TimeToFull = TimeToFull(datastore.Id),
+        };
+    }
+
+    /// <summary>
+    /// The latest reading of one capacity counter, straight from the raw
+    /// tier -- the same query shape as <c>DatastoreTimeToFull.LatestCapacity</c>,
+    /// generalized to the other capacity series it does not cover. A single
+    /// point at <c>MaxPoints = 1</c>, not the 720-point history the trend is
+    /// fitted to, so this costs nothing extra per row.
+    /// </summary>
+    private double? LatestReading(
+        EntityId entity, string counter, DateTimeOffset now, SeriesRetentionPolicy retention)
+    {
+        var result = _observations.Query(new SeriesQuery
+        {
+            Key = new SeriesKey(entity, counter, string.Empty),
+            FromUtc = now - retention.Raw,
+            ToUtc = now + TimeSpan.FromTicks(1),
+            Resolution = SeriesResolution.Raw,
+            MaxPoints = 1,
+        });
+
+        return result.Points.Count > 0 ? result.Points[^1].Last : null;
+    }
+
+    private static CapacityReportSummary SummarizeCapacity(List<CapacityReportRow> rows)
+    {
+        var byReason = new Dictionary<string, int>(StringComparer.Ordinal);
+        var noEstimate = 0;
+
+        foreach (var row in rows)
+        {
+            if (row.TimeToFull.IsForecast || row.TimeToFull.Reason is not { } reason)
+            {
+                continue;
+            }
+
+            noEstimate++;
+            byReason[reason] = byReason.GetValueOrDefault(reason) + 1;
+        }
+
+        return new CapacityReportSummary
+        {
+            TotalDatastores = rows.Count,
+            TotalCapacityBytes = rows.Sum(r => r.CapacityBytes ?? 0),
+            TotalUsedBytes = rows.Sum(r => r.UsedBytes ?? 0),
+            TotalFreeBytes = rows.Sum(r => r.FreeBytes ?? 0),
+            FillingWithin30Days = rows.Count(r =>
+                r.TimeToFull is { IsForecast: true, Days: <= 30 }),
+            FillingWithin7Days = rows.Count(r =>
+                r.TimeToFull is { IsForecast: true, Days: <= 7 }),
+            OvercommittedCount = rows.Count(r => r.OvercommitRatio is > 1),
+            NoEstimateCount = noEstimate,
+            NoEstimateByReason = byReason,
+        };
+    }
+
     // --- entities ---------------------------------------------------------
 
     /// <summary>The entity explorer (tier 1 of ADR-0007).</summary>
