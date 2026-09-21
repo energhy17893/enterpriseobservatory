@@ -1,6 +1,6 @@
 # ADR-0026: Değerlendirme üç değerlidir; "bilinmiyor" bir alarmı çözemez
 
-- **Durum:** Önerildi
+- **Durum:** Kabul edildi
 - **Tarih:** 2026-09-22
 - **Karar verenler:** Ertuğrul Ünal
 - **İlgili:** ADR-0007, ADR-0009 (değerlendirme kapsamı), ADR-0018, ADR-0024,
@@ -49,10 +49,10 @@ yoktur.**
 5. Alarmın kimliği ve başlangıç zamanı kalıcıdır; yeniden başlatmadan sonra ilk
    değerlendirmeden **önce** geri yüklenir; bildirilmiş bir alarm yeniden
    bildirilmez.
-6. Susan bir kaynağın alarmları ileri taşınır. **Üst sınır açık sorudur** — bkz.
-   aşağıda.
+6. Susan bir kaynağın alarmları ileri taşınır; **ham saklama süresi (2 gün)
+   dolunca alarm "bilinmiyor" durumuna geçer** — bkz. aşağıda.
 
-### Açık soru: ileri taşımanın üst sınırı
+### İleri taşımanın üst sınırı *(karara bağlandı, 22 Eylül 2026)*
 
 Bir kaynak üç gün susarsa üç gün önceki CPU alarmı hâlâ "açık" görünür.
 Referanslar dört ayrı cevap veriyor (§10.1): Prometheus çözer, Datadog son
@@ -63,9 +63,12 @@ durumu gösterir, Zabbix dondurur, Grafana ayrı bir NoData kaydı açar.
 - **Seçenek 2 — N saat sonra "bilinmiyor"a çevir.** Alarm kapanmaz, çözülmez;
   ayrı bir durum alır ve sayımlardan düşer. N bir seçimdir, alıntı değil.
 
-Öneri: **Seçenek 2, N = ham saklama süresi (2 gün)** — o noktadan sonra alarmın
-dayandığı örnekler de depoda yoktur, yani kanıt gerçekten kalmamıştır. Karar
-Ertuğrul'un.
+**Karar: Seçenek 2, N = ham saklama süresi (2 gün).** O noktadan sonra alarmın
+dayandığı örnekler de depoda yoktur, yani kanıt gerçekten kalmamıştır. Alarm
+kapanmaz ve çözülmez; "bilinmiyor" durumunu alır, açık sayımından düşer, ve
+kaynak geri döndüğünde ilk taze değerlendirmeyle ya yeniden açılır ya çözülür.
+N bir **seçimdir**, alıntı değil: ham saklama süresine bağlıdır ve o süre
+değişirse (ADR-0017) birlikte değişir.
 
 ## Gerekçe
 
