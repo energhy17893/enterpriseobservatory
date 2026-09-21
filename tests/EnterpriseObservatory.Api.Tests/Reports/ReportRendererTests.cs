@@ -156,6 +156,18 @@ public class ReportRendererTests
     }
 
     [Fact]
+    public async Task The_continuity_report_attaches_the_same_csv_the_download_endpoint_builds()
+    {
+        var content = await Renderer().RenderAsync(
+            ReportKind.Continuity, ReportFrequency.Weekly, CancellationToken.None);
+
+        Assert.Equal($"Enterprise Observatory — continuity report {Now:yyyy-MM-dd}", content.Subject);
+        var attachment = Assert.Single(content.Attachments);
+        Assert.StartsWith("continuity-", attachment.FileName, StringComparison.Ordinal);
+        Assert.Equal("text/csv", attachment.ContentType);
+    }
+
+    [Fact]
     public async Task A_compliance_subscription_without_the_compliance_engine_fails_visibly()
     {
         await Assert.ThrowsAsync<NotSupportedException>(

@@ -678,6 +678,48 @@ export interface CapacityReportView {
   rows: CapacityReportRow[]
 }
 
+// --- continuity report (M8.10) -------------------------------------------
+
+/** One cluster's continuity posture: HA, DRS, storage-path redundancy for its hosts, and the N+1 placeholder. */
+export interface ContinuityReportRow {
+  clusterId: string
+  clusterName: string
+  source: string
+  /** Whether this cluster's own inventory carried a dasConfig.* setting -- whether HA was actually read. */
+  haSettingsCollected: boolean
+  haCriticalCount: number
+  haWarningCount: number
+  drsCriticalCount: number
+  drsWarningCount: number
+  storagePathCriticalCount: number
+  storagePathWarningCount: number
+  /** Hosts under this cluster with a multipath or path-redundancy finding, by name. */
+  storagePathAffectedHosts: string[]
+  /** N+1 capacity rule: a placeholder until that rule ships. Zero until then. */
+  nPlusOneCriticalCount: number
+  nPlusOneWarningCount: number
+  hasCritical: boolean
+}
+
+export interface ContinuityReportSummary {
+  totalClusters: number
+  /** Alert count per rule id -- cluster-ha-scorecard, drs-rule-violation, multipath-single-point-of-failure, storage-path-redundancy, n-plus-one. */
+  byRule: Record<string, number>
+  bySeverity: Record<string, number>
+  clustersWithCriticalCount: number
+  clustersWithCriticalNames: string[]
+  /** False means the HA/DRS collector wiring has not run against this estate yet. */
+  haInputsCollected: boolean
+  /** Set only when haInputsCollected is false. */
+  note: string | null
+}
+
+export interface ContinuityReportView {
+  generatedAtUtc: string
+  summary: ContinuityReportSummary
+  rows: ContinuityReportRow[]
+}
+
 export interface AddExceptionCommand {
   controlId: string
   /** Null for every entity the control applies to. */
@@ -731,7 +773,7 @@ export interface MailTestView {
 
 export type ReportFrequency = 'Daily' | 'Weekly'
 
-export type ReportKind = 'Alerts' | 'Compliance' | 'Capacity'
+export type ReportKind = 'Alerts' | 'Compliance' | 'Capacity' | 'Continuity'
 
 export interface ReportSubscriptionView {
   id: string

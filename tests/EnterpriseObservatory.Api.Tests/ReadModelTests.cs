@@ -967,6 +967,187 @@ public class ReadModelTests
         Assert.Empty(Model().CapacityReport().Rows);
     }
 
+    // --- continuity report (M8.10) ------------------------------------------
+
+    /// <summary>
+    /// An alert whose fingerprint carries a rule id the way every rule file
+    /// does -- see <c>ReadModel.HasRule</c>'s remarks. <paramref name="ruleId"/>
+    /// goes in as the fingerprint's check-id, the same slot every analysis
+    /// rule passes its own <c>RuleId</c> constant into.
+    /// </summary>
+    private static AlertInstance RuleAlert(
+        string ruleId, AlertSeverity severity, EntityId entity, string discriminator = "finding") =>
+        new()
+        {
+            Fingerprint = AlertFingerprint.Create("platform", ruleId, "Configuration", entity.Value, ruleId + "-" + discriminator),
+            Severity = severity,
+            State = AlertLifecycleState.Open,
+            Title = ruleId,
+            Description = $"{ruleId} on {entity.Value}.",
+            Category = "Configuration",
+            Source = "platform",
+            Entity = entity,
+            Scope = AlertScopes.Inventory,
+            ConsecutiveHits = 1,
+            IsConfirmed = true,
+            ClearedByOperator = false,
+            PendingNotification = AlertNotificationKind.None,
+            FirstSeenUtc = T0,
+            LastSeenUtc = T0,
+            IsDerived = true,
+        };
+
+    [Fact]
+    public void A_cluster_with_no_findings_and_no_ha_settings_reports_not_collected()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1"));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.False(row.HaSettingsCollected);
+        Assert.Equal(0, row.HaCriticalCount);
+        Assert.False(Model().ContinuityReport().Summary.HaInputsCollected);
+        Assert.NotNull(Model().ContinuityReport().Summary.Note);
+    }
+
+    [Fact]
+    public void A_cluster_with_ha_settings_read_is_not_flagged_as_uncollected()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")));
+
+        var summary = Model().ContinuityReport().Summary;
+
+        Assert.True(summary.HaInputsCollected);
+        Assert.Null(summary.Note);
+        Assert.True(Model().ContinuityReport().Rows[0].HaSettingsCollected);
+    }
+
+    [Fact]
+    public void The_ha_scorecard_rules_own_findings_are_counted_on_its_row()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "false")));
+        GivenAlerts(RuleAlert(ClusterHighAvailability.RuleId, AlertSeverity.Critical, clusterId, "ha-disabled"));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.HaCriticalCount);
+        Assert.Equal(0, row.DrsCriticalCount);
+        Assert.True(row.HasCritical);
+    }
+
+    [Fact]
+    public void Drs_rule_violations_are_counted_separately_from_ha()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1"));
+        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Warning, clusterId));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(0, row.HaCriticalCount);
+        Assert.Equal(1, row.DrsWarningCount);
+        Assert.False(row.HasCritical);
+    }
+
+    [Fact]
+    public void Storage_path_findings_on_a_hosts_alert_roll_up_to_its_cluster()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        var hostId = new EntityId("vc-1:host-1");
+
+        GivenEntities(
+            Cluster("vc-1:domain-c1"),
+            Host("vc-1:host-1", HealthState.Warning));
+        GivenRelationships(new Relationship
+        {
+            From = hostId,
+            To = clusterId,
+            Kind = RelationshipKind.PartOf,
+            ObservedAtUtc = T0,
+        });
+        GivenAlerts(
+            RuleAlert(StoragePathRedundancy.RuleId, AlertSeverity.Critical, hostId),
+            RuleAlert(MultipathSinglePointOfFailure.RuleId, AlertSeverity.Warning, hostId));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.StoragePathCriticalCount);
+        Assert.Equal(1, row.StoragePathWarningCount);
+        Assert.Contains("vc-1:host-1.corp.local", row.StoragePathAffectedHosts);
+        Assert.True(row.HasCritical);
+    }
+
+    [Fact]
+    public void A_storage_path_finding_on_a_host_outside_the_cluster_does_not_roll_up()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        var otherHostId = new EntityId("vc-1:host-2");
+
+        GivenEntities(Cluster("vc-1:domain-c1"), Host("vc-1:host-2", HealthState.Warning));
+        GivenAlerts(RuleAlert(StoragePathRedundancy.RuleId, AlertSeverity.Critical, otherHostId));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(0, row.StoragePathCriticalCount);
+        Assert.Empty(row.StoragePathAffectedHosts);
+    }
+
+    [Fact]
+    public void The_n_plus_one_placeholder_reads_generically_by_rule_id()
+    {
+        // n-plus-one is being built in a parallel change; this only proves
+        // the report picks it up the same way it picks up every other rule,
+        // with no type of its own to reference.
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1"));
+        GivenAlerts(RuleAlert("n-plus-one", AlertSeverity.Warning, clusterId));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.NPlusOneWarningCount);
+        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule["n-plus-one"]);
+    }
+
+    [Fact]
+    public void The_summary_counts_clusters_with_any_critical_finding()
+    {
+        var quiet = new EntityId("vc-1:domain-c1");
+        var loud = new EntityId("vc-1:domain-c2");
+
+        GivenEntities(
+            Cluster("vc-1:domain-c1") with { DisplayName = "Quiet" },
+            Cluster("vc-1:domain-c2") with { DisplayName = "Loud" });
+        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Critical, loud));
+
+        var summary = Model().ContinuityReport().Summary;
+
+        Assert.Equal(1, summary.ClustersWithCriticalCount);
+        Assert.Contains("Loud", summary.ClustersWithCriticalNames);
+        Assert.DoesNotContain("Quiet", summary.ClustersWithCriticalNames);
+    }
+
+    [Fact]
+    public void A_vanished_cluster_is_not_on_the_continuity_report()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1") with { ObservationState = ObservationState.Vanished });
+
+        Assert.Empty(Model().ContinuityReport().Rows);
+    }
+
+    [Fact]
+    public void An_unconfirmed_continuity_alert_does_not_count()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1"));
+        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Critical, clusterId) with
+        {
+            IsConfirmed = false,
+        });
+
+        Assert.Equal(0, Assert.Single(Model().ContinuityReport().Rows).DrsCriticalCount);
+    }
+
     /// <summary>
     /// Measurements are covered by the persistence tests against the real
     /// store; the read model only passes them through.
