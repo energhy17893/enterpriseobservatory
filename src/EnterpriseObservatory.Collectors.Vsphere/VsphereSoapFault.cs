@@ -205,9 +205,9 @@ public static class VsphereSoapFaultReader
             return VsphereFaultKind.InvalidName;
         }
 
-        // The query-size refusal is RestrictedByAdministrator, matched by type;
-        // see AdaptiveBatchSizer.IsQuerySizeRefusal, including why the message
-        // is still read when no specific type is named. Only for a performance
+        // The query-size refusal: its documented text (Broadcom KB 301449) or
+        // the RestrictedByAdministrator type; see
+        // AdaptiveBatchSizer.IsQuerySizeRefusal. Only for a performance
         // query, because that is the only place the reading is meaningful — a
         // live vCenter returns "'config.vpxd.stats.maxQueryMetrics' is invalid
         // or exceeds the maximum number of characters permitted" for an unset

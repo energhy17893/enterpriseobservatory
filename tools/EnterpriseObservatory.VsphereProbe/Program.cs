@@ -354,6 +354,24 @@ try
         return 0;
     }
 
+    // Real QueryPerf round trips, timed; the read-budget measurement's missing
+    // number. Read-only.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --time-queryperf 30
+    var timingIndex = Array.FindIndex(args, a =>
+        string.Equals(a, "--time-queryperf", StringComparison.OrdinalIgnoreCase));
+    if (timingIndex >= 0)
+    {
+        var calls = timingIndex + 1 < args.Length &&
+                    int.TryParse(args[timingIndex + 1], out var n) && n >= 20
+            ? n
+            : 20;
+
+        Section("QueryPerf round trips");
+        return await EnterpriseObservatory.VsphereProbe.QueryPerfTiming.RunAsync(
+            client, payload, catalog, calls, cancellation.Token);
+    }
+
     // The full map, and then nothing else: it is a reference document, not a
     // section of a health check, and burying it under a sample read would make
     // it something nobody pastes into a file.

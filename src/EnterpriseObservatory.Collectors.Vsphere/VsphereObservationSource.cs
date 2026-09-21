@@ -423,6 +423,43 @@ public sealed class VsphereObservationSource(
 
         /// <summary>The first entity not yet read, where the next cycle should start.</summary>
         public string? ResumeFrom { get; set; }
+
+        /// <summary>Entities whose own query faulted, by fault kind, with the first fault seen.</summary>
+        public Dictionary<VsphereFaultKind, (VsphereApiException First, List<string> MoRefs)> Faults { get; } = [];
+
+        public void Faulted(string moRef, VsphereApiException error)
+        {
+            if (!Faults.TryGetValue(error.Kind, out var entry))
+            {
+                entry = (error, []);
+                Faults[error.Kind] = entry;
+            }
+
+            entry.MoRefs.Add(moRef);
+        }
+    }
+
+    /// <summary>
+    /// Says which entities of a type could not be read, one report per fault kind (T1.4).
+    /// </summary>
+    private static CollectionFailure EntitiesFaulted(
+        VsphereEntityType entityType, VsphereFaultKind kind, VsphereApiException first, List<string> moRefs)
+    {
+        var advice = kind == VsphereFaultKind.NoPermission
+            ? $" The account is authenticated but not permitted to read these {entityType} objects' " +
+              "performance data — a permission on those objects, not something a retry can change."
+            : string.Empty;
+
+        return new CollectionFailure
+        {
+            Kind = ((ICollectionFault)first).Kind,
+            Target = $"{entityType} entities ({kind})",
+            Detail =
+                $"{moRefs.Count} {entityType} entities could not be read with {kind} " +
+                $"({string.Join(", ", moRefs.Take(5))}{(moRefs.Count > 5 ? ", …" : string.Empty)}): " +
+                $"{first.Message}{advice} The batch each was in was asked again one entity at a time, " +
+                "so the others in it, and every other batch, were read. No value is substituted for the missing ones.",
+        };
     }
 
     /// <summary>
@@ -558,6 +595,11 @@ public sealed class VsphereObservationSource(
             if (progress.Gone.Count > 0)
             {
                 failures.Add(NoLongerExist(entityType, progress.Gone));
+            }
+
+            foreach (var (kind, (first, faulted)) in progress.Faults)
+            {
+                failures.Add(EntitiesFaulted(entityType, kind, first, faulted));
             }
         }
     }
@@ -833,6 +875,26 @@ public sealed class VsphereObservationSource(
                 var half = batch.Count / 2;
                 isolating.Push(batch.GetRange(half, batch.Count - half));
                 isolating.Push(batch.GetRange(0, half));
+            }
+            catch (VsphereApiException ex) when (!EndsTheSession(ex.Kind))
+            {
+                // Any other fault (T1.4, the OTel vcenterreceiver rule): this
+                // batch — only this one — is asked again one entity at a time,
+                // so the fault lands on the entity it is about and the others
+                // in the batch are read. It used to end the type: one VM the
+                // account may not read cost every VM. A fault that really does
+                // cover the whole type costs one query per entity, which the
+                // read budget bounds, and is reported once per kind.
+                if (batch.Count == 1)
+                {
+                    progress.Faulted(batch[0], ex);
+                    continue;
+                }
+
+                for (var i = batch.Count - 1; i >= 0; i--)
+                {
+                    isolating.Push([batch[i]]);
+                }
             }
         }
 

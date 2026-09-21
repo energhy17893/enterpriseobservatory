@@ -99,19 +99,17 @@ public sealed class AdaptiveBatchSizer
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The fault type decides (T1.3). vCenter enforces
-    /// <c>maxQueryMetrics</c> with <c>vim.fault.RestrictedByAdministrator</c>
-    /// (a <c>RuntimeFault</c>, vSphere API 6.0+), which arrives in the SOAP
-    /// detail as <c>RestrictedByAdministratorFault</c>. Its message is the
-    /// server's wording and is localised; the type is what vim25 promises.
-    /// </para>
-    /// <para>
-    /// The message is read only when the reply names no specific type — no
-    /// detail at all, or the generic <c>RuntimeFault</c>. That fallback stays
-    /// until a live refusal has been seen: this estate's limit has never been
-    /// hit, and provoking it on a production vCenter is not an acceptable way
-    /// to find out. A fault that does name its own type is that type, whatever
-    /// its wording.
+    /// Two signals, either of which is enough (T1.3). The <b>primary</b> is
+    /// the text: Broadcom KB 301449 documents what a client receives when
+    /// <c>config.vpxd.stats.maxQueryMetrics</c> is exceeded — "Request
+    /// processing is restricted by administrator" — and it is matched under
+    /// whatever fault type carries it. The <b>secondary</b> is the type
+    /// <c>RestrictedByAdministrator</c> (in the SOAP detail as
+    /// <c>RestrictedByAdministratorFault</c>), which the name of that message
+    /// suggests; no source documents it and no live refusal has been seen, so
+    /// it is not verified. It still catches a localised server whose wording
+    /// differs. (vpxd logs the other side: "The query size of N metrics
+    /// exceeded the vpxd.stats.maxQueryMetrics limit of 256 metrics".)
     /// </para>
     /// <para>
     /// It should only be applied to a performance query — see
@@ -122,17 +120,9 @@ public sealed class AdaptiveBatchSizer
     {
         ArgumentNullException.ThrowIfNull(faultType);
 
-        if (faultType.Contains(RefusalFaultType, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var namesNoSpecificType = faultType.Length == 0 ||
-            string.Equals(faultType, "RuntimeFault", StringComparison.OrdinalIgnoreCase);
-
-        return namesNoSpecificType && IsQuerySizeRefusal(serverMessage);
+        return IsQuerySizeRefusal(serverMessage) ||
+               faultType.Contains(RefusalFaultType, StringComparison.OrdinalIgnoreCase);
     }
-
     /// <summary>The vim25 fault vCenter answers an oversized performance query with.</summary>
     public const string RefusalFaultType = "RestrictedByAdministrator";
 
@@ -141,8 +131,7 @@ public sealed class AdaptiveBatchSizer
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The fallback for a fault that names no specific type; see the
-    /// two-argument overload.
+    /// The primary signal; see the two-argument overload.
     /// </para>
     /// <para>
     /// The patterns are deliberately narrow. An earlier version also matched

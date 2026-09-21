@@ -7,6 +7,54 @@
 dotnet test tests/EnterpriseObservatory.Collectors.Vsphere.Tests --filter "FullyQualifiedName~ReadBudgetMeasurement" --logger "console;verbosity=detailed"
 ```
 
+## Canlı ölçüm — gerçek `QueryPerf` gidiş-dönüşü (22 Eylül 2026)
+
+Aşağıdaki sentetik tabloların tek varsayımı çağrı gecikmesiydi; bu bölüm onu
+ölçüyor. Probe, salt-okunur:
+`dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --mask --time-queryperf 30`
+(bağlantı ürünün deposundan, parola user-secrets'tan; servis durdurulmadı).
+Estate: 10 host, 145 VM; `maxQueryMetrics` okunamıyor (varsayılan 256).
+Süre, istemci çağrısının tamamı (istek + sunucu + yanıt + ayrıştırma);
+her vakada ilk çağrı ısınma sayılıp dışarıda bırakıldı; çağrılar arası 200 ms.
+
+| vaka | koşu (n) | medyan | p95 | min | maks |
+|---|---|---|---|---|---|
+| (a) 12 VM × 17 sayaç, maxSample 3 | 30 | 130 ms | 270 ms | 108 | 337 |
+| | 40 | 131 ms | 364 ms | 107 | 576 |
+| | 20 | 143 ms | 219 ms | 110 | 250 |
+| | 20 | 157 ms | 488 ms | 104 | 689 |
+| (b) 1 host × 28 sayaç | 30 | 149 ms | 529 ms | 118 | 564 |
+| | 40 | 141 ms | 283 ms | 114 | 598 |
+| | 20 | 138 ms | 174 ms | 131 | 526 |
+| | 20 | 147 ms | 180 ms | 115 | 397 |
+| (c) 1 VM × 17 sayaç (ölçek kontrolü) | 30 / 40 / 20 / 20 | 34 / 34 / 33 / 32 ms | 521 / 494 / 52 / 73 ms | 29 | 880 |
+
+Toplam **110 çağrı** (a), **110 çağrı** (b). Özet: (a) medyan **~135 ms**
+(koşular arası 130–157), p95 **220–490 ms** (tipik ~320). (b) medyan **~145 ms**,
+p95 170–530 ms. p95 koşudan koşuya oynuyor — n=20–40 ile kuyruk kararlı değil.
+
+(c) ile (a)'nın farkı: 1 VM 33 ms, 12 VM ~135 ms → **~25 ms sabit + VM başına ~9 ms**.
+Maliyetin çoğu varlık başına; batch'i büyütmek yalnız sabit kısmı (2000 VM'de
+167 × ~25 ms ≈ 4 sn) kazandırır. Bu bir tasarım önerisi değil, ölçüm.
+
+### 2000 VM'in sığması — gerçek gecikmeyle yeniden hesap
+
+Bütçe: 30 sn × 0,8 = 24 sn; kaynağa 21,6 sn'de "dur" deniyor. 2000 VM = 167
+`QueryPerf` + ~3 ön çağrı (katalog, limit, probe; ~0,5 sn).
+
+| çağrı başına | 2000 VM tam okuma | 21,6 sn'ye sığan | sığıyor mu? |
+|---|---|---|---|
+| **135 ms (medyan)** | 167 × 0,135 + 0,5 ≈ **23,0 sn** | ~156 sorgu ≈ **1870 VM** | **Hayır, kıl payı** (~1,4 sn aşıyor); kalan ~130 VM sonraki döngüde, her VM ≤ 60 sn'de bir okunuyor |
+| 157 ms (en kötü koşu medyanı) | ≈ 26,7 sn | ≈ 1600 VM | Hayır |
+| ~320 ms (tipik p95, kötümser ortalama) | ≈ 54 sn | ≈ 790 VM | Hayır — her VM ~3 döngüde bir |
+| başabaş | ≤ ~126 ms | — | — |
+
+~80 host eklenirse (batch 7 × 28 sayaç → 12 sorgu, tek host 145 ms; 7'li
+batch'in süresi ölçülmedi) +2–4 sn daha: **2000 VM + 80 host medyan gecikmede
+de sığmıyor.** Toplam süre ortalamayı izler, medyanı değil; p95'in 2–3 katı
+kuyruk ortalamayı medyanın üstüne iter, dolayısıyla gerçekçi tahmin
+"23 sn'nin biraz üstü" — sığmıyor.
+
 ## Özet — bugünkü kod (önce)
 
 | | Değer |
@@ -28,9 +76,9 @@ gerekir. Bu, planlayıcı için ayrı bir karar.
 
 ## Varsayımlar
 
-- **Çağrı gecikmesi ölçülmedi.** Bu estate'te hiçbir `QueryPerf` gidiş-dönüşü
-  zamanlanmadı; üç değer taranıyor (250 / 500 / 1000 ms, sabit, batch boyutundan
-  bağımsız). Canlı ölçüm açık iş.
+- **Çağrı gecikmesi** bu tablolarda varsayım (250 / 500 / 1000 ms, sabit). Gerçeği
+  yukarıdaki canlı ölçümde: 12 VM'lik sorgu medyan ~135 ms — taranan en iyimser
+  değerden de hızlı; sığma hesabı orada yeniden yapıldı.
 - Sunucu limiti **katı** yorumla uygulanıyor (varlık × sayaç ≤ limit) — ADR-0005 §2.
 - Sanal saat: çağrılar gerçek zaman harcamıyor; süre = çağrı sayısı × gecikme.
   Soru zaten çağrı dizisi üzerinde aritmetik.
@@ -73,7 +121,12 @@ Okunanlar:
   döngü başına 2 boşa sorgu. Maliyet küçük (0,5–2 sn), ama her döngü bir
   `ProtocolError` "küçültüldü" kaydı bırakıyor ve 3'lük batch 669 sorgu ediyor —
   asıl maliyet limitin kendisi.
-- **T1.3** — ret bugün mesaj metniyle tanınıyor ("restricted by administrator").
+- **T1.3** — ret mesaj metniyle tanınıyor ("restricted by administrator"). Sonra:
+  metin **birincil** (Broadcom KB 301449 istemcinin aldığı metni belgeliyor:
+  "Request processing is restricted by administrator"), `RestrictedByAdministrator`
+  fault tipi **ikincil**; ikisinden biri yeter. Tipi hiçbir kaynak belgelemiyor ve
+  canlı bir ret görülmedi — **canlıda doğrulanmadı**; limit canlıda bilerek
+  tetiklenmedi.
 - **T1.4** — `moRefs[0]` silinmişse probe `ManagedObjectNotFound` ile düşüyor ve
   **2000 VM'in tamamı** okunmuyor. Listenin ortasında silinmiş tek VM de o
   batch'ten sonraki **1004 VM'i** düşürüyor.
@@ -136,8 +189,16 @@ okunduğu için **seride boşluk kalmıyor**; 500 ms ve üstünde kalıyor.
   her döngüde okumak ya **paralel `QueryPerf`** (T2.3'ün aile başına tavanı
   içinde), ya da limit gevşek yorumlanıyorsa **daha büyük batch** ister — ikisi
   de ölçülmeden karar verilmemeli.
-- **İlk canlı ölçüm**: gerçek `QueryPerf` gidiş-dönüşü. Buradaki tüm saniyeler
-  onun doğrusal katı.
+- **Canlı gecikme ölçüldü** (yukarıda): medyan ~135 ms'de 2000 VM ≈ 23 sn,
+  21,6 sn'lik bütçeyi ~1,4 sn aşıyor; hostlarla birlikte daha çok. Sıralı
+  tasarımın sınırı ≈ 1850 VM (medyan), ≈ 800 VM (p95-kötümser).
+- **T1.4, araştırma sonrası (OTel vcenterreceiver kuralı):** `ManagedObjectNotFound`
+  → nesne yarılayarak yalıtılıp atlanıyor; **başka her fault** → yalnız o batch
+  varlık başına tek sorguyla yeniden soruluyor, hata o varlığa yazılıyor, diğer
+  batch'ler etkilenmiyor. Tipin tamamını kapsayan bir fault varlık sayısı kadar
+  sorgu eder; bunu okuma bütçesi sınırlıyor, rapor tür başına bir kez.
+  Yukarıdaki tablolar bu değişiklikten önce üretildi; senaryolarda başka fault
+  olmadığı için sayılar aynı kalıyor.
 - Envanter bütçesi 25 → 240 sn oldu; envanter okuması bu harness'ta
   simüle edilmedi ve kısmi envanter **bilerek** eklenmedi (yarım envanter
   varlıkların "kaybolması" demek, T0.1'in tersi).

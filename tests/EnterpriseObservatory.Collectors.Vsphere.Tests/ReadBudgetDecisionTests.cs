@@ -157,16 +157,17 @@ public class ReadBudgetDecisionTests
     }
 
     [Fact]
-    public void A_specific_fault_type_is_not_overruled_by_its_wording()
+    public void The_documented_text_is_the_primary_signal_whatever_the_fault_type()
     {
-        // A fault that names its own type is that type. Reading the message
-        // anyway is how a text match starts shrinking batches against a
-        // problem that has nothing to do with size.
+        // Broadcom KB 301449 documents the client-side text, "Request
+        // processing is restricted by administrator"; no source documents the
+        // fault type. So the text decides for any fault, and the type is a
+        // second way in rather than a gate in front of the text.
         var fault = VsphereSoapFaultReader.TryRead(
-            Fault("SystemErrorFault", "Request processing is restricted by administrator."),
+            Fault("SystemErrorFault", "Request processing is restricted by administrator"),
             VsphereCallContext.PerformanceQuery);
 
-        Assert.NotEqual(VsphereFaultKind.QuerySizeRefused, fault!.Kind);
+        Assert.Equal(VsphereFaultKind.QuerySizeRefused, fault!.Kind);
     }
 
     [Fact]
@@ -181,12 +182,16 @@ public class ReadBudgetDecisionTests
     [Theory]
     [InlineData("RuntimeFault")]
     [InlineData("")]
-    public void The_message_is_read_only_when_no_specific_type_was_named(string faultType)
+    [InlineData("SomeNewFault")]
+    public void The_message_is_recognised_under_any_fault_type(string faultType)
     {
-        // Kept until the live fault is seen (T1.3 is verified against a real
-        // refusal only when one occurs): a generic RuntimeFault, or a reply
-        // with no detail at all, has nothing better than its message.
-        Assert.True(AdaptiveBatchSizer.IsQuerySizeRefusal(faultType, "Request processing is restricted by administrator."));
+        Assert.True(AdaptiveBatchSizer.IsQuerySizeRefusal(faultType, "Request processing is restricted by administrator"));
+    }
+
+    [Fact]
+    public void Neither_signal_means_no_refusal()
+    {
+        Assert.False(AdaptiveBatchSizer.IsQuerySizeRefusal("SystemErrorFault", "A general system error occurred."));
     }
 
     // --- T1.4: an entity that no longer exists --------------------------------
@@ -234,5 +239,50 @@ public class ReadBudgetDecisionTests
         Assert.Empty(batch.Observations);
         Assert.Contains(batch.Failures, f => f.Target == "VirtualMachine");
         Assert.True(api.Calls < 10, $"{api.Calls} calls");
+    }
+
+    [Theory]
+    [InlineData(VsphereFaultKind.NoPermission, CollectionFailureKind.AuthorizationDenied)]
+    [InlineData(VsphereFaultKind.Other, CollectionFailureKind.ProtocolError)]
+    public async Task Any_other_fault_on_a_batch_falls_back_to_one_query_per_entity_for_that_batch(
+        VsphereFaultKind fault, CollectionFailureKind expected)
+    {
+        // OTel vcenterreceiver's rule. Before, a permission fault on one VM
+        // cost every VM of the type; now it costs that VM, the batch it was
+        // in is asked one entity at a time, and every other batch is untouched.
+        using var api = new SimulatedVcenter { Faulty = new(StringComparer.Ordinal) { ["vm-30"] = fault } };
+
+        var batch = await Source(api, new SyntheticTargets(60)).ReadAsync(api.Token);
+
+        var read = batch.Observations.Select(o => o.Entity.Value).ToHashSet(StringComparer.Ordinal);
+        Assert.Equal(59, read.Count);
+        Assert.DoesNotContain("vm-30", read);
+
+        // Five batches of 12, one of which (vm-25..vm-36) failed and was
+        // re-asked as twelve single queries.
+        Assert.Equal(5 + 12, api.PerfQueries);
+
+        var failure = Assert.Single(batch.Failures);
+        Assert.Equal(expected, failure.Kind);
+        Assert.Contains("vm-30", failure.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_fault_on_every_entity_is_still_one_report_per_kind()
+    {
+        // The worst case of the per-entity fallback — a fault that applies to
+        // the whole type — costs one query per entity, bounded by the read
+        // budget, and is said once rather than sixty times.
+        using var api = new SimulatedVcenter
+        {
+            Faulty = Enumerable.Range(1, 60).ToDictionary(
+                i => $"vm-{i}", _ => VsphereFaultKind.NoPermission, StringComparer.Ordinal),
+        };
+
+        var batch = await Source(api, new SyntheticTargets(60)).ReadAsync(api.Token);
+
+        Assert.Empty(batch.Observations);
+        var failure = Assert.Single(batch.Failures);
+        Assert.Contains("60", failure.Detail, StringComparison.Ordinal);
     }
 }

@@ -44,6 +44,10 @@ internal sealed class SimulatedVcenter : IVsphereApi, IDisposable
     /// <summary>Managed objects that were deleted after the target list was built.</summary>
     public HashSet<string> Deleted { get; init; } = new(StringComparer.Ordinal);
 
+    /// <summary>Managed objects any query naming them faults on, and with what.</summary>
+    /// <remarks>vim25 fails the whole query for one such object, as it does for a deleted one.</remarks>
+    public Dictionary<string, VsphereFaultKind> Faulty { get; init; } = new(StringComparer.Ordinal);
+
     /// <summary>Virtual time at which the source's token is cancelled, if any.</summary>
     public TimeSpan? CancelAt { get; set; }
 
@@ -157,6 +161,11 @@ internal sealed class SimulatedVcenter : IVsphereApi, IDisposable
         {
             Refusals++;
             throw Refusal();
+        }
+
+        if (entityMoRefs.FirstOrDefault(Faulty.ContainsKey) is { } faulty)
+        {
+            throw new VsphereApiException(Faulty[faulty], $"Fault on {faulty}.");
         }
 
         // vim25 refuses the whole query when any one object in it is gone.

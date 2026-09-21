@@ -580,7 +580,9 @@ public class VsphereObservationSourceTests
 
         var batch = await Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None);
 
-        var failure = Assert.Single(batch.Failures, f => f.Target == "VirtualMachine");
+        // Since T1.4 a query fault is narrowed to the entities it is about;
+        // the report still names the type, and still sends the operator to a role.
+        var failure = Assert.Single(batch.Failures, f => f.Target.StartsWith("VirtualMachine", StringComparison.Ordinal));
 
         Assert.Equal(CollectionFailureKind.AuthorizationDenied, failure.Kind);
         Assert.Contains("denied", failure.Detail, StringComparison.OrdinalIgnoreCase);

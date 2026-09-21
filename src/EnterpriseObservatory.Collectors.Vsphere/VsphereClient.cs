@@ -285,6 +285,41 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             response, byId, TimeSpan.FromSeconds(intervalSeconds));
     }
 
+    /// <summary>
+    /// A performance query with the sample count and window chosen by the
+    /// caller, returning the raw reply beside the parsed samples.
+    /// </summary>
+    /// <remarks>
+    /// For the read-only probe's measurements only (how <c>maxSample</c>
+    /// interacts with a window, and how large a long real-time read is). The
+    /// collector's own reads go through <see cref="QueryPerfAsync"/>, whose
+    /// shape is fixed on purpose.
+    /// </remarks>
+    public async Task<(string Body, IReadOnlyList<PerfEntitySamples> Samples)> QueryPerfForMeasurementAsync(
+        IReadOnlyList<string> entityMoRefs,
+        VsphereEntityType entityType,
+        IReadOnlyList<VsphereCounter> counters,
+        int maxSample,
+        (DateTimeOffset From, DateTimeOffset To)? window,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(entityMoRefs);
+        ArgumentNullException.ThrowIfNull(counters);
+
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var intervalSeconds = VsphereIntervals.IntervalSecondsFor(entityType);
+
+        var response = await SendAsync(
+            VsphereSoapRequests.QueryPerf(
+                content.PerformanceManager, entityMoRefs, entityType.ToString(),
+                counters, intervalSeconds, maxSample, window),
+            cancellationToken,
+            VsphereCallContext.PerformanceQuery).ConfigureAwait(false);
+
+        return (response, PerfResponseParser.ParseSamples(
+            response, counters.ToDictionary(c => c.Id), TimeSpan.FromSeconds(intervalSeconds)));
+    }
+
     // --- IVsphereInventoryApi ---------------------------------------------
 
     /// <summary>
