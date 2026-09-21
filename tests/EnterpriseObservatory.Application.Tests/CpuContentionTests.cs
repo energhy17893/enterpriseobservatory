@@ -186,6 +186,37 @@ public class CpuContentionTests
         Assert.DoesNotContain(alerts, a => a.Entity == new EntityId("vc-1:vm-9"));
     }
 
+    [Fact]
+    public void An_over_wide_machine_is_told_its_vcpu_count_and_the_source_of_the_threshold()
+    {
+        // M1.1. Four vCPUs losing 5% each to co-stop, 2% ready: the machine is
+        // wider than it can use. The finding names the width (the first thing an
+        // operator asks) and the KB the 3% per vCPU comes from.
+        var alerts = CpuContention.Evaluate(
+            [
+                Wait("vc-1:vm-1", 8, counter: Ready),
+                Wait("vc-1:vm-1", 20, counter: CoStop),
+            ],
+            Widths(("vc-1:vm-1", (int?)4)));
+
+        var alert = Assert.Single(alerts);
+        Assert.Equal("More vCPUs than the host can place", alert.Title);
+        Assert.Contains("4-vCPU", alert.Description, StringComparison.Ordinal);
+        Assert.Contains("KB 438023", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Co_stop_below_three_percent_per_vcpu_is_normal()
+    {
+        // 8% raw over four vCPUs is 2% each -- under the KB's line. Undivided it
+        // would have fired, which is the defect the width divide closed.
+        Assert.Empty(CpuContention.Evaluate(
+            [
+                Wait("vc-1:vm-1", 4, counter: Ready),
+                Wait("vc-1:vm-1", 8, counter: CoStop),
+            ],
+            Widths(("vc-1:vm-1", (int?)4))));
+    }
     // ---------------------------------------------------------------
     // Saying so: the machines the rule could not judge.
     // ---------------------------------------------------------------
