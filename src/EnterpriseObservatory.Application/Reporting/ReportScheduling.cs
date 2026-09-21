@@ -36,27 +36,47 @@ public static class ReportScheduling
             candidateDate = candidateDate.AddDays(-back);
         }
 
-        var candidateLocal = new DateTimeOffset(candidateDate, localNow.Offset)
-            .AddHours(schedule.HourLocal);
+        var candidateWallClock = candidateDate.AddHours(schedule.HourLocal);
 
-        // The offset captured above is today's; a candidate that lands on a
-        // different side of a DST change needs its own offset, so it is
-        // reconstructed from wall-clock components through the zone rather
-        // than trusted as an arithmetic shift.
-        candidateLocal = new DateTimeOffset(
-            DateTime.SpecifyKind(candidateLocal.DateTime, DateTimeKind.Unspecified),
-            zone.GetUtcOffset(candidateLocal.DateTime));
+        // Reconstructed from wall-clock components through the zone rather
+        // than trusted as an arithmetic shift on an offset carried over from
+        // somewhere else: the offset is only ever valid for the date it was
+        // read for.
+        var candidateLocal = ResolveLocal(candidateWallClock, zone);
 
         if (candidateLocal > localNow)
         {
             // The computed slot for "today" (or this week) has not happened
-            // yet; the one that is due is a full cycle earlier.
-            candidateLocal = schedule.Frequency == ReportFrequency.Weekly
-                ? candidateLocal.AddDays(-7)
-                : candidateLocal.AddDays(-1);
+            // yet; the one that is due is a full cycle earlier. Stepped back
+            // on the wall clock and re-resolved through the zone -- a
+            // candidate a day or a week away does not necessarily share
+            // today's offset, and reusing it is exactly what let a schedule
+            // whose local slot has not yet happened today land on the wrong
+            // side of a DST change and appear due a second time.
+            candidateWallClock = schedule.Frequency == ReportFrequency.Weekly
+                ? candidateWallClock.AddDays(-7)
+                : candidateWallClock.AddDays(-1);
+
+            candidateLocal = ResolveLocal(candidateWallClock, zone);
         }
 
         return candidateLocal.ToUniversalTime();
+    }
+
+    /// <summary>
+    /// Pairs a wall-clock date and time with the zone's offset for it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TimeZoneInfo.GetUtcOffset(DateTime)"/> is a pure function of
+    /// its input, so an invalid time in a spring-forward gap or an ambiguous
+    /// one in a fall-back overlap always resolves the same way for the same
+    /// wall clock -- deterministic, even though which side of the transition
+    /// it lands on is the zone's rule to make, not this method's.
+    /// </remarks>
+    private static DateTimeOffset ResolveLocal(DateTime wallClock, TimeZoneInfo zone)
+    {
+        var unspecified = DateTime.SpecifyKind(wallClock, DateTimeKind.Unspecified);
+        return new DateTimeOffset(unspecified, zone.GetUtcOffset(unspecified));
     }
 
     /// <summary>Whether the schedule owes a run that has not yet been claimed.</summary>
