@@ -110,9 +110,19 @@ public sealed class PostgresComplianceStore : IComplianceStore
         string catalogueRelease,
         string controlId,
         EntityId entity,
+        Func<ComplianceFinding, ComplianceFinding> change) =>
+        Mutate(catalogueRelease, controlId, entity, string.Empty, change);
+
+    public ComplianceFinding? Mutate(
+        string catalogueRelease,
+        string controlId,
+        EntityId entity,
+        string subject,
         Func<ComplianceFinding, ComplianceFinding> change)
     {
         ArgumentNullException.ThrowIfNull(change);
+
+        subject ??= string.Empty;
 
         lock (_gate)
         {
@@ -120,7 +130,8 @@ public sealed class PostgresComplianceStore : IComplianceStore
             var index = findings.FindIndex(f =>
                 InRelease(f, catalogueRelease) &&
                 string.Equals(f.ControlId, controlId, StringComparison.Ordinal) &&
-                f.Entity == entity);
+                f.Entity == entity &&
+                string.Equals(f.Subject, subject, StringComparison.Ordinal));
 
             if (index < 0)
             {
@@ -153,15 +164,16 @@ public sealed class PostgresComplianceStore : IComplianceStore
             {
                 using var command = Command(connection, """
                     INSERT INTO compliance_exception
-                        (id, control_id, entity_id, reason, owner, created_by, created_at_utc, expires_utc,
-                         removed_by, removed_at_utc)
-                    VALUES (@id, @control, @entity, @reason, @owner, @by, @at, @expires,
+                        (id, control_id, entity_id, subject, reason, owner, created_by, created_at_utc,
+                         expires_utc, removed_by, removed_at_utc)
+                    VALUES (@id, @control, @entity, @subject, @reason, @owner, @by, @at, @expires,
                             @removedBy, @removedAt);
                     """);
 
                 command.Bind("@id", exception.Id);
                 command.Bind("@control", exception.ControlId);
                 command.Bind("@entity", exception.Entity?.Value);
+                command.Bind("@subject", exception.Subject);
                 command.Bind("@reason", exception.Reason);
                 command.Bind("@owner", exception.Owner);
                 command.Bind("@by", exception.CreatedBy);
@@ -223,19 +235,22 @@ public sealed class PostgresComplianceStore : IComplianceStore
     /// rarely, and it grows with time where the findings do not.
     /// </remarks>
     public IReadOnlyList<ComplianceTransition> Transitions(
-        string catalogueRelease, string controlId, EntityId entity) =>
+        string catalogueRelease, string controlId, EntityId entity, string subject = "") =>
         _database.Read(connection =>
         {
             using var command = Command(connection, """
-                SELECT from_verdict, to_verdict, observed, evidence_utc, at_utc
+                SELECT from_verdict, to_verdict, observed, evidence_utc, at_utc, subject_label,
+                       accepted_by, accepted_reason
                 FROM compliance_transition
                 WHERE catalogue_release = @release AND control_id = @control AND entity_id = @entity
+                  AND subject = @subject
                 ORDER BY at_utc, id;
                 """);
 
             command.Bind("@release", catalogueRelease);
             command.Bind("@control", controlId);
             command.Bind("@entity", entity.Value);
+            command.Bind("@subject", subject ?? string.Empty);
 
             using var reader = command.ExecuteReader();
             var transitions = new List<ComplianceTransition>();
@@ -247,11 +262,15 @@ public sealed class PostgresComplianceStore : IComplianceStore
                     CatalogueRelease = catalogueRelease,
                     ControlId = controlId,
                     Entity = entity,
+                    Subject = subject ?? string.Empty,
                     From = ReadEnumOrNull<ComplianceVerdict>(reader, 0),
                     To = ReadEnumOrNull<ComplianceVerdict>(reader, 1),
                     Observed = ReadTextOrNull(reader, 2),
                     EvidenceUtc = ReadTimeOrNull(reader, 3),
                     AtUtc = ReadTime(reader, 4),
+                    SubjectLabel = ReadTextOrNull(reader, 5),
+                    AcceptedBy = ReadTextOrNull(reader, 6),
+                    AcceptedReason = ReadTextOrNull(reader, 7),
                 });
             }
 
@@ -294,7 +313,7 @@ public sealed class PostgresComplianceStore : IComplianceStore
             // over the same predicate.
             using var command = Command(connection, $"""
                 SELECT catalogue_release, control_id, entity_id, from_verdict, to_verdict, observed,
-                       evidence_utc, at_utc
+                       evidence_utc, at_utc, subject, subject_label, accepted_by, accepted_reason
                 FROM compliance_transition
                 WHERE at_utc >= @since {toFilter} {releaseFilter} {controlFilter} {entityFilter}
                 ORDER BY at_utc, id
@@ -339,6 +358,10 @@ public sealed class PostgresComplianceStore : IComplianceStore
                     Observed = ReadTextOrNull(reader, 5),
                     EvidenceUtc = ReadTimeOrNull(reader, 6),
                     AtUtc = ReadTime(reader, 7),
+                    Subject = reader.GetString(8),
+                    SubjectLabel = ReadTextOrNull(reader, 9),
+                    AcceptedBy = ReadTextOrNull(reader, 10),
+                    AcceptedReason = ReadTextOrNull(reader, 11),
                 });
             }
 
@@ -365,15 +388,17 @@ public sealed class PostgresComplianceStore : IComplianceStore
 
         using var command = Command(connection, """
             DELETE FROM compliance_finding f
-            USING unnest(@controls, @entities) AS gone (control_id, entity_id)
+            USING unnest(@controls, @entities, @subjects) AS gone (control_id, entity_id, subject)
             WHERE f.catalogue_release = @release
               AND f.control_id = gone.control_id
-              AND f.entity_id = gone.entity_id;
+              AND f.entity_id = gone.entity_id
+              AND f.subject = gone.subject;
             """);
 
         command.Bind("@release", release);
         command.Bind("@controls", removed.Select(f => f.ControlId).ToArray());
         command.Bind("@entities", removed.Select(f => f.Entity.Value).ToArray());
+        command.Bind("@subjects", removed.Select(f => f.Subject).ToArray());
         command.ExecuteNonQuery();
     }
 
@@ -389,15 +414,17 @@ public sealed class PostgresComplianceStore : IComplianceStore
         using var command = Command(connection, """
             UPDATE compliance_finding f
             SET last_evaluated_utc = seen.at_utc
-            FROM unnest(@controls, @entities, @ats) AS seen (control_id, entity_id, at_utc)
+            FROM unnest(@controls, @entities, @subjects, @ats) AS seen (control_id, entity_id, subject, at_utc)
             WHERE f.catalogue_release = @release
               AND f.control_id = seen.control_id
-              AND f.entity_id = seen.entity_id;
+              AND f.entity_id = seen.entity_id
+              AND f.subject = seen.subject;
             """);
 
         command.Bind("@release", release);
         command.Bind("@controls", touched.Select(f => f.ControlId).ToArray());
         command.Bind("@entities", touched.Select(f => f.Entity.Value).ToArray());
+        command.Bind("@subjects", touched.Select(f => f.Subject).ToArray());
         command.Bind("@ats", touched.Select(f => f.LastEvaluatedUtc.UtcDateTime).ToArray());
         command.ExecuteNonQuery();
     }
@@ -420,10 +447,11 @@ public sealed class PostgresComplianceStore : IComplianceStore
                 INSERT INTO compliance_finding
                     (catalogue_release, control_id, entity_id, entity_name, verdict, reason, observed,
                      expected, first_seen_utc, last_evaluated_utc, stale, accepted_by, accepted_at_utc,
-                     accepted_reason)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                ON CONFLICT (catalogue_release, control_id, entity_id) DO UPDATE SET
+                     accepted_reason, subject, subject_label)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                ON CONFLICT (catalogue_release, control_id, entity_id, subject) DO UPDATE SET
                     entity_name = EXCLUDED.entity_name,
+                    subject_label = EXCLUDED.subject_label,
                     verdict = EXCLUDED.verdict,
                     reason = EXCLUDED.reason,
                     observed = EXCLUDED.observed,
@@ -450,6 +478,8 @@ public sealed class PostgresComplianceStore : IComplianceStore
             Positional(command, finding.Acceptance?.By);
             Positional(command, finding.Acceptance?.AtUtc.ToUniversalTime());
             Positional(command, finding.Acceptance?.Reason);
+            Positional(command, finding.Subject);
+            Positional(command, finding.SubjectLabel);
 
             batch.BatchCommands.Add(command);
         }
@@ -473,8 +503,8 @@ public sealed class PostgresComplianceStore : IComplianceStore
             command.CommandText = """
                 INSERT INTO compliance_transition
                     (catalogue_release, control_id, entity_id, from_verdict, to_verdict, observed,
-                     evidence_utc, at_utc)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+                     evidence_utc, at_utc, subject, subject_label, accepted_by, accepted_reason)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
                 """;
 
             Positional(command, transition.CatalogueRelease);
@@ -485,6 +515,10 @@ public sealed class PostgresComplianceStore : IComplianceStore
             Positional(command, transition.Observed);
             Positional(command, transition.EvidenceUtc?.ToUniversalTime());
             Positional(command, transition.AtUtc.ToUniversalTime());
+            Positional(command, transition.Subject);
+            Positional(command, transition.SubjectLabel);
+            Positional(command, transition.AcceptedBy);
+            Positional(command, transition.AcceptedReason);
 
             batch.BatchCommands.Add(command);
         }
@@ -510,7 +544,7 @@ public sealed class PostgresComplianceStore : IComplianceStore
         using var command = Command(connection, """
             SELECT catalogue_release, control_id, entity_id, entity_name, verdict, reason, observed,
                    expected, first_seen_utc, last_evaluated_utc, accepted_by, accepted_at_utc,
-                   accepted_reason, stale
+                   accepted_reason, stale, subject, subject_label
             FROM compliance_finding;
             """);
         using var reader = command.ExecuteReader();
@@ -540,6 +574,8 @@ public sealed class PostgresComplianceStore : IComplianceStore
                         Reason = ReadTextOrNull(reader, 12) ?? string.Empty,
                     },
                 Stale = reader.GetBoolean(13),
+                Subject = reader.GetString(14),
+                SubjectLabel = ReadTextOrNull(reader, 15),
             });
         }
 
@@ -552,7 +588,7 @@ public sealed class PostgresComplianceStore : IComplianceStore
 
         using var command = Command(connection, """
             SELECT id, control_id, entity_id, reason, owner, created_by, created_at_utc, expires_utc,
-                   removed_by, removed_at_utc
+                   removed_by, removed_at_utc, subject
             FROM compliance_exception;
             """);
         using var reader = command.ExecuteReader();
@@ -571,6 +607,7 @@ public sealed class PostgresComplianceStore : IComplianceStore
                 ExpiresUtc = ReadTime(reader, 7),
                 RemovedBy = ReadTextOrNull(reader, 8),
                 RemovedAtUtc = ReadTimeOrNull(reader, 9),
+                Subject = ReadTextOrNull(reader, 10),
             });
         }
 
@@ -601,8 +638,8 @@ public sealed record ComplianceFindingChanges
     public static ComplianceFindingChanges Between(
         IReadOnlyList<ComplianceFinding> previous, IReadOnlyList<ComplianceFinding> next, DateTimeOffset nowUtc)
     {
-        var before = previous.ToDictionary(f => (f.ControlId, f.Entity));
-        var after = next.ToDictionary(f => (f.ControlId, f.Entity));
+        var before = previous.ToDictionary(f => (f.ControlId, f.Entity, f.Subject));
+        var after = next.ToDictionary(f => (f.ControlId, f.Entity, f.Subject));
 
         var written = new List<ComplianceFinding>();
         var touched = new List<ComplianceFinding>();
@@ -610,7 +647,7 @@ public sealed record ComplianceFindingChanges
 
         foreach (var finding in next)
         {
-            if (!before.TryGetValue((finding.ControlId, finding.Entity), out var last))
+            if (!before.TryGetValue((finding.ControlId, finding.Entity, finding.Subject), out var last))
             {
                 written.Add(finding);
                 transitions.Add(Transition(finding, from: null, to: finding.Verdict, nowUtc));
@@ -637,15 +674,23 @@ public sealed record ComplianceFindingChanges
             }
         }
 
-        var removed = previous.Where(f => !after.ContainsKey((f.ControlId, f.Entity))).ToList();
+        var removed = previous.Where(f => !after.ContainsKey((f.ControlId, f.Entity, f.Subject))).ToList();
 
+        // Left the evaluation: the row goes, the record does not. The
+        // acceptance lived on the row, so it travels with the transition,
+        // with the last thing observed and the subject's label.
         transitions.AddRange(removed.Select(f => new ComplianceTransition
         {
             CatalogueRelease = f.CatalogueRelease,
             ControlId = f.ControlId,
             Entity = f.Entity,
+            Subject = f.Subject,
+            SubjectLabel = f.SubjectLabel,
             From = f.Verdict,
             To = null,
+            Observed = f.Observed,
+            AcceptedBy = f.Acceptance?.By,
+            AcceptedReason = f.Acceptance?.Reason,
             AtUtc = nowUtc,
         }));
 
@@ -664,6 +709,8 @@ public sealed record ComplianceFindingChanges
             CatalogueRelease = finding.CatalogueRelease,
             ControlId = finding.ControlId,
             Entity = finding.Entity,
+            Subject = finding.Subject,
+            SubjectLabel = finding.SubjectLabel,
             From = from,
             To = to,
             Observed = finding.Observed,

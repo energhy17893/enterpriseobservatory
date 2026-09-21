@@ -55,6 +55,9 @@ public sealed record ComplianceControlView
     /// <summary>Why not, when it does not. Never counted as passing.</summary>
     public string? NotEvaluatedReason { get; init; }
 
+    /// <summary>The catalogue the control comes from: the vendor guide, or the product's own.</summary>
+    public string CatalogueName { get; init; } = string.Empty;
+
     public required FindingCountsView Counts { get; init; }
 }
 
@@ -67,6 +70,9 @@ public sealed record ComplianceExceptionView
 
     /// <summary>Null means every entity the control applies to.</summary>
     public string? EntityId { get; init; }
+
+    /// <summary>Null means every subject.</summary>
+    public string? Subject { get; init; }
 
     public required string Reason { get; init; }
 
@@ -120,6 +126,12 @@ public sealed record ComplianceFindingView
 
     public required string EntityName { get; init; }
 
+    /// <summary>What on the entity the finding is about; empty for the entity itself.</summary>
+    public string Subject { get; init; } = string.Empty;
+
+    /// <summary>How the subject is shown; display only.</summary>
+    public string? SubjectLabel { get; init; }
+
     public required FindingState State { get; init; }
 
     public string? Reason { get; init; }
@@ -155,6 +167,9 @@ public sealed record AcceptFindingCommand
 
     public required string EntityId { get; init; }
 
+    /// <summary>The finding's subject; empty (the default) for a finding about the entity itself.</summary>
+    public string Subject { get; init; } = string.Empty;
+
     public string Reason { get; init; } = string.Empty;
 }
 
@@ -164,6 +179,9 @@ public sealed record AddExceptionCommand
 
     /// <summary>Null or empty for every entity the control applies to.</summary>
     public string? EntityId { get; init; }
+
+    /// <summary>Null or empty for every subject.</summary>
+    public string? Subject { get; init; }
 
     public required string Reason { get; init; }
 
@@ -215,7 +233,12 @@ public static class ComplianceApi
 
                 return Respond(
                     service,
-                    service.Accept(command.ControlId, new EntityId(command.EntityId), command.Reason, actor));
+                    service.Accept(
+                        command.ControlId,
+                        new EntityId(command.EntityId),
+                        command.Subject ?? string.Empty,
+                        command.Reason,
+                        actor));
             })
             .RequireAuthorization(ObservatoryApi.Policies.Operator)
             .WithName("AcceptComplianceFinding");
@@ -233,6 +256,7 @@ public static class ComplianceApi
                 return Respond(service, service.AddException(
                     command.ControlId,
                     string.IsNullOrWhiteSpace(command.EntityId) ? null : new EntityId(command.EntityId),
+                    command.Subject,
                     command.Reason,
                     command.Owner,
                     command.ExpiresUtc,
@@ -349,8 +373,9 @@ public static class ComplianceApi
             .Where(f => entity is null || string.Equals(f.Entity.Value, entity, StringComparison.Ordinal))
             .ToList();
 
-        var controlsById = service.Catalogue.Controls
-            .ToDictionary(c => c.ControlId, c => c, StringComparer.Ordinal);
+        var controlsById = service.Controls()
+            .GroupBy(b => b.Control.ControlId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Control, StringComparer.Ordinal);
 
         var byControl = findings
             .GroupBy(f => f.ControlId, StringComparer.Ordinal)
@@ -378,6 +403,10 @@ public static class ComplianceApi
             {
                 ControlId = t.ControlId,
                 EntityId = t.Entity.Value,
+                Subject = t.Subject,
+                SubjectLabel = t.SubjectLabel,
+                AcceptedBy = t.AcceptedBy,
+                AcceptedReason = t.AcceptedReason,
                 From = t.From,
                 To = t.To,
                 Observed = t.Observed,
@@ -408,6 +437,7 @@ public static class ComplianceApi
                     Assessment = bound.Control.Assessment,
                     Evaluated = bound.IsEvaluated,
                     NotEvaluatedReason = bound.NotEvaluatedReason,
+                    CatalogueName = bound.CatalogueName,
                     Counts = byControl.TryGetValue(bound.Control.ControlId, out var counts)
                         ? counts
                         : new FindingCountsView(),
@@ -420,7 +450,8 @@ public static class ComplianceApi
                     .Select(f => ToReportRow(f, exceptions, now, controlsById))
                     .OrderBy(r => r.State)
                     .ThenBy(r => r.ControlId, StringComparer.Ordinal)
-                    .ThenBy(r => r.EntityName, StringComparer.OrdinalIgnoreCase),
+                    .ThenBy(r => r.EntityName, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(r => r.Subject, StringComparer.Ordinal),
             ],
             Exceptions =
             [
@@ -488,6 +519,8 @@ public static class ComplianceApi
             Priority = control?.Priority ?? string.Empty,
             EntityId = finding.Entity.Value,
             EntityName = finding.EntityName,
+            Subject = finding.Subject,
+            SubjectLabel = finding.SubjectLabel,
             State = state,
             NotEvaluatedReason = state == FindingState.NotEvaluated ? finding.Reason : null,
             Observed = finding.Observed,
@@ -542,6 +575,7 @@ public static class ComplianceApi
                     Assessment = bound.Control.Assessment,
                     Evaluated = bound.IsEvaluated,
                     NotEvaluatedReason = bound.NotEvaluatedReason,
+                    CatalogueName = bound.CatalogueName,
                     Counts = byControl.TryGetValue(bound.Control.ControlId, out var counts)
                         ? counts
                         : new FindingCountsView(),
@@ -577,7 +611,8 @@ public static class ComplianceApi
                 .Where(f => state is null || f.State == state)
                 .OrderBy(f => f.State)
                 .ThenBy(f => f.ControlId, StringComparer.Ordinal)
-                .ThenBy(f => f.EntityName, StringComparer.OrdinalIgnoreCase),
+                .ThenBy(f => f.EntityName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(f => f.Subject, StringComparer.Ordinal),
         ];
     }
 
@@ -632,6 +667,8 @@ public static class ComplianceApi
             CatalogueRelease = finding.CatalogueRelease,
             EntityId = finding.Entity.Value,
             EntityName = finding.EntityName,
+            Subject = finding.Subject,
+            SubjectLabel = finding.SubjectLabel,
             State = finding.StateAt(exceptions, now),
             Reason = finding.Reason,
             Observed = finding.Observed,
@@ -652,6 +689,7 @@ public static class ComplianceApi
         Id = exception.Id,
         ControlId = exception.ControlId,
         EntityId = exception.Entity?.Value,
+        Subject = exception.Subject,
         Reason = exception.Reason,
         Owner = exception.Owner,
         CreatedBy = exception.CreatedBy,
