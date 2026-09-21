@@ -69,8 +69,45 @@ public class MultipathSinglePointOfFailureTests
         Settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["type"] = "NFS" },
     };
 
+    /// <summary>
+    /// Evaluates with a healthy second host that reaches every device the
+    /// case's hosts do, so each device is shared (seen by two hosts) and the
+    /// case judges only the host under test.
+    /// </summary>
     private static IReadOnlyList<AlertDefinition> Evaluate(params Entity[] entities) =>
-        MultipathSinglePointOfFailure.Evaluate(entities);
+        MultipathSinglePointOfFailure.Evaluate([.. entities, SharingPeer(entities)]);
+
+    private static Entity SharingPeer(IEnumerable<Entity> entities)
+    {
+        var devices = entities
+            .Where(e => e.Kind == EntityKind.EsxiHost)
+            .SelectMany(e => e.StoragePaths)
+            .Select(p => (p.StorageDeviceId, p.DeviceKey))
+            .Distinct();
+
+        return HostWith(
+        [
+            .. devices.SelectMany(d => new[]
+            {
+                Path("active", name: "vmhba1:C0:T0:L1", device: d.StorageDeviceId, key: d.DeviceKey, adapter: "vmhba1"),
+                Path("active", name: "vmhba2:C0:T0:L1", device: d.StorageDeviceId, key: d.DeviceKey, adapter: "vmhba2"),
+            }),
+        ]) with { Id = new EntityId("vc-1:host-peer"), DisplayName = "esx-peer" };
+    }
+
+    // --- local VMFS: seen by one host only ----------------------------------
+
+    [Fact]
+    public void A_vmfs_device_only_one_host_can_reach_is_local_and_not_judged()
+    {
+        Assert.Empty(MultipathSinglePointOfFailure.Evaluate([HostWith(Path("active")), VmfsDatastore()]));
+    }
+
+    [Fact]
+    public void The_same_single_path_is_judged_once_a_second_host_shares_the_device()
+    {
+        Assert.Single(Evaluate(HostWith(Path("active")), VmfsDatastore()));
+    }
 
     // --- the finding this rule exists for: single path --------------------
 
@@ -276,14 +313,18 @@ public class MultipathSinglePointOfFailureTests
     {
         var policy = MultipathSinglePointOfFailurePolicy.Default with { WorkingStates = ["online"] };
 
+        Entity[] estate =
+        [
+            HostWith(
+                Path("online", name: "vmhba0:C0:T0:L1"),
+                Path("online", name: "vmhba0:C1:T0:L1")),
+            VmfsDatastore(),
+        ];
+
+        // The peer's paths read "active", which this policy does not count as
+        // working, so the peer only makes the device shared and adds nothing.
         var alert = Assert.Single(MultipathSinglePointOfFailure.Evaluate(
-            [
-                HostWith(
-                    Path("online", name: "vmhba0:C0:T0:L1"),
-                    Path("online", name: "vmhba0:C1:T0:L1")),
-                VmfsDatastore(),
-            ],
-            policy));
+            [.. estate, SharingPeer(estate)], policy));
 
         Assert.Equal(SingleHbaTitle, alert.Title);
     }
