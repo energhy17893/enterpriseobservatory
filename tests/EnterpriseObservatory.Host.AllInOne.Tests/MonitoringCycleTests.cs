@@ -1484,6 +1484,50 @@ public class MonitoringCycleTests : IDisposable
         Category = "Hardware",
         Source = source,
     };
+
+    [Fact]
+    public async Task The_dropped_packet_rule_is_reached_by_the_metric_cycle()
+    {
+        // Dropping its call site would leave every DroppedPacketsTests case
+        // green and the product silent about a guest losing five percent of
+        // its frames -- the failure four earlier rules shipped with.
+        var cycle = Cycle();
+
+        Observation Packets(string counter, double raw) => new()
+        {
+            Entity = new EntityId("vc-1:vm-1"),
+            SampledAtUtc = T0,
+            Source = "vc-1",
+            Value = new CounterValue
+            {
+                CounterName = counter,
+                Raw = raw,
+                Rollup = RollupType.Summation,
+                Interval = TimeSpan.FromSeconds(20),
+                Unit = "number",
+            },
+        };
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    Packets("net.packetsRx.summation", 10_000),
+                    Packets("net.droppedRx.summation", 500),
+                ],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Contains(result.Visible, a => a.Title == "Dropping received packets");
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
 }
 
 /// <summary>
