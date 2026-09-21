@@ -79,8 +79,13 @@ public sealed class MonitoringWorker(
                 // cycle failing. Bounded as a whole, not only per call: a read
                 // is many calls, and their timeouts add up to far more than
                 // one inventory interval. A source cut off keeps its mark.
+                //
+                // Only the vCenters whose inventory just answered are asked.
+                // This read has no breaker of its own, and without that it
+                // kept presenting a rejected password after the inventory
+                // breaker had already stopped doing so.
                 var events = await _events
-                    .RunAsync(_sources.Events, _options.EventReadDeadline, token)
+                    .RunAsync(_sources.Events, result.ReportingSources, _options.EventReadDeadline, token)
                     .ConfigureAwait(false);
 
                 HostLog.EventCycle(_logger, events.Recorded, events.Pruned);

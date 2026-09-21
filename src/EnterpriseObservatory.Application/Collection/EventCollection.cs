@@ -365,12 +365,49 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
     /// again. Only <paramref name="cancellationToken"/> — shutdown — throws.
     /// </para>
     /// </remarks>
+    public Task<EventCollectionResult> RunAsync(
+        IReadOnlyList<IEventSource> sources,
+        TimeSpan deadline,
+        CancellationToken cancellationToken) =>
+        RunAsync(sources, answered: null, deadline, cancellationToken);
+
+    /// <summary>
+    /// As above, asking only the sources named in <paramref name="answered"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This read does not go through <c>SourceRunner</c>, so on its own it has
+    /// no breaker and no one-strike rule: a vCenter that rejected the password
+    /// was held off for inventory after a single failure and then presented
+    /// with the same password by this read, every cycle, indefinitely. That is
+    /// the account lockout <see cref="CollectionFailures"/> describes, reached
+    /// by the one path that was not guarded.
+    /// </para>
+    /// <para>
+    /// It borrows a verdict rather than growing a third breaker. Events are
+    /// read straight after inventory, from the same address, in the same
+    /// session, with the same credential; whether that vCenter is worth asking
+    /// right now is a question the inventory read has just answered. A source
+    /// it could not read — refused, unreachable, or being backed off from — is
+    /// not asked here either. Its cursor does not move, so nothing is lost:
+    /// the window is read once the source answers again.
+    /// </para>
+    /// <para>
+    /// Null asks everyone, for callers with no inventory read to go by.
+    /// </para>
+    /// </remarks>
     public async Task<EventCollectionResult> RunAsync(
         IReadOnlyList<IEventSource> sources,
+        IReadOnlyCollection<string>? answered,
         TimeSpan deadline,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sources);
+
+        var asked = answered?.ToHashSet(StringComparer.Ordinal);
+        const string notAsked =
+            "not asked for events: this cycle's inventory read of the same vCenter did not " +
+            "succeed; its position was kept and the window is read once it answers again";
 
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (deadline != Timeout.InfiniteTimeSpan)
@@ -392,6 +429,25 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
             if (budget.IsCancellationRequested)
             {
                 failures.Add((source.InstanceId, outOfTime));
+                continue;
+            }
+
+            if (asked is not null && !asked.Contains(source.InstanceId))
+            {
+                // Reported, never silent: "we did not look" must not be
+                // readable as "nothing happened".
+                failures.Add((source.InstanceId, notAsked));
+
+                try
+                {
+                    _store.RecordFailure(source.InstanceId, notAsked, _clock.UtcNow);
+                }
+#pragma warning disable CA1031 // Justified: as below — reported, not thrown into the loop.
+                catch (Exception)
+#pragma warning restore CA1031
+                {
+                }
+
                 continue;
             }
 
