@@ -27,18 +27,18 @@ Verinin çoğu zaten toplanıyor; eksik olan kurallar.
 | ✅ M1.3 | **Düşen paketler** — oran + eşik | canlıda alarm |
 | ✅ M1.4 | **Depolama gürültücü komşusu** — yavaş datastore'da en çok IOPS üreten VM'ler (per-VM `virtualDisk` IOPS toplanacak) | canlıda "şu VM'ler bu volume'ü dövüyor" |
 
-## ▶ M2 — Olay akışı *(sürüyor)*
+## ✅ M2 — Olay akışı *(tamam, 21 Eylül 2026)*
 
 vCenter event stream (`CreateCollectorForEvents`, en yeni sayfa).
 
 | Adım | Feature | Bitti = |
 |---|---|---|
 | ✅ M2.1 | Olay toplayıcı + depolama *(canlıda; ekranda görsel doğrulama bekliyor)* | olaylar ekranında görünür |
-| M2.2 | HA olayları → alarm (host izole, failover başarısız, master kayıp) | canlıda alarm |
-| M2.3 | NFS/depolama bağlantı kaybı, pNIC flapping | canlıda alarm |
-| M2.4 | Snapshot'ı kimin aldığı (snapshot bulgusuna eklenir) | bulguda kullanıcı adı |
+| ✅ M2.2 | HA olayları → alarm (host izole, failover başarısız, master kayıp) | canlıda alarm |
+| ✅ M2.3 | NFS/depolama bağlantı kaybı, pNIC flapping | canlıda alarm |
+| ✅ M2.4 | Snapshot'ı kimin aldığı (snapshot bulgusuna eklenir) | bulguda kullanıcı adı |
 
-**→ Mimari kontrol #1** (M1 + M2 sonrası)
+**▶ Mimari kontrol #1** (M1 + M2 sonrası) *(sürüyor)*
 
 ## M3 — Uygunluk motoru
 
