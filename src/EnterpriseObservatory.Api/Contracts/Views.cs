@@ -172,6 +172,46 @@ public sealed record EntityDetailView
     /// null for a cluster whose HA configuration could not be read at all.
     /// </summary>
     public HaScorecardView? HaScorecard { get; init; }
+
+    /// <summary>
+    /// If the largest host fails, do the survivors still hold the running
+    /// VMs' demand, and until when. Null for every entity kind but
+    /// <see cref="EntityKind.Cluster"/>, and also null for a cluster with
+    /// fewer than two live hosts. See roadmap M8.2.
+    /// </summary>
+    public ClusterFailoverView? ClusterFailover { get; init; }
+}
+
+/// <summary>
+/// A cluster's N+1 answer for CPU and for memory, each in host-equivalents —
+/// see <see cref="EnterpriseObservatory.Application.Analysis.ClusterNPlusOnePolicy"/>
+/// for why the unit is a share of one host's own capacity rather than MHz or
+/// bytes: neither is collected for a host today.
+/// </summary>
+public sealed record ClusterFailoverView
+{
+    public required int HostCount { get; init; }
+
+    public required ClusterFailoverResourceView Cpu { get; init; }
+
+    public required ClusterFailoverResourceView Memory { get; init; }
+}
+
+/// <summary>One resource's N+1 answer: does it hold now, and until when.</summary>
+public sealed record ClusterFailoverResourceView
+{
+    /// <summary>
+    /// Null when this cluster's current demand for this resource could not be
+    /// read from at least one host this cycle — "unknown", not "yes".
+    /// </summary>
+    public bool? HoldsNow { get; init; }
+
+    public double? DemandHosts { get; init; }
+
+    public required double AvailableAfterFailoverHosts { get; init; }
+
+    /// <summary>The same date estimate <see cref="TimeToFullView"/> gives a datastore, or a refusal.</summary>
+    public TimeToFullView? Date { get; init; }
 }
 
 /// <summary>

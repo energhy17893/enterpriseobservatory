@@ -108,6 +108,12 @@ export interface EntityDetailView {
   timeToFull?: TimeToFullView | null
   /** Clusters only: the vSphere HA configuration, or null when unread. */
   haScorecard?: HaScorecardView | null
+  /**
+   * Clusters only: if the largest host fails, do the survivors still hold the
+   * running VMs' demand, and until when. Null for a cluster with fewer than
+   * two live hosts, which N+1 cannot be asked of.
+   */
+  clusterFailover?: ClusterFailoverView | null
 }
 
 /**
@@ -128,6 +134,29 @@ export interface HaScorecardView {
   redundantNetworkWarningSilenced: boolean | null
   /** The scorecard rule's open findings for this cluster. */
   findings: AlertView[]
+}
+
+/**
+ * A cluster's N+1 answer for CPU and for memory, each in host-equivalents --
+ * a share of one host's own capacity, because no collector this product runs
+ * reads a host's CPU or memory capacity in MHz or bytes. "Largest host" is
+ * approximated as any one host, one host-equivalent of capacity, which is
+ * exact on a cluster built from identical hosts (VMware's own recommendation
+ * for a predictable HA cluster) and an approximation otherwise.
+ */
+export interface ClusterFailoverView {
+  hostCount: number
+  cpu: ClusterFailoverResourceView
+  memory: ClusterFailoverResourceView
+}
+
+export interface ClusterFailoverResourceView {
+  /** Null when this cluster's current demand could not be read from at least one host -- unknown, not "yes". */
+  holdsNow: boolean | null
+  demandHosts: number | null
+  availableAfterFailoverHosts: number
+  /** The date the guarantee is lost, or why there is none. Null only alongside a null holdsNow. */
+  date: TimeToFullView | null
 }
 
 export interface TimeToFullView {

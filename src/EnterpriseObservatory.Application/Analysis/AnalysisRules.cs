@@ -40,6 +40,7 @@ public static class AnalysisRules
         new ClusterHighAvailabilityRule(),
         new EventAlertsRule(),
         new DatastoreTimeToFullRule(),
+        new ClusterNPlusOneRule(),
         new CollectionCoverageRule(),
     ];
 
@@ -406,6 +407,46 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
                 context.Options.Retention),
             context.Unevaluated,
             policy);
+    }
+}
+
+/// <summary>Adapts <see cref="ClusterNPlusOne"/>.</summary>
+/// <remarks>
+/// <para>
+/// On the inventory rhythm beside <see cref="DatastoreTimeToFullRule"/>, for
+/// the parallel reason: cluster membership (<c>PartOf</c>) is read on it, and
+/// the question this rule answers is a capacity-planning one rather than a
+/// thirty-second one. Unlike <see cref="DatastoreTimeToFullRule"/> it does not
+/// read <see cref="RuleContext.Observations"/> for current demand -- the
+/// inventory rhythm carries none -- and instead reads each host's latest
+/// sample from the series store, the way
+/// <see cref="DatastoreTimeToFull.LatestCapacity"/> reads a datastore's
+/// capacity from outside a cycle.
+/// </para>
+/// <para>
+/// Guarded per cluster the same way <see cref="DatastoreTimeToFullRule"/> is:
+/// a cluster whose history cannot be read keeps its alerts
+/// (<see cref="RuleContext.Unevaluated"/>) rather than having them silently
+/// resolved.
+/// </para>
+/// </remarks>
+public sealed class ClusterNPlusOneRule : IAnalysisRule
+{
+    public string RuleId => ClusterNPlusOne.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        var policy = context.Options.ClusterNPlusOne;
+
+        var states = ClusterNPlusOne.CurrentReadings(
+            context.Series, context.Graph, context.NowUtc, policy, context.Options.Retention);
+
+        return ClusterNPlusOne.EvaluateEach(
+            states, context.Series, context.NowUtc, policy, context.Options.Retention, context.Unevaluated);
     }
 }
 
