@@ -251,6 +251,175 @@ public class VsphereInventoryPropertyTests
         Assert.Equal(string.Empty, path.StorageDeviceId);
     }
 
+    // --- path transport ---------------------------------------------------
+
+    /// <remarks>
+    /// Transport types and child names as a live vCenter returned them (probe
+    /// <c>--shapes</c>): 1240 <c>HostFibreChannelTargetTransport</c> carrying
+    /// <c>portWorldWideName</c> and <c>nodeWorldWideName</c>, 16
+    /// <c>HostSerialAttachedTargetTransport</c> and 2
+    /// <c>HostPcieTargetTransport</c> with no children. The iSCSI transport is
+    /// from the schema only; that estate had none.
+    /// </remarks>
+    private static IReadOnlyList<VsphereStoragePath> PathsWithTransport(string transports) =>
+        VsphereClient.ToHost(Single($"""
+            <RetrievePropertiesExResponse xmlns="urn:vim25" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <returnval>
+                <objects>
+                  <obj type="HostSystem">host-1</obj>
+                  <propSet>
+                    <name>config.storageDevice.multipathInfo</name>
+                    <val xsi:type="HostMultipathInfo">
+                      <lun>
+                        <id>0200000000deadbeef</id>
+                        {transports}
+                      </lun>
+                    </val>
+                  </propSet>
+                </objects>
+              </returnval>
+            </RetrievePropertiesExResponse>
+            """)).StoragePaths;
+
+    [Fact]
+    public void A_fibre_channel_path_names_its_target_port_wwn_in_colon_hex()
+    {
+        var path = Assert.Single(PathsWithTransport("""
+            <path>
+              <name>vmhba2:C0:T0:L1</name><pathState>active</pathState>
+              <transport xsi:type="HostFibreChannelTargetTransport">
+                <nodeWorldWideName>2305843080538627886</nodeWorldWideName>
+                <portWorldWideName>5766297885714947898</portWorldWideName>
+              </transport>
+            </path>
+            """));
+
+        Assert.Equal("HostFibreChannelTargetTransport", path.TransportType);
+        Assert.Equal("50:06:01:60:3b:20:1f:3a", path.Target);
+    }
+
+    [Fact]
+    public void A_wwn_above_two_to_the_63_arrives_negative_and_is_read_unsigned()
+    {
+        // xsd:long on the wire. A WWN whose top bit is set -- NAA type C,
+        // common for virtual ports -- is a negative long, and formatting it
+        // signed would give a string that joins to no switch's table.
+        var path = Assert.Single(PathsWithTransport("""
+            <path>
+              <name>vmhba2:C0:T1:L1</name>
+              <transport xsi:type="HostFibreChannelTargetTransport">
+                <portWorldWideName>-4589038236550955004</portWorldWideName>
+              </transport>
+            </path>
+            """));
+
+        Assert.Equal("c0:50:76:09:a1:b2:00:04", path.Target);
+    }
+
+    [Fact]
+    public void A_small_wwn_is_zero_padded_to_sixteen_digits()
+    {
+        var path = Assert.Single(PathsWithTransport("""
+            <path>
+              <name>vmhba2:C0:T2:L1</name>
+              <transport xsi:type="HostFibreChannelTargetTransport">
+                <portWorldWideName>255</portWorldWideName>
+              </transport>
+            </path>
+            """));
+
+        Assert.Equal("00:00:00:00:00:00:00:ff", path.Target);
+    }
+
+    [Fact]
+    public void An_iscsi_path_names_its_target_by_iqn()
+    {
+        var path = Assert.Single(PathsWithTransport("""
+            <path>
+              <name>vmhba64:C0:T0:L0</name>
+              <transport xsi:type="HostInternetScsiTargetTransport">
+                <iScsiName>iqn.2001-05.com.equallogic:0-8a0906-vol1</iScsiName>
+                <iScsiAlias>vol1</iScsiAlias>
+                <address>10.0.0.5:3260</address>
+              </transport>
+            </path>
+            """));
+
+        Assert.Equal("HostInternetScsiTargetTransport", path.TransportType);
+        Assert.Equal("iqn.2001-05.com.equallogic:0-8a0906-vol1", path.Target);
+    }
+
+    [Fact]
+    public void Transports_that_name_no_port_leave_the_target_null()
+    {
+        // SAS and PCIe arrive with no children at all; a missing transport or
+        // an unparseable WWN is likewise not a target. Never invented.
+        var paths = PathsWithTransport("""
+            <path><name>vmhba0:C0:T0:L0</name><transport xsi:type="HostSerialAttachedTargetTransport"></transport></path>
+            <path><name>vmhba1:C0:T0:L0</name><transport xsi:type="HostPcieTargetTransport"></transport></path>
+            <path><name>vmhba2:C0:T0:L0</name></path>
+            <path><name>vmhba3:C0:T0:L0</name><transport xsi:type="HostFibreChannelTargetTransport"><portWorldWideName>not-a-number</portWorldWideName></transport></path>
+            <path><name>vmhba4:C0:T0:L0</name><transport xsi:type="HostFibreChannelTargetTransport"><portWorldWideName>0</portWorldWideName></transport></path>
+            """);
+
+        Assert.Equal(5, paths.Count);
+        Assert.All(paths, p => Assert.Null(p.Target));
+        Assert.Equal("HostSerialAttachedTargetTransport", paths[0].TransportType);
+        Assert.Equal("HostPcieTargetTransport", paths[1].TransportType);
+        Assert.Equal(string.Empty, paths[2].TransportType);
+    }
+
+    // --- cluster configuration wiring -------------------------------------
+
+    [Fact]
+    public void A_cluster_carries_its_ha_settings_groups_and_drs_rules()
+    {
+        var cluster = VsphereClient.ToCluster(Single("""
+            <RetrievePropertiesExResponse xmlns="urn:vim25" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <returnval>
+                <objects>
+                  <obj type="ClusterComputeResource">domain-c7</obj>
+                  <propSet><name>name</name><val>prod</val></propSet>
+                  <propSet>
+                    <name>configurationEx</name>
+                    <val xsi:type="ClusterConfigInfoEx">
+                      <dasConfig>
+                        <enabled>true</enabled>
+                        <admissionControlPolicy xsi:type="ClusterFailoverResourceAdmissionControlPolicy"><x>1</x></admissionControlPolicy>
+                      </dasConfig>
+                      <drsConfig><enabled>true</enabled></drsConfig>
+                      <group xsi:type="ClusterVmGroup"><name>db</name><vm type="VirtualMachine">vm-1</vm></group>
+                      <group xsi:type="ClusterHostGroup"><name>lic</name><host type="HostSystem">host-1</host></group>
+                      <rule xsi:type="ClusterVmHostRuleInfo">
+                        <key>1</key><enabled>true</enabled><name>db-on-lic</name><mandatory>false</mandatory>
+                        <userCreated>true</userCreated><vmGroupName>db</vmGroupName><affineHostGroupName>lic</affineHostGroupName>
+                      </rule>
+                    </val>
+                  </propSet>
+                </objects>
+              </returnval>
+            </RetrievePropertiesExResponse>
+            """));
+
+        Assert.Equal("true", cluster.HaSettings[ClusterHaSettings.Enabled]);
+        Assert.Equal(2, cluster.Groups.Count);
+        Assert.Equal("db-on-lic", Assert.Single(cluster.DrsRules).Name);
+    }
+
+    [Fact]
+    public void A_cluster_without_configurationEx_carries_no_ha_settings_rather_than_defaults()
+    {
+        var cluster = VsphereClient.ToCluster(Single("""
+            <RetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval><objects><obj type="ClusterComputeResource">domain-c7</obj></objects></returnval>
+            </RetrievePropertiesExResponse>
+            """));
+
+        Assert.Same(ClusterHaSettings.None, cluster.HaSettings);
+        Assert.Empty(cluster.Groups);
+        Assert.Empty(cluster.DrsRules);
+    }
+
     [Fact]
     public void A_host_whose_path_table_was_not_read_reports_no_paths_rather_than_no_redundancy()
     {

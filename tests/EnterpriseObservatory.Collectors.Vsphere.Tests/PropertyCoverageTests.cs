@@ -182,6 +182,29 @@ public class PropertyCoverageTests
     }
 
     [Fact]
+    public void A_cluster_configurationEx_is_expected_but_its_rules_and_groups_are_not()
+    {
+        // configurationEx is requested whole -- its sub-paths cannot be asked
+        // for -- and it always carries dasConfig, so a cluster without it was
+        // not read. Rules and groups are repeated children that a cluster
+        // with none legitimately lacks, and have no row of their own.
+        var rows = VsphereClient.MeasureCoverage(PropertyCollectorParser.ParsePage(Page("""
+            <objects>
+              <obj type="ClusterComputeResource">domain-c1</obj>
+              <propSet>
+                <name>name</name>
+                <val xsi:type="xsd:string" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">c1</val>
+              </propSet>
+            </objects>
+            """)).Objects);
+
+        Assert.True(rows.Single(r =>
+            r.ObjectType == "ClusterComputeResource" && r.Property == "configurationEx").IsBlind);
+        Assert.DoesNotContain(rows, r => r.Property.Contains("rule", StringComparison.Ordinal));
+        Assert.DoesNotContain(rows, r => r.Property.Contains("group", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void An_empty_reply_produces_no_rows_rather_than_total_blindness()
     {
         // A cycle that read nothing is a collection failure with its own

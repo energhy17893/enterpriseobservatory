@@ -366,6 +366,13 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             "name",
             "configuration.dasConfig.enabled",
             "configuration.drsConfig.enabled",
+
+            // Stands for its dasConfig child: configurationEx can only be
+            // requested whole, and every cluster's carries dasConfig, so a
+            // cluster without it had its HA configuration go unread. Its
+            // rule and group children are deliberately not expected -- a
+            // cluster with none is the common, valid answer.
+            "configurationEx",
         ],
         ["Datastore"] =
         [
@@ -1062,6 +1069,55 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                 lines.Add($"  {transport.Count(),5} x {transport.Key}");
             }
 
+            // One level into configurationEx, then one more into the three
+            // children this collector reads. Element names, xsi:types and
+            // counts only: a rule's or group's name is estate data.
+            var clusters = objects
+                .Where(o => o.Structures.ContainsKey("configurationEx"))
+                .ToList();
+
+            lines.Add($"configurationEx ({clusters.Count} clusters)");
+            foreach (var child in clusters
+                .SelectMany(o => o.Structures["configurationEx"])
+                .GroupBy(n => (n.Name, n.Type))
+                .OrderBy(g => g.Key.Name, StringComparer.Ordinal))
+            {
+                var type = child.Key.Type.Length == 0 ? "(untyped)" : child.Key.Type;
+                lines.Add($"  {child.Key.Name,-28} {type,-44} {child.Count(),5}");
+
+                if (child.Key.Name is "dasConfig" or "rule" or "group")
+                {
+                    var grandchildren = child
+                        .SelectMany(n => n.Children)
+                        .GroupBy(n => n.Name, StringComparer.Ordinal)
+                        .OrderBy(g => g.Key, StringComparer.Ordinal)
+                        .Select(g => $"{g.Key}({g.Count()})");
+                    lines.Add($"      {string.Join(", ", grandchildren)}");
+                }
+            }
+
+            lines.Add("readers");
+            foreach (var cluster in clusters)
+            {
+                var ha = ClusterConfigurationParser.ReadHaSettings(cluster);
+                lines.Add(
+                    $"  cluster: ha settings {(ha is null ? "NOT READ" : ha.Count.ToString(CultureInfo.InvariantCulture) + " keys")}, " +
+                    $"groups {PropertyCollectorParser.ReadClusterGroups(cluster.Structures).Count}, " +
+                    $"drs rules {PropertyCollectorParser.ReadDrsRules(cluster.Structures).Count}");
+            }
+
+            foreach (var byTransport in objects
+                .Where(o => string.Equals(o.Type, "HostSystem", StringComparison.Ordinal))
+                .SelectMany(ReadStoragePaths)
+                .GroupBy(p => p.TransportType.Length == 0 ? "(none)" : p.TransportType)
+                .OrderByDescending(g => g.Count()))
+            {
+                lines.Add(
+                    $"  paths {byTransport.Key}: {byTransport.Count()}, " +
+                    $"with target {byTransport.Count(p => p.Target is not null)}, " +
+                    $"distinct targets {byTransport.Select(p => p.Target).OfType<string>().Distinct(StringComparer.Ordinal).Count()}");
+            }
+
             return lines;
         }
         finally
@@ -1117,11 +1173,66 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                     Adapter = AdapterName(path.TextOf("adapter")),
                     DeviceKey = deviceKey,
                     StorageDeviceId = device,
+                    TransportType = path.Child("transport")?.Type ?? string.Empty,
+                    Target = TransportTarget(path.Child("transport")),
                 });
             }
         }
 
         return paths;
+    }
+
+    /// <summary>
+    /// The storage-side port a path's transport names, or null when it names
+    /// none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Fibre Channel (measured live, 1240 paths): <c>portWorldWideName</c> is
+    /// an <c>xsd:long</c>, so a WWN with its top bit set — NAA type C, usual
+    /// for virtual ports — arrives negative. It is reinterpreted unsigned and
+    /// written as sixteen lowercase hex digits in colon-separated pairs,
+    /// <c>50:06:01:60:3b:20:1f:3a</c>, the form switch and array WWPNs will be
+    /// joined on. Zero is not a WWN and reads as none.
+    /// </para>
+    /// <para>
+    /// iSCSI: <c>HostInternetScsiTargetTransport.iScsiName</c>, the target
+    /// IQN. <strong>Not validated live</strong> — the measured estate had no
+    /// iSCSI; this follows the published schema (<c>iScsiName</c>,
+    /// <c>iScsiAlias</c>, <c>address[]</c>).
+    /// </para>
+    /// <para>
+    /// SAS and PCIe transports arrived with no children (measured), and
+    /// anything else is a transport this reader does not know. Both stay
+    /// null rather than being given an invented identity.
+    /// </para>
+    /// </remarks>
+    private static string? TransportTarget(PropertyNode? transport)
+    {
+        switch (transport?.Type)
+        {
+            case "HostFibreChannelTargetTransport":
+                return long.TryParse(
+                        transport.TextOf("portWorldWideName"),
+                        NumberStyles.AllowLeadingSign,
+                        CultureInfo.InvariantCulture,
+                        out var wwn) && wwn != 0
+                    ? FormatWorldWideName(unchecked((ulong)wwn))
+                    : null;
+
+            case "HostInternetScsiTargetTransport":
+                return transport.TextOf("iScsiName") is { Length: > 0 } iqn ? iqn : null;
+
+            default:
+                return null;
+        }
+    }
+
+    /// <summary><c>50:06:01:60:3b:20:1f:3a</c>: sixteen lowercase hex digits, paired.</summary>
+    public static string FormatWorldWideName(ulong wwn)
+    {
+        var hex = wwn.ToString("x16", CultureInfo.InvariantCulture);
+        return string.Join(':', Enumerable.Range(0, 8).Select(i => hex.Substring(i * 2, 2)));
     }
 
     /// <summary>Maps each SCSI device's internal key to its canonical NAA.</summary>
@@ -1392,6 +1503,9 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         // and "HA is off" lead to opposite actions.
         HighAvailabilityEnabled = PropertyCollectorParser.ReadBoolean(o.Values, "configuration.dasConfig.enabled"),
         DrsEnabled = PropertyCollectorParser.ReadBoolean(o.Values, "configuration.drsConfig.enabled"),
+        HaSettings = ClusterConfigurationParser.ReadHaSettings(o) ?? ClusterHaSettings.None,
+        Groups = PropertyCollectorParser.ReadClusterGroups(o.Structures),
+        DrsRules = PropertyCollectorParser.ReadDrsRules(o.Structures),
     };
 
     public static VsphereDatastore ToDatastore(

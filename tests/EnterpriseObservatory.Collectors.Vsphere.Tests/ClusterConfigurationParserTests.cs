@@ -4,8 +4,10 @@ namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
 
 /// <summary>
 /// A cluster's vSphere HA configuration, read the way a vim25
-/// <c>RetrievePropertiesEx</c> reply carrying <c>configurationEx.dasConfig</c>
-/// would present it.
+/// <c>RetrievePropertiesEx</c> reply carrying <c>configurationEx</c> whole
+/// presents it: <c>dasConfig</c> is one child of that structure. The path
+/// <c>configurationEx.dasConfig</c> cannot be requested — vCenter refuses it
+/// as InvalidProperty and fails the whole retrieval.
 /// </summary>
 /// <remarks>
 /// The fixtures follow the vSphere Web Services API reference for
@@ -36,8 +38,8 @@ public class ClusterConfigurationParserTests
     /// <summary>A realistic, fully-configured cluster.</summary>
     private const string WellConfigured = """
         <propSet>
-          <name>configurationEx.dasConfig</name>
-          <val xsi:type="ClusterDasConfigInfo">
+          <name>configurationEx</name>
+          <val xsi:type="ClusterConfigInfoEx"><dasConfig>
             <enabled>true</enabled>
             <admissionControlEnabled>true</admissionControlEnabled>
             <admissionControlPolicy xsi:type="ClusterFailoverResourceAdmissionControlPolicy">
@@ -68,7 +70,7 @@ public class ClusterConfigurationParserTests
               <key>das.respectVmVmAntiAffinityRules</key>
               <value>true</value>
             </option>
-          </val>
+          </dasConfig></val>
         </propSet>
         """;
 
@@ -79,10 +81,54 @@ public class ClusterConfigurationParserTests
     }
 
     [Fact]
+    public void ConfigurationEx_without_a_dasConfig_child_is_null()
+    {
+        Assert.Null(ClusterConfigurationParser.ReadHaSettings(Cluster("""
+            <propSet><name>configurationEx</name><val xsi:type="ClusterConfigInfoEx">
+              <drsConfig><enabled>true</enabled></drsConfig>
+            </val></propSet>
+            """)));
+    }
+
+    [Fact]
+    public void The_live_shape_with_rules_and_groups_beside_dasConfig_is_read()
+    {
+        // Measured: dasConfig arrives untyped beside drsConfig, repeated
+        // group and rule elements and a dozen other ClusterConfigInfoEx
+        // fields; the deprecated failoverLevel sits at dasConfig's top level.
+        var settings = ClusterConfigurationParser.ReadHaSettings(Cluster("""
+            <propSet><name>configurationEx</name><val xsi:type="ClusterConfigInfoEx">
+              <dasConfig>
+                <enabled>true</enabled>
+                <vmMonitoring>vmMonitoringDisabled</vmMonitoring>
+                <hostMonitoring>enabled</hostMonitoring>
+                <vmComponentProtecting>disabled</vmComponentProtecting>
+                <failoverLevel>1</failoverLevel>
+                <admissionControlPolicy xsi:type="ClusterFailoverResourceAdmissionControlPolicy">
+                  <cpuFailoverResourcesPercent>50</cpuFailoverResourcesPercent>
+                </admissionControlPolicy>
+                <admissionControlEnabled>true</admissionControlEnabled>
+                <hBDatastoreCandidatePolicy>allFeasibleDsWithUserPreference</hBDatastoreCandidatePolicy>
+              </dasConfig>
+              <drsConfig><enabled>true</enabled></drsConfig>
+              <rule xsi:type="ClusterVmHostRuleInfo"><name>r</name><enabled>true</enabled></rule>
+              <group xsi:type="ClusterVmGroup"><name>g</name></group>
+            </val></propSet>
+            """))!;
+
+        Assert.Equal("true", settings[ClusterHaSettings.Enabled]);
+        Assert.Equal("enabled", settings[ClusterHaSettings.HostMonitoring]);
+        Assert.Equal(
+            "ClusterFailoverResourceAdmissionControlPolicy",
+            settings[ClusterHaSettings.AdmissionControlPolicyType]);
+        Assert.Equal("0", settings[ClusterHaSettings.HeartbeatDatastoreCount]);
+    }
+
+    [Fact]
     public void Reported_empty_is_empty_rather_than_null()
     {
         var settings = ClusterConfigurationParser.ReadHaSettings(Cluster("""
-            <propSet><name>configurationEx.dasConfig</name><val xsi:type="ClusterDasConfigInfo"></val></propSet>
+            <propSet><name>configurationEx</name><val xsi:type="ClusterConfigInfoEx"><dasConfig></dasConfig><drsConfig><enabled>true</enabled></drsConfig></val></propSet>
             """));
 
         Assert.NotNull(settings);
@@ -154,11 +200,11 @@ public class ClusterConfigurationParserTests
     {
         var settings = ClusterConfigurationParser.ReadHaSettings(Cluster("""
             <propSet>
-              <name>configurationEx.dasConfig</name>
-              <val xsi:type="ClusterDasConfigInfo">
+              <name>configurationEx</name>
+              <val xsi:type="ClusterConfigInfoEx"><dasConfig>
                 <enabled>true</enabled>
                 <option><key>das.ignoreRedundantNetWarning</key><value>true</value></option>
-              </val>
+              </dasConfig></val>
             </propSet>
             """))!;
 
@@ -168,23 +214,17 @@ public class ClusterConfigurationParserTests
     [Fact]
     public void A_cluster_with_a_single_heartbeat_datastore_is_counted_as_one()
     {
-        // admissionControlPolicy is included because it is what the shared
-        // property-collector parser uses to tell a structure from a scalar:
-        // a dasConfig reply carrying only flat leaves (enabled,
-        // heartbeatDatastore) has nothing to distinguish it from an ordinary
-        // scalar property, and every real vCenter reply for
-        // configurationEx.dasConfig carries admissionControlPolicy. See
-        // PropertyCollectorParser.IsStructureArray.
+        // Only flat leaves under dasConfig. Requested on its own this would
+        // have flattened (PropertyCollectorParser.IsStructureArray); inside
+        // configurationEx, dasConfig is itself the nested structure, so it
+        // stays readable.
         var settings = ClusterConfigurationParser.ReadHaSettings(Cluster("""
             <propSet>
-              <name>configurationEx.dasConfig</name>
-              <val xsi:type="ClusterDasConfigInfo">
+              <name>configurationEx</name>
+              <val xsi:type="ClusterConfigInfoEx"><dasConfig>
                 <enabled>true</enabled>
-                <admissionControlPolicy xsi:type="ClusterFailoverLevelAdmissionControlPolicy">
-                  <failoverLevel>1</failoverLevel>
-                </admissionControlPolicy>
                 <heartbeatDatastore type="Datastore">datastore-101</heartbeatDatastore>
-              </val>
+              </dasConfig></val>
             </propSet>
             """))!;
 
