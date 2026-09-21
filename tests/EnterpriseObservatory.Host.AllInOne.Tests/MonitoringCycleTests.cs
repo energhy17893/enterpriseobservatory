@@ -1484,6 +1484,61 @@ public class MonitoringCycleTests : IDisposable
         Category = "Hardware",
         Source = source,
     };
+
+    [Fact]
+    public async Task The_memory_pressure_rule_is_reached_and_is_given_the_graph_it_needs()
+    {
+        // The rule judges nothing the graph does not know the kind of, so a
+        // call site that passed an empty graph -- or no call site at all --
+        // would be silent here in exactly the same way. Inventory runs first
+        // for that reason, and the machine is swapping on both cycles so the
+        // warning survives hysteresis.
+        var cycle = Cycle();
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot(
+                "vc-1",
+                _clock.UtcNow,
+                entities: [Node("vc-1:vm-swap", EntityKind.VirtualMachine, "vm-swap")]),
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    new Observation
+                    {
+                        Entity = new EntityId("vc-1:vm-swap"),
+                        SampledAtUtc = _clock.UtcNow,
+                        Source = "vc-1",
+                        Value = new CounterValue
+                        {
+                            CounterName = "mem.swapinRate.average",
+                            Raw = 500,
+                            Rollup = RollupType.Average,
+                            Interval = TimeSpan.FromSeconds(20),
+                            Unit = "kiloBytesPerSecond",
+                        },
+                    },
+                ],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Contains(result.Visible, a =>
+            a.Title == "Memory is being swapped or compressed" &&
+            a.Entity == new EntityId("vc-1:vm-swap"));
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
 }
 
 /// <summary>

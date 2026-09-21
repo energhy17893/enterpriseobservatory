@@ -204,6 +204,10 @@ public sealed record MonitoringOptions
     public Analysis.CpuContentionPolicy CpuContention { get; init; } =
         Analysis.CpuContentionPolicy.Default;
 
+    /// <summary>When memory is being swapped or compressed, and whose it is.</summary>
+    public Analysis.MemoryPressurePolicy MemoryPressure { get; init; } =
+        Analysis.MemoryPressurePolicy.Default;
+
     /// <summary>Which layer of the storage stack a device's latency sits in.</summary>
     public Analysis.StorageLayerPolicy StorageLayers { get; init; } =
         Analysis.StorageLayerPolicy.Default;

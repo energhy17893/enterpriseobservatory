@@ -275,6 +275,10 @@ public sealed class MonitoringCycle(
                 () => Analysis.CpuContention.Evaluate(
                     cycle.Observations, _graphStore.Current, options.CpuContention)),
             .. Analysis.GuardedRule.Run(
+                Analysis.MemoryPressure.RuleId,
+                () => Analysis.MemoryPressure.Evaluate(
+                    cycle.Observations, _graphStore.Current, options.MemoryPressure)),
+            .. Analysis.GuardedRule.Run(
                 Analysis.StorageLayerSplit.RuleId,
                 () => Analysis.StorageLayerSplit.Evaluate(
                     cycle.Observations, options.StorageLayers)),
