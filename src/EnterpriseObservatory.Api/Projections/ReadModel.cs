@@ -410,31 +410,24 @@ public sealed class ReadModel(
     // --- continuity report (M8.10) -----------------------------------------
 
     /// <summary>
-    /// The four rule ids this report reads, by the same string every rule
-    /// file bakes into its own fingerprints' check-id component. There is no
-    /// separate "which rule produced this" field on an alert -- see
-    /// <see cref="HasRule"/> for why that is enough.
+    /// The five rule ids this report reads, by the same <c>RuleId</c> constant
+    /// every rule file bakes into its own fingerprints' check-id component.
+    /// There is no separate "which rule produced this" field on an alert --
+    /// see <see cref="HasRule"/> for why that is enough.
     /// </summary>
     private static class ContinuityRuleIds
     {
-        public const string Ha = "cluster-ha-scorecard";
-        public const string Drs = "drs-rule-violation";
-        public const string Multipath = "multipath-single-point-of-failure";
-        public const string StoragePath = "storage-path-redundancy";
-
-        /// <summary>
-        /// M8's next rule, still being built in a parallel change. Read the
-        /// same generic way as the other four so this report needs no change
-        /// the day it ships -- it is a rule id like any other, not a type
-        /// this file knows about.
-        /// </summary>
-        public const string NPlusOne = "cluster-n-plus-one";
+        public const string Ha = ClusterHighAvailability.RuleId;
+        public const string Drs = DrsRuleViolations.RuleId;
+        public const string Multipath = MultipathSinglePointOfFailure.RuleId;
+        public const string StoragePath = StoragePathRedundancy.RuleId;
+        public const string NPlusOne = ClusterNPlusOne.RuleId;
     }
 
     /// <summary>
     /// One row per live cluster: its HA scorecard (M8.1) and DRS compliance
     /// (M8.3) findings, the storage-path redundancy findings of the hosts
-    /// under it, and the N+1 placeholder.
+    /// under it, and the N+1 what-if capacity check.
     /// </summary>
     /// <remarks>
     /// Nothing here recomputes a verdict -- every count is read from the same
@@ -470,8 +463,18 @@ public sealed class ReadModel(
         };
     }
 
+    /// <summary>
+    /// The common prefix every HA setting key is filed under, taken from the
+    /// policy's own <see cref="ClusterHighAvailabilityPolicy.EnabledSetting"/>
+    /// rather than restated as a literal, so a renamed prefix cannot make this
+    /// check and the policy disagree about what "collected" means.
+    /// </summary>
+    private static readonly string HaSettingPrefix =
+        ClusterHighAvailabilityPolicy.Default.EnabledSetting[
+            ..(ClusterHighAvailabilityPolicy.Default.EnabledSetting.IndexOf('.', StringComparison.Ordinal) + 1)];
+
     private static bool HasHaSettings(Entity cluster) =>
-        cluster.Settings.Keys.Any(k => k.StartsWith("dasConfig.", StringComparison.Ordinal));
+        cluster.Settings.Keys.Any(k => k.StartsWith(HaSettingPrefix, StringComparison.Ordinal));
 
     private static ContinuityReportRow ToContinuityRow(
         Entity cluster, EntityGraph graph, IReadOnlyList<AlertInstance> visible)
@@ -535,17 +538,55 @@ public sealed class ReadModel(
     /// Whether one rule produced this alert.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// There is no <c>RuleId</c> field on an alert: <see cref="AlertFingerprint.Create"/>
-    /// folds it into the check-id part of the fingerprint instead, and every
-    /// rule file passes its own <c>RuleId</c> constant there (see
-    /// <c>ClusterHighAvailability</c>, <c>DrsRuleViolations</c>,
-    /// <c>MultipathSinglePointOfFailure</c>, <c>StoragePathRedundancy</c>).
-    /// Reading it back as a substring of the fingerprint's already-normalised
-    /// value is the generic hook this report needs to pick up the N+1 rule
-    /// the day it ships, without this file knowing anything about it.
+    /// folds it into the check-id part of the fingerprint instead (the fifth,
+    /// last <c>|</c>-separated segment of <see cref="AlertFingerprint.Value"/>),
+    /// and every rule file passes its own <c>RuleId</c> constant there --
+    /// either bare (<c>DrsRuleViolations</c>, <c>MultipathSinglePointOfFailure</c>,
+    /// <c>StoragePathRedundancy</c>, <c>ClusterNPlusOne</c>'s main finding) or as
+    /// a prefix of a per-finding key (<c>ClusterHighAvailability</c>'s
+    /// <c>"{RuleId}-{findingKey}"</c>, <c>ClusterNPlusOne</c>'s own
+    /// "history unreadable" check).
+    /// </para>
+    /// <para>
+    /// Matching against the whole fingerprint, as a plain substring search,
+    /// was wrong: it also matched <see cref="GuardedRule"/>'s own failure
+    /// alert (whose check-id segment is the constant <c>"analysis-rule-failed"</c>,
+    /// but whose object-name segment carries the failed rule's id) and any
+    /// alert whose title or object name happened to contain another rule's id
+    /// -- for example a user-named DRS rule. Segmenting on <c>|</c> and
+    /// comparing only the check-id part avoids both, and excluding
+    /// <c>"analysis-rule-failed"</c> outright is a second, explicit guard
+    /// against the one segment shape every rule shares.
+    /// </para>
     /// </remarks>
     private static bool HasRule(AlertInstance alert, string ruleId) =>
-        alert.Fingerprint.Value.Contains(ruleId, StringComparison.Ordinal);
+        HasRule(alert.Fingerprint.Value, ruleId);
+
+    /// <summary>Same check as the other overload, from an already-projected view.</summary>
+    private static bool HasRule(AlertView alert, string ruleId) =>
+        HasRule(alert.Fingerprint, ruleId);
+
+    private static bool HasRule(string fingerprintValue, string ruleId)
+    {
+        var segments = fingerprintValue.Split('|');
+
+        if (segments.Length != 5)
+        {
+            return false;
+        }
+
+        var checkId = segments[4];
+
+        if (string.Equals(checkId, "analysis-rule-failed", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return string.Equals(checkId, ruleId, StringComparison.Ordinal) ||
+            checkId.StartsWith(ruleId + "-", StringComparison.Ordinal);
+    }
 
     private static ContinuityReportSummary SummarizeContinuity(
         List<ContinuityReportRow> rows, IReadOnlyList<AlertInstance> visible, bool haInputsCollected)
@@ -581,10 +622,9 @@ public sealed class ReadModel(
             HaInputsCollected = haInputsCollected,
             Note = haInputsCollected
                 ? null
-                : "HA and DRS show zero because no cluster in this estate has reported HA settings " +
-                  "yet (no dasConfig.* key was read). That means the input was never collected, not " +
-                  "that every cluster is protected -- the collector wiring for cluster HA/DRS " +
-                  "configuration is still pending.",
+                : "Cluster HA/DRS configuration has not been read yet (not collected by this " +
+                  "version, not yet read since startup, or not permitted for the service account) " +
+                  "-- see Coverage.",
         };
     }
 
@@ -680,8 +720,16 @@ public sealed class ReadModel(
         {
             Enabled = Bool(settings, rules.EnabledSetting),
             AdmissionControlEnabled = Bool(settings, rules.AdmissionControlEnabledSetting),
+            // Not in ClusterHighAvailabilityPolicy: no HA rule check reads
+            // this key, only the scorecard displays it, so the policy (which
+            // exists to keep a rule and this display from drifting apart) has
+            // no property for it. Pinned against the collector's own constant
+            // by AdmissionControlPolicyTypeAndVmMonitoringSettingsDriftTests
+            // in Host.AllInOne.Tests instead.
             AdmissionControlPolicyType = settings.GetValueOrDefault("dasConfig.admissionControlPolicy.type"),
             HostMonitoring = settings.GetValueOrDefault(rules.HostMonitoringSetting),
+            // Same as AdmissionControlPolicyType above: display-only, no rule
+            // reads it, so it is not on the policy.
             VmMonitoring = settings.GetValueOrDefault("dasConfig.vmMonitoring"),
             ApdResponse = settings.GetValueOrDefault(rules.ApdResponseSetting),
             PdlResponse = settings.GetValueOrDefault(rules.PdlResponseSetting),
@@ -690,9 +738,13 @@ public sealed class ReadModel(
                 int.TryParse(count, out var parsed)
                     ? parsed
                     : null,
-            HeartbeatDatastoreCandidatePolicy = settings.GetValueOrDefault("dasConfig.hBDatastoreCandidatePolicy"),
+            HeartbeatDatastoreCandidatePolicy =
+                settings.GetValueOrDefault(rules.HeartbeatDatastoreCandidatePolicySetting),
             RedundantNetworkWarningSilenced = Bool(settings, rules.IgnoreRedundantNetworkWarningSetting),
-            Findings = [.. entityAlerts.Where(a => string.Equals(a.Category, "Configuration", StringComparison.Ordinal))],
+            // Not Category == "Configuration": that also catches other rules'
+            // alerts filed under the same category (RemoteLogging, for one),
+            // which do not belong on this cluster's HA scorecard.
+            Findings = [.. entityAlerts.Where(a => HasRule(a, ContinuityRuleIds.Ha))],
         };
     }
 
