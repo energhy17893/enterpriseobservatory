@@ -330,7 +330,7 @@ public static class PerfResponseParser
     {
         try
         {
-            document = XDocument.Parse(xml);
+            document = VsphereXml.Parse(xml);
             return true;
         }
         catch (System.Xml.XmlException)

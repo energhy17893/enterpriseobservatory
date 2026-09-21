@@ -144,7 +144,7 @@ public static class VsphereSoapFaultReader
         XDocument document;
         try
         {
-            document = XDocument.Parse(responseBody);
+            document = VsphereXml.Parse(responseBody);
         }
         catch (System.Xml.XmlException)
         {
