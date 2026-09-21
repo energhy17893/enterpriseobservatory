@@ -82,6 +82,9 @@ public class ComplianceServiceTests
 
         /// <summary>Puts a finding of another release beside the evaluated ones.</summary>
         public void Seed(ComplianceFinding finding) => _findings.Add(finding);
+
+        public IReadOnlyList<ComplianceTransition> TransitionsSince(
+            DateTimeOffset sinceUtc, string? catalogueRelease = null) => [];
     }
 
     private readonly Clock _clock = new(T0);

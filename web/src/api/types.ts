@@ -549,6 +549,73 @@ export interface AlertReportView {
   rows: AlertReportRow[]
 }
 
+// --- compliance report (M5.2) ----------------------------------------------
+//
+// The auditor-facing sibling of the alert report. Every finding carries the
+// exception or acceptance that covers it in full -- a report stands alone,
+// printed or read a year later, so a bare id into a list it does not carry
+// would not do.
+
+export interface ComplianceReportFindingRow {
+  controlId: string
+  controlTitle: string
+  priority: string
+  entityId: string
+  entityName: string
+  state: FindingState
+  /** Set only when state is NotEvaluated. */
+  notEvaluatedReason: string | null
+  observed: string | null
+  expected: string
+  firstSeenUtc: string
+  lastEvaluatedUtc: string
+  stale: boolean
+  acceptedBy: string | null
+  acceptedAtUtc: string | null
+  acceptedReason: string | null
+  exceptionId: string | null
+  exceptionOwner: string | null
+  exceptionReason: string | null
+  exceptionCreatedBy: string | null
+  exceptionCreatedAtUtc: string | null
+  exceptionExpiresUtc: string | null
+}
+
+export interface ComplianceReportTransitionRow {
+  controlId: string
+  /** The finding may since have left the evaluation, so this is not always resolvable to a name. */
+  entityId: string
+  /** Null when the finding was new at this change. */
+  from: 'Failing' | 'Passing' | 'NotEvaluated' | null
+  /** Null when the finding left the evaluation at this change. */
+  to: 'Failing' | 'Passing' | 'NotEvaluated' | null
+  observed: string | null
+  atUtc: string
+}
+
+export interface ComplianceReportView {
+  generatedAtUtc: string
+  catalogueName: string
+  catalogueRelease: string
+  /** "All hosts", or what the caller scoped the report to. */
+  scope: string
+  lastEvaluatedUtc: string | null
+  staleCount: number
+  /** The hosts behind staleCount, by name. */
+  staleEntityNames: string[]
+  /** Every control the catalogue names, evaluated or not -- filter by !evaluated for the "not evaluated" section. */
+  controls: ComplianceControlView[]
+  totals: FindingCountsView
+  findings: ComplianceReportFindingRow[]
+  /** The exceptions standing now, in scope. */
+  exceptions: ComplianceExceptionView[]
+  /** Withdrawn exceptions -- audit evidence in their own right. */
+  removedExceptions: ComplianceExceptionView[]
+  historyFromUtc: string
+  historyToUtc: string
+  history: ComplianceReportTransitionRow[]
+}
+
 export interface AddExceptionCommand {
   controlId: string
   /** Null for every entity the control applies to. */

@@ -1,3 +1,5 @@
+using EnterpriseObservatory.Api.Contracts;
+using EnterpriseObservatory.Api.Reports;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Compliance;
@@ -258,7 +260,247 @@ public static class ComplianceApi
             .RequireAuthorization(ObservatoryApi.Policies.Operator)
             .WithName("RemoveComplianceException");
 
+        // --- reports ---------------------------------------------------------
+        //
+        // The auditor-facing report, M5.2. Read for any signed-in user, same
+        // line as the screen above: printing or exporting a finding is not a
+        // more sensitive act than reading it. A sibling of the alert report
+        // under the same /api/reports prefix (ObservatoryApi.MapObservatoryApi),
+        // mapped here instead because everything it reads comes from
+        // ComplianceService, which this file already has.
+
+        var reports = endpoints.MapGroup("/api/reports").RequireAuthorization();
+
+        reports.MapGet("/compliance", (
+                ComplianceService service,
+                string? control,
+                string? entity,
+                DateTimeOffset? from,
+                DateTimeOffset? to) =>
+            Report(service, control, entity, from, to))
+            .WithName("GetComplianceReport");
+
+        reports.MapGet("/compliance.csv", (
+                ComplianceService service,
+                string? control,
+                string? entity,
+                DateTimeOffset? from,
+                DateTimeOffset? to,
+                string? section) =>
+        {
+            var report = Report(service, control, entity, from, to);
+
+            // "history" is the one other section this report has; anything
+            // else -- including nothing -- is the findings detail, the report
+            // an auditor reaches for first.
+            var isHistory = string.Equals(section, "history", StringComparison.OrdinalIgnoreCase);
+
+            var csv = isHistory
+                ? ComplianceHistoryReportCsv.Write(report.History)
+                : ComplianceFindingsReportCsv.Write(report.Findings);
+
+            var name = isHistory ? "compliance-history" : "compliance";
+            var fileName = $"{name}-{report.GeneratedAtUtc:yyyyMMdd-HHmm}.csv";
+
+            return Results.File(CsvWriter.ToUtf8WithBom(csv), "text/csv", fileName);
+        })
+            .WithName("GetComplianceReportCsv");
+
         return endpoints;
+    }
+
+    /// <summary>How far back the change-history section reaches when the caller does not say.</summary>
+    /// <remarks>
+    /// Thirty days: long enough to show a month's worth of remediation
+    /// without printing a year of <c>compliance_transition</c> on a page
+    /// meant to be read, not archived -- the store's own, wider retention
+    /// (thirteen months) is for a caller who asks for it with an explicit
+    /// <c>from</c>.
+    /// </remarks>
+    public static readonly TimeSpan DefaultHistoryWindow = TimeSpan.FromDays(30);
+
+    /// <summary>Builds the compliance report: everything an auditor asks for, in one read.</summary>
+    /// <remarks>
+    /// Every field comes from <see cref="ComplianceService"/> the same way
+    /// <see cref="Summary"/> and <see cref="Findings"/> above read it --
+    /// nothing here re-derives a verdict or re-decides what counts as stale.
+    /// A report that disagreed with the screen an operator worked from would
+    /// be worse than no report.
+    /// </remarks>
+    public static ComplianceReportView Report(
+        ComplianceService service,
+        string? control,
+        string? entity,
+        DateTimeOffset? fromUtc,
+        DateTimeOffset? toUtc)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+
+        var now = service.Now;
+        var to = toUtc ?? now;
+        var from = fromUtc ?? to - DefaultHistoryWindow;
+
+        var exceptions = service.Exceptions();
+        var standing = exceptions.Where(e => e.RemovedAtUtc is null).ToList();
+        var removedExceptions = exceptions.Where(e => e.RemovedAtUtc is not null).ToList();
+
+        var findings = service.Findings()
+            .Where(f => control is null || string.Equals(f.ControlId, control, StringComparison.Ordinal))
+            .Where(f => entity is null || string.Equals(f.Entity.Value, entity, StringComparison.Ordinal))
+            .ToList();
+
+        var controlsById = service.Catalogue.Controls
+            .ToDictionary(c => c.ControlId, c => c, StringComparer.Ordinal);
+
+        var byControl = findings
+            .GroupBy(f => f.ControlId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => Count(g, exceptions, now), StringComparer.Ordinal);
+
+        var boundControls = service.Controls()
+            .Where(bound => control is null ||
+                string.Equals(bound.Control.ControlId, control, StringComparison.Ordinal));
+
+        var staleEntityNames = findings
+            .Where(f => f.Stale)
+            .Select(f => f.EntityName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var history = service.TransitionsSince(from)
+            .Where(t => t.AtUtc <= to)
+            .Where(t => control is null || string.Equals(t.ControlId, control, StringComparison.Ordinal))
+            .Where(t => entity is null || string.Equals(t.Entity.Value, entity, StringComparison.Ordinal))
+            .Select(t => new ComplianceReportTransitionRow
+            {
+                ControlId = t.ControlId,
+                EntityId = t.Entity.Value,
+                From = t.From,
+                To = t.To,
+                Observed = t.Observed,
+                AtUtc = t.AtUtc,
+            })
+            .ToList();
+
+        return new ComplianceReportView
+        {
+            GeneratedAtUtc = now,
+            CatalogueName = service.Catalogue.Name,
+            CatalogueRelease = service.Catalogue.Release,
+            Scope = DescribeScope(control, entity),
+            LastEvaluatedUtc = findings.Count == 0 ? null : findings.Max(f => f.LastEvaluatedUtc),
+            StaleCount = findings.Count(f => f.Stale),
+            StaleEntityNames = staleEntityNames,
+            Controls =
+            [
+                .. boundControls.Select(bound => new ComplianceControlView
+                {
+                    ControlId = bound.Control.ControlId,
+                    Title = bound.Control.Title,
+                    Component = bound.Control.Component,
+                    Priority = bound.Control.Priority,
+                    Parameter = bound.Control.Parameter,
+                    InstallationDefault = bound.Control.InstallationDefault,
+                    BaselineValue = bound.Control.BaselineValue,
+                    Assessment = bound.Control.Assessment,
+                    Evaluated = bound.IsEvaluated,
+                    NotEvaluatedReason = bound.NotEvaluatedReason,
+                    Counts = byControl.TryGetValue(bound.Control.ControlId, out var counts)
+                        ? counts
+                        : new FindingCountsView(),
+                }),
+            ],
+            Totals = Count(findings, exceptions, now),
+            Findings =
+            [
+                .. findings
+                    .Select(f => ToReportRow(f, exceptions, now, controlsById))
+                    .OrderBy(r => r.State)
+                    .ThenBy(r => r.ControlId, StringComparer.Ordinal)
+                    .ThenBy(r => r.EntityName, StringComparer.OrdinalIgnoreCase),
+            ],
+            Exceptions =
+            [
+                .. standing
+                    .Where(e => control is null || string.Equals(e.ControlId, control, StringComparison.Ordinal))
+                    .Where(e => entity is null || e.Entity is null ||
+                        string.Equals(e.Entity?.Value, entity, StringComparison.Ordinal))
+                    .OrderBy(e => e.ExpiresUtc)
+                    .Select(e => ToView(e, now)),
+            ],
+            RemovedExceptions =
+            [
+                .. removedExceptions
+                    .Where(e => control is null || string.Equals(e.ControlId, control, StringComparison.Ordinal))
+                    .OrderByDescending(e => e.RemovedAtUtc)
+                    .Select(e => ToView(e, now)),
+            ],
+            HistoryFromUtc = from,
+            HistoryToUtc = to,
+            History = history,
+        };
+    }
+
+    private static string DescribeScope(string? control, string? entity)
+    {
+        if (control is null && entity is null)
+        {
+            return "All hosts";
+        }
+
+        var parts = new List<string>();
+
+        if (control is not null)
+        {
+            parts.Add($"control {control}");
+        }
+
+        if (entity is not null)
+        {
+            parts.Add($"entity {entity}");
+        }
+
+        return string.Join(", ", parts);
+    }
+
+    private static ComplianceReportFindingRow ToReportRow(
+        ComplianceFinding finding,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now,
+        Dictionary<string, ComplianceControl> controlsById)
+    {
+        var state = finding.StateAt(exceptions, now);
+
+        var covering = finding.Verdict == ComplianceVerdict.Failing
+            ? finding.CoveringException(exceptions, now)
+            : null;
+
+        controlsById.TryGetValue(finding.ControlId, out var control);
+
+        return new ComplianceReportFindingRow
+        {
+            ControlId = finding.ControlId,
+            ControlTitle = control?.Title ?? finding.ControlId,
+            Priority = control?.Priority ?? string.Empty,
+            EntityId = finding.Entity.Value,
+            EntityName = finding.EntityName,
+            State = state,
+            NotEvaluatedReason = state == FindingState.NotEvaluated ? finding.Reason : null,
+            Observed = finding.Observed,
+            Expected = finding.Expected,
+            FirstSeenUtc = finding.FirstSeenUtc,
+            LastEvaluatedUtc = finding.LastEvaluatedUtc,
+            Stale = finding.Stale,
+            AcceptedBy = finding.Acceptance?.By,
+            AcceptedAtUtc = finding.Acceptance?.AtUtc,
+            AcceptedReason = finding.Acceptance?.Reason,
+            ExceptionId = covering?.Id,
+            ExceptionOwner = covering?.Owner,
+            ExceptionReason = covering?.Reason,
+            ExceptionCreatedBy = covering?.CreatedBy,
+            ExceptionCreatedAtUtc = covering?.CreatedAtUtc,
+            ExceptionExpiresUtc = covering?.ExpiresUtc,
+        };
     }
 
     /// <summary>Every control with its counts, plus the exceptions in the record.</summary>
