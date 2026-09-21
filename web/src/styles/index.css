@@ -50,4 +50,18 @@
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
   }
+
+  /*
+    The printable report pages (M5.1 and, after it, M5.2/M5.3): plain black
+    on white so a report photocopies or scans as readably as it prints, and a
+    table row never splits across a page break. Nav, filters and buttons are
+    hidden per element with `print:hidden` rather than here, so a screen with
+    no report content still prints sanely if someone hits Ctrl+P on it.
+  */
+  @media print {
+    body {
+      background: white;
+      color: black;
+    }
+  }
 }

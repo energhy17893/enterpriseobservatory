@@ -15,6 +15,8 @@ import { Accounts } from '@/routes/Accounts'
 import { Connections } from '@/routes/Connections'
 import { Maintenance } from '@/routes/Maintenance'
 import { Compliance } from '@/routes/Compliance'
+import { Reports } from '@/routes/Reports'
+import { AlertsReport } from '@/routes/reports/AlertsReport'
 import './styles/index.css'
 
 const queryClient = new QueryClient({
@@ -72,6 +74,8 @@ function Application() {
           <Route path="entities/:id" element={<EntityDetail />} />
           <Route path="collectors" element={<Collectors />} />
           <Route path="compliance" element={<Compliance identity={data} />} />
+          <Route path="reports" element={<Reports />} />
+          <Route path="reports/alerts" element={<AlertsReport />} />
           <Route path="maintenance" element={<Maintenance identity={data} />} />
           <Route path="connections" element={<Connections identity={data} />} />
           <Route path="accounts" element={<Accounts identity={data} />} />
