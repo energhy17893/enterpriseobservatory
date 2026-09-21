@@ -1583,6 +1583,91 @@ public class MonitoringCycleTests : IDisposable
             a.Entity == new EntityId("vc-1:vm-swap"));
         Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
     }
+
+    [Fact]
+    public async Task The_storage_noisy_neighbour_rule_is_given_the_graph_and_the_history_it_needs()
+    {
+        // The one rule that needs both the graph (which machines are stored on
+        // the volume) and the sample store (whether the volume's load rose).
+        // Wired without either it compiles, runs and finds nothing forever, so
+        // this builds both: the inventory cycle first, and a day's worth of
+        // ordinary load written into the store before the volume slows down.
+        var cycle = Cycle();
+
+        string[] guests = ["vc-1:vm-1", "vc-1:vm-2", "vc-1:vm-3", "vc-1:vm-4", "vc-1:vm-5"];
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot(
+                "vc-1",
+                _clock.UtcNow,
+                entities:
+                [
+                    Node("vc-1:ds-prod", EntityKind.Datastore, "ds-prod"),
+                    .. guests.Select(v => Node(v, EntityKind.VirtualMachine, v)),
+                ],
+                relationships:
+                [
+                    .. guests.Select(v => new Relationship
+                    {
+                        From = new EntityId(v),
+                        To = new EntityId("vc-1:ds-prod"),
+                        Kind = RelationshipKind.BackedBy,
+                        ObservedAtUtc = _clock.UtcNow,
+                    }),
+                ]),
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        // What the volume usually carries: 100 a host, five hours ago.
+        _observations.Append(
+        [
+            .. MountingHosts.Select(h => Demand(h, 100) with { SampledAtUtc = T0.AddHours(-5) }),
+        ]);
+
+        static Observation Requests(string vm, double ops) => new()
+        {
+            Entity = new EntityId(vm),
+            SampledAtUtc = T0,
+            Source = "vc-1",
+            Value = new CounterValue
+            {
+                CounterName = "virtualDisk.numberReadAveraged.average",
+                Raw = ops,
+                Rollup = RollupType.Average,
+                Interval = TimeSpan.FromSeconds(20),
+                Unit = "number",
+            },
+        };
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    .. MountingHosts.Select(h => Vantage(h, 9)),
+                    .. MountingHosts.Select(h => Demand(h, 400)),
+                    Requests("vc-1:vm-1", 1000),
+                    .. guests.Skip(1).Select(v => Requests(v, 50)),
+                ],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        var alert = Assert.Single(
+            result.Visible, a => a.Title == "Virtual machines are loading a slow volume");
+        Assert.Contains("'vc-1:vm-1'", alert.Description, StringComparison.Ordinal);
+
+        // A guarded rule that throws still reports, so the assertion above
+        // could be satisfied by the guard rather than the wire without this.
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
 }
 
 /// <summary>

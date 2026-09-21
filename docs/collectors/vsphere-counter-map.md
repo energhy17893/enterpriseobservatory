@@ -110,6 +110,8 @@ Her satır ölçülmüştür.
 |---|---|---|---|---|---|
 | Sanal disk | `virtualDisk.totalReadLatency.average` | VirtualMachine | vDisk | — | 1 |
 | | `virtualDisk.totalWriteLatency.average` | VirtualMachine | vDisk | — | 1 |
+| | `virtualDisk.numberReadAveraged.average` | VirtualMachine | vDisk; VM başına **toplanır** (M1.4) | ölçülmedi — katalogda var, canlı değer görülmedi | 1 |
+| | `virtualDisk.numberWriteAveraged.average` | VirtualMachine | vDisk; VM başına **toplanır** (M1.4) | ölçülmedi — katalogda var, canlı değer görülmedi | 1 |
 | Datastore (mantıksal) | `datastore.totalReadLatency.average` | **HostSystem** | **VMFS UUID** | 30 | 1 |
 | | `datastore.totalWriteLatency.average` | **HostSystem** | **VMFS UUID** | 30 | 1 |
 | | `datastore.sizeNormalizedDatastoreLatency.average` | HostSystem | VMFS UUID | 30 | 1 |
