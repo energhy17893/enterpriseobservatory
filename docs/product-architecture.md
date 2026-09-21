@@ -507,6 +507,32 @@ Kimlik katlamanın (ilke 3) ilk gerçek sınavı.
 
 Değişmedi.
 
+### 10–12. Genişleme: süreklilik, maruziyet, öngörü v2 *(21 Eylül 2026)*
+
+Yol haritası o güne kadar neredeyse tamamen **arıza ve teşhis**ti. Dört kollu
+referans araştırması ([reference-approaches §9](reference-approaches.md)) üç
+set ve M6/M7 ekleri çıkardı; adımlar `feature-roadmap.md`'de M8, M9, M10.
+
+- **Süreklilik duruşu (M8)** soru 2'nin ("doğru kurulmuş mu") ikinci yarısı:
+  SCG *güvenli mi* diye soruyor, bu set *bir şey düştüğünde ayakta kalır mı*
+  diye. Raporlamadan hemen sonra, ikinci satıcıdan **önce** yürür: neredeyse
+  tamamı eldeki veriyle cevaplanıyor — gürültücü komşudaki gibi yeni veri değil,
+  yeni sorgu — ve çıktısı alıcının okuyacağı bir rapor. SPOF kontrolleri
+  §3'teki çapraz doğrulama sütununun vim25'le yapılabilen kısmı.
+- **Maruziyet ve yaşam döngüsü (M9)** uygunluk motorunun ikinci kataloğu: VMSA,
+  KEV ve destek tarihleri SCG CSV'si gibi **veri olarak** yutulur. Skyline
+  Advisor'ın kapanması ve Runecast'in yeniden konumlanması on-prem sağlık
+  kontrolünde boşluk bıraktı.
+- **Öngörü v2 (M10)** §7'nin içinde kalır: hepsi eğilim, eşik ve aritmetik;
+  ML yok. İlk adım değişim noktası, çünkü M4'ün dolma tarihleri bir göçten sonra
+  bugün de yanlış eğim okur. Haftanın saati bantları §7'nin sınırındadır ve
+  ADR'siz yapılmaz.
+- **Donanımda tarih yalnızca aşınmaya verilir.** ECC ve SMART bir **risk
+  bayrağını** destekler, arıza tarihini desteklemez — ilke 1.
+
+Dördüncü ilke burada da geçerli: çok ateşleyen kontrol (Tools sürümü, eski
+adaptör) bulgu değil görünüm ya da sayısıyla tek bulgu olur.
+
 ### Çapraz kesen: kompozisyon kökü testi
 
 `Program.cs` 406 satır ve **hiçbir testi yok**. `UseAuthorization()`'ı silmek her
@@ -534,6 +560,12 @@ sınandığı yerdir ve bu ürünün farkı orada değil.
 
 **Uygunluğu alarm olarak modellemek.** İlk gün yüzlerce bulgu, ilk hafta
 kapatılmış bir alarm kutusu.
+
+**KB ↔ log eşleştirme ve HCL hükmü.** İlki syslog ve sürekli bir içerik ekibi
+ister; ikincisinin resmî veri beslemesi yok. Yerine küme içi sapma.
+
+**Sayaçtan arıza tarihi.** ECC/SMART sayaçları bayrak üretir; tarih uydurmak
+ilke 1'in ihlalidir.
 
 **Satıcı başına ayrı ekran.** Api hiçbir collector'ı görmez (mimari testle
 zorlanır). Arayüz satıcı şeklinde parçalanırsa ürün, izlediği silolara dönüşür.
