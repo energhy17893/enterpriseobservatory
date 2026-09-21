@@ -76,7 +76,18 @@ if (databaseProblems.Count > 0)
         "a settings file. See ADR-0010 and ADR-0016.");
 }
 
-builder.Services.AddSingleton(new PostgresDatabase(database));
+// Built when first asked for rather than here, and the difference is not a
+// performance one. Constructing it opens a connection and applies the schema,
+// so building it eagerly meant the composition root reached PostgreSQL before
+// anything could replace a store — which made the whole host untestable
+// without a live server, and is why Program.cs went a week with no test while
+// its endpoints could not coexist.
+//
+// Refusing to start is unchanged. The startup code below reads the stored
+// connections before RunAsync, which resolves a store and therefore this, so a
+// database that cannot be reached still stops the service at boot rather than
+// on the first request.
+builder.Services.AddSingleton(_ => new PostgresDatabase(database));
 builder.Services.AddSingleton<IEntityGraphStore, PostgresEntityGraphStore>();
 builder.Services.AddSingleton<IAlertStateStore, PostgresAlertStateStore>();
 builder.Services.AddSingleton<ICollectorHealthStore, PostgresCollectorHealthStore>();
@@ -449,3 +460,9 @@ static string KeyRingPath(IConfiguration configuration)
     // See KeyRingDurabilityGuard.
     return keys;
 }
+
+// Exposed so the composition root can be booted by a test. Top-level
+// statements compile to an internal Program class, and WebApplicationFactory
+// needs a type it can name. It is only the class that becomes visible; nothing
+// in it is public API.
+public partial class Program;

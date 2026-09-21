@@ -1,0 +1,333 @@
+using System.Net;
+using System.Net.Http.Json;
+using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Monitoring;
+using EnterpriseObservatory.Application.Security;
+using EnterpriseObservatory.Host.AllInOne;
+using EnterpriseObservatory.Persistence.Postgres;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+
+namespace EnterpriseObservatory.Host.AllInOne.Tests;
+
+/// <summary>
+/// The real composition root, booted and asked who may do what.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Program.cs went a week without a test, and the roadmap said what that
+/// would cost: deleting <c>UseAuthorization()</c> turns every
+/// <c>RequireAuthorization</c> into a no-op, deleting the
+/// <c>OnValidatePrincipal</c> handler leaves a removed account twelve hours
+/// of access, and no test anywhere would fail. The first bill arrived as an
+/// outage — two endpoints sharing a name took the whole interface down with
+/// the suite green.
+/// </para>
+/// <para>
+/// These tests boot Program.cs itself, not a copy of its wiring. Only the
+/// stores are swapped for in-memory ones and the two background workers are
+/// removed; authentication, authorization, the cookie scheme, its events, the
+/// policies and every endpoint are the production ones. That is the point of
+/// the exercise: a smoke test that rebuilt the pipeline by hand would test the
+/// hand-built pipeline.
+/// </para>
+/// <para>
+/// **Every negative here has a positive beside it.** A 401 or 403 proves
+/// nothing on its own — a pipeline that refused everyone would pass — so each
+/// refusal is paired with the same caller succeeding where they should. The
+/// first registration test in this repository failed all its assertions for a
+/// setup reason that looked exactly like the bug it was hunting; the pairs are
+/// what stop that happening here.
+/// </para>
+/// <para>
+/// What this does not cover, said so nobody assumes it: PostgreSQL. No store
+/// here touches a database, and any attempt to build one throws. The 68 live
+/// persistence tests are what cover the database, and they run in CI.
+/// </para>
+/// </remarks>
+public sealed class CompositionRootSmokeTests : IDisposable
+{
+    private const string Password = "correct horse battery staple";
+
+    private readonly ObservatoryHost _host = new();
+
+    public void Dispose() => _host.Dispose();
+
+    private HttpClient Client() => _host.CreateClient(new WebApplicationFactoryClientOptions
+    {
+        // A redirect would hide exactly the status these tests read. The API
+        // answers with 401 and 403 rather than a login page, and following a
+        // redirect would turn a regression there into a 200 from index.html.
+        AllowAutoRedirect = false,
+        HandleCookies = true,
+    });
+
+    private void Account(string username, Role role) =>
+        Assert.True(_host.Accounts.TryAdd(new UserAccount
+        {
+            Username = username,
+            // Deliberately cheap. The hash's strength is tested elsewhere; here
+            // it only has to verify, and the default work factor would make
+            // this class the slowest in the suite for no information.
+            Password = PasswordHash.Create(Secret.From(Password), iterations: 1_000),
+            Role = role,
+            CreatedUtc = DateTimeOffset.UtcNow,
+        }));
+
+    private static async Task<HttpClient> SignedIn(HttpClient client, string username)
+    {
+        var response = await client.PostAsJsonAsync(
+            "/api/auth/signin", new { username, password = Password });
+
+        // If signing in failed, every assertion after this would be about an
+        // anonymous caller. Stop here rather than let a 401 masquerade as the
+        // behaviour under test.
+        Assert.True(
+            response.IsSuccessStatusCode,
+            $"Sign-in as '{username}' failed with {(int)response.StatusCode}; " +
+            "the tests that follow would be about an anonymous caller.");
+
+        return client;
+    }
+
+    private static Task<HttpResponseMessage> Acknowledge(HttpClient client) =>
+        client.PostAsJsonAsync("/api/alerts/acknowledge", new { fingerprint = "smoke|test|x|y|z" });
+
+    // --- anonymous ---------------------------------------------------------
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_with_401()
+    {
+        var response = await Client().GetAsync("/api/overview");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_sign_in_surface_is_reachable_without_a_session()
+    {
+        // The positive control for the test above. If the pipeline refused
+        // everyone, the 401 there would still pass; this proves the refusal is
+        // a decision about that endpoint rather than about every request.
+        var response = await Client().GetAsync("/api/auth/state");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Every_api_endpoint_outside_sign_in_refuses_an_anonymous_caller()
+    {
+        // The roadmap's named mutation: remove UseAuthorization() and every
+        // RequireAuthorization becomes decorative. Asked of every GET the
+        // product maps rather than of one, because the failure it guards
+        // against is an endpoint somebody added without the requirement --
+        // and that endpoint is, by definition, not the one a hand-picked test
+        // would name.
+        var client = Client();
+
+        var paths = _host.Services.GetRequiredService<EndpointDataSource>().Endpoints
+            .OfType<RouteEndpoint>()
+            .Where(e => e.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods.Contains("GET") == true)
+            .Select(e => e.RoutePattern.RawText ?? string.Empty)
+            .Where(p => p.StartsWith("/api/", StringComparison.Ordinal) &&
+                        !p.StartsWith("/api/auth", StringComparison.Ordinal))
+            .Select(p => p.Replace("{id}", "x", StringComparison.Ordinal)
+                          .Replace("{instanceId}", "x", StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        Assert.NotEmpty(paths);
+
+        foreach (var path in paths)
+        {
+            var response = await client.GetAsync(path);
+
+            Assert.True(
+                response.StatusCode == HttpStatusCode.Unauthorized,
+                $"GET {path} answered an anonymous caller with {(int)response.StatusCode}.");
+        }
+    }
+
+    // --- a viewer ----------------------------------------------------------
+
+    [Fact]
+    public async Task A_viewer_can_read()
+    {
+        // The positive control for the viewer's 403. Without it, a viewer who
+        // could not sign in at all would pass the refusal test for the wrong
+        // reason.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/overview");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_viewer_who_tries_to_change_something_is_refused_with_403()
+    {
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await Acknowledge(client);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task An_operator_gets_past_the_policy_a_viewer_is_stopped_at()
+    {
+        // The other half of the pair. The body names an alert that does not
+        // exist, so whatever the handler says is not the point; what matters
+        // is that it was reached, which neither 401 nor 403 would mean.
+        Account("operator", Role.Operator);
+        var client = await SignedIn(Client(), "operator");
+
+        var response = await Acknowledge(client);
+
+        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    // --- a session that outlives its account --------------------------------
+
+    [Fact]
+    public async Task A_session_ends_when_its_account_is_removed()
+    {
+        // The one test here no stub scheme could run. Replacing the cookie
+        // handler with a test handler -- the usual recipe -- means the real
+        // OnValidatePrincipal never executes, so it would pass whether or not
+        // the handler exists. This drives the production cookie: sign in, get
+        // a real session, remove the account, and ask again.
+        Account("leaver", Role.Operator);
+        var client = await SignedIn(Client(), "leaver");
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/overview")).StatusCode);
+
+        Assert.True(_host.Accounts.Remove("leaver"));
+
+        var afterwards = await client.GetAsync("/api/overview");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, afterwards.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_demotion_takes_effect_on_the_next_request()
+    {
+        // The same handler in the other direction. A cookie carries the role
+        // it was issued with; without the refresh, an operator demoted to
+        // viewer keeps writing until the cookie expires -- twelve hours.
+        Account("demoted", Role.Operator);
+        var client = await SignedIn(Client(), "demoted");
+
+        Assert.NotEqual(HttpStatusCode.Forbidden, (await Acknowledge(client)).StatusCode);
+
+        _host.Accounts.Mutate("demoted", a => a with { Role = Role.Viewer });
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await Acknowledge(client)).StatusCode);
+    }
+
+    // --- the host itself ----------------------------------------------------
+
+    [Fact]
+    public async Task The_interface_is_served_from_the_same_origin()
+    {
+        // The failure that started this file: a host that cannot build its
+        // route matcher answers every request with 500. Any page at all proves
+        // the matcher was built.
+        var response = await Client().GetAsync("/api/auth/state");
+
+        Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+    }
+}
+
+/// <summary>
+/// Program.cs with its stores in memory and its workers removed.
+/// </summary>
+/// <remarks>
+/// Environment is "Testing" rather than the factory's default of Development,
+/// because Development loads appsettings.Development.json — the operator's own
+/// file, gitignored, carrying real vCenter addresses — and a test that reads it
+/// behaves differently on every machine.
+/// </remarks>
+internal sealed class ObservatoryHost : WebApplicationFactory<Program>
+{
+    private readonly string _keyRing = Path.Combine(
+        Path.GetTempPath(), "eo-smoke-keys-" + Guid.NewGuid().ToString("N"));
+
+    public InMemoryUserAccountStore Accounts { get; } = new();
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Testing");
+
+        // Not a real credential and never sent anywhere: nothing here reaches
+        // a database. Program.cs refuses to start without a password, and it
+        // arrives from in-memory configuration, which the credential guard
+        // rightly does not treat as a settings file.
+        builder.UseSetting("Database:Password", "smoke-test-no-database-is-reached");
+        builder.UseSetting("Storage:KeyRingPath", _keyRing);
+
+        builder.ConfigureTestServices(services =>
+        {
+            Replace<IUserAccountStore>(services, Accounts);
+            Replace<IEntityGraphStore>(services, new InMemoryEntityGraphStore());
+            Replace<IAlertStateStore>(services, new InMemoryAlertStateStore());
+            Replace<ICollectorHealthStore>(services, new InMemoryCollectorHealthStore());
+            Replace<ICoverageStore>(services, new InMemoryCoverageStore());
+            Replace<IObservationStore>(services, new InMemoryObservationStore());
+            Replace<IMaintenanceWindowStore>(services, new InMemoryMaintenanceWindowStore());
+            Replace<ISourceConnectionStore>(services, new TestConnectionStore());
+
+            // Only the product's own workers. Removing every IHostedService
+            // would take the test server with it.
+            foreach (var worker in services
+                         .Where(d => d.ImplementationType == typeof(MonitoringWorker) ||
+                                     d.ImplementationType == typeof(CompactionWorker))
+                         .ToList())
+            {
+                services.Remove(worker);
+            }
+
+            // Loud rather than silent. If anything still asks for the
+            // database, a store was missed above, and a smoke suite that
+            // quietly connected to whatever runs on 5432 would be testing the
+            // developer's machine.
+            services.RemoveAll<PostgresDatabase>();
+            services.AddSingleton<PostgresDatabase>(_ => throw new InvalidOperationException(
+                "The composition-root smoke suite reached PostgreSQL; a store was not replaced."));
+        });
+    }
+
+    private static void Replace<T>(IServiceCollection services, T instance)
+        where T : class
+    {
+        services.RemoveAll<T>();
+        services.AddSingleton(instance);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+
+        try
+        {
+            if (Directory.Exists(_keyRing))
+            {
+                Directory.Delete(_keyRing, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // A key file still open at teardown is a temp directory left
+            // behind, not a failed test.
+        }
+    }
+}
