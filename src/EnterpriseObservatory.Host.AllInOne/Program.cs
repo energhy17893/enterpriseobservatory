@@ -52,7 +52,37 @@ if (problems.Count > 0)
         "Configuration is not usable:" + Environment.NewLine + string.Join(Environment.NewLine, problems));
 }
 
-builder.Services.AddSingleton(BuildMonitoringOptions(builder.Configuration));
+// CollectionPolicy (T2.4): configurable from appsettings under Collection,
+// with defaults equal to what CollectionPolicy.Default already was — an
+// installation that sets nothing behaves exactly as before. Validated here,
+// beside every other refusal-to-start below, rather than left to fail the
+// first time a source is polled with a nonsensical setting.
+var collection = builder.Configuration.GetSection("Collection").Get<CollectionOptions>()
+                  ?? new CollectionOptions();
+var collectionProblems = collection.Validate();
+
+if (collectionProblems.Count > 0)
+{
+    throw new InvalidOperationException(
+        "Configuration is not usable:" + Environment.NewLine + string.Join(Environment.NewLine, collectionProblems));
+}
+
+var monitoringOptions = BuildMonitoringOptions(builder.Configuration, collection.ToPolicy());
+
+// The interval floor (T2.4): a cadence below this is not a valid choice, it is
+// a typo — seconds where minutes were meant, or a config key that lost its
+// value and bound to zero. Both turn MonitoringWorker's PeriodicTimer into a
+// busy loop against every configured vCenter. See MonitoringIntervalValidation.
+var intervalProblems = MonitoringIntervalValidation.Validate(
+    monitoringOptions.InventoryInterval, monitoringOptions.ObservationInterval);
+
+if (intervalProblems.Count > 0)
+{
+    throw new InvalidOperationException(
+        "Configuration is not usable:" + Environment.NewLine + string.Join(Environment.NewLine, intervalProblems));
+}
+
+builder.Services.AddSingleton(monitoringOptions);
 builder.Services.AddSingleton<IClock, SystemClock>();
 
 // State outlives the process. Losing it forgets every acknowledgement and
@@ -91,7 +121,37 @@ if (databaseProblems.Count > 0)
 // connections before RunAsync, which resolves a store and therefore this, so a
 // database that cannot be reached still stops the service at boot rather than
 // on the first request.
-builder.Services.AddSingleton(_ => new PostgresDatabase(database));
+// Startup DB retry (T2.4): the service was found dead twice this week
+// because PostgreSQL was still starting when this process was. A bounded
+// retry with backoff here is the difference between a restart nobody has to
+// perform and one that has to happen every time the two start together. Not
+// endless: a database that is misconfigured rather than merely slow to start
+// must still fail loudly, which DatabaseStartupRetry does once the window in
+// Database:StartupRetrySeconds (default two minutes) runs out.
+var databaseStartupRetryWindow = Seconds(
+    builder.Configuration["Database:StartupRetrySeconds"], DatabaseStartupRetry.DefaultWindow);
+
+builder.Services.AddSingleton(provider =>
+{
+    var startupLogger = provider.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("EnterpriseObservatory.Startup");
+
+    return DatabaseStartupRetry.Open(
+        open: () => new PostgresDatabase(database),
+        // Bad configuration (a missing password, an out-of-range port) is
+        // permanent and reported through options.Validate() inside the
+        // constructor as an ArgumentException; retrying that for two minutes
+        // would only delay a message that is already correct. Everything
+        // else — connection refused, DNS not resolving yet, a timeout — is
+        // exactly the transient state a database that is still starting up
+        // looks like.
+        isTransient: ex => ex is not ArgumentException,
+        window: databaseStartupRetryWindow,
+        delay: DatabaseStartupRetry.DefaultDelay,
+        onRetry: (attempt, elapsed, ex) =>
+            HostLog.DatabaseNotReachableRetrying(startupLogger, ex, attempt, elapsed.TotalSeconds));
+});
+
 builder.Services.AddSingleton<IEntityGraphStore, PostgresEntityGraphStore>();
 builder.Services.AddSingleton<IAlertStateStore, PostgresAlertStateStore>();
 builder.Services.AddSingleton<ICollectorHealthStore, PostgresCollectorHealthStore>();
@@ -455,7 +515,7 @@ static PostgresOptions BuildDatabaseOptions(IConfiguration configuration)
         string.IsNullOrWhiteSpace(value) ? fallback : value;
 }
 
-static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration)
+static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration, CollectionPolicy collectionPolicy)
 {
     var section = configuration.GetSection("Monitoring");
     var defaults = MonitoringOptions.Default;
@@ -466,6 +526,7 @@ static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration)
         ObservationInterval = Seconds(section["ObservationIntervalSeconds"], defaults.ObservationInterval),
         CompactionInterval = Seconds(section["CompactionIntervalSeconds"], defaults.CompactionInterval),
         EventReadDeadline = Seconds(section["EventReadDeadlineSeconds"], defaults.EventReadDeadline),
+        Collection = collectionPolicy,
         Retention = new SeriesRetentionPolicy
         {
             Raw = Days(section["Retention:RawDays"], defaults.Retention.Raw),
