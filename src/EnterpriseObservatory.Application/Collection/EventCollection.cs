@@ -194,6 +194,28 @@ public interface IEventStore
 
     /// <summary>Removes events created before the cutoff; returns how many.</summary>
     int Prune(DateTimeOffset createdBeforeUtc);
+
+    /// <summary>
+    /// Every source's events of the given types created at or after
+    /// <paramref name="createdSinceUtc"/>, newest first, at most
+    /// <see cref="EventCollectionPipeline.MaxMatching"/> of them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For rules that turn events into alerts (roadmap M2.2). They cannot use
+    /// <see cref="Recent"/>: that is a page for a screen, capped at
+    /// <see cref="EventCollectionPipeline.MaxRecent"/>, and a busy vCenter
+    /// writes that many task and login events in well under an hour — the one
+    /// "host isolated" event a rule needs would fall off the page while it was
+    /// still the most important thing in it.
+    /// </para>
+    /// <para>
+    /// Type ids are matched without regard to case. vCenter itself is not
+    /// consistent: its catalogue carries <c>com.vmware.vc.HA.*</c> beside
+    /// <c>com.vmware.vc.ha.VmRestartedByHAEvent</c>.
+    /// </para>
+    /// </remarks>
+    IReadOnlyList<SourceEvent> OfTypes(IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc);
 }
 
 /// <summary>What one pass over the event sources did.</summary>
@@ -245,6 +267,14 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
 
     /// <summary>The most events one page of the listing may return.</summary>
     public const int MaxRecent = 500;
+
+    /// <summary>The most events one <see cref="IEventStore.OfTypes"/> read may return.</summary>
+    /// <remarks>
+    /// A bound on a storm, not a page size: a host flapping a link for a day
+    /// must not turn one rule's read into a million rows. The newest are kept,
+    /// and those are the ones that decide whether something is open now.
+    /// </remarks>
+    public const int MaxMatching = 5000;
 
     private readonly IEventStore _store = store ?? throw new ArgumentNullException(nameof(store));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
