@@ -4,7 +4,11 @@ namespace EnterpriseObservatory.Application.Analysis;
 /// The arithmetic the rules share, written once so that two rules that must
 /// agree cannot drift apart.
 /// </summary>
-internal static class Stats
+/// <remarks>
+/// Public so that its arithmetic is pinned by tests of its own: it used to be
+/// four private copies, and the even-count median was checked by none of them.
+/// </remarks>
+public static class Stats
 {
     /// <summary>
     /// The middle value; for an even count, the mean of the two middle values;
