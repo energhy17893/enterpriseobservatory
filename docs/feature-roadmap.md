@@ -51,16 +51,16 @@ Broadcom SCG CSV'si **veri olarak** yutulur; kod içine kontrol gömülmez.
 | ✅ M3.3 | `config.option` ile cevaplanabilen ilk kontroller (syslog, shell timeout, audit) | uygunluk ekranı dolu |
 | ✅ M3.4 | vSwitch güvenlik politikası, NTP, SSH/Shell servisleri | ekranda bulgu |
 
-## ▶ M4 — Kapasite ve eğilim *(sürüyor)*
+## ✅ M4 — Kapasite ve eğilim *(tamam, 21 Eylül 2026 — ilk tahminler 7 günlük veri birikince)*
 
 | Adım | Feature | Bitti = |
 |---|---|---|
 | ✅ M4.1 | Datastore kapasitesi zaman serisi *(perf sayacı değil, envanterde zaten okunan `summary.*`: `datastore.{capacity,free,used,uncommitted,provisioned}.bytes`, Latest; 205 seri ≈ 394 MB — bkz. counter map §4; canlıda doğrulama bekliyor)* | grafik |
-| M4.2 | Seri okuma portu (kurallar geçmişi okuyabilsin) | — |
-| M4.3 | **Dolma tarihi** — ya "N gün" ya "söyleyemem, sebebi şu" | datastore'da tahmin |
-| M4.4 | Aşırı taahhüt bulgusuna tarih | bulguda "X tarihinde dolar" |
+| ✅ M4.2 | Seri okuma portu (kurallar geçmişi okuyabilsin) | — |
+| ✅ M4.3 | **Dolma tarihi** — ya "N gün" ya "söyleyemem, sebebi şu" | datastore'da tahmin |
+| ✅ M4.4 | Aşırı taahhüt bulgusuna tarih | bulguda "X tarihinde dolar" |
 
-**→ Mimari kontrol #2** (M3 + M4 sonrası)
+**▶ Mimari kontrol #2** (M3 + M4 sonrası) *(sürüyor)*
 
 ## M5 — Raporlama
 
