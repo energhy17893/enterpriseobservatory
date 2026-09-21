@@ -1,7 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Host.AllInOne;
@@ -247,6 +250,87 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Assert.Equal(HttpStatusCode.Forbidden, (await Acknowledge(client)).StatusCode);
     }
 
+    // --- compliance ---------------------------------------------------------
+
+    // The host sends enums as names; see Program.cs.
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    private static Task<HttpResponseMessage> AcceptFinding(HttpClient client) =>
+        client.PostAsJsonAsync(
+            "/api/compliance/accept",
+            new { controlId = "esxi-8.logs-remote", entityId = "vc-1:host-1", reason = "smoke" });
+
+    [Fact]
+    public async Task A_viewer_can_read_the_compliance_screen_and_its_catalogue_is_loaded()
+    {
+        // The positive for the anonymous 401 every GET gets above, and proof
+        // that the catalogue shipped beside the binary was found: a host that
+        // lost it would answer 200 with a problem instead of controls.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/compliance");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<Api.ComplianceView>(Json);
+
+        Assert.NotNull(body);
+        Assert.Null(body.CatalogueProblem);
+        Assert.Equal("803-20260612-01", body.CatalogueRelease);
+        Assert.Contains(body.Controls, c => c.ControlId == "esxi-8.logs-remote" && c.Evaluated);
+        Assert.Contains(body.Controls, c => !c.Evaluated && c.NotEvaluatedReason is not null);
+
+        Assert.Equal(
+            HttpStatusCode.OK, (await client.GetAsync("/api/compliance/findings?state=Failing")).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_viewer_who_tries_to_accept_a_finding_is_refused_with_403()
+    {
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await AcceptFinding(client)).StatusCode);
+    }
+
+    [Fact]
+    public async Task An_operator_can_accept_a_failing_finding_and_it_is_attributed()
+    {
+        // Evaluated through the real service the host registered, over a
+        // host whose log target is empty -- then accepted over HTTP.
+        var compliance = _host.Services.GetRequiredService<ComplianceService>();
+        compliance.Evaluate(
+        [
+            new Domain.Entity
+            {
+                Id = new Domain.EntityId("vc-1:host-1"),
+                Kind = Domain.EntityKind.EsxiHost,
+                DisplayName = "esx-01",
+                LastSeenUtc = DateTimeOffset.UtcNow,
+                Settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Syslog.global.logHost"] = "",
+                },
+            },
+        ]);
+
+        Account("operator", Role.Operator);
+        var client = await SignedIn(Client(), "operator");
+
+        var response = await AcceptFinding(client);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var finding = await response.Content.ReadFromJsonAsync<Api.ComplianceFindingView>(Json);
+
+        Assert.Equal(Domain.Compliance.FindingState.Accepted, finding!.State);
+        Assert.Equal("operator", finding.AcceptedBy);
+    }
+
     // --- the host itself ----------------------------------------------------
 
     [Fact]
@@ -277,6 +361,8 @@ internal sealed class ObservatoryHost : WebApplicationFactory<Program>
 
     public InMemoryUserAccountStore Accounts { get; } = new();
 
+    public InMemoryComplianceStore Compliance { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -298,6 +384,7 @@ internal sealed class ObservatoryHost : WebApplicationFactory<Program>
             Replace<IEventStore>(services, new InMemoryEventStore());
             Replace<IObservationStore>(services, new InMemoryObservationStore());
             Replace<IMaintenanceWindowStore>(services, new InMemoryMaintenanceWindowStore());
+            Replace<IComplianceStore>(services, Compliance);
             Replace<ISourceConnectionStore>(services, new TestConnectionStore());
 
             // Only the product's own workers. Removing every IHostedService

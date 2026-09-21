@@ -2,8 +2,10 @@ using EnterpriseObservatory.Api;
 using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Application.Security;
+using EnterpriseObservatory.Domain.Compliance;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -61,6 +63,8 @@ public class EndpointRegistrationTests
             typeof(AuthenticationService),
             typeof(AlertOperations),
             typeof(MaintenanceService),
+            typeof(ComplianceService),
+            typeof(ComplianceCatalogue),
             typeof(SourceConnectionCatalogue),
             typeof(MonitoringOptions),
             typeof(IConnectionProbe),
@@ -76,6 +80,7 @@ public class EndpointRegistrationTests
             typeof(IEntityGraphStore),
             typeof(IObservationStore),
             typeof(IMaintenanceWindowStore),
+            typeof(IComplianceStore),
             typeof(ISecretProtector),
             typeof(IUserAccountStore),
         })
@@ -90,6 +95,7 @@ public class EndpointRegistrationTests
         app.MapAccountsApi();
         app.MapConnections();
         app.MapMaintenanceApi();
+        app.MapComplianceApi();
         app.MapObservatoryApi();
 
         return [.. ((IEndpointRouteBuilder)app).DataSources.SelectMany(s => s.Endpoints)];
