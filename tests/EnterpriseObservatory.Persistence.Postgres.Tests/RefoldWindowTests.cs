@@ -115,6 +115,68 @@ public class RefoldWindowTests
     }
 
     [Fact]
+    public void A_slice_is_at_most_the_configured_number_of_buckets()
+    {
+        Assert.Equal(
+            T0.AddHours(1),
+            RefoldWindow.SliceEnd(T0, T0.AddDays(2), SeriesResolution.FiveMinutes, 12));
+        Assert.Equal(
+            T0.AddHours(12),
+            RefoldWindow.SliceEnd(T0, T0.AddDays(2), SeriesResolution.OneHour, 12));
+    }
+
+    [Fact]
+    public void A_slice_stops_at_the_last_complete_bucket()
+    {
+        Assert.Equal(
+            T0.AddMinutes(10),
+            RefoldWindow.SliceEnd(T0, T0.AddMinutes(10), SeriesResolution.FiveMinutes, 12));
+    }
+
+    [Fact]
+    public void A_two_day_range_takes_forty_eight_hour_long_slices()
+    {
+        var start = T0;
+        var end = T0.AddDays(2);
+        var slices = 0;
+
+        while (start < end)
+        {
+            var next = RefoldWindow.SliceEnd(start, end, SeriesResolution.FiveMinutes, 12);
+            Assert.True(next - start <= TimeSpan.FromHours(1));
+            start = next;
+            slices++;
+        }
+
+        Assert.Equal(48, slices);
+    }
+
+    [Fact]
+    public void A_slice_below_the_watermark_leaves_the_marker_where_it_stopped()
+    {
+        Assert.Equal(
+            (T0, (DateTimeOffset?)T0.AddHours(-3)),
+            RefoldWindow.After(T0, T0.AddHours(-3)));
+    }
+
+    [Fact]
+    public void A_slice_reaching_the_watermark_clears_the_marker()
+    {
+        Assert.Equal((T0, (DateTimeOffset?)null), RefoldWindow.After(T0, T0));
+    }
+
+    [Fact]
+    public void A_slice_past_the_watermark_moves_it()
+    {
+        Assert.Equal(
+            (T0.AddHours(1), (DateTimeOffset?)null),
+            RefoldWindow.After(T0, T0.AddHours(1)));
+        Assert.Equal(
+            (T0.AddHours(1), (DateTimeOffset?)null),
+            RefoldWindow.After(null, T0.AddHours(1)));
+    }
+
+    [Fact]
     public void The_hourly_marker_is_on_the_hourly_grid()
     {
         // A five-minute rebuild from 11:55 dirties the hour starting 11:00.
