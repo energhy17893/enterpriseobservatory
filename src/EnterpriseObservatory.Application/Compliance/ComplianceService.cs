@@ -53,6 +53,24 @@ public interface IComplianceStore
         EntityId entity,
         Func<ComplianceFinding, ComplianceFinding> change);
 
+    /// <summary>
+    /// Applies a change to one finding of one subject, atomically; null when
+    /// there is no such finding.
+    /// </summary>
+    /// <remarks>
+    /// The default serves a store that predates subjects: it knows only the
+    /// empty subject. The real stores key every finding by its subject.
+    /// </remarks>
+    ComplianceFinding? Mutate(
+        string catalogueRelease,
+        string controlId,
+        EntityId entity,
+        string subject,
+        Func<ComplianceFinding, ComplianceFinding> change) =>
+        string.IsNullOrEmpty(subject)
+            ? Mutate(catalogueRelease, controlId, entity, change)
+            : null;
+
     void AddException(ComplianceWaiver exception);
 
     /// <summary>
@@ -156,12 +174,43 @@ public sealed record ComplianceResult
 /// the non-compliant count, and it always ends.
 /// </para>
 /// </remarks>
-public sealed class ComplianceService(
-    ComplianceCatalogue catalogue, IComplianceStore store, IClock clock)
+public sealed class ComplianceService
 {
-    private readonly IComplianceStore _store = store ?? throw new ArgumentNullException(nameof(store));
+    private readonly IComplianceStore _store;
 
-    private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+    private readonly IClock _clock;
+
+    private readonly IReadOnlyDictionary<string, IComplianceCheck> _checksById;
+
+    /// <summary>One catalogue: the vendor guide alone.</summary>
+    public ComplianceService(ComplianceCatalogue catalogue, IComplianceStore store, IClock clock)
+        : this([catalogue ?? throw new ArgumentNullException(nameof(catalogue))], store, clock)
+    {
+    }
+
+    /// <summary>Several catalogues, each evaluated independently: the vendor guide first.</summary>
+    /// <param name="catalogues">The catalogues; the first is the one <see cref="Catalogue"/> names.</param>
+    /// <param name="store">Where findings and exceptions live.</param>
+    /// <param name="clock">The time.</param>
+    /// <param name="checksById">The checks of the catalogues that bind by control id.</param>
+    public ComplianceService(
+        IReadOnlyList<ComplianceCatalogue> catalogues,
+        IComplianceStore store,
+        IClock clock,
+        IReadOnlyDictionary<string, IComplianceCheck>? checksById = null)
+    {
+        ArgumentNullException.ThrowIfNull(catalogues);
+
+        if (catalogues.Count == 0)
+        {
+            throw new ArgumentException("At least one catalogue is needed.", nameof(catalogues));
+        }
+
+        Catalogues = catalogues;
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        _checksById = checksById ?? new Dictionary<string, IComplianceCheck>(StringComparer.Ordinal);
+    }
 
     /// <summary>
     /// The longest an exception may run.
@@ -184,55 +233,124 @@ public sealed class ComplianceService(
     /// <summary>The longest owner an exception may name: a person, a team, or a mailbox.</summary>
     public const int MaximumOwnerLength = 200;
 
-    public ComplianceCatalogue Catalogue { get; } =
-        catalogue ?? throw new ArgumentNullException(nameof(catalogue));
+    /// <summary>The vendor guide: the first catalogue, the one the screen's header names.</summary>
+    public ComplianceCatalogue Catalogue => Catalogues[0];
 
-    /// <summary>Every control, with the reason for each one this product cannot judge.</summary>
-    public IReadOnlyList<BoundControl> Controls() => ComplianceEvaluation.Bind(Catalogue);
+    /// <summary>Every catalogue, the vendor guide first.</summary>
+    public IReadOnlyList<ComplianceCatalogue> Catalogues { get; }
 
-    public IReadOnlyList<ComplianceFinding> Findings() =>
-        [.. _store.Findings.Where(f =>
-            string.Equals(f.CatalogueRelease, Catalogue.Release, StringComparison.Ordinal))];
+    /// <summary>
+    /// Every control of every catalogue, tagged with its catalogue, with the
+    /// reason for each one this product cannot judge.
+    /// </summary>
+    public IReadOnlyList<BoundControl> Controls() =>
+        [.. Catalogues.SelectMany(c => ComplianceEvaluation.Bind(c, checksById: _checksById))];
+
+    /// <summary>The findings of every loaded catalogue release.</summary>
+    public IReadOnlyList<ComplianceFinding> Findings()
+    {
+        var releases = Catalogues.Select(c => c.Release).ToHashSet(StringComparer.Ordinal);
+
+        return [.. _store.Findings.Where(f => releases.Contains(f.CatalogueRelease))];
+    }
 
     /// <summary>Every exception, standing or withdrawn.</summary>
     public IReadOnlyList<ComplianceWaiver> Exceptions() => _store.Exceptions;
 
     /// <summary>
     /// Verdict changes in [<paramref name="sinceUtc"/>, <paramref name="toUtc"/>],
-    /// for the loaded catalogue release, optionally narrowed further.
+    /// for the loaded catalogue releases, optionally narrowed further.
     /// </summary>
+    /// <remarks>
+    /// A control belongs to one catalogue, so a history narrowed to it reads
+    /// that release alone. Otherwise every loaded release is read, oldest
+    /// first, and the whole is still capped at
+    /// <see cref="ComplianceTransitionsPage.MaxRows"/>.
+    /// </remarks>
     public ComplianceTransitionsPage TransitionsSince(
-        DateTimeOffset sinceUtc, DateTimeOffset toUtc, string? controlId = null, EntityId? entity = null) =>
-        _store.TransitionsSince(sinceUtc, toUtc, Catalogue.Release, controlId, entity);
+        DateTimeOffset sinceUtc, DateTimeOffset toUtc, string? controlId = null, EntityId? entity = null)
+    {
+        if (Catalogues.Count == 1 || controlId is not null)
+        {
+            return _store.TransitionsSince(
+                sinceUtc, toUtc, ReleaseOf(controlId) ?? Catalogue.Release, controlId, entity);
+        }
+
+        var pages = Catalogues
+            .Select(c => _store.TransitionsSince(sinceUtc, toUtc, c.Release, controlId, entity))
+            .ToList();
+
+        var merged = pages
+            .SelectMany(p => p.Transitions)
+            .OrderBy(t => t.AtUtc)
+            .ToList();
+
+        var truncated = pages.Any(p => p.Truncated) || merged.Count > ComplianceTransitionsPage.MaxRows;
+
+        return new ComplianceTransitionsPage
+        {
+            Transitions = [.. merged.Take(ComplianceTransitionsPage.MaxRows)],
+            Truncated = truncated,
+        };
+    }
 
     public DateTimeOffset Now => _clock.UtcNow;
 
-    /// <summary>Judges the estate as the inventory last read it.</summary>
+    /// <summary>Judges the estate as the inventory last read it, one catalogue at a time.</summary>
     /// <param name="entities">The estate.</param>
     /// <param name="reportingSources">
-    /// The sources that answered in the inventory cycle just run; a host of
+    /// The sources that answered in the inventory cycle just run; an entity of
     /// any other source is judged on what it last reported and marked stale.
-    /// Null treats every source as having answered.
+    /// Null treats every source as having answered. Every catalogue is judged
+    /// with the same sources: a silent vCenter's clusters are as stale as its
+    /// hosts.
     /// </param>
-    /// <returns>How many findings the evaluation holds.</returns>
+    /// <param name="graph">The estate as a graph; built from <paramref name="entities"/> when null.</param>
+    /// <param name="demand">Precomputed demand for N+1 checks; null when none.</param>
+    /// <returns>How many findings the evaluations hold.</returns>
+    /// <remarks>
+    /// A catalogue that could not be loaded is skipped; the others are still
+    /// judged. The store replaces one release at a time, so no catalogue's
+    /// evaluation can touch another's rows.
+    /// </remarks>
     public int Evaluate(
-        IReadOnlyList<Entity> entities, IReadOnlyCollection<string>? reportingSources = null)
+        IReadOnlyList<Entity> entities,
+        IReadOnlyCollection<string>? reportingSources = null,
+        EntityGraph? graph = null,
+        DemandSnapshot? demand = null)
     {
         ArgumentNullException.ThrowIfNull(entities);
 
         var now = _clock.UtcNow;
         var count = 0;
 
-        _store.Evaluate(Catalogue.Release, now, previous =>
+        foreach (var catalogue in Catalogues.Where(c => c.Problem is null))
         {
-            var findings = ComplianceEvaluation.Evaluate(
-                Catalogue, entities, previous, now, reportingSources: reportingSources);
-            count = findings.Count;
-            return findings;
-        });
+            _store.Evaluate(catalogue.Release, now, previous =>
+            {
+                var findings = ComplianceEvaluation.Evaluate(
+                    catalogue,
+                    entities,
+                    previous,
+                    now,
+                    reportingSources: reportingSources,
+                    checksById: _checksById,
+                    graph: graph,
+                    demand: demand);
+                count += findings.Count;
+                return findings;
+            });
+        }
 
         return count;
     }
+
+    /// <summary>The release of the catalogue that holds a control; null when none does.</summary>
+    private string? ReleaseOf(string? controlId) =>
+        controlId is null
+            ? null
+            : Catalogues.FirstOrDefault(c => c.Controls.Any(
+                control => string.Equals(control.ControlId, controlId, StringComparison.Ordinal)))?.Release;
 
     /// <summary>Records that an operator owns a failing finding.</summary>
     /// <remarks>
@@ -241,9 +359,16 @@ public sealed class ComplianceService(
     /// wants to take it over says so to the person on the record.
     /// </remarks>
     public ComplianceResult Accept(
-        string controlId, EntityId entity, string reason, OperatorIdentity actor)
+        string controlId, EntityId entity, string reason, OperatorIdentity actor) =>
+        Accept(controlId, entity, string.Empty, reason, actor);
+
+    /// <summary>Records that an operator owns one subject's failing finding.</summary>
+    public ComplianceResult Accept(
+        string controlId, EntityId entity, string subject, string reason, OperatorIdentity actor)
     {
         ArgumentNullException.ThrowIfNull(actor);
+
+        subject ??= string.Empty;
 
         var trimmed = reason?.Trim() ?? string.Empty;
 
@@ -252,8 +377,13 @@ public sealed class ComplianceService(
             return ComplianceResult.Refused(ComplianceFailure.TooLong);
         }
 
+        var release = ReleaseOf(controlId) ?? Catalogue.Release;
+
         var current = Findings().FirstOrDefault(f =>
-            string.Equals(f.ControlId, controlId, StringComparison.Ordinal) && f.Entity == entity);
+            string.Equals(f.CatalogueRelease, release, StringComparison.Ordinal) &&
+            string.Equals(f.ControlId, controlId, StringComparison.Ordinal) &&
+            f.Entity == entity &&
+            string.Equals(f.Subject, subject, StringComparison.Ordinal));
 
         if (current is null)
         {
@@ -280,7 +410,7 @@ public sealed class ComplianceService(
         // Applied to the stored finding, not to the copy read above: an
         // evaluation or another operator may have landed in between, and the
         // checks are repeated under the hold for the same reason.
-        var changed = _store.Mutate(Catalogue.Release, controlId, entity, f =>
+        var changed = _store.Mutate(release, controlId, entity, subject, f =>
             f.Verdict == ComplianceVerdict.Failing && f.Acceptance is null
                 ? f with { Acceptance = acceptance }
                 : f);
@@ -301,11 +431,26 @@ public sealed class ComplianceService(
         string reason,
         string owner,
         DateTimeOffset expiresUtc,
+        OperatorIdentity actor) =>
+        AddException(controlId, entity, null, reason, owner, expiresUtc, actor);
+
+    /// <summary>
+    /// Records an exception to a control, for one entity or all of them, and
+    /// for one subject or all of them.
+    /// </summary>
+    /// <param name="subject">The one subject it covers; null or blank for every subject.</param>
+    public ComplianceResult AddException(
+        string controlId,
+        EntityId? entity,
+        string? subject,
+        string reason,
+        string owner,
+        DateTimeOffset expiresUtc,
         OperatorIdentity actor)
     {
         ArgumentNullException.ThrowIfNull(actor);
 
-        if (!Catalogue.Controls.Any(c => string.Equals(c.ControlId, controlId, StringComparison.Ordinal)))
+        if (ReleaseOf(controlId) is null)
         {
             return ComplianceResult.Refused(ComplianceFailure.UnknownControl);
         }
@@ -334,6 +479,7 @@ public sealed class ComplianceService(
             Id = Guid.NewGuid().ToString("n"),
             ControlId = controlId,
             Entity = entity,
+            Subject = string.IsNullOrWhiteSpace(subject) ? null : subject,
             Reason = reason.Trim(),
             Owner = owner.Trim(),
             CreatedBy = actor.AuditName,
