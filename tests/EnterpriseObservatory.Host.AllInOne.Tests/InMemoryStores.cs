@@ -687,24 +687,35 @@ internal sealed class InMemoryComplianceStore : IComplianceStore
         }
     }
 
-    public void Evaluate(Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate)
+    public void Evaluate(
+        string catalogueRelease,
+        DateTimeOffset nowUtc,
+        Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate)
     {
         ArgumentNullException.ThrowIfNull(evaluate);
 
         lock (_gate)
         {
-            _findings = [.. evaluate([.. _findings])];
+            _findings =
+            [
+                .. _findings.Where(f => f.CatalogueRelease != catalogueRelease),
+                .. evaluate([.. _findings.Where(f => f.CatalogueRelease == catalogueRelease)]),
+            ];
         }
     }
 
     public ComplianceFinding? Mutate(
-        string controlId, EntityId entity, Func<ComplianceFinding, ComplianceFinding> change)
+        string catalogueRelease,
+        string controlId,
+        EntityId entity,
+        Func<ComplianceFinding, ComplianceFinding> change)
     {
         ArgumentNullException.ThrowIfNull(change);
 
         lock (_gate)
         {
-            var index = _findings.FindIndex(f => f.ControlId == controlId && f.Entity == entity);
+            var index = _findings.FindIndex(f =>
+                f.CatalogueRelease == catalogueRelease && f.ControlId == controlId && f.Entity == entity);
 
             if (index < 0)
             {
@@ -728,11 +739,19 @@ internal sealed class InMemoryComplianceStore : IComplianceStore
         }
     }
 
-    public bool RemoveException(string id)
+    public bool RemoveException(string id, string removedBy, DateTimeOffset removedAtUtc)
     {
         lock (_gate)
         {
-            return _exceptions.RemoveAll(e => e.Id == id) > 0;
+            var index = _exceptions.FindIndex(e => e.Id == id && e.RemovedAtUtc is null);
+
+            if (index < 0)
+            {
+                return false;
+            }
+
+            _exceptions[index] = _exceptions[index] with { RemovedBy = removedBy, RemovedAtUtc = removedAtUtc };
+            return true;
         }
     }
 }

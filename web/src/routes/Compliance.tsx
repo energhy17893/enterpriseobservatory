@@ -31,6 +31,24 @@ const STATE_LABEL: Record<FindingState, string> = {
 
 const ORDER: FindingState[] = ['Failing', 'Accepted', 'Excepted', 'Passing', 'NotEvaluated']
 
+/** The server refuses longer; see ComplianceService. */
+const MAX_REASON = 2000
+const MAX_OWNER = 200
+
+/**
+ * Said beside the counts, never folded into them: a stale failing finding is
+ * still failing. What it is not is current — its vCenter did not answer last
+ * cycle, so the verdict is the last one that could be reached.
+ */
+function StaleBadge({ count }: { count: number }) {
+  if (count === 0) return null
+  return (
+    <StatusBadge status="Unknown">
+      Stale {count}
+    </StatusBadge>
+  )
+}
+
 const EXCEPTION_DURATIONS = [
   { label: '30 days', days: 30 },
   { label: '90 days', days: 90 },
@@ -117,7 +135,16 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
             {STATE_LABEL[state]} {countOf(data.totals, state)}
           </StatusBadge>
         ))}
+        <StaleBadge count={data.totals.stale} />
       </div>
+
+      {data.totals.stale > 0 && (
+        <Card className="p-4 text-sm text-muted-foreground">
+          {data.totals.stale} findings are stale: their vCenter did not answer in the last inventory
+          cycle, so they show the last verdict that could be reached and when the host was last
+          read — not the host as it is now.
+        </Card>
+      )}
 
       <section className="space-y-2">
         <h2 className="text-sm font-medium">
@@ -210,6 +237,7 @@ function ControlRow({
               {STATE_LABEL[state]} {countOf(control.counts, state)}
             </StatusBadge>
           ))}
+          <StaleBadge count={control.counts.stale} />
         </div>
       </button>
       {open && <Findings control={control} canAct={canAct} />}
@@ -278,6 +306,9 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
               {finding.entityName || finding.entityId}
             </Link>
             <StatusBadge status={STATE_STATUS[finding.state]}>{STATE_LABEL[finding.state]}</StatusBadge>
+            {finding.stale && (
+              <StatusBadge status="Unknown">Stale — vCenter did not answer</StatusBadge>
+            )}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
             {finding.observed === null ? (
@@ -299,7 +330,7 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
         </div>
         <div className="shrink-0 text-right text-xs text-muted-foreground">
           <div>since {ago(finding.firstSeenUtc)}</div>
-          <div>checked {ago(finding.lastEvaluatedUtc)}</div>
+          <div>{finding.stale ? 'last read' : 'read'} {ago(finding.lastEvaluatedUtc)}</div>
         </div>
       </div>
 
@@ -309,6 +340,7 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="Why, or the change ticket"
+            maxLength={MAX_REASON}
             className="min-w-48 flex-1 rounded-md border border-border bg-card px-2 py-1 text-xs"
           />
           <button
@@ -384,6 +416,7 @@ function ExceptionForm({
           value={reason}
           onChange={(event) => setReason(event.target.value)}
           placeholder="Why this does not apply"
+          maxLength={MAX_REASON}
           className="w-full rounded-md border border-border bg-card px-2 py-1"
         />
       </label>
@@ -393,6 +426,7 @@ function ExceptionForm({
           value={owner}
           onChange={(event) => setOwner(event.target.value)}
           placeholder="Who answers for it"
+          maxLength={MAX_OWNER}
           className="rounded-md border border-border bg-card px-2 py-1"
         />
       </label>

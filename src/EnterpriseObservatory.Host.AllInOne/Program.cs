@@ -356,7 +356,10 @@ if (KeyRingDurabilityGuard.CredentialsAreUnrecoverable(keyRingLocation, storedCo
 
 if (complianceCatalogue.Problem is { } complianceProblem)
 {
-    HostLog.ComplianceCatalogueUnavailable(startupLog, complianceProblem);
+    // The full account, path and error included; the screen shows only the
+    // edition's name and what kind of thing is wrong.
+    HostLog.ComplianceCatalogueUnavailable(
+        startupLog, complianceCatalogue.Diagnostic ?? complianceProblem);
 }
 else
 {

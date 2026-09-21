@@ -107,6 +107,46 @@ public class ComplianceCatalogueSourceTests
     }
 
     [Fact]
+    public void The_problem_viewers_see_names_the_edition_and_not_the_path_on_the_server()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "eo-no-such-" + Guid.NewGuid(), "scg-9.2");
+
+        var catalogue = ComplianceCatalogueSource.Load(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Compliance:Catalogue"] = directory })
+            .Build());
+
+        // Every signed-in viewer reads Problem; only the service log gets Diagnostic.
+        Assert.Contains("'scg-9.2'", catalogue.Problem, StringComparison.Ordinal);
+        Assert.DoesNotContain(Path.GetTempPath(), catalogue.Problem, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(directory, catalogue.Problem, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(directory, catalogue.Diagnostic, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_misshapen_edition_keeps_its_file_names_out_of_the_viewers_message()
+    {
+        var directory = Directory.CreateTempSubdirectory("eo-scg-");
+
+        try
+        {
+            File.WriteAllText(Path.Combine(directory.FullName, "a.csv"), "x");
+            File.WriteAllText(Path.Combine(directory.FullName, "b.csv"), "y");
+
+            var catalogue = ComplianceCatalogueSource.LoadDirectory(directory.FullName, "downloaded");
+
+            Assert.Contains("'downloaded'", catalogue.Problem, StringComparison.Ordinal);
+            Assert.DoesNotContain(directory.FullName, catalogue.Problem, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(directory.FullName, catalogue.Diagnostic, StringComparison.Ordinal);
+            Assert.Contains("a.csv", catalogue.Diagnostic, StringComparison.Ordinal);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public void A_downloaded_edition_without_a_version_is_refused()
     {
         var directory = Directory.CreateTempSubdirectory("eo-scg-");
