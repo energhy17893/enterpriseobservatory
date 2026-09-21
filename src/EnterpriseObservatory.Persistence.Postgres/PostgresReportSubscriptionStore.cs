@@ -67,13 +67,23 @@ public sealed class PostgresReportSubscriptionStore : IReportSubscriptionStore
 
         lock (_gate)
         {
-            if (!_subscriptions.ContainsKey(subscription.Id))
+            if (!_subscriptions.TryGetValue(subscription.Id, out var existing))
             {
                 return false;
             }
 
-            Write(subscription);
-            _subscriptions[subscription.Id] = subscription;
+            // The stored send status, not the caller's copy of it -- see
+            // IReportSubscriptionStore.Update. Read and written under the
+            // same lock MarkDispatched and MarkFailed use, so a claim landing
+            // between this method's read and write cannot be lost.
+            var next = subscription with
+            {
+                LastSentUtc = existing.LastSentUtc,
+                LastError = existing.LastError,
+            };
+
+            Write(next);
+            _subscriptions[subscription.Id] = next;
             return true;
         }
     }
@@ -138,9 +148,11 @@ public sealed class PostgresReportSubscriptionStore : IReportSubscriptionStore
             using var command = Command(connection, """
                 INSERT INTO report_subscription (
                     id, recipients, frequency, day_of_week, hour_local, time_zone_id, kind,
-                    is_enabled, last_sent_utc, last_error, created_by, created_utc)
+                    is_enabled, last_sent_utc, last_error, created_by, created_utc,
+                    last_modified_by, last_modified_utc)
                 VALUES (@id, @recipients, @frequency, @day, @hour, @zone, @kind,
-                        @enabled, @lastSent, @lastError, @by, @created)
+                        @enabled, @lastSent, @lastError, @by, @created,
+                        @modifiedBy, @modifiedUtc)
                 ON CONFLICT (id) DO UPDATE SET
                     recipients = EXCLUDED.recipients,
                     frequency = EXCLUDED.frequency,
@@ -152,7 +164,9 @@ public sealed class PostgresReportSubscriptionStore : IReportSubscriptionStore
                     last_sent_utc = EXCLUDED.last_sent_utc,
                     last_error = EXCLUDED.last_error,
                     created_by = EXCLUDED.created_by,
-                    created_utc = EXCLUDED.created_utc;
+                    created_utc = EXCLUDED.created_utc,
+                    last_modified_by = EXCLUDED.last_modified_by,
+                    last_modified_utc = EXCLUDED.last_modified_utc;
                 """);
 
             command.Bind("@id", entry.Id);
@@ -167,6 +181,8 @@ public sealed class PostgresReportSubscriptionStore : IReportSubscriptionStore
             command.Bind("@lastError", entry.LastError);
             command.Bind("@by", entry.CreatedBy);
             command.BindTime("@created", entry.CreatedUtc);
+            command.Bind("@modifiedBy", entry.LastModifiedBy);
+            command.BindTime("@modifiedUtc", entry.LastModifiedUtc);
             command.ExecuteNonQuery();
         });
 
@@ -176,7 +192,8 @@ public sealed class PostgresReportSubscriptionStore : IReportSubscriptionStore
 
         using var command = Command(connection, """
             SELECT id, recipients, frequency, day_of_week, hour_local, time_zone_id, kind,
-                   is_enabled, last_sent_utc, last_error, created_by, created_utc
+                   is_enabled, last_sent_utc, last_error, created_by, created_utc,
+                   last_modified_by, last_modified_utc
             FROM report_subscription;
             """);
         using var reader = command.ExecuteReader();
@@ -200,6 +217,8 @@ public sealed class PostgresReportSubscriptionStore : IReportSubscriptionStore
                 LastError = ReadTextOrNull(reader, 9),
                 CreatedBy = reader.GetString(10),
                 CreatedUtc = ReadTime(reader, 11),
+                LastModifiedBy = ReadTextOrNull(reader, 12),
+                LastModifiedUtc = ReadTimeOrNull(reader, 13),
             };
 
             subscriptions[entry.Id] = entry;

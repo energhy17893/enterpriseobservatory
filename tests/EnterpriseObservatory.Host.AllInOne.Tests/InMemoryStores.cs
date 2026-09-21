@@ -839,12 +839,18 @@ internal sealed class InMemoryReportSubscriptionStore : IReportSubscriptionStore
 
         lock (_gate)
         {
-            if (!_subscriptions.ContainsKey(subscription.Id))
+            if (!_subscriptions.TryGetValue(subscription.Id, out var existing))
             {
                 return false;
             }
 
-            _subscriptions[subscription.Id] = subscription;
+            // Same guarantee the real store makes, for the same reason: see
+            // IReportSubscriptionStore.Update.
+            _subscriptions[subscription.Id] = subscription with
+            {
+                LastSentUtc = existing.LastSentUtc,
+                LastError = existing.LastError,
+            };
             return true;
         }
     }

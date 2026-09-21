@@ -161,4 +161,74 @@ public class ReportingStoreTests : IDisposable
         Assert.Equal(T0.AddDays(1), recovered.LastSentUtc);
         Assert.Null(recovered.LastError);
     }
+
+    [SkippableFact]
+    public void Updating_a_subscription_keeps_the_stores_own_last_sent_utc_rather_than_the_callers_copy()
+    {
+        RequireDatabase();
+
+        // Architecture review 3: Update used to write the whole record back,
+        // so an edit submitted around the same time as a dispatch could
+        // restore a stale LastSentUtc and cause a duplicate send. The store
+        // now keeps whatever it currently holds for LastSentUtc/LastError
+        // regardless of what the caller's copy carries.
+        var store = new PostgresReportSubscriptionStore(_live.Database);
+
+        var original = new ReportSubscription
+        {
+            Id = "sub-1",
+            Recipients = ["team@example.com"],
+            Schedule = new ReportSchedule { Frequency = ReportFrequency.Daily, HourLocal = 7 },
+            CreatedBy = "ertugrul",
+            CreatedUtc = T0,
+        };
+
+        store.Add(original);
+        store.MarkDispatched("sub-1", T0.AddDays(1));
+
+        var staleEdit = original with { Recipients = ["team@example.com", "second@example.com"] };
+        Assert.True(store.Update(staleEdit));
+
+        _live.Restart();
+
+        var recovered = Assert.Single(new PostgresReportSubscriptionStore(_live.Database).All);
+
+        Assert.Equal(T0.AddDays(1), recovered.LastSentUtc);
+        Assert.Equal(["team@example.com", "second@example.com"], recovered.Recipients);
+    }
+
+    [SkippableFact]
+    public void A_last_modifier_survives_a_restart()
+    {
+        RequireDatabase();
+
+        var store = new PostgresReportSubscriptionStore(_live.Database);
+
+        store.Add(new ReportSubscription
+        {
+            Id = "sub-1",
+            Recipients = ["team@example.com"],
+            Schedule = new ReportSchedule { Frequency = ReportFrequency.Daily, HourLocal = 7 },
+            CreatedBy = "ertugrul",
+            CreatedUtc = T0,
+        });
+
+        store.Update(new ReportSubscription
+        {
+            Id = "sub-1",
+            Recipients = ["team@example.com"],
+            Schedule = new ReportSchedule { Frequency = ReportFrequency.Daily, HourLocal = 8 },
+            CreatedBy = "ertugrul",
+            CreatedUtc = T0,
+            LastModifiedBy = "someone-else",
+            LastModifiedUtc = T0.AddHours(1),
+        });
+
+        _live.Restart();
+
+        var recovered = Assert.Single(new PostgresReportSubscriptionStore(_live.Database).All);
+
+        Assert.Equal("someone-else", recovered.LastModifiedBy);
+        Assert.Equal(T0.AddHours(1), recovered.LastModifiedUtc);
+    }
 }

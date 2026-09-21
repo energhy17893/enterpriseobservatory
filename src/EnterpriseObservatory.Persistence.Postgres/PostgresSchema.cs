@@ -523,6 +523,21 @@ internal static class PostgresSchema
             created_utc    timestamptz NOT NULL
         );
         """,
+
+        // --- 9: report subscription audit trail (architecture review 3) ------
+        //
+        // Any operator could edit or delete anyone's subscription with no
+        // record of who did it. These two columns are that record: null for
+        // a subscription nobody has edited since it was created, set by
+        // every PUT after. Not a history table -- one edit overwriting the
+        // last is the same trade ReportSubscription.LastError already makes,
+        // and a subscription is edited by hand rarely enough that "who
+        // touched it last" is the question that gets asked, not "every time
+        // it changed".
+        """
+        ALTER TABLE report_subscription ADD COLUMN last_modified_by  text        NULL;
+        ALTER TABLE report_subscription ADD COLUMN last_modified_utc timestamptz NULL;
+        """,
     ];
 
     public static int Current => Migrations.Length;

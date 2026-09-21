@@ -604,6 +604,196 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
     }
 
+    [Fact]
+    public async Task An_operator_cannot_edit_or_delete_another_operators_subscription_but_an_administrator_can()
+    {
+        // Architecture review 3: any Operator could edit or delete anyone's
+        // subscription and redirect it externally, with nothing recorded
+        // about who did it. Only the creator or an Administrator may now.
+        Account("owner", Role.Operator);
+        var owner = await SignedIn(Client(), "owner");
+
+        string[] ownerRecipients = ["team@example.com"];
+
+        var created = await owner.PostAsJsonAsync("/api/reports/subscriptions", new
+        {
+            recipients = ownerRecipients,
+            frequency = "Daily",
+            dayOfWeek = "Monday",
+            hourLocal = 7,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        var subscription = await created.Content.ReadFromJsonAsync<Api.ReportSubscriptionView>(Json);
+        Assert.NotNull(subscription);
+
+        Account("other", Role.Operator);
+        var other = await SignedIn(Client(), "other");
+
+        string[] attackerRecipients = ["attacker@example.com"];
+
+        var editByOther = await other.PutAsJsonAsync($"/api/reports/subscriptions/{subscription!.Id}", new
+        {
+            recipients = attackerRecipients,
+            frequency = "Daily",
+            dayOfWeek = "Monday",
+            hourLocal = 7,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        Assert.Equal(HttpStatusCode.Forbidden, editByOther.StatusCode);
+
+        var deleteByOther = await other.DeleteAsync($"/api/reports/subscriptions/{subscription.Id}");
+        Assert.Equal(HttpStatusCode.Forbidden, deleteByOther.StatusCode);
+
+        // The positive control: the creator may still edit their own, and
+        // the edit is stamped with who made it.
+        string[] twoRecipients = ["team@example.com", "second@example.com"];
+
+        var editByOwner = await owner.PutAsJsonAsync($"/api/reports/subscriptions/{subscription.Id}", new
+        {
+            recipients = twoRecipients,
+            frequency = "Daily",
+            dayOfWeek = "Monday",
+            hourLocal = 7,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, editByOwner.StatusCode);
+
+        var edited = await editByOwner.Content.ReadFromJsonAsync<Api.ReportSubscriptionView>(Json);
+        Assert.Equal("owner", edited!.LastModifiedBy);
+        Assert.NotNull(edited.LastModifiedUtc);
+
+        // The other positive control: an Administrator may act on anyone's.
+        Account("root", Role.Administrator);
+        var admin = await SignedIn(Client(), "root");
+
+        var editByAdmin = await admin.PutAsJsonAsync($"/api/reports/subscriptions/{subscription.Id}", new
+        {
+            recipients = ownerRecipients,
+            frequency = "Weekly",
+            dayOfWeek = "Friday",
+            hourLocal = 9,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, editByAdmin.StatusCode);
+
+        var removeByAdmin = await admin.DeleteAsync($"/api/reports/subscriptions/{subscription.Id}");
+        Assert.Equal(HttpStatusCode.NoContent, removeByAdmin.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_numeric_string_outside_the_named_range_is_refused_rather_than_silently_accepted()
+    {
+        // Enum.TryParse alone accepts "7" as a DayOfWeek even though nothing
+        // names it; a value the product cannot render or schedule against
+        // must be refused at the door instead.
+        Account("op", Role.Operator);
+        var client = await SignedIn(Client(), "op");
+
+        string[] recipients = ["team@example.com"];
+
+        var created = await client.PostAsJsonAsync("/api/reports/subscriptions", new
+        {
+            recipients,
+            frequency = "Daily",
+            dayOfWeek = "7",
+            hourLocal = 7,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, created.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_subscription_cannot_name_more_than_twenty_recipients()
+    {
+        Account("op", Role.Operator);
+        var client = await SignedIn(Client(), "op");
+
+        var recipients = Enumerable.Range(0, 21).Select(i => $"team{i}@example.com").ToArray();
+
+        var created = await client.PostAsJsonAsync("/api/reports/subscriptions", new
+        {
+            recipients,
+            frequency = "Daily",
+            dayOfWeek = "Monday",
+            hourLocal = 7,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, created.StatusCode);
+    }
+
+    [Fact]
+    public async Task Editing_a_subscription_does_not_restore_an_older_send_status_over_a_dispatch_in_between()
+    {
+        // The update race: Update used to write the whole record back,
+        // including the caller's stale LastSentUtc/LastError, so an edit
+        // submitted around the same time as a dispatch could undo the
+        // dispatcher's claim and cause a duplicate send. The store now keeps
+        // its own copy of those two fields regardless of what the request
+        // carries.
+        Account("op", Role.Operator);
+        var client = await SignedIn(Client(), "op");
+
+        string[] oneRecipient = ["team@example.com"];
+
+        var created = await client.PostAsJsonAsync("/api/reports/subscriptions", new
+        {
+            recipients = oneRecipient,
+            frequency = "Daily",
+            dayOfWeek = "Monday",
+            hourLocal = 7,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        var subscription = await created.Content.ReadFromJsonAsync<Api.ReportSubscriptionView>(Json);
+        Assert.NotNull(subscription);
+
+        // Simulates the dispatcher claiming the window between the operator
+        // reading the record and this edit landing.
+        var store = _host.Services.GetRequiredService<IReportSubscriptionStore>();
+        var dispatchedAt = DateTimeOffset.UtcNow;
+        store.MarkDispatched(subscription!.Id, dispatchedAt);
+
+        string[] twoRecipients = ["team@example.com", "second@example.com"];
+
+        var edited = await client.PutAsJsonAsync($"/api/reports/subscriptions/{subscription.Id}", new
+        {
+            recipients = twoRecipients,
+            frequency = "Daily",
+            dayOfWeek = "Monday",
+            hourLocal = 7,
+            timeZoneId = "UTC",
+            kind = "Alerts",
+            isEnabled = true,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, edited.StatusCode);
+
+        var view = await edited.Content.ReadFromJsonAsync<Api.ReportSubscriptionView>(Json);
+        Assert.Equal(dispatchedAt, view!.LastSentUtc);
+    }
+
     // --- the host itself ----------------------------------------------------
 
     [Fact]
