@@ -56,7 +56,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         Shape Shape,
         HttpClient Http,
         IInventorySource Inventory,
-        IObservationSource Observation);
+        IObservationSource Observation,
+        IEventSource Events);
 
     private readonly SourceConnectionCatalogue _catalogue;
     private readonly IEntityGraphStore _graph;
@@ -171,6 +172,25 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             var (collectors, unusable) = Refresh(Reader.Observations);
 
             return [.. collectors.Select(b => b.Observation), .. unusable];
+        }
+    }
+
+    /// <remarks>
+    /// Counted as the inventory loop, because that is the loop that asks: events
+    /// are read on the inventory rhythm, after its cycle. The loop is serial, so
+    /// asking here proves the inventory read before it has finished — exactly
+    /// what a pass count is taken to mean — and a second pass per cycle only
+    /// lets a retired client go sooner, never while it is still being read.
+    /// Unusable connections are left out; the inventory cycle already reports
+    /// them, once.
+    /// </remarks>
+    public IReadOnlyList<IEventSource> Events
+    {
+        get
+        {
+            var (collectors, _) = Refresh(Reader.Inventory);
+
+            return [.. collectors.Select(b => b.Events)];
         }
     }
 
@@ -461,7 +481,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             http,
             new VsphereInventorySource(client, _clock),
             new VsphereObservationSource(
-                client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock));
+                client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock),
+            new VsphereEventSource(client, _clock));
     }
 
     public void Dispose()

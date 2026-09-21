@@ -331,6 +331,74 @@ public static class VsphereSoapRequests
             </vim25:DestroyView>
         """);
 
+    // --- events -------------------------------------------------------------
+    //
+    // A collector rather than QueryEvents, and the reason is a silent
+    // truncation: QueryEvents returns the *oldest* thousand events of the
+    // window it is given, so a day's query on a busy vCenter can miss the most
+    // recent hours with nothing in the reply saying so. A collector exposes the
+    // newest page first and is walked backwards to where the last read
+    // stopped, so what is lost under load, if anything, is the old end.
+
+    /// <summary>Opens a server-side collector over events since a time.</summary>
+    /// <remarks>
+    /// EventFilterSpec is an xsd:sequence; <c>time</c> comes before everything
+    /// this sends, and only <c>beginTime</c> is set so that events written
+    /// while the read is in progress are not excluded by an end bound.
+    /// </remarks>
+    public static string CreateCollectorForEvents(string eventManagerMoRef, DateTimeOffset beginTime) => Envelope($"""
+            <vim25:CreateCollectorForEvents>
+              <vim25:_this type="EventManager">{Escape(eventManagerMoRef)}</vim25:_this>
+              <vim25:filter>
+                <vim25:time>
+                  <vim25:beginTime>{beginTime.UtcDateTime.ToString("o", CultureInfo.InvariantCulture)}</vim25:beginTime>
+                </vim25:time>
+              </vim25:filter>
+            </vim25:CreateCollectorForEvents>
+        """);
+
+    /// <summary>Sets how many events the latest page and each backwards read hold.</summary>
+    public static string SetCollectorPageSize(string collectorMoRef, int maxCount) => Envelope($"""
+            <vim25:SetCollectorPageSize>
+              <vim25:_this type="EventHistoryCollector">{Escape(collectorMoRef)}</vim25:_this>
+              <vim25:maxCount>{maxCount.ToString(CultureInfo.InvariantCulture)}</vim25:maxCount>
+            </vim25:SetCollectorPageSize>
+        """);
+
+    /// <summary>Reads the collector's <c>latestPage</c> — the newest events.</summary>
+    public static string RetrieveLatestEventPage(string propertyCollectorMoRef, string collectorMoRef) => Envelope($"""
+            <vim25:RetrievePropertiesEx>
+              <vim25:_this type="PropertyCollector">{Escape(propertyCollectorMoRef)}</vim25:_this>
+              <vim25:specSet>
+                <vim25:propSet>
+                  <vim25:type>EventHistoryCollector</vim25:type>
+                  <vim25:all>false</vim25:all>
+                  <vim25:pathSet>latestPage</vim25:pathSet>
+                </vim25:propSet>
+                <vim25:objectSet>
+                  <vim25:obj type="EventHistoryCollector">{Escape(collectorMoRef)}</vim25:obj>
+                  <vim25:skip>false</vim25:skip>
+                </vim25:objectSet>
+              </vim25:specSet>
+              <vim25:options />
+            </vim25:RetrievePropertiesEx>
+        """);
+
+    /// <summary>Reads the next-older page of events from the collector's position.</summary>
+    public static string ReadPreviousEvents(string collectorMoRef, int maxCount) => Envelope($"""
+            <vim25:ReadPreviousEvents>
+              <vim25:_this type="EventHistoryCollector">{Escape(collectorMoRef)}</vim25:_this>
+              <vim25:maxCount>{maxCount.ToString(CultureInfo.InvariantCulture)}</vim25:maxCount>
+            </vim25:ReadPreviousEvents>
+        """);
+
+    /// <summary>Closes a collector. vCenter bounds how many one session may hold.</summary>
+    public static string DestroyCollector(string collectorMoRef) => Envelope($"""
+            <vim25:DestroyCollector>
+              <vim25:_this type="EventHistoryCollector">{Escape(collectorMoRef)}</vim25:_this>
+            </vim25:DestroyCollector>
+        """);
+
     /// <summary>
     /// Escapes a value for inclusion in XML content.
     /// </summary>

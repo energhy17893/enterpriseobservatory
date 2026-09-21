@@ -25,4 +25,12 @@ public interface ISourceRegistry
 
     /// <summary>Sources for the observation cycle.</summary>
     IReadOnlyList<IObservationSource> Observations { get; }
+
+    /// <summary>Sources for event collection, read on the inventory rhythm.</summary>
+    /// <remarks>
+    /// Only connections that can actually be polled. One that cannot is already
+    /// reported through the inventory cycle, and reporting it a second time from
+    /// here would put two alerts in front of an operator for one fault.
+    /// </remarks>
+    IReadOnlyList<IEventSource> Events { get; }
 }

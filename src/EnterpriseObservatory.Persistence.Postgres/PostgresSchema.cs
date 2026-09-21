@@ -309,6 +309,62 @@ internal static class PostgresSchema
             PRIMARY KEY (instance_id, object_type, property)
         );
         """,
+
+        // --- 4: events -------------------------------------------------------
+        //
+        // vCenter's event stream, as it said it (roadmap M2.1). History rather
+        // than state, and bounded: rows older than the retention window are
+        // deleted every inventory cycle, so ix_source_event_created is on the
+        // path of both the sweep and the "newest first" listing.
+        //
+        // The key includes the creation time as well as vCenter's own key.
+        // Keys increase within one vCenter's database, but a rebuilt vCenter
+        // starts counting again, and keying on the number alone would silently
+        // drop every event it wrote that collided with an old one.
+        //
+        // type_id beside event_class, never instead of it: every esx.problem
+        // arrives as the one class EventEx, and the type id is the only column
+        // that tells a lost storage path from an isolated host.
+        //
+        // event_cursor is where each source's stream was read up to, and when
+        // it was last read or failed to be. A row per source that has ever been
+        // asked, including one that has only ever failed — "could not read" has
+        // to be sayable, and an absent row cannot say it.
+        """
+        CREATE TABLE source_event (
+            source_instance_id    text        NOT NULL,
+            event_key             bigint      NOT NULL,
+            created_at_utc        timestamptz NOT NULL,
+            chain_id              bigint      NULL,
+            event_class           text        NOT NULL,
+            type_id               text        NOT NULL,
+            severity              text        NULL,
+            message               text        NOT NULL,
+            user_name             text        NULL,
+            datacenter_name       text        NULL,
+            compute_resource_ref  text        NULL,
+            compute_resource_name text        NULL,
+            host_ref              text        NULL,
+            host_name             text        NULL,
+            vm_ref                text        NULL,
+            vm_name               text        NULL,
+            datastore_ref         text        NULL,
+            datastore_name        text        NULL,
+            PRIMARY KEY (source_instance_id, event_key, created_at_utc)
+        );
+
+        CREATE INDEX ix_source_event_created ON source_event (created_at_utc);
+
+        CREATE TABLE event_cursor (
+            source_instance_id text        NOT NULL PRIMARY KEY,
+            mark_key           bigint      NULL,
+            mark_created_utc   timestamptz NULL,
+            last_attempt_utc   timestamptz NULL,
+            last_success_utc   timestamptz NULL,
+            last_failure       text        NULL,
+            last_gap_utc       timestamptz NULL
+        );
+        """,
     ];
 
     public static int Current => Migrations.Length;

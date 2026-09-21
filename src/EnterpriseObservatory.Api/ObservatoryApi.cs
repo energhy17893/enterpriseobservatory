@@ -1,6 +1,7 @@
 using EnterpriseObservatory.Api.Contracts;
 using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -77,6 +78,13 @@ public static class ObservatoryApi
         // hiding things.
         api.MapGet("/events", (ReadModel model) => model.Events())
             .WithName("GetEvents");
+
+        // What vCenter itself reported happening, as it said it. Not the
+        // grouped alerts above, which share the word: those are this product's
+        // conclusions, these are the source's record.
+        api.MapGet("/vcenter-events", (IEventStore store, string? source, int? limit) =>
+                EventFeed.Build(store, source, limit))
+            .WithName("GetVcenterEvents");
 
         api.MapGet("/collectors", (ReadModel model) => model.Collectors())
             .WithName("GetCollectors");
