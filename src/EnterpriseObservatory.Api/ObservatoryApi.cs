@@ -140,6 +140,23 @@ public static class ObservatoryApi
         })
             .WithName("GetAlertsReportCsv");
 
+        // Same read-for-any-signed-in-user rule. M5.3: every live datastore,
+        // worst fill date first, and the estimate the datastore's own page
+        // already shows -- reused through ReadModel.CapacityReport's cache,
+        // not recomputed here.
+        api.MapGet("/reports/capacity", (ReadModel model) => model.CapacityReport())
+            .WithName("GetCapacityReport");
+
+        api.MapGet("/reports/capacity.csv", (ReadModel model) =>
+        {
+            var report = model.CapacityReport();
+            var csv = CapacityReportCsv.Write(report.Rows);
+            var fileName = $"capacity-{report.GeneratedAtUtc:yyyyMMdd-HHmm}.csv";
+
+            return Results.File(CsvWriter.ToUtf8WithBom(csv), "text/csv", fileName);
+        })
+            .WithName("GetCapacityReportCsv");
+
         // --- operator commands ---------------------------------------------
         //
         // POST rather than PATCH on a resource, and the fingerprint in the body

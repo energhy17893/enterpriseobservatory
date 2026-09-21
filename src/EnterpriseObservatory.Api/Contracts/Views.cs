@@ -664,3 +664,91 @@ public sealed record AlertReportView
     /// <summary>Worst first, then most recent — the same order the inbox uses.</summary>
     public required IReadOnlyList<AlertReportRow> Rows { get; init; }
 }
+
+/// <summary>
+/// One datastore on the capacity report: its latest reading and the same
+/// fill-date answer <see cref="TimeToFullView"/> gives the datastore's own
+/// page — never recomputed differently. See
+/// EnterpriseObservatory.Application.Analysis.DatastoreTimeToFull.
+/// </summary>
+public sealed record CapacityReportRow
+{
+    public required string Name { get; init; }
+
+    /// <summary>VMFS, NFS, vsan and so on, as vSphere words it. Null when not read.</summary>
+    public string? DatastoreType { get; init; }
+
+    public required string Source { get; init; }
+
+    /// <summary>
+    /// The latest reading of each, or null when this cycle never recorded one
+    /// -- absent, never a zero standing in for "we did not look".
+    /// </summary>
+    public double? CapacityBytes { get; init; }
+
+    public double? UsedBytes { get; init; }
+
+    public double? FreeBytes { get; init; }
+
+    /// <summary><see cref="UsedBytes"/> over <see cref="CapacityBytes"/>, in percent.</summary>
+    public double? PercentUsed { get; init; }
+
+    /// <summary>
+    /// Used plus what has been promised to thin disks. Null when uncommitted
+    /// space was never read -- not the same as a datastore with no thin disks.
+    /// </summary>
+    public double? ProvisionedBytes { get; init; }
+
+    /// <summary><see cref="ProvisionedBytes"/> over <see cref="CapacityBytes"/>. Above 1 is over-committed.</summary>
+    public double? OvercommitRatio { get; init; }
+
+    /// <summary>The same estimate the datastore's own page and the filling rule use.</summary>
+    public required TimeToFullView TimeToFull { get; init; }
+}
+
+/// <summary>Totals and counts across every datastore on the report.</summary>
+public sealed record CapacityReportSummary
+{
+    public required int TotalDatastores { get; init; }
+
+    public required double TotalCapacityBytes { get; init; }
+
+    public required double TotalUsedBytes { get; init; }
+
+    public required double TotalFreeBytes { get; init; }
+
+    /// <summary>Filling inside 30 days, the product's warning threshold. See <c>DatastoreTimeToFullPolicy</c>.</summary>
+    public required int FillingWithin30Days { get; init; }
+
+    /// <summary>Filling inside 7 days, the product's critical threshold.</summary>
+    public required int FillingWithin7Days { get; init; }
+
+    /// <summary>Promised more than capacity: <see cref="CapacityReportRow.OvercommitRatio"/> above 1.</summary>
+    public required int OvercommittedCount { get; init; }
+
+    /// <summary>No fill-date estimate yet -- a refusal is counted here, never left blank.</summary>
+    public required int NoEstimateCount { get; init; }
+
+    /// <summary>
+    /// Why, for every datastore counted in <see cref="NoEstimateCount"/>. Keyed
+    /// by the machine-readable reason, e.g. <c>WindowTooShort</c> -- "less than
+    /// a week of history" on a live estate whose capacity series only started
+    /// recently is the expected, correct answer, not a bug.
+    /// </summary>
+    public required IReadOnlyDictionary<string, int> NoEstimateByReason { get; init; }
+}
+
+/// <summary>
+/// The capacity report: every live datastore, worst first, for the printable
+/// page and the CSV export. See <see cref="AlertReportView"/> for the shape
+/// this copies.
+/// </summary>
+public sealed record CapacityReportView
+{
+    public required DateTimeOffset GeneratedAtUtc { get; init; }
+
+    public required CapacityReportSummary Summary { get; init; }
+
+    /// <summary>Soonest fill date first, then highest percent used among the rest.</summary>
+    public required IReadOnlyList<CapacityReportRow> Rows { get; init; }
+}
