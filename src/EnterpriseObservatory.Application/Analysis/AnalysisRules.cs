@@ -35,7 +35,9 @@ public static class AnalysisRules
 
         new StoragePathRedundancyRule(),
         new MultipathSinglePointOfFailureRule(),
+        new DrsRuleViolationsRule(),
         new RemoteLoggingRule(),
+        new ClusterHighAvailabilityRule(),
         new EventAlertsRule(),
         new DatastoreTimeToFullRule(),
         new CollectionCoverageRule(),
@@ -260,6 +262,28 @@ public sealed class MultipathSinglePointOfFailureRule : IAnalysisRule
     }
 }
 
+/// <summary>Adapts <see cref="DrsRuleViolations"/>.</summary>
+/// <remarks>
+/// On the inventory rhythm beside <see cref="StoragePathRedundancyRule"/> and
+/// for the same reason: DRS rules and the placement they are judged against
+/// are both read on the inventory rhythm and change on it, and the graph
+/// handed here is the one this cycle just merged rather than the store's
+/// stale copy.
+/// </remarks>
+public sealed class DrsRuleViolationsRule : IAnalysisRule
+{
+    public string RuleId => DrsRuleViolations.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return DrsRuleViolations.Evaluate(context.Graph);
+    }
+}
+
 /// <summary>Adapts <see cref="RemoteLogging"/>.</summary>
 /// <remarks>
 /// <para>
@@ -287,6 +311,27 @@ public sealed class RemoteLoggingRule : IAnalysisRule
         ArgumentNullException.ThrowIfNull(context);
 
         return RemoteLogging.Evaluate([.. context.Graph.Active], context.Options.RemoteLogging);
+    }
+}
+
+/// <summary>Adapts <see cref="ClusterHighAvailability"/>.</summary>
+/// <remarks>
+/// On the inventory rhythm because HA configuration is read on it and changes
+/// on it, same as <see cref="RemoteLoggingRule"/> above -- a setting nobody
+/// changes has nothing new to say every twenty seconds.
+/// </remarks>
+public sealed class ClusterHighAvailabilityRule : IAnalysisRule
+{
+    public string RuleId => ClusterHighAvailability.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return ClusterHighAvailability.Evaluate(
+            [.. context.Graph.Active], context.Options.ClusterHighAvailability);
     }
 }
 

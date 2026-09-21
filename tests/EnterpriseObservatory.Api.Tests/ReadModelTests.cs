@@ -1,5 +1,6 @@
 using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
@@ -817,6 +818,87 @@ public class ReadModelTests
 
         Assert.Null(Model().Entity("h1")!.TimeToFull);
         Assert.Empty(_observations.Queries);
+    }
+
+    // --- HA scorecard (M8.1) ------------------------------------------------
+
+    private static readonly ClusterHighAvailabilityPolicy HaRules = ClusterHighAvailabilityPolicy.Default;
+
+    private static Entity Cluster(string id, params (string Key, string Value)[] settings) => new()
+    {
+        Id = new EntityId(id),
+        Kind = EntityKind.Cluster,
+        DisplayName = "Prod-Cluster",
+        SourceInstanceId = "vc-1",
+        Health = HealthState.Unknown,
+        LastSeenUtc = T0,
+        Settings = settings.ToDictionary(s => s.Key, s => s.Value, StringComparer.OrdinalIgnoreCase),
+    };
+
+    [Fact]
+    public void A_cluster_page_shows_its_ha_configuration()
+    {
+        GivenEntities(Cluster(
+            "vc-1:domain-c1",
+            (HaRules.EnabledSetting, "true"),
+            (HaRules.AdmissionControlEnabledSetting, "true"),
+            ("dasConfig.admissionControlPolicy.type", "ClusterFailoverResourceAdmissionControlPolicy"),
+            (HaRules.HostMonitoringSetting, "enabled"),
+            ("dasConfig.vmMonitoring", "vmAndAppMonitoring"),
+            (HaRules.ApdResponseSetting, "restartConservative"),
+            (HaRules.PdlResponseSetting, "restartAggressive"),
+            (HaRules.HeartbeatDatastoreCountSetting, "2"),
+            ("dasConfig.hBDatastoreCandidatePolicy", "allFeasibleDsWithUserPreference"),
+            (HaRules.IgnoreRedundantNetworkWarningSetting, "false")));
+
+        var card = Model().Entity("vc-1:domain-c1")!.HaScorecard!;
+
+        Assert.True(card.Enabled);
+        Assert.True(card.AdmissionControlEnabled);
+        Assert.Equal("ClusterFailoverResourceAdmissionControlPolicy", card.AdmissionControlPolicyType);
+        Assert.Equal("enabled", card.HostMonitoring);
+        Assert.Equal("vmAndAppMonitoring", card.VmMonitoring);
+        Assert.Equal("restartConservative", card.ApdResponse);
+        Assert.Equal("restartAggressive", card.PdlResponse);
+        Assert.Equal(2, card.HeartbeatDatastoreCount);
+        Assert.Equal("allFeasibleDsWithUserPreference", card.HeartbeatDatastoreCandidatePolicy);
+        Assert.False(card.RedundantNetworkWarningSilenced);
+        Assert.Empty(card.Findings);
+    }
+
+    [Fact]
+    public void A_cluster_with_no_ha_configuration_read_shows_an_all_null_card()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1"));
+
+        var card = Model().Entity("vc-1:domain-c1")!.HaScorecard!;
+
+        Assert.Null(card.Enabled);
+        Assert.Null(card.HeartbeatDatastoreCount);
+        Assert.Empty(card.Findings);
+    }
+
+    [Fact]
+    public void The_scorecard_carries_the_clusters_own_open_findings()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1", (HaRules.EnabledSetting, "false")));
+        GivenAlerts(Alert("cluster-ha-scorecard-ha-disabled", AlertSeverity.Critical) with
+        {
+            Category = "Configuration",
+            Entity = new EntityId("vc-1:domain-c1"),
+        });
+
+        var card = Model().Entity("vc-1:domain-c1")!.HaScorecard!;
+
+        Assert.Single(card.Findings);
+    }
+
+    [Fact]
+    public void Only_a_cluster_carries_an_ha_scorecard()
+    {
+        GivenEntities(Host("h1", HealthState.Healthy));
+
+        Assert.Null(Model().Entity("h1")!.HaScorecard);
     }
 
     // --- capacity report (M5.3) --------------------------------------------

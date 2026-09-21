@@ -4,8 +4,8 @@ import { api, ApiError } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { SeriesChart } from '@/components/SeriesChart'
 import { AlertActions } from '@/components/AlertActions'
-import { ago, healthStatus, severityStatus } from '@/lib/ui'
-import type { RelationshipKind, RelationshipView, TimeToFullView } from '@/api/types'
+import { ago, healthStatus, ramp, severityStatus } from '@/lib/ui'
+import type { HaScorecardView, RelationshipKind, RelationshipView, TimeToFullView } from '@/api/types'
 
 /**
  * How an edge reads in a sentence, in each direction.
@@ -57,7 +57,7 @@ export function EntityDetail() {
 
   if (isPending) return <Loading what="the entity" />
 
-  const { entity, marks, relationships, alerts, timeToFull } = data
+  const { entity, marks, relationships, alerts, timeToFull, haScorecard } = data
 
   return (
     <div className="space-y-6">
@@ -128,6 +128,13 @@ export function EntityDetail() {
         <section className="space-y-2">
           <h2 className="text-sm font-medium">Time to full</h2>
           <TimeToFull estimate={timeToFull} />
+        </section>
+      )}
+
+      {haScorecard && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-medium">HA scorecard</h2>
+          <HaScorecard card={haScorecard} />
         </section>
       )}
 
@@ -225,6 +232,91 @@ function TimeToFull({ estimate }: { estimate: TimeToFullView }) {
       )}
     </Card>
   )
+}
+
+/**
+ * A cluster's vSphere HA configuration, in the platform's own words.
+ *
+ * Every row is shown even when its value is unread, as a dash rather than
+ * being omitted — a missing HA setting is itself worth seeing, not something
+ * to quietly leave off the card. das.ignoreRedundantNetWarning gets its own
+ * called-out row because setting it to true does not fix the underlying risk,
+ * it only hides vCenter's own warning about it (see roadmap M8.1).
+ */
+function HaScorecard({ card }: { card: HaScorecardView }) {
+  const rows: { label: string; value: string; bad?: boolean }[] = [
+    { label: 'HA enabled', value: yesNo(card.enabled), bad: card.enabled === false },
+    {
+      label: 'Admission control',
+      value: yesNo(card.admissionControlEnabled),
+      bad: card.admissionControlEnabled === false,
+    },
+    { label: 'Admission control policy', value: card.admissionControlPolicyType ?? '—' },
+    { label: 'Host monitoring', value: card.hostMonitoring ?? '—', bad: card.hostMonitoring === 'disabled' },
+    { label: 'VM monitoring', value: card.vmMonitoring ?? '—' },
+    { label: 'APD response', value: card.apdResponse ?? '—', bad: card.apdResponse === 'disabled' },
+    { label: 'PDL response', value: card.pdlResponse ?? '—', bad: card.pdlResponse === 'disabled' },
+    {
+      label: 'Heartbeat datastores',
+      value: card.heartbeatDatastoreCount === null ? '—' : String(card.heartbeatDatastoreCount),
+      bad: card.heartbeatDatastoreCount !== null && card.heartbeatDatastoreCount < 2,
+    },
+    {
+      label: 'Heartbeat datastore policy',
+      value: card.heartbeatDatastoreCandidatePolicy ?? '—',
+    },
+  ]
+
+  return (
+    <div className="space-y-2">
+      <Card className="divide-y divide-border">
+        {rows.map((row) => (
+          <div
+            key={row.label}
+            className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-sm"
+          >
+            <span className="text-muted-foreground">{row.label}</span>
+            <span className={row.bad ? `font-medium ${ramp('Critical').text}` : 'font-medium'}>
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </Card>
+
+      {card.redundantNetworkWarningSilenced && (
+        <Card className="p-3 text-sm">
+          <span className={`font-medium ${ramp('Warning').text}`}>Hidden risk: </span>
+          <span className="text-muted-foreground">
+            das.ignoreRedundantNetWarning is set to true. This cluster&apos;s HA management
+            network has no redundant path, and vCenter&apos;s own warning about it has been
+            silenced rather than fixed — the risk is unchanged, only invisible.
+          </span>
+        </Card>
+      )}
+
+      {card.findings.length > 0 && (
+        <ul className="space-y-2">
+          {card.findings.map((finding) => (
+            <li key={finding.fingerprint}>
+              <Card className="p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusBadge status={severityStatus(finding.severity)}>
+                    {finding.severity}
+                  </StatusBadge>
+                  <span className="font-medium">{finding.title}</span>
+                </div>
+                <div className="mt-1 text-sm text-muted-foreground">{finding.description}</div>
+              </Card>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function yesNo(value: boolean | null): string {
+  return value === null ? '—' : value ? 'Yes' : 'No'
 }
 
 function windowText(estimate: TimeToFullView): string {

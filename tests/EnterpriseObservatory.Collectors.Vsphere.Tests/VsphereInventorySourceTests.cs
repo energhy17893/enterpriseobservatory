@@ -465,6 +465,123 @@ public class VsphereInventorySourceTests
         Assert.Empty(snapshot.Alerts);
     }
 
+    // --- M8.3: DRS rules ----------------------------------------------------
+
+    [Fact]
+    public async Task An_affinity_rule_s_vm_list_is_carried_onto_the_cluster_qualified_by_source()
+    {
+        var snapshot = await Read(Payload(clusters:
+        [
+            new VsphereCluster
+            {
+                MoRef = "c-1",
+                Name = "prod",
+                DrsRules =
+                [
+                    new VsphereDrsRule
+                    {
+                        Name = "keep-together",
+                        Kind = DrsRuleKind.Affinity,
+                        Enabled = true,
+                        VirtualMachineMoRefs = ["vm-1", "vm-2"],
+                    },
+                ],
+            },
+        ]));
+
+        var cluster = snapshot.Entities.Single(e => e.Kind == EntityKind.Cluster);
+        var rule = Assert.Single(cluster.DrsRules);
+
+        Assert.Equal("keep-together", rule.Name);
+        Assert.Equal(["vc-1:vm-1", "vc-1:vm-2"], rule.VirtualMachineEntityIds);
+    }
+
+    [Fact]
+    public async Task A_vm_host_rule_s_groups_are_resolved_to_their_current_members()
+    {
+        var snapshot = await Read(Payload(clusters:
+        [
+            new VsphereCluster
+            {
+                MoRef = "c-1",
+                Name = "prod",
+                Groups =
+                [
+                    new VsphereClusterGroup
+                    {
+                        Name = "db-vms", Kind = VsphereClusterGroupKind.VirtualMachine, MemberMoRefs = ["vm-1"],
+                    },
+                    new VsphereClusterGroup
+                    {
+                        Name = "licensed-hosts", Kind = VsphereClusterGroupKind.Host, MemberMoRefs = ["host-1"],
+                    },
+                ],
+                DrsRules =
+                [
+                    new VsphereDrsRule
+                    {
+                        Name = "db-on-licensed-hosts",
+                        Kind = DrsRuleKind.VmHostAffine,
+                        Enabled = true,
+                        Mandatory = true,
+                        VmGroupName = "db-vms",
+                        HostGroupName = "licensed-hosts",
+                    },
+                ],
+            },
+        ]));
+
+        var cluster = snapshot.Entities.Single(e => e.Kind == EntityKind.Cluster);
+        var rule = Assert.Single(cluster.DrsRules);
+
+        Assert.Equal(["vc-1:vm-1"], rule.VirtualMachineEntityIds);
+        Assert.Equal(["vc-1:host-1"], rule.HostEntityIds);
+        Assert.True(rule.Mandatory);
+    }
+
+    [Fact]
+    public async Task A_rule_naming_a_group_vCenter_did_not_also_report_resolves_to_no_members()
+    {
+        // A group deleted between the two reads of a snapshot that is not
+        // transactional, or one this account could not see. Empty, not a
+        // throw: the analysis rule reads that as "nothing to judge".
+        var snapshot = await Read(Payload(clusters:
+        [
+            new VsphereCluster
+            {
+                MoRef = "c-1",
+                Name = "prod",
+                DrsRules =
+                [
+                    new VsphereDrsRule
+                    {
+                        Name = "orphaned-rule",
+                        Kind = DrsRuleKind.VmHostAntiAffine,
+                        VmGroupName = "gone",
+                        HostGroupName = "also-gone",
+                    },
+                ],
+            },
+        ]));
+
+        var cluster = snapshot.Entities.Single(e => e.Kind == EntityKind.Cluster);
+        var rule = Assert.Single(cluster.DrsRules);
+
+        Assert.Empty(rule.VirtualMachineEntityIds);
+        Assert.Empty(rule.HostEntityIds);
+    }
+
+    [Fact]
+    public async Task A_cluster_with_no_drs_rules_carries_an_empty_list()
+    {
+        var snapshot = await Read(Payload(clusters:
+            [new VsphereCluster { MoRef = "c-1", Name = "prod" }]));
+
+        var cluster = snapshot.Entities.Single(e => e.Kind == EntityKind.Cluster);
+
+        Assert.Empty(cluster.DrsRules);
+    }
+
     // --- relationships ----------------------------------------------------
 
     [Fact]

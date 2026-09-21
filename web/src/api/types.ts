@@ -106,6 +106,28 @@ export interface EntityDetailView {
   alerts: AlertView[]
   /** Datastores only: a fill date with its window, or why there is none. */
   timeToFull?: TimeToFullView | null
+  /** Clusters only: the vSphere HA configuration, or null when unread. */
+  haScorecard?: HaScorecardView | null
+}
+
+/**
+ * A cluster's HA configuration, in the platform's own words. Every field is
+ * null when that one setting was not reported — see roadmap M8.1.
+ */
+export interface HaScorecardView {
+  enabled: boolean | null
+  admissionControlEnabled: boolean | null
+  admissionControlPolicyType: string | null
+  hostMonitoring: string | null
+  vmMonitoring: string | null
+  apdResponse: string | null
+  pdlResponse: string | null
+  heartbeatDatastoreCount: number | null
+  heartbeatDatastoreCandidatePolicy: string | null
+  /** True when vCenter's own network-redundancy warning has been silenced. */
+  redundantNetworkWarningSilenced: boolean | null
+  /** The scorecard rule's open findings for this cluster. */
+  findings: AlertView[]
 }
 
 export interface TimeToFullView {
