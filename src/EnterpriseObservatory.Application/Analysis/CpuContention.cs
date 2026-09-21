@@ -177,9 +177,11 @@ public sealed record CpuContentionPolicy
     /// a busy host.
     /// </para>
     /// <para>
-    /// Three rather than one because a twenty-second window can hold a single
-    /// scheduling event without anything being wrong; three percent of it
-    /// cannot be one event.
+    /// Borrowed, and the only CPU threshold in this rule that is: Broadcom
+    /// KB 438023 gives co-stop "below about 3% per vCPU" as normal and says
+    /// sustained higher values "typically indicate the VM has more vCPUs than
+    /// it can effectively use". The reading is divided by vCPU count before it
+    /// reaches this gate, so the comparison is per vCPU, as the KB states it.
     /// </para>
     /// </remarks>
     public double CoStopPercent { get; init; } = 3d;
@@ -576,7 +578,7 @@ public static class CpuContention
             // one verdict a host running a single VM can still receive.
             alerts.AddRange(
                 guests.Where(g => TooWide(g, ready, costop, rules))
-                      .Select(g => OverWide(g, ready[g], costop[g], rules)));
+                      .Select(g => OverWide(g, ready[g], costop[g], Width(graph, g), rules)));
         }
 
         return alerts;
@@ -767,11 +769,9 @@ public static class CpuContention
     /// advice — remove vCPUs — that makes a starved machine slower.
     /// </para>
     /// <para>
-    /// Nothing checks the vCPU count, because it is not collected, and nothing
-    /// needs to: co-stop is time a vCPU spent stopped waiting for its siblings
-    /// and a uniprocessor machine has no siblings to wait for. A single-vCPU
-    /// VM reads zero here by construction, so the floor is the same gate as a
-    /// vCPU test would have been, and is one less thing to get wrong.
+    /// No separate vCPU test: co-stop is time a vCPU spent waiting for its
+    /// siblings, so a uniprocessor machine reads zero by construction and the
+    /// floor already excludes it.
     /// </para>
     /// </remarks>
     private static bool TooWide(
@@ -784,8 +784,11 @@ public static class CpuContention
         stopped >= rules.CoStopPercent &&
         waiting < rules.CoStopReadyCeilingPercent;
 
+    private static int? Width(EntityGraph graph, EntityId guest) =>
+        graph.Entities.TryGetValue(guest, out var entity) ? entity.Sizing?.VirtualCpuCount : null;
+
     private static AlertDefinition OverWide(
-        EntityId guest, double ready, double costop, CpuContentionPolicy rules) =>
+        EntityId guest, double ready, double costop, int? width, CpuContentionPolicy rules) =>
         new()
         {
             // The machine and the counter. The width travels with the machine,
@@ -798,12 +801,14 @@ public static class CpuContention
             Severity = AlertSeverity.Warning,
             Title = WidthTitle,
             Description =
-                $"This virtual machine lost {Percent(costop)}% of the sample interval to " +
-                $"co-scheduling — its vCPUs stopped waiting for each other — while spending " +
-                $"only {Percent(ready)}% waiting for a physical core. That combination is a " +
-                "sizing problem rather than a busy host: the machine has more vCPUs than the " +
-                "host can place at once. Removing vCPUs will make it faster, which is the " +
-                "opposite of what the same symptom would call for on a saturated host.",
+                $"This {(width is { } w ? $"{w}-vCPU " : string.Empty)}virtual machine lost " +
+                $"{Percent(costop)}% per vCPU to co-scheduling — its vCPUs stopped waiting for " +
+                $"each other — while spending only {Percent(ready)}% per vCPU waiting for a " +
+                "physical core. That combination is a sizing problem rather than a busy host: " +
+                "the machine has more vCPUs than it can effectively use. Removing vCPUs will " +
+                "make it faster, which is the opposite of what the same symptom would call for " +
+                $"on a saturated host. Threshold: {Percent(rules.CoStopPercent)}% per vCPU, " +
+                "from Broadcom KB 438023.",
             Category = SizingCategory,
             Source = Platform,
             Entity = guest,
