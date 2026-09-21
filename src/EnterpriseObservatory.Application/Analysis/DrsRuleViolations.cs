@@ -62,6 +62,18 @@ public static class DrsRuleViolations
 
     private const string Platform = "platform";
 
+    /// <summary>
+    /// The <c>Entity.Settings</c> key a virtual machine's power state arrives
+    /// under. This is the application layer's own copy of the same literal
+    /// <c>VsphereInventorySource.PowerStateSetting</c> writes -- the two
+    /// cannot share a constant across the collector/application boundary, the
+    /// same split <see cref="ClusterHighAvailabilityPolicy"/> documents for
+    /// its own setting names.
+    /// </summary>
+    private const string PowerStateSetting = "powerState";
+
+    private const string PoweredOnValue = "poweredOn";
+
     private const string AffinityTitle = "DRS affinity rule violated";
     private const string AntiAffinityTitle = "DRS anti-affinity rule violated";
     private const string VmHostAffineTitle = "DRS VM-host affinity rule violated";
@@ -105,18 +117,45 @@ public static class DrsRuleViolations
     private static bool Judgeable(Entity entity) =>
         entity.Kind == EntityKind.Cluster && entity.DrsRules.Count > 0;
 
-    /// <summary>Every VM's current host, from this cycle's <c>RunsOn</c> edges.</summary>
+    /// <summary>
+    /// Every powered-on VM's current host, from this cycle's <c>RunsOn</c>
+    /// edges.
+    /// </summary>
+    /// <remarks>
+    /// <c>RunsOn</c> itself is written for every VM whose <c>runtime.host</c>
+    /// resolved, powered on or off -- other consumers of the graph need that,
+    /// and this rule leaves that edge alone rather than narrowing what it
+    /// means for everyone. DRS itself does not judge a powered-off VM's
+    /// placement against a rule (there is nothing running to place), so this
+    /// rule filters here instead: a VM this cycle's collector reported as not
+    /// <c>poweredOn</c> is left out of the map entirely, which
+    /// <see cref="PlacementOf"/> then reads exactly as "not currently known
+    /// to be running" -- the same silence an unplaced or uncollected VM
+    /// already produces. A VM whose power state was not collected at all
+    /// (the key absent) is not filtered: silence about power state is not
+    /// evidence the VM is off.
+    /// </remarks>
     private static Dictionary<EntityId, EntityId> VmHosts(EntityGraph graph)
     {
         var map = new Dictionary<EntityId, EntityId>();
 
         foreach (var edge in graph.Relationships.Where(r => r.Kind == RelationshipKind.RunsOn))
         {
+            if (IsKnownPoweredOff(graph, edge.From))
+            {
+                continue;
+            }
+
             map[edge.From] = edge.To;
         }
 
         return map;
     }
+
+    private static bool IsKnownPoweredOff(EntityGraph graph, EntityId vm) =>
+        graph.Entities.TryGetValue(vm, out var entity) &&
+        entity.Settings.TryGetValue(PowerStateSetting, out var powerState) &&
+        !string.Equals(powerState, PoweredOnValue, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// What one rule adds up to, or null when there is nothing to report.

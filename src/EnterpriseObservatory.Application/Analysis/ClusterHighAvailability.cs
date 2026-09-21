@@ -119,10 +119,50 @@ public static class ClusterHighAvailability
     private static readonly HashSet<string> Disabled =
         new(StringComparer.OrdinalIgnoreCase) { "disabled" };
 
+    private const string HaDisabledTitle = "Cluster has no vSphere HA protection";
+    private const string AdmissionControlDisabledTitle = "Cluster admission control is disabled";
+    private const string HostMonitoringDisabledTitle = "Cluster host monitoring is disabled";
+    private const string StorageProtectionDisabledTitle = "Cluster storage failure protection is disabled";
+    private const string TooFewHeartbeatDatastoresTitle = "Cluster has too few HA heartbeat datastores";
+    private const string RedundantNetworkWarningSilencedTitle = "Cluster hides its HA network redundancy warning";
+
+    /// <summary>The finding key and title of every alert this rule can raise for one cluster.</summary>
+    private static readonly (string Key, string Title)[] Findings =
+    [
+        ("ha-disabled", HaDisabledTitle),
+        ("admission-control-disabled", AdmissionControlDisabledTitle),
+        ("host-monitoring-disabled", HostMonitoringDisabledTitle),
+        ("storage-protection-disabled", StorageProtectionDisabledTitle),
+        ("too-few-heartbeat-datastores", TooFewHeartbeatDatastoresTitle),
+        ("redundant-network-warning-silenced", RedundantNetworkWarningSilencedTitle),
+    ];
+
+    /// <summary>Every fingerprint this rule can raise for one cluster.</summary>
+    /// <remarks>
+    /// For <see cref="RuleContext.Unevaluated"/>, the same purpose
+    /// <see cref="ClusterNPlusOne.Fingerprints"/> serves there: a cluster
+    /// whose <c>dasConfig.*</c> settings could not be read this cycle must
+    /// keep whatever findings it already had rather than have them silently
+    /// resolved by a transient read failure. See <see cref="Evaluate"/>.
+    /// </remarks>
+    public static IReadOnlyList<AlertFingerprint> Fingerprints(EntityId cluster) =>
+        [.. Findings.Select(f => FingerprintFor(cluster, f.Key, f.Title))];
+
+    private static AlertFingerprint FingerprintFor(EntityId cluster, string findingKey, string title) =>
+        AlertFingerprint.Create(Platform, title, Category, cluster.Value, $"{RuleId}-{findingKey}");
+
     /// <summary>Runs every check below over every live cluster.</summary>
+    /// <param name="unevaluated">
+    /// Receives this cluster's fingerprints when its HA configuration could
+    /// not be read at all this cycle, so reconciliation keeps whatever
+    /// alerts it already had instead of resolving them on a read failure it
+    /// cannot tell apart from a genuinely clean cluster. Optional because
+    /// several callers (tests, the entity page) only want the verdict.
+    /// </param>
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Entity> entities,
-        ClusterHighAvailabilityPolicy? policy = null)
+        ClusterHighAvailabilityPolicy? policy = null,
+        ICollection<AlertFingerprint>? unevaluated = null)
     {
         ArgumentNullException.ThrowIfNull(entities);
 
@@ -137,16 +177,52 @@ public static class ClusterHighAvailability
                 continue;
             }
 
+            // No dasConfig.* key at all means this cycle never read the
+            // cluster's HA configuration -- a collection failure, not a
+            // cluster nobody configured. Every check below is already silent
+            // on an absent key, so this changes no alert; it only keeps this
+            // cluster's existing ones open rather than letting a transient
+            // read failure resolve them.
+            if (!HasDasConfig(cluster))
+            {
+                if (unevaluated is not null)
+                {
+                    foreach (var fingerprint in Fingerprints(cluster.Id))
+                    {
+                        unevaluated.Add(fingerprint);
+                    }
+                }
+
+                continue;
+            }
+
             HaDisabled(cluster, rules, alerts);
-            AdmissionControlDisabled(cluster, rules, alerts);
-            HostMonitoringDisabled(cluster, rules, alerts);
-            StorageProtectionDisabled(cluster, rules, alerts);
-            TooFewHeartbeatDatastores(cluster, rules, alerts);
-            RedundantNetworkWarningSilenced(cluster, rules, alerts);
+
+            // The other checks are about how HA is configured; none of them
+            // mean anything on a cluster HA itself is off on, or one whose
+            // enabled flag was never confirmed true. Running them anyway
+            // produced noise alongside HaDisabled's own critical finding —
+            // "admission control is off" on a cluster that has no HA
+            // protection to admit failovers into in the first place.
+            if (HaConfirmedEnabled(cluster, rules))
+            {
+                AdmissionControlDisabled(cluster, rules, alerts);
+                HostMonitoringDisabled(cluster, rules, alerts);
+                StorageProtectionDisabled(cluster, rules, alerts);
+                TooFewHeartbeatDatastores(cluster, rules, alerts);
+                RedundantNetworkWarningSilenced(cluster, rules, alerts);
+            }
         }
 
         return alerts;
     }
+
+    private static bool HasDasConfig(Entity cluster) =>
+        cluster.Settings.Keys.Any(k => k.StartsWith("dasConfig", StringComparison.OrdinalIgnoreCase));
+
+    private static bool HaConfirmedEnabled(Entity cluster, ClusterHighAvailabilityPolicy rules) =>
+        cluster.Settings.TryGetValue(rules.EnabledSetting, out var value) &&
+        string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// HA turned off. The one finding here that is not subtle: nothing about
@@ -161,7 +237,7 @@ public static class ClusterHighAvailability
             return;
         }
 
-        Add(alerts, cluster, "ha-disabled", AlertSeverity.Critical, "Cluster has no vSphere HA protection",
+        Add(alerts, cluster, "ha-disabled", AlertSeverity.Critical, HaDisabledTitle,
             $"'{cluster.DisplayName}' has vSphere HA turned off. A host failing on this cluster " +
             "does not cause its virtual machines to restart anywhere -- they stay down until " +
             "somebody notices and powers them on by hand.");
@@ -181,7 +257,7 @@ public static class ClusterHighAvailability
         }
 
         Add(alerts, cluster, "admission-control-disabled", AlertSeverity.Warning,
-            "Cluster admission control is disabled",
+            AdmissionControlDisabledTitle,
             $"'{cluster.DisplayName}' has HA admission control turned off, so vCenter is not " +
             "reserving failover capacity on the surviving hosts. A host failure can still trigger " +
             "restarts that the remaining hosts do not have the CPU or memory for, which turns one " +
@@ -199,7 +275,7 @@ public static class ClusterHighAvailability
         }
 
         Add(alerts, cluster, "host-monitoring-disabled", AlertSeverity.Critical,
-            "Cluster host monitoring is disabled",
+            HostMonitoringDisabledTitle,
             $"'{cluster.DisplayName}' has HA host monitoring turned off. HA is enabled but will not " +
             "restart virtual machines after a host failure, because the mechanism that detects the " +
             "failure is the part that is switched off. This is the setting VMware asks an " +
@@ -233,7 +309,7 @@ public static class ClusterHighAvailability
         };
 
         Add(alerts, cluster, "storage-protection-disabled", AlertSeverity.Warning,
-            "Cluster storage failure protection is disabled",
+            StorageProtectionDisabledTitle,
             $"'{cluster.DisplayName}' has VM Component Protection's response to {which} storage " +
             "failure set to disabled. A datastore this cluster's virtual machines depend on going " +
             "away does not trigger a restart anywhere; the machines that lost storage simply hang " +
@@ -261,7 +337,7 @@ public static class ClusterHighAvailability
         }
 
         Add(alerts, cluster, "too-few-heartbeat-datastores", AlertSeverity.Warning,
-            "Cluster has too few HA heartbeat datastores",
+            TooFewHeartbeatDatastoresTitle,
             $"'{cluster.DisplayName}' has {count} heartbeat datastore(s) configured for HA, " +
             $"fewer than the {rules.MinimumHeartbeatDatastores} VMware recommends (KB 2004739). " +
             "With only one, losing that datastore's connectivity removes HA's only way to " +
@@ -283,7 +359,7 @@ public static class ClusterHighAvailability
         }
 
         Add(alerts, cluster, "redundant-network-warning-silenced", AlertSeverity.Warning,
-            "Cluster hides its HA network redundancy warning",
+            RedundantNetworkWarningSilencedTitle,
             $"'{cluster.DisplayName}' has the advanced option " +
             "das.ignoreRedundantNetWarning set to true, which turns off vCenter's own warning " +
             "that this cluster's HA management network has no redundant path. The underlying risk " +
@@ -302,8 +378,7 @@ public static class ClusterHighAvailability
     {
         alerts.Add(new AlertDefinition
         {
-            Fingerprint = AlertFingerprint.Create(
-                Platform, title, Category, cluster.Id.Value, $"{RuleId}-{findingKey}"),
+            Fingerprint = FingerprintFor(cluster.Id, findingKey, title),
             Severity = severity,
             Title = title,
             Description = description,

@@ -69,6 +69,16 @@ public sealed record MultipathSinglePointOfFailurePolicy
 /// judging, rather than counting as "the same port".
 /// </para>
 /// <para>
+/// <strong>iSCSI is not judged for "single HBA".</strong> Software iSCSI with
+/// port binding legitimately runs every path through the one software
+/// <c>vmhba</c>; the redundancy is the bound NICs beneath it, which vim25
+/// does not show here. <see cref="Domain.StoragePath.Transport"/> says a
+/// path is iSCSI but not whether the initiator is software or a hardware
+/// HBA, so a device whose paths are all iSCSI is left unjudged for this case
+/// rather than raise a permanent false alarm. Not validated live: this
+/// estate has no iSCSI.
+/// </para>
+/// <para>
 /// <strong>Citations.</strong> Broadcom's official multipathing guidance
 /// ("Managing Multiple Paths", vSphere Storage guide) states plainly that
 /// path failover exists to survive the loss of one HBA, one cable, one switch
@@ -90,6 +100,9 @@ public static class MultipathSinglePointOfFailure
 
     private const string SinglePathTitle = "Storage device has only one path";
     private const string SingleHbaTitle = "All working paths share one HBA";
+
+    /// <summary>vim25's transport type for iSCSI paths, software or hardware alike.</summary>
+    private const string IscsiTransport = "HostInternetScsiTargetTransport";
 
     private const string Platform = "platform";
 
@@ -259,6 +272,27 @@ public static class MultipathSinglePointOfFailure
         // there genuinely is HBA-level redundancy. Only exactly one adapter,
         // named, is this rule's business.
         if (workingAdapters.Count != 1)
+        {
+            return null;
+        }
+
+        // Software iSCSI with port binding runs every path through the one
+        // software vmhba by design; the redundancy is the bound NICs beneath
+        // it, which vim25 does not show here. The transport cannot tell a
+        // software initiator from a hardware iSCSI HBA, so all-iSCSI devices
+        // are left unjudged rather than risk a permanent false alarm.
+        if (paths.All(p => string.Equals(p.Transport, IscsiTransport, StringComparison.Ordinal)))
+        {
+            return null;
+        }
+
+        // A path on this device that is not currently working is
+        // StoragePathRedundancy's fact to report — "this device lost a
+        // route" — not this rule's. Without this guard a host with one
+        // active path and one merely dead one would be told both "a route
+        // failed" and "you only ever had one HBA", which is the same
+        // underlying loss named twice under two different titles.
+        if (paths.Any(p => !rules.WorkingStates.Contains(p.State, StringComparer.OrdinalIgnoreCase)))
         {
             return null;
         }

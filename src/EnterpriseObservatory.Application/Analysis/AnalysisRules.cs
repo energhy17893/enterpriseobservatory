@@ -332,7 +332,7 @@ public sealed class ClusterHighAvailabilityRule : IAnalysisRule
         ArgumentNullException.ThrowIfNull(context);
 
         return ClusterHighAvailability.Evaluate(
-            [.. context.Graph.Active], context.Options.ClusterHighAvailability);
+            [.. context.Graph.Active], context.Options.ClusterHighAvailability, context.Unevaluated);
     }
 }
 

@@ -150,17 +150,29 @@ public class MultipathSinglePointOfFailureTests
     }
 
     [Fact]
-    public void A_dead_second_path_on_a_different_adapter_still_counts_as_single_hba()
+    public void Iscsi_paths_through_one_software_adapter_are_not_called_single_hba()
     {
-        // Only the paths still carrying I/O decide the verdict. A dead path on
-        // vmhba1 is not protection right now, whatever adapter it names.
-        var alert = Assert.Single(Evaluate(
+        // Port binding: two NICs beneath one software vmhba64 — redundant by design.
+        const string iscsi = "HostInternetScsiTargetTransport";
+
+        Assert.Empty(Evaluate(
+            HostWith(
+                Path("active", name: "vmhba64:C0:T0:L1", adapter: "vmhba64") with { Transport = iscsi },
+                Path("active", name: "vmhba64:C1:T0:L1", adapter: "vmhba64") with { Transport = iscsi }),
+            VmfsDatastore()));
+    }
+
+    [Fact]
+    public void A_dead_second_path_on_a_different_adapter_suppresses_the_single_hba_verdict()
+    {
+        // StoragePathRedundancy already reports the lost path on vmhba1 as
+        // its own, more urgent fact. Naming "single HBA" here on top of it
+        // would be the same underlying loss under a second title.
+        Assert.Empty(Evaluate(
             HostWith(
                 Path("active", name: "vmhba0:C0:T0:L1"),
                 Path("dead", name: "vmhba1:C0:T0:L1", adapter: "vmhba1")),
             VmfsDatastore()));
-
-        Assert.Equal(SingleHbaTitle, alert.Title);
     }
 
     // --- the healthy case: dual fabric --------------------------------------
