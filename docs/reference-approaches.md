@@ -491,6 +491,155 @@ arkasında sorguyu hızlandıran önceden hesaplanmış bir kabalaştırma olup 
 belgesiz. Yani §2.2'deki "yaş kademesi yok" satırı **kullanıcıya görünen
 sözleşme** hakkındadır, depolama iç yapısı hakkında değil.
 
+## 9. Yol haritası genişlemesi — süreklilik, maruziyet, öngörü, donanım (21 Eylül 2026)
+
+Dört paralel araştırma kolu; yol haritasındaki M8, M9, M10 ve M6/M7 eklerinin
+dayanağı. **Doğrulama durumu:** kaynaklar ajan raporundan alındı, sayfaların
+çoğu arama/fetch özetinden okundu. Aşağıdaki **vim25 özellik yolları API
+referansına karşı doğrulanmadı** — her adım o kontrolle başlar. Ateşleme
+sayıları tahmindir, ölçüm değil. Kovalar: **bugün** (veri toplanıyor), **bir
+çağrı** (yol adlandırılır), **yeni eksen**.
+
+### 9.1 Süreklilik duruşu (M8)
+
+| Bulgu | Kova | Yol / kaynak |
+|---|---|---|
+| Aria kullanılabilir kapasiteyi HA rezervinden **sonra** hesaplıyor; host ekle/çıkar what-if kalan süreyi gösteriyor | bugün | `configurationEx.dasConfig.admissionControlPolicy` + `summary`; [KB 378176](https://knowledge.broadcom.com/external/article/378176/capacity-tab-for-cluster-compute-resourc.html), [Add or Remove Hosts](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-configuration-guide-8-18/optimizing-capacity-and-improving-performance/how-to-plan-for-capacity-changes/what-if-analysis-infrastructure-planning-traditional/add-or-remove-hosts.html) |
+| Aria'nın küme alarm listesinde affinity ihlali ve admission control tanımı **yok** — boşluk | bugün | `configurationEx.rule[]` ↔ `vm.runtime.host`; [küme alarm tanımları](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-user-guide-8-18/metric-property-and-alert-definitions/alert-definitions-in-vrealize-operations-manager/cluster-compute-resource-alert-definitions.html) |
+| Heartbeat datastore < 2, slot bilgisi | bir çağrı | `RetrieveDasAdvancedRuntimeInfo`; [KB 318871](https://knowledge.broadcom.com/external/article/318871/ha-error-the-number-of-heartbeat-datasto.html) |
+| Yönetim ağı yedekliliği / uyarının bastırılması | bugün | `host.config.network`, `dasConfig.option[]`; [KB 317612](https://knowledge.broadcom.com/external/article/317612/network-redundancy-message-when-configur.html) |
+| APD/PDL, VM/host izleme, EVC, FT, tek host'lu datastore, bağlı CD-ROM | bugün | `dasConfig.defaultVmSettings.vmComponentProtectionSettings`, `summary.currentEVCModeKey`, `datastore.summary.multipleHostAccess`, `VirtualCdrom.connectable.connected` |
+| Lisans ve ESXi sertifika bitişi | bir çağrı | `LicenseManager.licenses[].properties`, `HostCertificateManager.certificateInfo.notAfter` |
+| VCSA dosya tabanlı yedek | yeni (küçük REST) | `/appliance/recovery/backup/schedules`, `/jobs/details`; [William Lam](https://williamlam.com/2024/01/quick-tip-verifying-vcenter-server-appliance-vcsa-backup-status.html) |
+| Veeam ONE "Protected VMs" B&R verisi ve **eşleşen topoloji** istiyor | — | [Reporting Guide](https://helpcenter.veeam.com/docs/one/reporter/protected_vms.html?ver=120) |
+| B&R son başarılı yedeği VM özel niteliğine yazabiliyor | bugün / bir çağrı | `vm.customValue` + `CustomFieldsManager.field`; [Veeam](https://helpcenter.veeam.com/docs/backup/vsphere/backup_job_advanced_notify_vm.html) |
+| pNIC → fiziksel switch portu | bir çağrı | `HostNetworkSystem.QueryNetworkHint` (CDP/LLDP); [API](https://developer.broadcom.com/xapis/virtual-infrastructure-json-api/latest/sdk/vim25/release/HostNetworkSystem/moId/QueryNetworkHint/post/) |
+| vSphere Replication RPO ihlali, SRM sorunları | yeni eksen (REST) | [VR API](https://developer.broadcom.com/xapis/vsphere-replication-api/latest/pairings/pairing_id/replications/get/); RPO ihlali vCenter olayı olarak da düşüyor ([KB 312689](https://knowledge.broadcom.com/external/article/312689/troubleshooting-vsphere-replication-slow.html)), olay kimliği **bulunamadı** |
+
+**Benimsenen:** Runecast'in eksenleri (önem × katman × tasarım niteliği:
+erişilebilirlik, kurtarılabilirlik…) — düz liste değil
+([Runecast](https://www.runecast.com/capabilities/best-practice-analysis)).
+Bastırılmış uyarıyı "risk gizlendi" diye ayrı raporlamak. Yedek tazeliğinde
+satıcıdan bağımsız nitelik okuması.
+**Reddedilen:** Veeam tarzı tek yedekleme satıcısına topoloji bağı; klasör adı
+tutarsızlığı, vSwitch boş port gibi vCheck/RVTools önemsizleri; varsayılan açık
+zombie VMDK taraması (ağır datastore taraması, "Possible… please check"
+etiketli); Aria'nın dokuz neredeyse-aynı DRS contention alarmı. **Uplink SPOF
+fikri türetilmiştir** — yapan bir ürün referansı bulunamadı.
+
+### 9.2 Healthcheck katalogları ve beslemeler (M9)
+
+- **Pazar:** Skyline Advisor 4 Ekim 2024'te kapandı; bulgular yalnızca VCF/VVF
+  müşterilerine açık VCF Operations Diagnostics'e taşındı
+  ([KB 375104](https://knowledge.broadcom.com/external/article/375104/questions-and-answers-for-diagnostics-fo.html)).
+  Runecast "by Dynatrace" olarak satılıyor, ürün sayfası uyumluluk ve duruş
+  yönetimini öne çıkarıyor
+  ([ürün sayfası](https://www.dynatrace.com/platform/runecast-analyzer/)).
+  Skyline çevrimiçi kontrolleri CEIP ve internet istiyor — on-prem karşılığı farktır.
+- **VMSA:** kimlik doğrulamasız POST,
+  `support.broadcom.com/web/ecx/security-advisory/-/securityadvisory/getSecurityAdvisoryList`
+  ([William Lam](https://williamlam.com/2024/09/quick-tip-api-for-broadcom-security-advisories.html)).
+  Broadcom'un kendi KB 408302 sayfası 404 döndü. **Yanıtın duyuru başına
+  düzeltilmiş build taşıyıp taşımadığı bulunamadı.**
+- **CISA KEV:** `cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`
+  ([şema](https://github.com/cisagov/kev-data)); VMSA ile `cveID` üzerinden birleşir.
+- **Build tabloları:** resmî kaynak yalnızca HTML
+  ([KB 316595](https://knowledge.broadcom.com/external/article/316595/build-numbers-and-versions-of-vmware-esx.html),
+  [KB 343944](https://knowledge.broadcom.com/external/article/343944/correlating-build-numbers-and-versions-o.html)).
+  Topluluk JSON'u var, lisansı belirtilmemiş → **kendi sürümlü dosyamız.**
+- **Yaşam döngüsü:** resmî portal giriş istiyor, API bulunamadı;
+  [endoflife.date](https://endoflife.date/esxi) topluluk JSON'u.
+- **HCL:** yalnızca vSAN için indirilebilir JSON
+  (`vvs.broadcom.com/service/vsan/all.json`,
+  [KB 315556](https://knowledge.broadcom.com/external/article/315556/updating-the-vsan-hcl-database-manually.html));
+  sunucu ve I/O cihazları için *"there is not an official BCG API"*
+  ([William Lam](https://williamlam.com/2025/05/programmatically-accessing-the-broadcom-compatibility-guide-bcg.html)).
+- **Performans best-practice** ([8.0U3 kılavuzu](https://www.vmware.com/docs/vsphere-esxi-vcenter-server-80U3-performance-best-practices),
+  [KB 438023](https://knowledge.broadcom.com/external/article/438023/rightsizing-virtual-machines-on-esxi-80.html)):
+  `config.powerSystemInfo.currentPolicy`, `hardware.numaInfo`,
+  `config.cpuHotAddEnabled` + `config.version`, `config.hardware.device[]`
+  türleri, `guest.toolsVersionStatus2`, `memoryAllocation.limit`. Donanım sürümü
+  20+ hot-add'de vNUMA'yı koruyor — kural yalnızca altında geçerli.
+- **vSAN:** `VsanQueryVcClusterHealthSummary`
+  ([SDK](https://techdocs.broadcom.com/us/en/vmware-cis/vsan/vsan-sdk/8-0/vsan-sdk-programming-guide-7-0/monitoring-vsan/viewing-vsan-health-check-status.html)) —
+  aktar, yeniden yazma.
+
+**Reddedilen:** KB ↔ log eşleştirme (syslog + içerik ekibi; Broadcom sürüm başına
+100+ bulgu yayımlıyor); `viewResults` kazıyarak HCL hükmü ve yükseltme
+simülasyonu; düzeltme betikleri; VM başına Tools/donanım sürümü bulgusu;
+CloudPhysics "Global Insights" gibi SaaS kıyas verisine bağımlılık.
+
+### 9.3 Açıklanabilir öngörü (M10)
+
+- **Aria kapasite motoru**
+  ([belge](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-configuration-guide-8-18/optimizing-capacity-and-improving-performance/capacity-optimization-concepts/how-does-vmware-aria-operations-calculate-and-forecast-capacity.html)):
+  üstel azalan ağırlık, paralel doğrusal modellerden en iyisi, üst/alt sınırlı
+  projeksiyon. Temkinli = üst sınır, agresif = iki sınırın ortalaması; "peak
+  focused" seçeneği. Önerilen boyut: en çok %50 küçült, %100 büyüt. Rejim
+  değişiminde elle **RESET**
+  ([Capacity tab](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-configuration-guide-8-18/optimizing-capacity-and-improving-performance/how-to-view-and-assess-capacity/viewing-object-capacity-in-the-capacity-tab.html)).
+- **Geri kazanım eşikleri:** boşta = her 24 saatlik dönemin %100'ünde CPU
+  < 100 MHz ([KB 445643](https://knowledge.broadcom.com/external/article/445643/identifying-and-reviewing-idle-virtual-m.html));
+  kapalı = zamanın %90'ı. Yetim disk varsayılanı ve "kalan VM" formülü **bulunamadı.**
+- **NetApp Active IQ:** ortalama haftalık büyüme, 1–6 ay uzatma
+  ([SSS](https://docs.netapp.com/us-en/active-iq/reference_aiq_faq.html)) — bizimkine en yakın, tam açıklanabilir.
+- **Dynatrace Davis:** örneklenmiş yol benzetimi + yüzdelik regresyonu
+  ([belge](https://docs.dynatrace.com/docs/discover-dynatrace/platform/davis-ai/ai-models/forecast-analysis)) — elle doğrulanamaz.
+- **Açık ekosistem:** Prometheus `predict_linear` basit regresyon,
+  `holt_winters` mevsimsiz olduğu için yeniden adlandırıldı
+  ([belge](https://prometheus.io/docs/prometheus/latest/querying/functions/));
+  Zabbix doğrusalla başlamayı öneriyor
+  ([belge](https://www.zabbix.com/documentation/current/en/manual/appendix/functions/prediction)).
+- **Mann-Kendall** bağımsız gözlem varsayar; saatlik kullanım otokorelasyonlu →
+  günlük veri + Hamed-Rao düzeltmesi ([pyMannKendall](https://github.com/mmhs013/pyMannKendall)).
+  **PELT** doğrusal maliyetli kesin değişim noktası, ceza parametresi düşükse
+  gürültüde ateşler ([Killick ve ark.](https://arxiv.org/pdf/1101.1438)).
+- **Donanım:** düzeltilebilir ECC görülen ay, düzeltilemez hata olasılığını
+  27–400 kat artırıyor ([Schroeder ve ark.](https://www.cs.toronto.edu/~bianca/papers/sigmetrics09.pdf)) —
+  **bayrak**, tarih değil. NVMe "Percentage Used" 100 = anma dayanıklılığı
+  tükendi, arıza değil, 100'ü aşabilir.
+
+**Reddedilen:** Pure/InfoSight tarzı fleet eğitimli yük skoru (fleet verimiz
+yok); Prophet, k-means, örneklenmiş yol; varsayılan polinom/üstel uyum; yıllık
+mevsimsellik (90 gün gösteremez); kovalar yüzdelik tutana kadar yüzdelik taban.
+**§5 ile gerilim:** haftanın saati bantları "dinamik eşik: şimdilik hiçbiri"
+kararına dokunuyor — M10.7 ADR ile başlar.
+
+### 9.4 Donanım ekosistemi (M6/M7 ekleri)
+
+- **Redfish standart:** `MemoryMetrics` `CorrectableECCErrorCount`
+  (`LifeTime` / `CurrentPeriod`)
+  ([şema](https://redfish.dmtf.org/schemas/v1/MemoryMetrics.v1_7_0.json));
+  `Drive.PredictedMediaLifeLeftPercent`, `Drive.FailurePredicted`. Standart eşik
+  tanımlamıyor. HPE SmartStorage OEM modeli iLO 6'da **kaldırıldı** — standart
+  depolama modeli kullanılır
+  ([HPE](https://servermanagementportal.ext.hpe.com/docs/redfishservices/ilos/ilo6/ilo6_adaptation.md)).
+  PSU/fan yedekliliği, Bios, SecureBoot, LogServices özellik adları **doğrulanmadı.**
+- **Firmware uyumluluğu:** yalnızca Dell'in makine-okur kataloğu var
+  (`downloads.dell.com/catalog/Catalog.xml.gz`); HPE reçetesi PDF. ESXi
+  tarafında VIB listesi `HostImageConfigManager.fetchSoftwarePackages`; pNIC
+  firmware'i için vim25 özelliği **bulunamadı** → Redfish `FirmwareInventory`.
+  Sonuç: katalog hükmü değil, **küme içi sapma.**
+- **Brocade FOS REST:** `fibrechannel-statistics` (crc, encoding, link-failures,
+  loss-of-sync, bb-credit-zero…)
+  ([belge](https://techdocs.broadcom.com/us/en/fibre-channel-networking/fabric-os/fabric-os-rest-api/10-0-x/brocade-fabric-os-rest-api-yang-modules/module_brocade-interface/uri_brocade-interface_brocade-interface_fibrechannel-statistics.html));
+  `media-rdp` rx/tx gücü + `remote-media-*` ile karşı uç
+  ([belge](https://techdocs.broadcom.com/us/en/fibre-channel-networking/fabric-os/fabric-os-rest-api/9-2-x/FOS-REST-API-Parameters/brocade-media-media-rdp_922.html));
+  `neighbor-node-wwn`; zone defined/effective; MAPS kuralları; FPI durumları.
+  `tim_txcrd_z`'nin REST karşılığı ve çift fabric doğrulama ilkeli **bulunamadı.**
+  MAPS varsayılan eşikleri ve optik bozulma modeli **bulunamadı.**
+- **Diziler:** Pure host bağlantı durumu (Redundant / Uneven / Single
+  Controller); PowerStore `replication_session.last_sync_timestamp`; ONTAP
+  snapmirror `lag_time`, `ha` takeover durumu. 3PAR/Primera alan adları
+  doğrulanmadı; MSA, Nimble, Unity, ME ve doygunluk ölçüsü **bulunamadı.**
+- **Uçtan uca zincir:** yalnızca IntelliMagic Vision'da bulundu
+  ([kaynak](https://www.intellimagic.com/resources/end-to-end-pathing-visualization/));
+  SANnav ve CloudIQ'da karşılığı bulunamadı — satıcı araçları kendi katmanında kalıyor.
+
+**Reddedilen:** iDRAC telemetri akışı (Datacenter lisansı ister, yoklama yeter);
+BIOS güç profili kuralları (alıntılanabilir nitelik adı yok); vDS Health Check
+(ek MAC ve trafik üretir — ilke 5).
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:

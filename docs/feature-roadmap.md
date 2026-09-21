@@ -73,6 +73,27 @@ Pazar araştırmasında alıcının ilk baktığı şey.
 | M5.3 | Kapasite raporu | indirilebilir |
 | M5.4 | Zamanlanmış e-posta raporu | posta kutusunda |
 
+## M8 — Süreklilik duruşu
+
+**Numara kimliktir, sıra değil:** M8, M5'in hemen arkasında ve M6'nın önünde
+yürür. Neredeyse tamamı eldeki vim25 verisiyle cevaplanıyor — yeni toplayıcı
+değil, yeni sorgu. Kaynaklar ve kovalar `reference-approaches.md` §9'da.
+Oradaki vim25 yolları **doğrulanmamıştır**; her adım API referansına karşı
+kontrolle başlar.
+
+| Adım | Feature | Bitti = |
+|---|---|---|
+| M8.1 | **Küme başına HA karnesi** — admission control, host/VM izleme, APD/PDL yanıtı, heartbeat datastore sayısı, `das.ignoreRedundantNetWarning` ile **gizlenmiş risk** | küme ekranında karne |
+| M8.2 | **N+1 what-if + tarih** — "en büyük host düşerse ayakta kalır mı; bu güvence hangi tarihte kaybolur" (M4 eğilimi yeniden kullanılır) | kümede cevap + tarih |
+| M8.3 | **DRS affinity/anti-affinity ihlali** — kural ↔ VM'in fiilen çalıştığı host | bulgu |
+| M8.4 | **Bakım modu / vMotion engelleri** — bağlı ISO, tek host'a bağlı datastore, konsolidasyon bekleyen disk, kapalı EVC | host'ta "bakıma alınamaz, sebebi şu" |
+| M8.5 | **Uplink SPOF** — bir team'in iki pNIC'i aynı fiziksel switch'e iniyor (`QueryNetworkHint`, CDP/LLDP; pasif, vDS Health Check tetiklenmez) | bulgu |
+| M8.6 | **Depolama yolu SPOF** — tüm yollar tek HBA'dan ya da tek hedef kontrolcüden geçiyor (`multipathInfo` zaten toplanıyor) | bulgu |
+| M8.7 | **Bitiş tarihi radarı** — ESXi sertifikası, lisans, vCenter sertifikası (TLS el sıkışması) | geri sayım + bulgu |
+| M8.8 | **Yedek tazeliği** — yedekleme aracının VM özel niteliğine yazdığı son başarılı yedek ↔ etiket/klasör başına RPO; satıcıdan bağımsız | "N saattir yedeği yok" |
+| M8.9 | **VCSA dosya tabanlı yedek durumu** (REST `/appliance/recovery/backup`) | bulgu |
+| M8.10 | **Süreklilik raporu** — M5'e dördüncü rapor | indirilebilir |
+
 ## M6 — İkinci satıcı: iLO / iDRAC (Redfish)
 
 | Adım | Feature | Bitti = |
@@ -80,10 +101,58 @@ Pazar araştırmasında alıcının ilk baktığı şey.
 | M6.1 | Redfish toplayıcı, firmware alt sınırı + destek matrisi | BMC bağlanır |
 | M6.2 | Donanım sağlığı aynı host'a katlanır (çift sayım yok) | host ekranında donanım |
 | M6.3 | Sensör kör noktası: okunamayan alt sistem "kapsam boşluğu" | kapsam ekranında |
+| M6.4 | **Öncü göstergeler** — ECC `CurrentPeriod` sayaçları, `Drive.FailurePredicted` → **risk bayrağı** (arıza tarihi **üretilmez**) | host'ta bayrak |
+| M6.5 | **SSD/NVMe ömür sonu tarihi** — `PredictedMediaLifeLeftPercent` üzerinde doğrusal eğilim; "anma dayanıklılığı", arıza değil | sürücüde tarih |
+| M6.6 | **Güç/fan yedekliliği kaybı** *(Redfish özellik adları doğrulanacak)* | alarm |
+| M6.7 | **Küme içi firmware/driver sapması** — host'lar birbirine karşı (VIB listesi + `FirmwareInventory`); katalog gerektirmez | bulgu |
 
 **→ Mimari kontrol #3**
 
 ## M7 — SAN switch ve depolama dizisi
 
 Brocade FOS REST, dizi REST API'leri; dizi volume'ü → datastore eşlemesi.
-Detaylandırma M6 bittiğinde.
+Detaylandırma M6 bittiğinde. Şimdiden kayıtlı adımlar:
+
+| Adım | Feature | Bitti = |
+|---|---|---|
+| M7.a | **Optik bozulma yerelleştirme** — CRC/encoding hata oranı + `media-rdp` rx/tx gücü, `remote-media-*` ile bağlantının **iki ucu**; §4'teki "SFP mi kablo mu" | "şu port, şu uç" |
+| M7.b | **Slow-drain etki alanı** — F-port FPI durumu → host/dizi → datastore → VM'ler | olayda etkilenen VM listesi |
+| M7.c | **Zoning hijyeni** — defined ↔ effective, üyesi login olmamış zone, peer olmayan çok-initiator'lı zone | bulgu |
+| M7.d | **Replikasyon RPO gecikmesi** datastore'a eşlenir (ONTAP `lag_time`, PowerStore `last_sync_timestamp`) | datastore'da RPO |
+| M7.e | **Dizi ↔ ESXi bağlantı çapraz doğrulaması** — dizinin gördüğü host bağlantı durumu ↔ ESXi yol sayısı | bulgu |
+| M7.f | **Uçtan uca zincir SPOF** — HBA WWPN → switch portu → efektif zone → dizi kontrolcüsü | zincirde tek nokta bulgusu |
+
+## M9 — Maruziyet ve yaşam döngüsü
+
+M3'ün yolu: besleme **veri olarak** yutulur, sürümlü, `catalogues/` altında.
+
+| Adım | Feature | Bitti = |
+|---|---|---|
+| M9.1 | **Build → sürüm tablosu** — kendi derlediğimiz sürümlü dosya (resmî kaynak yalnızca HTML) | host'ta sürüm + çıkış tarihi |
+| M9.2 | **Güvenlik açığı maruziyeti** — VMSA JSON + CISA KEV, CVE üzerinden; bulgu **build başına**, host başına değil *(açık soru: VMSA yanıtı düzeltilmiş build'i taşıyor mu)* | "bu build istismar edilen açığa açık" |
+| M9.3 | **Genel destek bitişi** — ESXi/vCenter | geri sayım + bulgu |
+| M9.4 | **Küme içi sapma** — build, NTP, gelişmiş ayarlar host'lar arasında; §3 "tutarlılık" sütunu | bulgu |
+| M9.5 | **Performans best-practice** — host güç politikası (küme başına tek bulgu), NUMA düğümünden geniş VM, limit altında balon, eski adaptörler (E1000/LSI — sayısıyla **tek** bulgu), hot-add yalnızca donanım sürümü < 20 ve geniş VM | bulgu |
+| M9.6 | **Tools / donanım sürümü** — bulgu **değil**, envanter görünümü (30–100 kez ateşler) | süzülebilir liste |
+| M9.7 | **vSAN sağlık aktarımı** — varsa; `VsanQueryVcClusterHealthSummary` sonucu aktarılır, kontroller yeniden yazılmaz | kümede vSAN sağlığı |
+
+## M10 — Öngörü v2
+
+Tamamı açıklanabilir ve mevcut min/max/sum/count/last kovalarıyla çalışır.
+
+| Adım | Feature | Bitti = |
+|---|---|---|
+| M10.1 | **Değişim noktası + "geçmişi sıfırla"** — göç sonrası eğim yanlış tarih üretir; M4 tahminleri de bugün buna açık, o yüzden ilk iş | tahmin rejim değişimini söyler |
+| M10.2 | **Genelleştirilmiş eşiğe-kalan-süre** — küme CPU/bellek, snapshot büyümesi, VCSA bölüm doluluğu | her birinde tarih ya da "söyleyemem" |
+| M10.3 | **Temkinli / agresif tarih yan yana** + `max` üzerinde tepe odaklı varyant | iki tarih, yöntemi yazılı |
+| M10.4 | **Geri kazanım** — boşta VM (24 saatin tamamında < 100 MHz, KB 445643), kapalı VM (zamanın %90'ı), eski snapshot | "şu kadar geri kazanılır" |
+| M10.5 | **Sağ boyutlandırma** — öneri en çok %50 küçültür, en çok %100 büyütür | VM'de öneri |
+| M10.6 | **What-if** — host çıkar, N ortalama VM ekle, donanım yenileme | senaryoda yeni tarih |
+| M10.7 | **Haftanın saati taban bantları + gecikme tırmanışı** — günlük veri, Hamed-Rao düzeltmeli Mann-Kendall. **Önce ADR**: `reference-approaches.md` §5'teki "dinamik eşik: şimdilik hiçbiri" kararına dokunuyor | ADR + "üç haftadır tırmanıyor" |
+
+## Bilerek yapılmayacaklar
+
+KB ↔ log eşleştirme (syslog + içerik ekibi ister); sunucu/I/O cihazı HCL hükmü
+(resmî API yok); fleet verisiyle eğitilmiş yük skoru; Prophet/k-means gibi elle
+doğrulanamayan tahmin; ECC/SMART'tan arıza **tarihi**; varsayılan açık zombie
+VMDK taraması; BIOS profil kuralları; vDS Health Check'i tetikleyen her şey.
