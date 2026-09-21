@@ -38,9 +38,14 @@ public class SnapshotCreatorsTests
             DateTimeOffset toUtc) =>
             Throws
                 ? throw new InvalidOperationException("database is down")
-                : [.. Events.Where(e =>
-                    e.SourceInstanceId == sourceInstanceId && typeIds.Contains(e.TypeId) &&
-                    e.CreatedAtUtc >= fromUtc && e.CreatedAtUtc <= toUtc)];
+                : [.. Events
+                    .Where(e =>
+                        e.SourceInstanceId == sourceInstanceId &&
+                        typeIds.Contains(e.TypeId, StringComparer.OrdinalIgnoreCase) &&
+                        e.CreatedAtUtc >= fromUtc && e.CreatedAtUtc <= toUtc)
+                    .OrderByDescending(e => e.CreatedAtUtc)
+                    .ThenByDescending(e => e.Key)
+                    .Take(EventCollectionPipeline.MaxMatching)];
 
         public DateTimeOffset? EarliestHeld(string sourceInstanceId) => Earliest;
 
@@ -94,6 +99,21 @@ public class SnapshotCreatorsTests
             Inventory(new SnapshotTaken { Name = "before upgrade", CreatedAtUtc = taken }), history);
 
         Assert.StartsWith("'fileserver' has one snapshot 5 days old.", description, StringComparison.Ordinal);
+        Assert.Contains(@"Taken by CORP\alice", description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_creation_event_in_another_case_still_names_the_creator()
+    {
+        // The history matches type ids without regard to case, as vCenter's
+        // own catalogue does not keep to one; the pairing must agree with it.
+        var taken = Now.AddDays(-5);
+        var history = new History();
+        history.Events.Add(CreateTask(taken.AddSeconds(-8), @"CORP\alice", typeId: "virtualmachine.CREATESNAPSHOT"));
+
+        var description = Describe(
+            Inventory(new SnapshotTaken { Name = "before upgrade", CreatedAtUtc = taken }), history);
+
         Assert.Contains(@"Taken by CORP\alice", description, StringComparison.Ordinal);
     }
 

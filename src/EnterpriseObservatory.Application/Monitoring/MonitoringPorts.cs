@@ -273,6 +273,20 @@ public sealed record MonitoringOptions
     /// <summary>How long measurements are kept at each resolution.</summary>
     public SeriesRetentionPolicy Retention { get; init; } = SeriesRetentionPolicy.Default;
 
+    /// <summary>
+    /// The most one pass over the event sources may take. <strong>This
+    /// product's choice</strong>, not a cited threshold.
+    /// </summary>
+    /// <remarks>
+    /// The event read runs inside the inventory loop, and a read is many calls
+    /// each with its own HTTP timeout, so without an overall bound one stalled
+    /// vCenter could hold the loop for tens of minutes against a five-minute
+    /// interval. Ninety seconds is well above a healthy read and well below
+    /// <see cref="InventoryInterval"/>; a read cut off keeps its position and
+    /// resumes next cycle.
+    /// </remarks>
+    public TimeSpan EventReadDeadline { get; init; } = TimeSpan.FromSeconds(90);
+
     public static MonitoringOptions Default { get; } = new();
 
     /// <summary>Which vCenter events become alerts, and how long each is held open.</summary>

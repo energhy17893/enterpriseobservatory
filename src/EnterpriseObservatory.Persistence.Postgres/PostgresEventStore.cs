@@ -173,9 +173,17 @@ public sealed class PostgresEventStore : IEventStore, IEventHistory
 
     /// <inheritdoc />
     /// <remarks>
-    /// Served by <c>ix_source_event_created</c>: the window is bounded by the
-    /// snapshots being explained and the type list is short, so the rows the
-    /// index yields are filtered rather than needing an index of their own.
+    /// <para>
+    /// Type ids are matched without regard to case, exactly as
+    /// <see cref="OfTypes"/> matches them, and for the same reason: vCenter's
+    /// catalogue is not consistent about case.
+    /// </para>
+    /// <para>
+    /// At most <see cref="EventCollectionPipeline.MaxMatching"/> rows, newest
+    /// first — a window over a busy vCenter must not become an unbounded read.
+    /// Served by <c>ix_source_event_source_type_created</c> for the source and
+    /// window, with the case-folded type test applied to its rows.
+    /// </para>
     /// </remarks>
     public IReadOnlyList<SourceEvent> Find(
         string sourceInstanceId,
@@ -191,6 +199,8 @@ public sealed class PostgresEventStore : IEventStore, IEventHistory
             return [];
         }
 
+        var folded = Fold(typeIds);
+
         return _database.Read(connection =>
         {
             using var command = PgValues.Command(connection, """
@@ -200,14 +210,17 @@ public sealed class PostgresEventStore : IEventStore, IEventHistory
                        vm_ref, vm_name, datastore_ref, datastore_name
                 FROM source_event
                 WHERE source_instance_id = @source
-                  AND type_id = ANY(@types)
-                  AND created_at_utc BETWEEN @from AND @to;
+                  AND upper(type_id) = ANY(@types)
+                  AND created_at_utc BETWEEN @from AND @to
+                ORDER BY created_at_utc DESC, event_key DESC
+                LIMIT @limit;
                 """);
 
             command.Bind("source", sourceInstanceId);
-            command.Parameters.AddWithValue("types", typeIds.ToArray());
+            command.Bind("types", folded);
             command.BindTime("from", fromUtc);
             command.BindTime("to", toUtc);
+            command.Bind("limit", EventCollectionPipeline.MaxMatching);
 
             return ReadEvents(command);
         });
@@ -249,9 +262,16 @@ public sealed class PostgresEventStore : IEventStore, IEventHistory
 
         // Case-folded on both sides because vCenter's own catalogue is not
         // consistent about case (com.vmware.vc.HA.* beside com.vmware.vc.ha.*).
-        // The time bound is what uses ix_source_event_created; the type test
-        // then runs over one window's rows, not thirty days of them.
-        var folded = typeIds.Select(t => t.ToUpperInvariant()).Distinct(StringComparer.Ordinal).ToArray();
+        // The folded type and the time bound are what
+        // ix_source_event_type_upper_created serves.
+        //
+        // The cap is spent breadth first. Each (source, type, subject) is
+        // ranked newest first, and the cap takes every group's newest before
+        // any group's second: a storm of one kind — a flapping uplink — can
+        // only crowd out its own older reports, never the one newest event
+        // that decides whether some other condition is still open. The result
+        // is then put back newest first.
+        var folded = Fold(typeIds);
 
         return _database.Read(connection =>
         {
@@ -260,10 +280,18 @@ public sealed class PostgresEventStore : IEventStore, IEventHistory
                        event_class, type_id, severity, message, user_name, datacenter_name,
                        compute_resource_ref, compute_resource_name, host_ref, host_name,
                        vm_ref, vm_name, datastore_ref, datastore_name
-                FROM source_event
-                WHERE created_at_utc >= @since AND upper(type_id) = ANY(@types)
-                ORDER BY created_at_utc DESC, event_key DESC
-                LIMIT @limit;
+                FROM (
+                    SELECT *,
+                           row_number() OVER (
+                               PARTITION BY source_instance_id, upper(type_id),
+                                            host_ref, vm_ref, compute_resource_ref
+                               ORDER BY created_at_utc DESC, event_key DESC) AS rank_in_group
+                    FROM source_event
+                    WHERE created_at_utc >= @since AND upper(type_id) = ANY(@types)
+                    ORDER BY rank_in_group, created_at_utc DESC, event_key DESC
+                    LIMIT @limit
+                ) AS kept
+                ORDER BY created_at_utc DESC, event_key DESC;
                 """);
 
             command.BindTime("since", createdSinceUtc);
@@ -273,6 +301,9 @@ public sealed class PostgresEventStore : IEventStore, IEventHistory
             return ReadEvents(command);
         });
     }
+
+    private static string[] Fold(IReadOnlyCollection<string> typeIds) =>
+        [.. typeIds.Select(t => t.ToUpperInvariant()).Distinct(StringComparer.Ordinal)];
 
     private static List<SourceEvent> ReadEvents(NpgsqlCommand command)
     {

@@ -214,6 +214,15 @@ public interface IEventStore
     /// consistent: its catalogue carries <c>com.vmware.vc.HA.*</c> beside
     /// <c>com.vmware.vc.ha.VmRestartedByHAEvent</c>.
     /// </para>
+    /// <para>
+    /// When more match than the cap, the cap is spent breadth first: the
+    /// events are grouped by source, case-folded type and subject (host,
+    /// virtual machine and compute resource), and every group's newest is kept
+    /// before any group's second-newest. A storm of one kind therefore drops
+    /// only its own older reports; it cannot push out the newest event of some
+    /// other type or subject — the one that decides whether an alert is still
+    /// open. See <see cref="EventCollectionPipeline.KeepNewestPerGroup"/>.
+    /// </para>
     /// </remarks>
     IReadOnlyList<SourceEvent> OfTypes(IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc);
 }
@@ -268,42 +277,128 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
     /// <summary>The most events one page of the listing may return.</summary>
     public const int MaxRecent = 500;
 
-    /// <summary>The most events one <see cref="IEventStore.OfTypes"/> read may return.</summary>
+    /// <summary>
+    /// The most events one <see cref="IEventStore.OfTypes"/> or
+    /// <see cref="IEventHistory.Find"/> read may return.
+    /// </summary>
     /// <remarks>
     /// A bound on a storm, not a page size: a host flapping a link for a day
-    /// must not turn one rule's read into a million rows. The newest are kept,
-    /// and those are the ones that decide whether something is open now.
+    /// must not turn one rule's read into a million rows. What is kept is each
+    /// kind's newest — see <see cref="KeepNewestPerGroup"/> — and those are the
+    /// ones that decide whether something is open now.
     /// </remarks>
     public const int MaxMatching = 5000;
+
+    /// <summary>
+    /// The bounding rule of <see cref="IEventStore.OfTypes"/>, over events
+    /// already filtered by type and time: at most <paramref name="cap"/> of
+    /// them, every group's newest before any group's second, returned newest
+    /// first.
+    /// </summary>
+    /// <remarks>
+    /// A group is one source, one type id folded to upper case, and one
+    /// subject — the host, virtual machine and compute resource the event
+    /// names. The Postgres store says the same thing in SQL with
+    /// <c>row_number() OVER (PARTITION BY ...)</c>; this is the statement of
+    /// it that other stores, and the tests, share.
+    /// </remarks>
+    public static IReadOnlyList<SourceEvent> KeepNewestPerGroup(IEnumerable<SourceEvent> events, int cap = MaxMatching)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+
+        return
+        [
+            .. events
+                .GroupBy(e => (
+                    e.SourceInstanceId,
+                    Type: e.TypeId.ToUpperInvariant(),
+                    Host: e.Host?.MoRef,
+                    Vm: e.VirtualMachine?.MoRef,
+                    ComputeResource: e.ComputeResource?.MoRef))
+                .SelectMany(g => g
+                    .OrderByDescending(e => e.CreatedAtUtc)
+                    .ThenByDescending(e => e.Key)
+                    .Select((e, rank) => (Event: e, Rank: rank)))
+                .OrderBy(r => r.Rank)
+                .ThenByDescending(r => r.Event.CreatedAtUtc)
+                .ThenByDescending(r => r.Event.Key)
+                .Take(cap)
+                .Select(r => r.Event)
+                .OrderByDescending(e => e.CreatedAtUtc)
+                .ThenByDescending(e => e.Key),
+        ];
+    }
 
     private readonly IEventStore _store = store ?? throw new ArgumentNullException(nameof(store));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
+    public Task<EventCollectionResult> RunAsync(
+        IReadOnlyList<IEventSource> sources,
+        CancellationToken cancellationToken) =>
+        RunAsync(sources, Timeout.InfiniteTimeSpan, cancellationToken);
+
+    /// <summary>
+    /// Reads every source, but stops asking once <paramref name="deadline"/>
+    /// has passed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The caller is the inventory loop, and without a deadline one slow
+    /// vCenter can hold it far past its interval: a read is dozens of calls,
+    /// each with its own HTTP timeout, and nothing bounds their sum.
+    /// </para>
+    /// <para>
+    /// A source cut off by the deadline, and any source not reached before it,
+    /// is reported as a failure but <strong>not recorded</strong>: its cursor
+    /// is left exactly as it was, so the next cycle asks for the same window
+    /// again. Only <paramref name="cancellationToken"/> — shutdown — throws.
+    /// </para>
+    /// </remarks>
     public async Task<EventCollectionResult> RunAsync(
         IReadOnlyList<IEventSource> sources,
+        TimeSpan deadline,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sources);
+
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (deadline != Timeout.InfiniteTimeSpan)
+        {
+            budget.CancelAfter(deadline);
+        }
 
         var cursors = _store.Cursors.ToDictionary(c => c.SourceInstanceId, StringComparer.Ordinal);
         var recorded = 0;
         var failures = new List<(string, string)>();
         var gaps = new List<string>();
+        var outOfTime = $"the event read did not finish within {deadline.TotalSeconds:0} s; " +
+                        "its position was kept and the next cycle reads from it again";
 
         foreach (var source in sources)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (budget.IsCancellationRequested)
+            {
+                failures.Add((source.InstanceId, outOfTime));
+                continue;
+            }
 
             var since = cursors.TryGetValue(source.InstanceId, out var cursor) ? cursor.Mark : null;
 
             EventRead read;
             try
             {
-                read = await source.ReadAsync(since, cancellationToken).ConfigureAwait(false);
+                read = await source.ReadAsync(since, budget.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (OperationCanceledException) when (budget.IsCancellationRequested)
+            {
+                failures.Add((source.InstanceId, outOfTime));
+                continue;
             }
 #pragma warning disable CA1031 // Justified: one vCenter's failure is recorded
             // against it and must not stop the others or fail the inventory loop.
@@ -311,6 +406,14 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
 #pragma warning restore CA1031
             {
                 read = EventRead.CouldNotAsk(ex.Message);
+            }
+
+            // A source that turned the deadline into "could not ask" was cut
+            // off, not refused: its cursor is left alone like any other.
+            if (read.Events is null && budget.IsCancellationRequested)
+            {
+                failures.Add((source.InstanceId, outOfTime));
+                continue;
             }
 
             var now = _clock.UtcNow;

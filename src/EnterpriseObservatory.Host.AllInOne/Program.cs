@@ -404,6 +404,7 @@ static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration)
         InventoryInterval = Seconds(section["InventoryIntervalSeconds"], defaults.InventoryInterval),
         ObservationInterval = Seconds(section["ObservationIntervalSeconds"], defaults.ObservationInterval),
         CompactionInterval = Seconds(section["CompactionIntervalSeconds"], defaults.CompactionInterval),
+        EventReadDeadline = Seconds(section["EventReadDeadlineSeconds"], defaults.EventReadDeadline),
         Retention = new SeriesRetentionPolicy
         {
             Raw = Days(section["Retention:RawDays"], defaults.Retention.Raw),

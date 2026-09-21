@@ -138,7 +138,7 @@ public static class PropertyCollectorParser
         XDocument document;
         try
         {
-            document = XDocument.Parse(xml);
+            document = VsphereXml.Parse(xml);
         }
         catch (System.Xml.XmlException)
         {

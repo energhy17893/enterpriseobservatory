@@ -67,8 +67,12 @@ public sealed class MonitoringWorker(
                 // mark, so a five-minute cadence loses nothing, and the event
                 // collection never throws into this loop — a vCenter whose
                 // events cannot be read must not be logged as the inventory
-                // cycle failing.
-                var events = await _events.RunAsync(_sources.Events, token).ConfigureAwait(false);
+                // cycle failing. Bounded as a whole, not only per call: a read
+                // is many calls, and their timeouts add up to far more than
+                // one inventory interval. A source cut off keeps its mark.
+                var events = await _events
+                    .RunAsync(_sources.Events, _options.EventReadDeadline, token)
+                    .ConfigureAwait(false);
 
                 HostLog.EventCycle(_logger, events.Recorded, events.Pruned);
 

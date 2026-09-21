@@ -67,7 +67,7 @@ public static class VsphereEventParser
     {
         try
         {
-            return XDocument.Parse(xml);
+            return VsphereXml.Parse(xml);
         }
         catch (System.Xml.XmlException)
         {
