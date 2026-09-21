@@ -81,15 +81,15 @@ orkestrasyon) çalıştırıcı katmanını sağlam, altındaki vSphere adaptör
 **yan yoldan atlanıyor**. Her adım **önce hatayı gösteren test**, sonra düzeltme.
 T-P0 hemen; T-P1 M8'den önce; **T-P2, M6'nın giriş şartı.**
 
-### T-P0 — sessizce yanlış veri ya da üretime zarar
+### ✅ T-P0 — sessizce yanlış veri ya da üretime zarar *(main'de, 21 Eylül 2026 — #47; canlıda doğrulandı)*
 
 | Adım | Açık | Bitti = |
 |---|---|---|
-| T0.1 | **Bozuk/kesik envanter yanıtı başarı sayılıyor** — `ParsePage` ayrıştırılamayan XML'de boş sayfa dönüyor, varlıklar ilk kaçırmada "kayboldu" | bozuk yanıt okuma hatası; hiçbir varlık kaybolmaz |
-| T0.2 | **Veritabanı kesintisinde devre kesici donuyor** — sağlık belleği ancak yazım başarılıysa güncelleniyor; kilit yazım boyunca tutuluyor | DB kapalıyken kesici ilerler; kilit DB'yi kapsamaz |
-| T0.3 | **Olay okuması devre kesicinin dışında** — yanlış parolada her turda reddedilmiş Login | olaylar aynı kesiciden geçer |
-| T0.4 | **Yalnızca son örnek saklanıyor** — toplam/arıza sayaçlarında olay kaçıyor, geri doldurma yok, damga yerel saatten | dönen tüm örnekler vCenter `sampleInfo` damgasıyla yazılır; saat farkı ölçülür |
-| T0.5 | **vCenter'da bırakılan nesneler** — `Logout` çağrılmıyor, zaman aşımında ContainerView sızıyor, sayfalama token'ı iptal edilmiyor | her yolda temizlik; test sayar |
+| ✅ T0.1 | **Bozuk/kesik envanter yanıtı başarı sayılıyor** — `ParsePage` ayrıştırılamayan XML'de boş sayfa dönüyor, varlıklar ilk kaçırmada "kayboldu" | bozuk yanıt okuma hatası; hiçbir varlık kaybolmaz |
+| ✅ T0.2 | **Veritabanı kesintisinde devre kesici donuyor** — sağlık belleği ancak yazım başarılıysa güncelleniyor; kilit yazım boyunca tutuluyor | DB kapalıyken kesici ilerler; kilit DB'yi kapsamaz |
+| ✅ T0.3 | **Olay okuması devre kesicinin dışında** — yanlış parolada her turda reddedilmiş Login | olaylar aynı kesiciden geçer |
+| ◐ T0.4 | **Yalnızca son örnek saklanıyor** — toplam/arıza sayaçlarında olay kaçıyor, geri doldurma yok, damga yerel saatten *(a: tüm örnekler vCenter damgasıyla — canlıda 30→20 sn, 1,495× satır; kontrol #3 çift sayım düzeltmesi #53'te. **b açık**: saat farkı ölçümü + boşluk sonrası geri doldurma, `Fold` düzeltmesine bağlı)* | dönen tüm örnekler vCenter `sampleInfo` damgasıyla yazılır; saat farkı ölçülür |
+| ✅ T0.5 | **vCenter'da bırakılan nesneler** — `Logout` çağrılmıyor, zaman aşımında ContainerView sızıyor, sayfalama token'ı iptal edilmiyor *(Logout canlıda sunucudan doğrulandı: `probe --sessions --confirm-logout`; oturum yarışı #53'te. **Gözle doğrulanmadı**: servis `Ctrl+C` ile kapanırken oturumun düşmesi — salt-okunur hesap oturum listesini okuyamıyor)* | her yolda temizlik; test sayar |
 
 ### T-P1 — ölçek ve dayanıklılık
 
@@ -114,6 +114,26 @@ T-P0 hemen; T-P1 M8'den önce; **T-P2, M6'nın giriş şartı.**
 | T2.4 | Yapılandırma ve başlangıç — `CollectionPolicy` ayarlanabilir, aralık alt sınırı, TLS thumbprint, açılışta DB yeniden denemesi | doğrulanmış ayarlar |
 | T2.5 | `WaitForUpdatesEx` (`ChangeFeedInventorySource`) — ADR-0005 "ikinci dilim" | adaptör değişimi, Application değişmez |
 
+### İş paketleri — T-P1 ve T-P2 nasıl paralel yürür
+
+Adımlar açığı tarif eder; paketler **kimin neye dokunacağını**. Aynı pakette
+olanlar aynı dosyalara dokunur ve tek PR'dır; farklı paketler dosya paylaşmaz ve
+paralel yürür. `→` bağımlılıktır: soldaki main'e girmeden sağdaki başlamaz.
+
+| Paket | Adımlar | Dokunur | Bağımlılık | Neden bu gruplama |
+|---|---|---|---|---|
+| **A — Okuma bütçesi** | T1.1, T1.2, T1.3, T1.4 | `VsphereObservationSource`, `AdaptiveBatchSizer`, `CollectionPolicy` | — | Dördü de tek döngüde, `ReadTypeAsync`'te buluşuyor: batch boyutu, limit hatası, varlık hatası ve kalan süre aynı `while`'ın kararları. Ayrı PR'lar aynı yirmi satırda çakışır. **Önce ölçüm**: 2000 VM'lik sentetik hedef listesiyle probe. |
+| **B — Katalog ve sınıflandırma** | T1.5, T1.6 | `VsphereClient` (katalog önbelleği), `VsphereSoapFault`, `PerfResponseParser` (sessiz boş XML) | #53 → | Üçü de "yanlış cevabı sessizce kabul etme" ailesi. #53 aynı iki dosyaya dokunuyor. |
+| **C — Yokluk** | T1.7 | `MonitoringCycle`, `AlertReconciler` | — | Önce **okuma**, sonra karar: yorum bilinçli bir tercih diyor. Sonuç "değişiklik gerekmez" olabilir; o zaman bir testle sabitlenir. |
+| **D — Öz-izleme** | T1.8 | `MonitoringWorker`, `MonitoringCycle` (sayaçlar), Api (`/health`), yeni `platform` alarmları | C → | `MonitoringCycle`'ı C ile paylaşır. En yüksek operatör değeri burada: bu hafta servis iki kez saatlerce durdu ve ürün bunu söyleyemedi. |
+| **E — Sözleşme takımı** | T2.1 | yeni `tests/…Collectors.Contract` | A, B → | A ve B davranışı değiştirirken sözleşmeyi sabitlemek iki kez yazdırır. Vakalar: kısmi okuma, boş yanıt, iptal, kimlik reddi, çakışan okuma, **geçersiz tek özellik yolu** (22 Eylül ölçümü: `InvalidProperty` tüm okumayı düşürüyor), süresi dolan oturumu iki çağrının birlikte fark etmesi. |
+| **F — Ortak parçalar** | T2.2, T2.3 | yeni `Collectors.Shared`; `AdaptiveBatchSizer`, hedef seçimi, kapsam, kayıt defteri taşınır; eşzamanlılık kapısı | E → | Taşıma, sözleşme takımı yeşilken yapılır ki "davranış değişmedi" kanıtlanabilsin. |
+| **G — Yapılandırma ve başlangıç** | T2.4 | `Program.cs`, `CollectionPolicy`, `VsphereConnectionOptions` | — | Kimseyle dosya paylaşmaz; boş bir ajana verilebilir. |
+| **H — Değişim akışı** | T2.5 | yeni `ChangeFeedInventorySource` | E, F → | En büyük ve en az acil. A'nın ölçümü "envanter 25 sn'ye sığmıyor" derse öne alınır. |
+
+**Bugün başlayabilecekler:** A, C, G (üçü bağımsız). **#53'ten sonra:** B.
+**Kritik yol:** A → E → F → M6. D, kritik yolda değil ama bekletilmemeli.
+
 ## M8 — Süreklilik duruşu
 
 **Numara kimliktir, sıra değil:** M8, M5'in hemen arkasında ve M6'nın önünde
@@ -124,16 +144,16 @@ kontrolle başlar.
 
 | Adım | Feature | Bitti = |
 |---|---|---|
-| M8.1 | **Küme başına HA karnesi** — admission control, host/VM izleme, APD/PDL yanıtı, heartbeat datastore sayısı, `das.ignoreRedundantNetWarning` ile **gizlenmiş risk** | küme ekranında karne |
-| M8.2 | **N+1 what-if + tarih** — "en büyük host düşerse ayakta kalır mı; bu güvence hangi tarihte kaybolur" (M4 eğilimi yeniden kullanılır) | kümede cevap + tarih |
-| M8.3 | **DRS affinity/anti-affinity ihlali** — kural ↔ VM'in fiilen çalıştığı host | bulgu |
+| ◐ M8.1 | **Küme başına HA karnesi** *(kural ve parser main'de — #48, #49; **sessiz**: `configurationEx` toplanmıyor, kablolama sürüyor)* — admission control, host/VM izleme, APD/PDL yanıtı, heartbeat datastore sayısı, `das.ignoreRedundantNetWarning` ile **gizlenmiş risk** | küme ekranında karne |
+| ✅ M8.2 | **N+1 what-if + tarih** *(#52)* — "en büyük host düşerse ayakta kalır mı; bu güvence hangi tarihte kaybolur" (M4 eğilimi yeniden kullanılır) | kümede cevap + tarih |
+| ◐ M8.3 | **DRS affinity/anti-affinity ihlali** *(#48; M8.1 ile aynı sebepten **sessiz**)* — kural ↔ VM'in fiilen çalıştığı host | bulgu |
 | M8.4 | **Bakım modu / vMotion engelleri** — bağlı ISO, tek host'a bağlı datastore, konsolidasyon bekleyen disk, kapalı EVC | host'ta "bakıma alınamaz, sebebi şu" |
 | M8.5 | **Uplink SPOF** — bir team'in iki pNIC'i aynı fiziksel switch'e iniyor (`QueryNetworkHint`, CDP/LLDP; pasif, vDS Health Check tetiklenmez) | bulgu |
-| M8.6 | **Depolama yolu SPOF** — tüm yollar tek HBA'dan ya da tek hedef kontrolcüden geçiyor (`multipathInfo` zaten toplanıyor) | bulgu |
+| ◐ M8.6 | **Depolama yolu SPOF** — tüm yollar tek HBA'dan ya da tek hedef kontrolcüden geçiyor (`multipathInfo` zaten toplanıyor) *(tek yol + tek HBA: #46, #50. **Açık**: tek hedef port — `path.transport` okunacak; canlıda 1240 FC yolu WWPN taşıyor, 16 SAS + 2 PCIe taşımıyor → `null`, yargılanmaz)* | bulgu |
 | M8.7 | **Bitiş tarihi radarı** — ESXi sertifikası, lisans, vCenter sertifikası (TLS el sıkışması) | geri sayım + bulgu |
 | M8.8 | **Yedek tazeliği** — yedekleme aracının VM özel niteliğine yazdığı son başarılı yedek ↔ etiket/klasör başına RPO; satıcıdan bağımsız | "N saattir yedeği yok" |
 | M8.9 | **VCSA dosya tabanlı yedek durumu** (REST `/appliance/recovery/backup`) | bulgu |
-| M8.10 | **Süreklilik raporu** — M5'e dördüncü rapor | indirilebilir |
+| ✅ M8.10 | **Süreklilik raporu** — M5'e dördüncü rapor *(#51)* | indirilebilir |
 
 ## M6 — İkinci satıcı: iLO / iDRAC (Redfish)
 
