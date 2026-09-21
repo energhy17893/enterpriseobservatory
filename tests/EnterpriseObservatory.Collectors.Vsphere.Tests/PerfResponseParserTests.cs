@@ -183,6 +183,76 @@ public class PerfResponseParserTests
         Assert.Equal(35d, value.Raw);
     }
 
+    // A thirty-second cycle meeting twenty-second samples never reads about one
+    // sample in three if only the latest is kept. For a rate that is a thinner
+    // chart; for a summation — bus resets, aborted commands, dropped packets —
+    // it is the event itself going unseen.
+
+    private const string ThreeSamples = """
+        <QueryPerfResponse xmlns="urn:vim25">
+          <returnval>
+            <entity type="HostSystem">host-1</entity>
+            <sampleInfo><timestamp>2026-09-21T12:00:00Z</timestamp><interval>20</interval></sampleInfo>
+            <sampleInfo><timestamp>2026-09-21T12:00:20Z</timestamp><interval>20</interval></sampleInfo>
+            <sampleInfo><timestamp>2026-09-21T12:00:40Z</timestamp><interval>20</interval></sampleInfo>
+            <value>
+              <id><counterId>180</counterId><instance></instance></id>
+              <value>10</value><value>-1</value><value>35</value>
+            </value>
+          </returnval>
+        </QueryPerfResponse>
+        """;
+
+    [Fact]
+    public void The_latest_sample_carries_the_time_vcenter_took_it()
+    {
+        var entity = Assert.Single(
+            PerfResponseParser.ParseSamples(ThreeSamples, Catalog(), TimeSpan.FromSeconds(20)));
+
+        Assert.Equal(35d, Assert.Single(entity.Values).Raw);
+        Assert.Equal(new DateTimeOffset(2026, 9, 21, 12, 0, 40, TimeSpan.Zero), entity.SampledAtUtc);
+    }
+
+    [Fact]
+    public void The_earlier_samples_are_kept_under_their_own_times()
+    {
+        var entity = Assert.Single(
+            PerfResponseParser.ParseSamples(ThreeSamples, Catalog(), TimeSpan.FromSeconds(20)));
+
+        // Two earlier slots, one of them a reading that cannot exist. It is a
+        // gap there exactly as it would be in the latest position: never zero.
+        var earlier = Assert.Single(entity.Earlier);
+
+        Assert.Equal(new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero), earlier.SampledAtUtc);
+        Assert.Equal(10d, Assert.Single(earlier.Values).Raw);
+    }
+
+    [Fact]
+    public void Without_sample_times_nothing_earlier_is_claimed()
+    {
+        // No timestamp, no way to say when. Filing them under a guessed time
+        // would put real numbers at moments nobody measured.
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="HostSystem">host-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value>
+                  <id><counterId>180</counterId><instance></instance></id>
+                  <value>10</value><value>20</value><value>35</value>
+                </value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var entity = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20)));
+
+        Assert.Null(entity.SampledAtUtc);
+        Assert.Empty(entity.Earlier);
+        Assert.Equal(35d, Assert.Single(entity.Values).Raw);
+    }
+
     [Fact]
     public void An_aggregate_series_wins_over_the_per_device_ones()
     {

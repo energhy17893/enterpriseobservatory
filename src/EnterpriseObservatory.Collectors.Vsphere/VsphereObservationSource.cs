@@ -176,6 +176,7 @@ public sealed class VsphereObservationSource(
     {
         var now = _clock.UtcNow;
         var observations = new List<Observation>();
+        var backfill = new List<Observation>();
         var failures = new List<CollectionFailure>();
 
         var catalog = await _api.GetCounterCatalogAsync(cancellationToken).ConfigureAwait(false);
@@ -192,7 +193,7 @@ public sealed class VsphereObservationSource(
             {
                 await ReadTypeAsync(
                     entityType, moRefs, byKey, maxQueryMetrics, now,
-                    observations, failures, cancellationToken).ConfigureAwait(false);
+                    observations, backfill, failures, cancellationToken).ConfigureAwait(false);
             }
             catch (VsphereApiException ex) when (!EndsTheSession(ex.Kind))
             {
@@ -208,6 +209,7 @@ public sealed class VsphereObservationSource(
             SourceInstanceId = InstanceId,
             ReadAtUtc = now,
             Observations = observations,
+            Backfill = backfill,
             Failures = failures,
         };
     }
@@ -401,6 +403,7 @@ public sealed class VsphereObservationSource(
         int? maxQueryMetrics,
         DateTimeOffset now,
         List<Observation> observations,
+        List<Observation> backfill,
         List<CollectionFailure> failures,
         CancellationToken cancellationToken)
     {
@@ -549,6 +552,7 @@ public sealed class VsphereObservationSource(
                 }
 
                 observations.AddRange(read);
+                backfill.AddRange(ToBackfill(samples, fallbackInterval));
             }
             catch (VsphereQuerySizeRefusedException ex)
             {
@@ -584,52 +588,74 @@ public sealed class VsphereObservationSource(
         }
     }
 
+    /// <summary>The current value of each series, under the time vCenter took it.</summary>
+    /// <remarks>
+    /// vCenter's sample time, not the moment this read started. The two differ
+    /// by up to a sampling interval for a host and by minutes for a datastore,
+    /// whose samples are five minutes apart — stamped "now", a five-minute-old
+    /// figure claimed to be current. It is also what lets the store recognise
+    /// a sample it has already been given: the same sample comes back on the
+    /// next read, and under one time it is one row. The local clock is the
+    /// fallback only for a reply that carried no sample times.
+    /// </remarks>
     private IEnumerable<Observation> ToObservations(
         IReadOnlyList<PerfEntitySamples> samples,
         TimeSpan fallbackInterval,
+        DateTimeOffset now) =>
+        samples.SelectMany(entity => ToObservations(
+            entity.EntityMoRef, entity.Values, fallbackInterval, entity.SampledAtUtc ?? now));
+
+    /// <summary>The samples before the current one; see <see cref="ObservationBatch.Backfill"/>.</summary>
+    private IEnumerable<Observation> ToBackfill(
+        IReadOnlyList<PerfEntitySamples> samples,
+        TimeSpan fallbackInterval) =>
+        samples.SelectMany(entity => entity.Earlier.SelectMany(earlier => ToObservations(
+            entity.EntityMoRef, earlier.Values, fallbackInterval, earlier.SampledAtUtc)));
+
+    private IEnumerable<Observation> ToObservations(
+        string entityMoRef,
+        IReadOnlyList<CounterValue> values,
+        TimeSpan fallbackInterval,
         DateTimeOffset now)
     {
-        foreach (var entity in samples)
+        // A sample we cannot attribute to an entity is dropped rather than
+        // attached to a guess. An unattributed number is worse than no
+        // number: it looks like knowledge.
+        if (_targets.ResolveEntity(entityMoRef) is not { } entityId)
         {
-            // A sample we cannot attribute to an entity is dropped rather than
-            // attached to a guess. An unattributed number is worse than no
-            // number: it looks like knowledge.
-            if (_targets.ResolveEntity(entity.EntityMoRef) is not { } entityId)
+            yield break;
+        }
+
+        var measuredBy = _targets.DisplayNameOf(entityMoRef);
+
+        foreach (var value in values)
+        {
+            var withInterval = value.Interval > TimeSpan.Zero
+                ? value
+                : value with { Interval = fallbackInterval };
+
+            // Measured on this object, about a different one. The sample
+            // arrived under a host because that is where vSphere keeps
+            // datastore counters; the instance says which datastore, and
+            // filing it under the host would put storage latency on the
+            // wrong page entirely.
+            if (VsphereCounters.InstanceNamesAnEntity(value.CounterName))
             {
+                if (Reattribute(withInterval, entityId, measuredBy) is { } moved)
+                {
+                    yield return moved;
+                }
+
                 continue;
             }
 
-            var measuredBy = _targets.DisplayNameOf(entity.EntityMoRef);
-
-            foreach (var value in entity.Values)
+            yield return new Observation
             {
-                var withInterval = value.Interval > TimeSpan.Zero
-                    ? value
-                    : value with { Interval = fallbackInterval };
-
-                // Measured on this object, about a different one. The sample
-                // arrived under a host because that is where vSphere keeps
-                // datastore counters; the instance says which datastore, and
-                // filing it under the host would put storage latency on the
-                // wrong page entirely.
-                if (VsphereCounters.InstanceNamesAnEntity(value.CounterName))
-                {
-                    if (Reattribute(withInterval, entityId, measuredBy) is { } moved)
-                    {
-                        yield return moved;
-                    }
-
-                    continue;
-                }
-
-                yield return new Observation
-                {
-                    Entity = entityId,
-                    Value = withInterval,
-                    SampledAtUtc = now,
-                    Source = InstanceId,
-                };
-            }
+                Entity = entityId,
+                Value = withInterval,
+                SampledAtUtc = now,
+                Source = InstanceId,
+            };
         }
 
         Observation? Reattribute(CounterValue value, EntityId measuredOn, string? measuredBy)

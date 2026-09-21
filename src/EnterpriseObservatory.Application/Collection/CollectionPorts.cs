@@ -234,7 +234,28 @@ public sealed record ObservationBatch
 
     public required DateTimeOffset ReadAtUtc { get; init; }
 
+    /// <summary>The current value of each series: what the rules reason about.</summary>
     public IReadOnlyList<Observation> Observations { get; init; } = [];
+
+    /// <summary>
+    /// Earlier samples the same read carried, to be kept but not reasoned about.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A platform that samples faster than it is polled hands back more than
+    /// one sample per series, and keeping only the newest loses the rest for
+    /// good — for a summation, the event itself. They are stored under the
+    /// time the platform took them, so a sample seen by two consecutive reads
+    /// is one row, not two.
+    /// </para>
+    /// <para>
+    /// Apart from <see cref="Observations"/> because a rule handed several
+    /// values for one series would have to decide which it meant, and every
+    /// rule written so far means the current one. Empty for a source that has
+    /// nothing earlier to offer.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<Observation> Backfill { get; init; } = [];
 
     public IReadOnlyList<CollectionFailure> Failures { get; init; } = [];
 }

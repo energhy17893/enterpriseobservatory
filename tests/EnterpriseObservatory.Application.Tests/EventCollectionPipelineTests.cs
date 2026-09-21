@@ -80,6 +80,37 @@ public class EventCollectionPipelineTests
     }
 
     [Fact]
+    public async Task A_source_whose_inventory_did_not_answer_is_not_asked_for_events()
+    {
+        // The event read shares the inventory read's session and credential but
+        // never went through the runner, so nothing held it off: with a rejected
+        // password the inventory breaker opened after one strike and this read
+        // went on presenting the same password every cycle regardless. The
+        // inventory read has already answered "is this vCenter worth asking
+        // right now", so its answer is used rather than asked again.
+        var store = new RecordingStore();
+        var pipeline = new EventCollectionPipeline(store, new FixedClock(Now));
+        var reachable = new ScriptedSource("vc-ok", _ => new EventRead { Events = [Event(1)] });
+        var refused = new ScriptedSource("vc-refused", _ => new EventRead { Events = [Event(2)] });
+
+        var result = await pipeline.RunAsync(
+            [reachable, refused], answered: ["vc-ok"], Timeout.InfiniteTimeSpan, CancellationToken.None);
+
+        Assert.Single(reachable.AskedSince);
+        Assert.Empty(refused.AskedSince);
+
+        // Said out loud: not asking must never read as "nothing happened".
+        var (source, detail) = Assert.Single(result.Failures);
+        Assert.Equal("vc-refused", source);
+        Assert.Contains("not asked", detail, StringComparison.Ordinal);
+
+        // And its position is kept, so the window is read once it answers again.
+        var cursor = Assert.Single(store.Cursors, c => c.SourceInstanceId == "vc-refused");
+        Assert.Null(cursor.Mark);
+        Assert.Null(cursor.LastSuccessUtc);
+    }
+
+    [Fact]
     public async Task Each_read_starts_from_where_the_last_one_stopped()
     {
         var store = new RecordingStore();

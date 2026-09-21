@@ -133,6 +133,35 @@ public sealed record PropertyPage
 /// <summary>Reads <c>RetrievePropertiesEx</c> responses.</summary>
 public static class PropertyCollectorParser
 {
+    /// <summary>The response elements of the two calls this parser serves.</summary>
+    private static readonly HashSet<string> PropertyCollectorReplies = new(StringComparer.Ordinal)
+    {
+        "RetrievePropertiesExResponse",
+        "ContinueRetrievePropertiesExResponse",
+    };
+
+    /// <summary>Reads one page of a property retrieval.</summary>
+    /// <remarks>
+    /// <para>
+    /// An empty page is a claim — "there is nothing here" — and the graph acts
+    /// on it: every entity this source used to report is marked vanished on
+    /// the first miss and stops being sampled. So a reply that could not be
+    /// read must not be allowed to look like one. This used to return an empty
+    /// page for malformed XML, which made a truncated body or a proxy's error
+    /// page indistinguishable from a vCenter with nothing in it.
+    /// </para>
+    /// <para>
+    /// Two different things are told apart here. A property-collector reply
+    /// with no <c>returnval</c> is vCenter saying the result is empty, and that
+    /// stays a legitimate answer. Anything that is not a property-collector
+    /// reply at all is a failed read, and failing the read is safe: the
+    /// pipeline treats a source that did not answer as silent and keeps what
+    /// it had.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="VsphereApiException">
+    /// The reply is malformed, or is not a property-collector response.
+    /// </exception>
     public static PropertyPage ParsePage(string xml)
     {
         XDocument document;
@@ -140,16 +169,24 @@ public static class PropertyCollectorParser
         {
             document = VsphereXml.Parse(xml);
         }
-        catch (System.Xml.XmlException)
+        catch (System.Xml.XmlException ex)
         {
-            return new PropertyPage();
+            throw new VsphereApiException(
+                "vCenter's inventory reply could not be read, so nothing in it was believed.", ex);
+        }
+
+        if (!document.Descendants().Any(e => PropertyCollectorReplies.Contains(e.Name.LocalName)))
+        {
+            throw new VsphereApiException(
+                "The inventory reply did not come from vCenter's property collector " +
+                $"(it was a <{document.Root?.Name.LocalName}>), so nothing in it was believed.");
         }
 
         var returnVal = document.Descendants().FirstOrDefault(e => e.Name.LocalName == "returnval");
         if (returnVal is null)
         {
-            // No returnval at all means an empty result, which is a legitimate
-            // answer: an inventory with nothing in it.
+            // The property collector answered and had nothing to return, which
+            // is a legitimate answer: an inventory with nothing in it.
             return new PropertyPage();
         }
 

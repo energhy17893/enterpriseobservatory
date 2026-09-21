@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Collectors.Vsphere;
 
 namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
@@ -170,13 +171,51 @@ public class PropertyCollectorParserTests
         Assert.False(page.HasMore);
     }
 
-    [Fact]
-    public void Malformed_xml_yields_nothing_rather_than_throwing()
-    {
-        var page = PropertyCollectorParser.ParsePage("<not-xml");
+    // An empty page is a claim: "this vCenter has nothing in it". The graph
+    // believes it and marks every entity the source used to report as vanished
+    // on the first miss. So a reply that could not be read must never become
+    // one — it has to fail the read, which leaves the estate exactly as it was.
 
-        Assert.Empty(page.Objects);
-        Assert.False(page.HasMore);
+    [Fact]
+    public void Malformed_xml_fails_the_read_rather_than_reporting_an_empty_estate()
+    {
+        var fault = Assert.Throws<VsphereApiException>(
+            () => PropertyCollectorParser.ParsePage("<not-xml"));
+
+        Assert.Equal(
+            CollectionFailureKind.ProtocolError,
+            ((ICollectionFault)fault).Kind);
+    }
+
+    [Fact]
+    public void A_reply_cut_off_mid_page_fails_the_read()
+    {
+        Assert.Throws<VsphereApiException>(() => PropertyCollectorParser.ParsePage("""
+            <RetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval><objects><obj type="HostSystem">host-1</obj>
+            """));
+    }
+
+    [Fact]
+    public void A_well_formed_reply_that_is_not_from_the_property_collector_fails_the_read()
+    {
+        // What a proxy or a captive portal answers with: 200, parses cleanly,
+        // and says nothing about the inventory.
+        Assert.Throws<VsphereApiException>(() => PropertyCollectorParser.ParsePage("""
+            <html><body><h1>Service temporarily unavailable</h1></body></html>
+            """));
+    }
+
+    [Fact]
+    public void A_continuation_page_is_recognised_as_a_property_collector_reply()
+    {
+        var page = PropertyCollectorParser.ParsePage("""
+            <ContinueRetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval><objects><obj type="Datastore">ds-1</obj></objects></returnval>
+            </ContinueRetrievePropertiesExResponse>
+            """);
+
+        Assert.Single(page.Objects);
     }
 
     // --- structures -------------------------------------------------------

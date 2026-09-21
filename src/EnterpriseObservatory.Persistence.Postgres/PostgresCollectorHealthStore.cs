@@ -61,49 +61,28 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
             return;
         }
 
+        // Memory first, and the database outside the lock. Both halves were
+        // the other way round, and both were wrong in the same place.
+        //
+        // The runner decides whether to ask a source again from Current, every
+        // cycle. While this only updated memory after a write that succeeded,
+        // a database outage froze it: the failure count stopped moving and the
+        // one-strike rule never saw the rejected password, so with two faults
+        // at once the product guessed a credential every thirty seconds — the
+        // lockout the breaker exists to prevent, and what this class's own
+        // remarks say must not happen. What the breaker needs is what was
+        // observed, not what was saved.
+        //
+        // And the lock guards the dictionary, as Current's remarks already
+        // said. Held across the transaction, a slow write on the inventory
+        // loop stalled the observation loop and the API behind it for as long
+        // as the command timeout.
+        //
+        // The write still throws. The cycle reports it as state that could
+        // not be saved, which is true: a restart during the outage comes back
+        // with the older record.
         lock (_gate)
         {
-            _database.Write(connection =>
-            {
-                using var command = Command(connection, """
-                    INSERT INTO collector_health (
-                        instance_id, role, health, last_success_utc,
-                        consecutive_failures, is_backing_off, last_failure_detail,
-                        last_attempt_utc, last_failure_kind)
-                    VALUES (@instance, @role, @health, @success, @failures, @backing, @detail,
-                            @attempt, @kind)
-                    ON CONFLICT (instance_id, role) DO UPDATE SET
-                        health = EXCLUDED.health,
-                        last_success_utc = EXCLUDED.last_success_utc,
-                        consecutive_failures = EXCLUDED.consecutive_failures,
-                        is_backing_off = EXCLUDED.is_backing_off,
-                        last_failure_detail = EXCLUDED.last_failure_detail,
-                        last_attempt_utc = EXCLUDED.last_attempt_utc,
-                        last_failure_kind = EXCLUDED.last_failure_kind;
-                    """);
-
-                foreach (var entry in health)
-                {
-                    command.Parameters.Clear();
-                    command.Bind("@instance", entry.InstanceId);
-                    command.Bind("@role", entry.Role.ToString());
-                    command.Bind("@health", entry.Health.ToString());
-                    command.BindTime("@success", entry.LastSuccessUtc);
-                    command.Bind("@failures", entry.ConsecutiveFailures);
-                    command.Bind("@backing", entry.IsBackingOff);
-                    command.Bind("@detail", entry.LastFailureDetail);
-                    command.BindTime("@attempt", entry.LastAttemptUtc);
-                    command.Bind("@kind", entry.LastFailureKind?.ToString());
-                    command.ExecuteNonQuery();
-                }
-
-                // Replaced wholesale per collector, never merged. These
-                // describe one attempt, so a problem that has been fixed has to
-                // disappear — a list that only grows is a list that stops being
-                // read.
-                WritePartialFailures(connection, health);
-            });
-
             // Merged rather than replaced: a cycle only reports on the sources
             // it ran, and the two cycles run on different schedules. Replacing
             // would erase the other one's findings.
@@ -112,6 +91,49 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                 _health[(entry.InstanceId, entry.Role)] = entry;
             }
         }
+
+        // Unordered against the other loop's write, and safe to be: the two
+        // loops never write the same (instance, role) row.
+        _database.Write(connection =>
+        {
+            using var command = Command(connection, """
+                INSERT INTO collector_health (
+                    instance_id, role, health, last_success_utc,
+                    consecutive_failures, is_backing_off, last_failure_detail,
+                    last_attempt_utc, last_failure_kind)
+                VALUES (@instance, @role, @health, @success, @failures, @backing, @detail,
+                        @attempt, @kind)
+                ON CONFLICT (instance_id, role) DO UPDATE SET
+                    health = EXCLUDED.health,
+                    last_success_utc = EXCLUDED.last_success_utc,
+                    consecutive_failures = EXCLUDED.consecutive_failures,
+                    is_backing_off = EXCLUDED.is_backing_off,
+                    last_failure_detail = EXCLUDED.last_failure_detail,
+                    last_attempt_utc = EXCLUDED.last_attempt_utc,
+                    last_failure_kind = EXCLUDED.last_failure_kind;
+                """);
+
+            foreach (var entry in health)
+            {
+                command.Parameters.Clear();
+                command.Bind("@instance", entry.InstanceId);
+                command.Bind("@role", entry.Role.ToString());
+                command.Bind("@health", entry.Health.ToString());
+                command.BindTime("@success", entry.LastSuccessUtc);
+                command.Bind("@failures", entry.ConsecutiveFailures);
+                command.Bind("@backing", entry.IsBackingOff);
+                command.Bind("@detail", entry.LastFailureDetail);
+                command.BindTime("@attempt", entry.LastAttemptUtc);
+                command.Bind("@kind", entry.LastFailureKind?.ToString());
+                command.ExecuteNonQuery();
+            }
+
+            // Replaced wholesale per collector, never merged. These
+            // describe one attempt, so a problem that has been fixed has to
+            // disappear — a list that only grows is a list that stops being
+            // read.
+            WritePartialFailures(connection, health);
+        });
     }
 
     private static void WritePartialFailures(
