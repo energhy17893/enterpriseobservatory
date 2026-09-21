@@ -58,6 +58,7 @@ public class AnalysisRulesTests
         Assert.Equal(
             [
                 StoragePathRedundancy.RuleId,
+                MultipathSinglePointOfFailure.RuleId,
                 RemoteLogging.RuleId,
                 EventAlerts.RuleId,
                 DatastoreTimeToFull.RuleId,

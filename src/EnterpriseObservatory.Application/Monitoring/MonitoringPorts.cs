@@ -255,6 +255,13 @@ public sealed record MonitoringOptions
     public Analysis.StoragePathRedundancyPolicy StoragePathRedundancy { get; init; } =
         Analysis.StoragePathRedundancyPolicy.Default;
 
+    /// <summary>
+    /// Which of a storage path's reported states still carry I/O, for judging
+    /// whether a shared LUN's paths share one HBA. See roadmap M8.6.
+    /// </summary>
+    public Analysis.MultipathSinglePointOfFailurePolicy MultipathSinglePointOfFailure { get; init; } =
+        Analysis.MultipathSinglePointOfFailurePolicy.Default;
+
     /// <summary>Which setting names the host's log target.</summary>
     public Analysis.RemoteLoggingPolicy RemoteLogging { get; init; } =
         Analysis.RemoteLoggingPolicy.Default;
