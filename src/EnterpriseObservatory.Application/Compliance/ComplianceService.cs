@@ -24,23 +24,42 @@ namespace EnterpriseObservatory.Application.Compliance;
 /// </remarks>
 public interface IComplianceStore
 {
+    /// <summary>Every finding, of every catalogue release.</summary>
     IReadOnlyList<ComplianceFinding> Findings { get; }
 
+    /// <summary>Every exception, including withdrawn ones — they stay on the record.</summary>
     IReadOnlyList<ComplianceWaiver> Exceptions { get; }
 
     /// <summary>
-    /// Replaces every finding with what <paramref name="evaluate"/> makes of the current ones.
+    /// Replaces one catalogue release's findings with what <paramref name="evaluate"/>
+    /// makes of them.
     /// </summary>
-    void Evaluate(Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate);
+    /// <param name="catalogueRelease">
+    /// The release being evaluated. Only its findings are handed to
+    /// <paramref name="evaluate"/> and only they are replaced: another
+    /// catalogue's findings are that catalogue's evaluation's business.
+    /// </param>
+    /// <param name="nowUtc">When the evaluation ran, for the transitions it records.</param>
+    /// <param name="evaluate">Every finding it returns must belong to <paramref name="catalogueRelease"/>.</param>
+    void Evaluate(
+        string catalogueRelease,
+        DateTimeOffset nowUtc,
+        Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate);
 
     /// <summary>Applies a change to one finding, atomically; null when there is no such finding.</summary>
     ComplianceFinding? Mutate(
-        string controlId, EntityId entity, Func<ComplianceFinding, ComplianceFinding> change);
+        string catalogueRelease,
+        string controlId,
+        EntityId entity,
+        Func<ComplianceFinding, ComplianceFinding> change);
 
     void AddException(ComplianceWaiver exception);
 
-    /// <summary>Removes an exception; false when there was none with that id.</summary>
-    bool RemoveException(string id);
+    /// <summary>
+    /// Withdraws an exception, keeping it on the record with who withdrew it
+    /// and when; false when there is no standing exception with that id.
+    /// </summary>
+    bool RemoveException(string id, string removedBy, DateTimeOffset removedAtUtc);
 }
 
 /// <summary>Why a compliance command was refused.</summary>
@@ -61,6 +80,12 @@ public enum ComplianceFailure
 
     /// <summary>A reason and an owner are both required.</summary>
     MissingDetail,
+
+    /// <summary>A reason or an owner is longer than the record keeps.</summary>
+    TooLong,
+
+    /// <summary>Somebody already owns the finding; an acceptance is not overwritten.</summary>
+    AlreadyAccepted,
 }
 
 /// <summary>What a compliance command did.</summary>
@@ -118,6 +143,17 @@ public sealed class ComplianceService(
     /// </remarks>
     public static TimeSpan MaximumExceptionDuration { get; } = TimeSpan.FromDays(366);
 
+    /// <summary>The longest reason an acceptance or an exception may carry.</summary>
+    /// <remarks>
+    /// Room for a paragraph and a list of change tickets. A reason is read by
+    /// people on a screen and in an audit report, and anything longer than
+    /// this is a document that belongs in the ticket it should be citing.
+    /// </remarks>
+    public const int MaximumReasonLength = 2000;
+
+    /// <summary>The longest owner an exception may name: a person, a team, or a mailbox.</summary>
+    public const int MaximumOwnerLength = 200;
+
     public ComplianceCatalogue Catalogue { get; } =
         catalogue ?? throw new ArgumentNullException(nameof(catalogue));
 
@@ -128,22 +164,31 @@ public sealed class ComplianceService(
         [.. _store.Findings.Where(f =>
             string.Equals(f.CatalogueRelease, Catalogue.Release, StringComparison.Ordinal))];
 
+    /// <summary>Every exception, standing or withdrawn.</summary>
     public IReadOnlyList<ComplianceWaiver> Exceptions() => _store.Exceptions;
 
     public DateTimeOffset Now => _clock.UtcNow;
 
     /// <summary>Judges the estate as the inventory last read it.</summary>
+    /// <param name="entities">The estate.</param>
+    /// <param name="reportingSources">
+    /// The sources that answered in the inventory cycle just run; a host of
+    /// any other source is judged on what it last reported and marked stale.
+    /// Null treats every source as having answered.
+    /// </param>
     /// <returns>How many findings the evaluation holds.</returns>
-    public int Evaluate(IReadOnlyList<Entity> entities)
+    public int Evaluate(
+        IReadOnlyList<Entity> entities, IReadOnlyCollection<string>? reportingSources = null)
     {
         ArgumentNullException.ThrowIfNull(entities);
 
         var now = _clock.UtcNow;
         var count = 0;
 
-        _store.Evaluate(previous =>
+        _store.Evaluate(Catalogue.Release, now, previous =>
         {
-            var findings = ComplianceEvaluation.Evaluate(Catalogue, entities, previous, now);
+            var findings = ComplianceEvaluation.Evaluate(
+                Catalogue, entities, previous, now, reportingSources: reportingSources);
             count = findings.Count;
             return findings;
         });
@@ -152,10 +197,22 @@ public sealed class ComplianceService(
     }
 
     /// <summary>Records that an operator owns a failing finding.</summary>
+    /// <remarks>
+    /// Refused when somebody already owns it. Overwriting would erase who took
+    /// it on first and why, which is the part an auditor asks about; whoever
+    /// wants to take it over says so to the person on the record.
+    /// </remarks>
     public ComplianceResult Accept(
         string controlId, EntityId entity, string reason, OperatorIdentity actor)
     {
         ArgumentNullException.ThrowIfNull(actor);
+
+        var trimmed = reason?.Trim() ?? string.Empty;
+
+        if (trimmed.Length > MaximumReasonLength)
+        {
+            return ComplianceResult.Refused(ComplianceFailure.TooLong);
+        }
 
         var current = Findings().FirstOrDefault(f =>
             string.Equals(f.ControlId, controlId, StringComparison.Ordinal) && f.Entity == entity);
@@ -170,24 +227,33 @@ public sealed class ComplianceService(
             return ComplianceResult.Refused(ComplianceFailure.NotFailing);
         }
 
+        if (current.Acceptance is not null)
+        {
+            return ComplianceResult.Refused(ComplianceFailure.AlreadyAccepted);
+        }
+
         var acceptance = new FindingAcceptance
         {
             By = actor.AuditName,
             AtUtc = _clock.UtcNow,
-            Reason = reason?.Trim() ?? string.Empty,
+            Reason = trimmed,
         };
 
         // Applied to the stored finding, not to the copy read above: an
-        // evaluation may have landed in between, and the check is repeated
-        // under the hold for the same reason.
-        var changed = _store.Mutate(controlId, entity, f =>
-            f.Verdict == ComplianceVerdict.Failing ? f with { Acceptance = acceptance } : f);
+        // evaluation or another operator may have landed in between, and the
+        // checks are repeated under the hold for the same reason.
+        var changed = _store.Mutate(Catalogue.Release, controlId, entity, f =>
+            f.Verdict == ComplianceVerdict.Failing && f.Acceptance is null
+                ? f with { Acceptance = acceptance }
+                : f);
 
-        return changed is null
-            ? ComplianceResult.Refused(ComplianceFailure.NotFound)
-            : changed.Acceptance == acceptance
-                ? ComplianceResult.Done(changed)
-                : ComplianceResult.Refused(ComplianceFailure.NotFailing);
+        return changed switch
+        {
+            null => ComplianceResult.Refused(ComplianceFailure.NotFound),
+            _ when changed.Acceptance == acceptance => ComplianceResult.Done(changed),
+            _ when changed.Acceptance is not null => ComplianceResult.Refused(ComplianceFailure.AlreadyAccepted),
+            _ => ComplianceResult.Refused(ComplianceFailure.NotFailing),
+        };
     }
 
     /// <summary>Records an exception to a control, for one entity or all of them.</summary>
@@ -211,6 +277,11 @@ public sealed class ComplianceService(
             // An exception nobody can explain or answer for is the forgotten
             // kind before it has even been forgotten.
             return ComplianceResult.Refused(ComplianceFailure.MissingDetail);
+        }
+
+        if (reason.Trim().Length > MaximumReasonLength || owner.Trim().Length > MaximumOwnerLength)
+        {
+            return ComplianceResult.Refused(ComplianceFailure.TooLong);
         }
 
         var now = _clock.UtcNow;
@@ -238,14 +309,24 @@ public sealed class ComplianceService(
     }
 
     /// <summary>Withdraws an exception; the findings it covered are failing again at once.</summary>
-    public ComplianceResult RemoveException(string id)
+    /// <remarks>
+    /// Withdrawn, not deleted: the exception stays on the record with who
+    /// withdrew it and when, because "why was this host not counted in March"
+    /// is asked long after the answer stopped applying.
+    /// </remarks>
+    public ComplianceResult RemoveException(string id, OperatorIdentity actor)
     {
+        ArgumentNullException.ThrowIfNull(actor);
+
+        var now = _clock.UtcNow;
+
         if (_store.Exceptions.FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.Ordinal)) is not { } exception ||
-            !_store.RemoveException(id))
+            exception.RemovedAtUtc is not null ||
+            !_store.RemoveException(id, actor.AuditName, now))
         {
             return ComplianceResult.Refused(ComplianceFailure.NotFound);
         }
 
-        return ComplianceResult.Done(exception);
+        return ComplianceResult.Done(exception with { RemovedBy = actor.AuditName, RemovedAtUtc = now });
     }
 }

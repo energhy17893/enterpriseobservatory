@@ -37,13 +37,24 @@ public class ComplianceServiceTests
 
         public IReadOnlyList<ComplianceWaiver> Exceptions => _exceptions;
 
-        public void Evaluate(Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate) =>
-            _findings = [.. evaluate(_findings)];
+        public void Evaluate(
+            string catalogueRelease,
+            DateTimeOffset nowUtc,
+            Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate) =>
+            _findings =
+            [
+                .. _findings.Where(f => f.CatalogueRelease != catalogueRelease),
+                .. evaluate([.. _findings.Where(f => f.CatalogueRelease == catalogueRelease)]),
+            ];
 
         public ComplianceFinding? Mutate(
-            string controlId, EntityId entity, Func<ComplianceFinding, ComplianceFinding> change)
+            string catalogueRelease,
+            string controlId,
+            EntityId entity,
+            Func<ComplianceFinding, ComplianceFinding> change)
         {
-            var index = _findings.FindIndex(f => f.ControlId == controlId && f.Entity == entity);
+            var index = _findings.FindIndex(f =>
+                f.CatalogueRelease == catalogueRelease && f.ControlId == controlId && f.Entity == entity);
 
             if (index < 0)
             {
@@ -56,7 +67,21 @@ public class ComplianceServiceTests
 
         public void AddException(ComplianceWaiver exception) => _exceptions.Add(exception);
 
-        public bool RemoveException(string id) => _exceptions.RemoveAll(e => e.Id == id) > 0;
+        public bool RemoveException(string id, string removedBy, DateTimeOffset removedAtUtc)
+        {
+            var index = _exceptions.FindIndex(e => e.Id == id && e.RemovedAtUtc is null);
+
+            if (index < 0)
+            {
+                return false;
+            }
+
+            _exceptions[index] = _exceptions[index] with { RemovedBy = removedBy, RemovedAtUtc = removedAtUtc };
+            return true;
+        }
+
+        /// <summary>Puts a finding of another release beside the evaluated ones.</summary>
+        public void Seed(ComplianceFinding finding) => _findings.Add(finding);
     }
 
     private readonly Clock _clock = new(T0);
@@ -177,9 +202,137 @@ public class ComplianceServiceTests
         Evaluate("");
         var added = _service.AddException("esx-9.log-forwarding", Host1, "why", "who", T0.AddDays(7), Operator);
 
-        Assert.True(_service.RemoveException(added.Exception!.Id).Applied);
+        Assert.True(_service.RemoveException(added.Exception!.Id, Operator).Applied);
         Assert.Equal(FindingState.Failing, State());
-        Assert.Equal(ComplianceFailure.NotFound, _service.RemoveException(added.Exception.Id).Failure);
+        Assert.Equal(ComplianceFailure.NotFound, _service.RemoveException(added.Exception.Id, Operator).Failure);
+    }
+
+    [Fact]
+    public void A_removed_exception_stays_on_the_record_with_who_removed_it()
+    {
+        Evaluate("");
+        var added = _service.AddException("esx-9.log-forwarding", Host1, "why", "who", T0.AddDays(7), Operator);
+
+        _clock.UtcNow = T0.AddHours(2);
+        var removed = _service.RemoveException(
+            added.Exception!.Id, OperatorIdentity.Verified("second-operator"));
+
+        Assert.True(removed.Applied);
+
+        var kept = Assert.Single(_service.Exceptions());
+
+        Assert.Equal("second-operator", kept.RemovedBy);
+        Assert.Equal(T0.AddHours(2), kept.RemovedAtUtc);
+
+        // It covered the finding until it was withdrawn, and not after.
+        Assert.True(kept.Covers("esx-9.log-forwarding", Host1, T0.AddHours(1)));
+        Assert.False(kept.Covers("esx-9.log-forwarding", Host1, T0.AddHours(2)));
+    }
+
+    [Fact]
+    public void Accepting_an_accepted_finding_is_refused_rather_than_overwriting_it()
+    {
+        Evaluate("");
+        _service.Accept("esx-9.log-forwarding", Host1, "CHG-1", Operator);
+
+        _clock.UtcNow = T0.AddHours(1);
+        var second = _service.Accept(
+            "esx-9.log-forwarding", Host1, "CHG-2", OperatorIdentity.Verified("second-operator"));
+
+        Assert.False(second.Applied);
+        Assert.Equal(ComplianceFailure.AlreadyAccepted, second.Failure);
+
+        var acceptance = _service.Findings()[0].Acceptance!;
+
+        Assert.Equal("ertugrul", acceptance.By);
+        Assert.Equal("CHG-1", acceptance.Reason);
+        Assert.Equal(T0, acceptance.AtUtc);
+    }
+
+    [Fact]
+    public void An_acceptance_reason_longer_than_the_record_keeps_is_refused()
+    {
+        Evaluate("");
+
+        var tooLong = _service.Accept(
+            "esx-9.log-forwarding", Host1, new string('x', ComplianceService.MaximumReasonLength + 1), Operator);
+
+        Assert.Equal(ComplianceFailure.TooLong, tooLong.Failure);
+        Assert.Null(_service.Findings()[0].Acceptance);
+
+        Assert.True(_service.Accept(
+            "esx-9.log-forwarding", Host1, new string('x', ComplianceService.MaximumReasonLength), Operator).Applied);
+    }
+
+    [Theory]
+    [InlineData(ComplianceService.MaximumReasonLength + 1, 10)]
+    [InlineData(10, ComplianceService.MaximumOwnerLength + 1)]
+    public void An_exception_reason_or_owner_longer_than_the_record_keeps_is_refused(int reason, int owner)
+    {
+        var result = _service.AddException(
+            "esx-9.log-forwarding", Host1, new string('r', reason), new string('o', owner), T0.AddDays(7), Operator);
+
+        Assert.Equal(ComplianceFailure.TooLong, result.Failure);
+        Assert.Empty(_service.Exceptions());
+    }
+
+    [Fact]
+    public void An_exception_at_the_length_limits_is_recorded()
+    {
+        var result = _service.AddException(
+            "esx-9.log-forwarding",
+            Host1,
+            new string('r', ComplianceService.MaximumReasonLength),
+            new string('o', ComplianceService.MaximumOwnerLength),
+            T0.AddDays(7),
+            Operator);
+
+        Assert.True(result.Applied);
+    }
+
+    [Fact]
+    public void An_evaluation_leaves_another_catalogue_releases_findings_alone()
+    {
+        // A second vendor's catalogue is evaluated by its own service; this
+        // one's evaluation must neither see nor replace what that one wrote.
+        var other = new ComplianceFinding
+        {
+            ControlId = "other-vendor.control",
+            CatalogueRelease = "other-2026",
+            Entity = Host1,
+            Verdict = ComplianceVerdict.Failing,
+            FirstSeenUtc = T0,
+            LastEvaluatedUtc = T0,
+        };
+
+        _store.Seed(other);
+
+        Evaluate("");
+        Evaluate("udp://10.0.0.5:514");
+
+        Assert.Contains(other, _store.Findings);
+        Assert.Equal(2, _store.Findings.Count);
+    }
+
+    [Fact]
+    public void A_host_whose_source_did_not_report_is_judged_stale_and_dated_when_it_was_read()
+    {
+        var host = Host(settings: ("Syslog.global.logHost", "")) with { SourceInstanceId = "vc-1" };
+
+        _clock.UtcNow = T0.AddHours(6);
+        _service.Evaluate([host], reportingSources: ["vc-2"]);
+
+        var finding = Assert.Single(_service.Findings());
+
+        Assert.True(finding.Stale);
+        Assert.Equal(T0, finding.LastEvaluatedUtc);
+
+        _service.Evaluate([host with { LastSeenUtc = T0.AddHours(6) }], reportingSources: ["vc-1"]);
+
+        finding = Assert.Single(_service.Findings());
+
+        Assert.False(finding.Stale);
+        Assert.Equal(T0.AddHours(6), finding.LastEvaluatedUtc);
     }
 
     [Theory]

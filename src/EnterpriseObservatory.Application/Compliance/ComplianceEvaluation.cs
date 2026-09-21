@@ -103,24 +103,42 @@ public static class ComplianceEvaluation
     /// <param name="catalogue">What to judge against.</param>
     /// <param name="entities">The estate, as the inventory last read it.</param>
     /// <param name="previous">What was concluded last time, for dates and acceptances.</param>
-    /// <param name="nowUtc">When this evaluation happens.</param>
+    /// <param name="nowUtc">When this evaluation happens; the latest a finding can be stamped.</param>
     /// <param name="checks">The checks available; the defaults when null.</param>
+    /// <param name="reportingSources">
+    /// The sources that answered in the inventory cycle this evaluation
+    /// follows, or null to treat every host's source as having answered. A
+    /// host whose source is not among them is judged on the settings it last
+    /// reported and its findings are marked <see cref="ComplianceFinding.Stale"/>.
+    /// </param>
     /// <returns>
     /// One finding per evaluated control per live host. Controls with no check
     /// produce none — they are reported per control by <see cref="Bind"/>,
     /// because repeating "we do not read this" on every host would multiply one
     /// fact by the size of the estate.
     /// </returns>
+    /// <remarks>
+    /// Every finding is stamped with when its host was last read, not with
+    /// <paramref name="nowUtc"/>. The graph keeps a silent vCenter's hosts as
+    /// they were (see <see cref="EntityGraph.Merge"/>), so judging them again
+    /// re-derives an old verdict from old settings; dating that verdict now
+    /// would make a reading nobody took look current.
+    /// </remarks>
     public static IReadOnlyList<ComplianceFinding> Evaluate(
         ComplianceCatalogue catalogue,
         IReadOnlyList<Entity> entities,
         IReadOnlyList<ComplianceFinding> previous,
         DateTimeOffset nowUtc,
-        IReadOnlyList<SettingCheck>? checks = null)
+        IReadOnlyList<SettingCheck>? checks = null,
+        IReadOnlyCollection<string>? reportingSources = null)
     {
         ArgumentNullException.ThrowIfNull(catalogue);
         ArgumentNullException.ThrowIfNull(entities);
         ArgumentNullException.ThrowIfNull(previous);
+
+        var reporting = reportingSources is null
+            ? null
+            : new HashSet<string>(reportingSources, StringComparer.Ordinal);
 
         var before = previous
             .Where(f => string.Equals(f.CatalogueRelease, catalogue.Release, StringComparison.Ordinal))
@@ -137,7 +155,13 @@ public static class ComplianceEvaluation
         {
             foreach (var host in hosts)
             {
-                var now = Judge(bound, host, catalogue.Release, nowUtc);
+                var stale = reporting is not null && !reporting.Contains(host.SourceInstanceId);
+
+                // Never later than now: a collector whose clock runs ahead
+                // must not date a reading in the future.
+                var readAt = host.LastSeenUtc < nowUtc ? host.LastSeenUtc : nowUtc;
+
+                var now = Judge(bound, host, catalogue.Release, readAt) with { Stale = stale };
 
                 findings.Add(before.TryGetValue((now.ControlId, now.Entity), out var last)
                     ? Continue(last, now)
@@ -149,7 +173,7 @@ public static class ComplianceEvaluation
     }
 
     private static ComplianceFinding Judge(
-        BoundControl bound, Entity host, string release, DateTimeOffset nowUtc)
+        BoundControl bound, Entity host, string release, DateTimeOffset readAtUtc)
     {
         var check = bound.Check!;
 
@@ -160,8 +184,8 @@ public static class ComplianceEvaluation
             Entity = host.Id,
             EntityName = host.DisplayName,
             Verdict = ComplianceVerdict.NotEvaluated,
-            FirstSeenUtc = nowUtc,
-            LastEvaluatedUtc = nowUtc,
+            FirstSeenUtc = readAtUtc,
+            LastEvaluatedUtc = readAtUtc,
         };
 
         // Absent is unread, and unread is not a verdict: whatever the host did

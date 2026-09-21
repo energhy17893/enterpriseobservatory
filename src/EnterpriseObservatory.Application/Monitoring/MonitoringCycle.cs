@@ -42,6 +42,17 @@ public sealed record MonitoringCycleResult
     /// result means: everything these sources cover is unknown, not healthy.
     /// </remarks>
     public IReadOnlyList<string> SilentSources { get; init; } = [];
+
+    /// <summary>
+    /// Sources that returned a snapshot this cycle.
+    /// </summary>
+    /// <remarks>
+    /// Not merely the complement of <see cref="SilentSources"/>: a vCenter
+    /// removed from the product is in neither the configured list nor this
+    /// one, and its entities stay in the graph as last read. Whatever is
+    /// judged from them is not current, and only this list can say so.
+    /// </remarks>
+    public IReadOnlyList<string> ReportingSources { get; init; } = [];
 }
 
 /// <summary>
@@ -226,6 +237,7 @@ public sealed class MonitoringCycle(
             ActiveEntities = graph.Active.Count(),
             VanishedEntities = graph.Vanished.Count(),
             SilentSources = silent,
+            ReportingSources = reporting,
         };
     }
 
