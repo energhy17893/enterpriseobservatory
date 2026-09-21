@@ -933,6 +933,74 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
+    public async Task A_source_that_goes_silent_in_the_metric_cycle_keeps_its_metric_alerts()
+    {
+        // The same defect PR #37 fixed for the inventory cycle, in the other
+        // scope. EntityGraph.Merge keeps a silent source's entities because we
+        // did not look; a metric-scope alert on one of them must be held the
+        // same way. It was not: RunObservationsAsync reconciles with
+        // CarryForward([], null, unevaluated), so a source that fails to
+        // answer this cycle has its open fault alerts resolved -- not because
+        // the fault cleared, but because nobody looked -- and they reopen and
+        // notify again the moment the source answers.
+        var reachable = true;
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow, entities: [Host("vc-1:host-1", _clock.UtcNow)]),
+        };
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => reachable
+                ? Batch("vc-1", _clock.UtcNow) with
+                {
+                    Observations = [Fault("storagePath.busResets.summation", 1, "vmhba0:C0:T0:L1")],
+                }
+                : throw new InvalidOperationException("unreachable"),
+        };
+
+        var cycle = Cycle();
+
+        // The entity has to be in the graph, carrying its source, before
+        // absence can be told apart from a source nobody has ever asked.
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        // Twice: a Warning confirms on its second consecutive observation.
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        var raised = Assert.Single(_alerts.All, a => a.Category == "Fault");
+        Assert.Equal(AlertLifecycleState.Open, raised.State);
+
+        reachable = false;
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Contains("vc-1", result.SilentSources);
+
+        var held = Assert.Single(_alerts.All, a => a.Category == "Fault");
+        Assert.Equal(AlertLifecycleState.Open, held.State);
+        Assert.Equal(raised.LastSeenUtc, held.LastSeenUtc);
+
+        // Held, not carried as a fresh confirmation: nothing about it is owed
+        // a notification just because the cycle ran.
+        Assert.DoesNotContain(result.ToNotify, a => a.Category == "Fault");
+
+        // And once the source answers again without the fault, it resolves as
+        // before -- this is not a scope that stopped resolving anything.
+        reachable = true;
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        var recovered = await cycle.RunObservationsAsync(
+            [new FakeObservationSource("vc-1") { Behaviour = () => Batch("vc-1", _clock.UtcNow) }],
+            Options,
+            CancellationToken.None);
+
+        Assert.DoesNotContain(recovered.Visible, a => a.Category == "Fault");
+    }
+
+    [Fact]
     public async Task A_clean_fabric_raises_nothing()
     {
         // The live case. Zero readings across every path, and the rule must
