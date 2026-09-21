@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace EnterpriseObservatory.Application.Analysis;
 
 /// <summary>One reading of a series: when, and how much.</summary>
@@ -92,19 +94,41 @@ public static class Trend
         var x = ordered.Select(p => (p.AtUtc - origin).TotalDays).ToArray();
         var y = ordered.Select(p => p.Value).ToArray();
 
-        var slopes = new List<double>(x.Length * (x.Length - 1) / 2);
-        for (var i = 0; i < x.Length - 1; i++)
+        // The pairwise slopes go into a pooled buffer and their median is
+        // selected in place. A fresh list here was 2 MB at 720 points, and
+        // sorting a copy of it for the median another 2 MB — per datastore,
+        // per estimate.
+        var pairs = x.Length * (x.Length - 1) / 2;
+        var buffer = ArrayPool<double>.Shared.Rent(Math.Max(pairs, x.Length));
+
+        try
         {
-            for (var j = i + 1; j < x.Length; j++)
+            var slopes = buffer.AsSpan(0, pairs);
+            var k = 0;
+            for (var i = 0; i < x.Length - 1; i++)
             {
-                slopes.Add((y[j] - y[i]) / (x[j] - x[i]));
+                for (var j = i + 1; j < x.Length; j++)
+                {
+                    slopes[k++] = (y[j] - y[i]) / (x[j] - x[i]);
+                }
             }
+
+            var slope = Stats.MedianInPlace(slopes);
+
+            var residuals = buffer.AsSpan(0, x.Length);
+            for (var i = 0; i < x.Length; i++)
+            {
+                residuals[i] = y[i] - slope * x[i];
+            }
+
+            var intercept = Stats.MedianInPlace(residuals);
+
+            return new TheilSenFit(slope, intercept, origin);
         }
-
-        var slope = Stats.Median(slopes);
-        var intercept = Stats.Median(y.Select((v, i) => v - slope * x[i]).ToList());
-
-        return new TheilSenFit(slope, intercept, origin);
+        finally
+        {
+            ArrayPool<double>.Shared.Return(buffer);
+        }
     }
 
     /// <summary>
