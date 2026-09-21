@@ -38,6 +38,14 @@ const GROUPS = [
     ],
   },
   {
+    // A group of its own, not a Triage item. Findings are months-long and
+    // expected by the hundred; next to the inbox they would read as work that
+    // needs doing tonight, which is the mistake this screen exists to avoid.
+    label: 'Assess',
+    question: 'Is it set up correctly?',
+    items: [{ to: '/compliance', label: 'Compliance' }],
+  },
+  {
     label: 'Configure',
     question: 'How do I set this up?',
     items: [

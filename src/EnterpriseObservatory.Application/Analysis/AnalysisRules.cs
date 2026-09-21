@@ -238,9 +238,19 @@ public sealed class StoragePathRedundancyRule : IAnalysisRule
 
 /// <summary>Adapts <see cref="RemoteLogging"/>.</summary>
 /// <remarks>
+/// <para>
 /// The first rule that reads configuration rather than measurement. It rides
 /// the inventory rhythm because that is when the setting is read: a value that
 /// changes when somebody changes it has nothing to say every twenty seconds.
+/// </para>
+/// <para>
+/// The compliance engine now judges the same setting as a catalogue control
+/// (<c>esx-9.log-forwarding</c>, <c>esxi-8.logs-remote</c>) with a finding's
+/// lifecycle, which is where it belongs. This alert is kept until that screen
+/// has been verified on the live estate (roadmap M3.3); retiring it before then
+/// would trade a proven signal for an unproven one. When it goes, it goes from
+/// this list and its tests together.
+/// </para>
 /// </remarks>
 public sealed class RemoteLoggingRule : IAnalysisRule
 {

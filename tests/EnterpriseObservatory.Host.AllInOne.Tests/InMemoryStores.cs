@@ -1,9 +1,11 @@
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
+using EnterpriseObservatory.Domain.Compliance;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -652,6 +654,85 @@ internal sealed class InMemoryEventStore : IEventStore, IEventHistory
         lock (_gate)
         {
             return _cursors.GetValueOrDefault(sourceInstanceId);
+        }
+    }
+}
+
+/// <summary>Compliance findings and exceptions, held under one lock like the real store.</summary>
+internal sealed class InMemoryComplianceStore : IComplianceStore
+{
+    private readonly Lock _gate = new();
+    private List<ComplianceFinding> _findings = [];
+    private readonly List<ComplianceWaiver> _exceptions = [];
+
+    public IReadOnlyList<ComplianceFinding> Findings
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _findings];
+            }
+        }
+    }
+
+    public IReadOnlyList<ComplianceWaiver> Exceptions
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _exceptions];
+            }
+        }
+    }
+
+    public void Evaluate(Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate)
+    {
+        ArgumentNullException.ThrowIfNull(evaluate);
+
+        lock (_gate)
+        {
+            _findings = [.. evaluate([.. _findings])];
+        }
+    }
+
+    public ComplianceFinding? Mutate(
+        string controlId, EntityId entity, Func<ComplianceFinding, ComplianceFinding> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+
+        lock (_gate)
+        {
+            var index = _findings.FindIndex(f => f.ControlId == controlId && f.Entity == entity);
+
+            if (index < 0)
+            {
+                return null;
+            }
+
+            var changed = change(_findings[index]);
+            _findings[index] = changed;
+
+            return changed;
+        }
+    }
+
+    public void AddException(ComplianceWaiver exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        lock (_gate)
+        {
+            _exceptions.Add(exception);
+        }
+    }
+
+    public bool RemoveException(string id)
+    {
+        lock (_gate)
+        {
+            return _exceptions.RemoveAll(e => e.Id == id) > 0;
         }
     }
 }
