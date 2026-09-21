@@ -60,25 +60,13 @@ public sealed record MultipathSinglePointOfFailurePolicy
 /// same thing directly, but the collector does not read it yet.
 /// </para>
 /// <para>
-/// <strong>The target-port finding this rule does not produce.</strong> The
-/// roadmap step asks for a third case — every working path leaving through
-/// the same storage-array target port — and it is not implemented here. The
-/// evidence for it exists in vim25 but is not collected: a
-/// <c>HostMultipathInfoPath</c> carries a <c>transport</c> field of type
-/// <c>HostTargetTransport</c>, which for Fibre Channel is a
-/// <c>HostFibreChannelTargetTransport</c> carrying <c>portWorldWideName</c>,
-/// and for iSCSI a <c>HostInternetScsiTargetTransport</c> carrying
-/// <c>iScsiName</c> (confirmed against the vSphere Web Services API
-/// reference on developer.broadcom.com, September 2026). Nothing this
-/// collector reads today parses <c>path.transport</c> at all — see
-/// <c>VsphereClient.ReadStoragePaths</c> — and adding it means changing that
-/// method's shape and <see cref="Domain.StoragePath"/>'s. Both are out of
-/// reach here: <c>VsphereClient.cs</c> is owned by a parallel session for the
-/// duration of this change, and changing the domain record underneath it
-/// while that session is also touching the collector risks exactly the
-/// merge collision the worktree split exists to avoid. Left as the next step
-/// on this roadmap item rather than smuggled in as a partial read that could
-/// not be tested against the real field.
+/// <strong>The target-port case.</strong> Every working path landing on the
+/// same storage-array target port is the third finding — see
+/// <c>SingleTargetPortVerdict</c>. It reads <see cref="Domain.StoragePath.Target"/>,
+/// which the collector fills from <c>path.transport</c>: a Fibre Channel
+/// target port WWN (measured live on 1240 paths) or an iSCSI target IQN
+/// (schema only). A path with no target is unknown and stops the case from
+/// judging, rather than counting as "the same port".
 /// </para>
 /// <para>
 /// <strong>Citations.</strong> Broadcom's official multipathing guidance
@@ -153,7 +141,8 @@ public static class MultipathSinglePointOfFailure
 
                 var paths = device.ToList();
 
-                if (Verdict(host, device.Key, datastoreName, paths, rules) is { } found)
+                if ((Verdict(host, device.Key, datastoreName, paths, rules)
+                     ?? SingleTargetPortVerdict(host, device.Key, datastoreName, paths, rules)) is { } found)
                 {
                     alerts.Add(found);
                 }
@@ -320,4 +309,62 @@ public static class MultipathSinglePointOfFailure
         "working route at once, exactly as if there had only ever been one path. Add a working " +
         "path that leaves through a different adapter so that an HBA failure has somewhere to " +
         "fail over to.";
+
+    // --- third case: one storage-array target port -------------------------
+    //
+    // Kept as its own method, reached only when Verdict found nothing, so it
+    // merges independently of other work on the single-path and single-HBA
+    // cases. Reads StoragePath.Target, which the collector fills from
+    // path.transport: a Fibre Channel target port WWN or an iSCSI target IQN.
+
+    private const string SingleTargetTitle = "All working paths reach one target port";
+
+    /// <summary>
+    /// Two or more working paths, every one landing on the same named
+    /// storage-array target port.
+    /// </summary>
+    /// <remarks>
+    /// Reached only when neither the single-path nor the single-HBA case
+    /// fired, so one device on one host carries at most one finding: with one
+    /// HBA and one port, the HBA is the nearer single point of failure and is
+    /// already named. A working path with a null target is unknown, not "the
+    /// same port" — SAS and PCIe transports name no port at all — so any such
+    /// path means this case does not judge.
+    /// </remarks>
+    private static AlertDefinition? SingleTargetPortVerdict(
+        Entity host,
+        string device,
+        string datastoreName,
+        List<StoragePath> paths,
+        MultipathSinglePointOfFailurePolicy rules)
+    {
+        var working = paths
+            .Where(p => rules.WorkingStates.Contains(p.State, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+
+        if (working.Count < 2 || working.Any(p => string.IsNullOrEmpty(p.Target)))
+        {
+            return null;
+        }
+
+        var targets = working
+            .Select(p => p.Target!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return targets.Count == 1
+            ? Alert(
+                host, device, SingleTargetTitle, AlertSeverity.Warning,
+                DescribeSingleTarget(datastoreName, device, targets[0], working.Count))
+            : null;
+    }
+
+    private static string DescribeSingleTarget(
+        string datastoreName, string device, string target, int workingPaths) =>
+        $"This host has {workingPaths} working paths to datastore {datastoreName} ({device}), and " +
+        $"every one of them lands on the same storage-array target port, {target}. The host side " +
+        "looks redundant but the array side is not: losing that one controller port, its SFP or " +
+        "the switch port in front of it removes every working route at once. Zone this host to a " +
+        "second target port, ideally on the other storage controller, so a port failure has " +
+        "somewhere to fail over to.";
 }

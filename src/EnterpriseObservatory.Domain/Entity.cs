@@ -591,6 +591,23 @@ public sealed record StoragePath
     public string Adapter { get; init; } = string.Empty;
 
     /// <summary>
+    /// How the path reaches its storage, as the platform words it, e.g.
+    /// <c>HostFibreChannelTargetTransport</c>. Empty when not reported.
+    /// </summary>
+    public string Transport { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The storage-side port this path lands on, or null when unknown.
+    /// </summary>
+    /// <remarks>
+    /// A Fibre Channel target port WWN as <c>50:06:01:60:3b:20:1f:3a</c>, the
+    /// form a switch or array reports it in, or an iSCSI target IQN. Null
+    /// means the transport names no port (SAS, PCIe) or was not reported —
+    /// unknown, which a rule must not read as "the same target as the rest".
+    /// </remarks>
+    public string? Target { get; init; }
+
+    /// <summary>
     /// Whether the platform reports this path as dead.
     /// </summary>
     /// <remarks>

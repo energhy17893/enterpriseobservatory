@@ -241,6 +241,26 @@ public sealed record VsphereStoragePath
 
     /// <summary>The device's NAA, when the second table could resolve it.</summary>
     public string StorageDeviceId { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The <c>xsi:type</c> of the path's <c>transport</c>, e.g.
+    /// <c>HostFibreChannelTargetTransport</c>; empty when none was reported.
+    /// </summary>
+    public string TransportType { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The storage-side port this path lands on, or null when the transport
+    /// does not name one.
+    /// </summary>
+    /// <remarks>
+    /// Fibre Channel: the target's port WWN as sixteen lowercase hex digits
+    /// in colon-separated pairs (<c>50:06:01:60:3b:20:1f:3a</c>), the form a
+    /// switch or array reports it in, so the two can be joined later. iSCSI:
+    /// the target's IQN. SAS and PCIe transports carry nothing that names a
+    /// port (measured on a live vCenter), and they stay null rather than
+    /// being given an invented identity.
+    /// </remarks>
+    public string? Target { get; init; }
 }
 
 /// <summary>A virtual machine as vCenter sees it.</summary>

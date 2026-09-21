@@ -1084,6 +1084,38 @@ public class VsphereInventorySourceTests
     }
 
     [Fact]
+    public async Task A_path_carries_its_transport_and_target_port_to_the_domain()
+    {
+        var snapshot = await Read(Payload(hosts:
+        [
+            Host() with
+            {
+                StoragePaths =
+                [
+                    new VsphereStoragePath
+                    {
+                        Name = "vmhba2:C0:T0:L1",
+                        TransportType = "HostFibreChannelTargetTransport",
+                        Target = "50:06:01:60:3b:20:1f:3a",
+                    },
+                    new VsphereStoragePath
+                    {
+                        Name = "vmhba0:C0:T0:L0",
+                        TransportType = "HostSerialAttachedTargetTransport",
+                    },
+                ],
+            },
+        ]));
+
+        var paths = snapshot.Entities.Single(e => e.Kind == EntityKind.EsxiHost).StoragePaths;
+
+        var fc = Assert.Single(paths, p => p.Name == "vmhba2:C0:T0:L1");
+        Assert.Equal("HostFibreChannelTargetTransport", fc.Transport);
+        Assert.Equal("50:06:01:60:3b:20:1f:3a", fc.Target);
+        Assert.Null(Assert.Single(paths, p => p.Name == "vmhba0:C0:T0:L0").Target);
+    }
+
+    [Fact]
     public async Task A_standby_path_is_not_counted_as_lost()
     {
         // A standby path in an ALUA configuration is working and unused.

@@ -589,14 +589,13 @@ public class VsphereSoapFaultReaderTests
     // --- M8.3: DRS affinity / anti-affinity / VM-host rules ----------------
 
     /// <summary>
-    /// Built from the vSphere Web Services API reference
-    /// (developer.broadcom.com, <c>vim.cluster.ConfigInfoEx</c>,
-    /// <c>vim.cluster.RuleInfo</c> and its three rule subtypes,
-    /// <c>vim.cluster.VmGroup</c>, <c>vim.cluster.HostGroup</c>), not dumped
-    /// from a live vCenter — the same "schema-shaped, not yet observed"
-    /// status <see cref="VsphereStoragePath"/> already carries for its wire
-    /// shape. <c>configurationEx</c> was not previously requested by this
-    /// collector, so there is nothing yet in docs/collectors to copy from.
+    /// <c>configurationEx</c> requested whole, in the shape a live vCenter
+    /// returned it (probe <c>--shapes</c>, 3 clusters): one <c>val</c> whose
+    /// children are the <c>ClusterConfigInfoEx</c> fields — <c>dasConfig</c>
+    /// and <c>drsConfig</c> once, <c>group</c> and <c>rule</c> repeated, each
+    /// carrying its xsi:type. The estate only had <c>ClusterVmHostRuleInfo</c>
+    /// rules; the affinity and anti-affinity elements follow the published
+    /// schema (<c>vim.cluster.RuleInfo</c>) and were not observed live.
     /// </summary>
     private const string ClusterConfigurationEx = """
         <RetrievePropertiesExResponse xmlns="urn:vim25" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -604,8 +603,15 @@ public class VsphereSoapFaultReaderTests
             <objects>
               <obj type="ClusterComputeResource">domain-c7</obj>
               <propSet>
-                <name>configurationEx.group</name>
-                <val xsi:type="ArrayOfClusterGroupInfo">
+                <name>configurationEx</name>
+                <val xsi:type="ClusterConfigInfoEx">
+                  <dasConfig>
+                    <enabled>true</enabled>
+                    <admissionControlPolicy xsi:type="ClusterFailoverLevelAdmissionControlPolicy">
+                      <failoverLevel>1</failoverLevel>
+                    </admissionControlPolicy>
+                  </dasConfig>
+                  <drsConfig><enabled>true</enabled></drsConfig>
                   <group xsi:type="ClusterVmGroup">
                     <name>db-vms</name>
                     <vm type="VirtualMachine">vm-101</vm>
@@ -616,11 +622,6 @@ public class VsphereSoapFaultReaderTests
                     <host type="HostSystem">host-11</host>
                     <host type="HostSystem">host-12</host>
                   </group>
-                </val>
-              </propSet>
-              <propSet>
-                <name>configurationEx.rule</name>
-                <val xsi:type="ArrayOfClusterRuleInfo">
                   <rule xsi:type="ClusterAffinityRuleSpec">
                     <name>keep-app-tier-together</name>
                     <enabled>true</enabled>

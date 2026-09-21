@@ -360,16 +360,29 @@ public static class PropertyCollectorParser
     // Structures, cannot conflict with each other or with a sibling method
     // reading configurationEx.dasConfig.
     //
-    // configurationEx.group and configurationEx.rule are each requested as a
-    // structure array, the same shape config.storageDevice.multipathInfo
-    // already is (see IsStructureArray): vim25's ClusterConfigInfoEx.group is
-    // ClusterGroupInfo[] and .rule is ClusterRuleInfo[], both polymorphic, so
-    // each element's declared xsi:type is what tells ClusterVmGroup from
-    // ClusterHostGroup and ClusterAffinityRuleSpec from
-    // ClusterAntiAffinityRuleSpec from ClusterVmHostRuleInfo. Confirmed
-    // against developer.broadcom.com's vSphere Web Services API reference
-    // (vim.cluster.ConfigInfoEx, vim.cluster.RuleInfo and its three subtypes,
-    // vim.cluster.VmGroup, vim.cluster.HostGroup) — see M8.3 roadmap notes.
+    // configurationEx is requested whole: its sub-paths cannot be asked for
+    // (InvalidProperty, which fails the entire retrieval — measured on a live
+    // vCenter). It arrives as one structure whose children are the
+    // ClusterConfigInfoEx fields; group and rule are repeated children among
+    // them, each carrying its declared xsi:type, which is what tells
+    // ClusterVmGroup from ClusterHostGroup and ClusterAffinityRuleSpec from
+    // ClusterAntiAffinityRuleSpec from ClusterVmHostRuleInfo. Measured on 3
+    // clusters: 10 ClusterVmGroup (name, vm), 10 ClusterHostGroup (name,
+    // host), 10 ClusterVmHostRuleInfo (name, enabled, mandatory, key,
+    // ruleUuid, userCreated, vmGroupName, affineHostGroupName). The affinity
+    // and anti-affinity specs did not occur there and follow the published
+    // schema (vim.cluster.RuleInfo and its subtypes).
+    //
+    // A cluster with no rules or groups simply has none of these children;
+    // that is a valid, empty answer, not a failed read.
+
+    private const string ConfigurationExPath = "configurationEx";
+
+    private static IEnumerable<PropertyNode> ConfigurationExChildren(
+        IReadOnlyDictionary<string, IReadOnlyList<PropertyNode>> structures, string name) =>
+        structures.TryGetValue(ConfigurationExPath, out var fields)
+            ? fields.Where(n => string.Equals(n.Name, name, StringComparison.Ordinal))
+            : [];
 
     private const string ClusterVmGroupType = "ClusterVmGroup";
     private const string ClusterHostGroupType = "ClusterHostGroup";
@@ -377,16 +390,13 @@ public static class PropertyCollectorParser
     private const string ClusterAntiAffinityRuleSpecType = "ClusterAntiAffinityRuleSpec";
     private const string ClusterVmHostRuleInfoType = "ClusterVmHostRuleInfo";
 
-    /// <summary>Reads <c>configurationEx.group</c>: the named VM and host groups.</summary>
+    /// <summary>Reads <c>configurationEx</c>'s <c>group</c> children: the named VM and host groups.</summary>
     public static IReadOnlyList<VsphereClusterGroup> ReadClusterGroups(
         IReadOnlyDictionary<string, IReadOnlyList<PropertyNode>> structures)
     {
         ArgumentNullException.ThrowIfNull(structures);
 
-        if (!structures.TryGetValue("configurationEx.group", out var nodes))
-        {
-            return [];
-        }
+        var nodes = ConfigurationExChildren(structures, "group");
 
         var groups = new List<VsphereClusterGroup>();
 
@@ -428,7 +438,7 @@ public static class PropertyCollectorParser
         return groups;
     }
 
-    /// <summary>Reads <c>configurationEx.rule</c>: the DRS affinity rules.</summary>
+    /// <summary>Reads <c>configurationEx</c>'s <c>rule</c> children: the DRS affinity rules.</summary>
     /// <remarks>
     /// Group names are carried as vCenter gave them, not yet resolved to
     /// members — see <see cref="VsphereDrsRule"/>. Resolving them against
@@ -440,10 +450,7 @@ public static class PropertyCollectorParser
     {
         ArgumentNullException.ThrowIfNull(structures);
 
-        if (!structures.TryGetValue("configurationEx.rule", out var nodes))
-        {
-            return [];
-        }
+        var nodes = ConfigurationExChildren(structures, "rule");
 
         var rules = new List<VsphereDrsRule>();
 
