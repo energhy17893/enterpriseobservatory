@@ -175,6 +175,14 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // above. Which settings arrive is decided in
                 // AdvancedSettings; what they mean is a rule's business.
                 Settings = host.AdvancedSettings,
+                // Same contract again, and null passes through as null: a
+                // host whose services were not read must not reach a rule
+                // looking like a host with none.
+                Services = host.Services,
+                TimeConfiguration = host.TimeConfiguration,
+                VirtualSwitchSecurity = host.VirtualSwitchSecurity,
+                PortGroupSecurity = host.PortGroupSecurity,
+                LockdownMode = host.LockdownMode,
             });
 
             relationships.Add(Edge(id(host.MoRef), vCenterId, RelationshipKind.ManagedBy, now));

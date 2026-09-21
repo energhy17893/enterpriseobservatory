@@ -271,6 +271,50 @@ public sealed record Entity
     /// </remarks>
     public IReadOnlyDictionary<string, string> Settings { get; init; } =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    // The four below are typed properties rather than more Settings keys:
+    // services, time and switch policies are lists of structures with a
+    // three-valued "unset" inside them, and flattening them into a string
+    // dictionary would mean inventing a key syntax and losing that third value.
+    // Every one is null when it was not read, which is not the same as empty.
+
+    /// <summary>
+    /// The services this host reported, or null when they were not read.
+    /// </summary>
+    /// <remarks>
+    /// Null is "the product could not see", empty is "the host has none".
+    /// A rule must stay quiet on the first and may speak on the second.
+    /// </remarks>
+    public IReadOnlyList<HostService>? Services { get; init; }
+
+    /// <summary>How this host keeps time, or null when that was not read.</summary>
+    public TimeConfiguration? TimeConfiguration { get; init; }
+
+    /// <summary>
+    /// The security policy of each standard vSwitch, or null when not read.
+    /// </summary>
+    /// <remarks>
+    /// Kept apart from <see cref="PortGroupSecurity"/> because the two are read
+    /// separately and can fail separately; one list could not say which half
+    /// was missing.
+    /// </remarks>
+    public IReadOnlyList<NetworkSecurityPolicy>? VirtualSwitchSecurity { get; init; }
+
+    /// <summary>
+    /// The security policy of each standard port group, or null when not read.
+    /// </summary>
+    public IReadOnlyList<NetworkSecurityPolicy>? PortGroupSecurity { get; init; }
+
+    /// <summary>
+    /// The host's lockdown mode in the platform's words, or null when not read.
+    /// </summary>
+    /// <remarks>
+    /// <c>lockdownDisabled</c>, <c>lockdownNormal</c> or <c>lockdownStrict</c>.
+    /// Carried as the platform words it, like <see cref="Settings"/>; the
+    /// legacy two-valued <c>adminDisabled</c> flag is deliberately not read,
+    /// because it cannot tell normal from strict.
+    /// </remarks>
+    public string? LockdownMode { get; init; }
 }
 
 /// <summary>
