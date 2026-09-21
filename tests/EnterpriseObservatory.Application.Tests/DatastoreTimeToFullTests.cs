@@ -308,6 +308,169 @@ public class DatastoreTimeToFullTests
         Assert.Contains("There is no date", alert.Description, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void A_datastore_whose_history_cannot_be_read_costs_only_that_datastore()
+    {
+        // Every query used to run inside the one guard around the rule, so a
+        // single timeout dropped every datastore's fill date — and
+        // reconciliation then resolved them all, unchecked.
+        var other = new EntityId("vc-1:datastore-42");
+        var series = new GrowingSeries { Failing = Ds };
+
+        var context = new RuleContext
+        {
+            Snapshots =
+            [
+                new InventorySnapshot
+                {
+                    SourceInstanceId = "vc-1",
+                    ReadAtUtc = T0,
+                    Observations =
+                    [
+                        Reading(CapacityCounters.DatastoreCapacity, 100 * Gb),
+                        Reading(CapacityCounters.DatastoreFree, 80 * Gb),
+                        Reading(CapacityCounters.DatastoreCapacity, 100 * Gb, other),
+                        Reading(CapacityCounters.DatastoreFree, 50 * Gb, other),
+                    ],
+                },
+            ],
+            ReadGraph = () => GraphWith("vmfs01"),
+            NowUtc = T0,
+            Options = MonitoringOptions.Default,
+            Series = series,
+            Events = new NoEvents(),
+        };
+
+        var alerts = new DatastoreTimeToFullRule().Evaluate(context);
+
+        // The readable one is estimated as usual: 2 GB a day, 50 GB left.
+        var filling = Assert.Single(alerts, a => a.Title == DatastoreTimeToFull.FillingTitle);
+        Assert.Equal(other, filling.Entity);
+
+        // The failure is said, not swallowed.
+        var failure = Assert.Single(alerts, a => a.Title == DatastoreTimeToFull.HistoryUnreadableTitle);
+        Assert.Contains("'vmfs01'", failure.Description, StringComparison.Ordinal);
+        Assert.Contains("TimeoutException", failure.Description, StringComparison.Ordinal);
+
+        // And the unreadable one's alerts are held open rather than resolved.
+        Assert.Equal(
+            DatastoreTimeToFull.Fingerprints(new DatastoreCapacity(Ds, "vmfs01", "vc-1", 100 * Gb, 80 * Gb, null)),
+            context.Unevaluated);
+    }
+
+    // --- the estimate is kept while its input stands still -----------------
+
+    [Fact]
+    public void The_same_history_capacity_and_hour_is_estimated_once()
+    {
+        // The hourly tier gains a bucket once an hour; the cycle asks every
+        // five minutes and the page on every load.
+        var cache = new TimeToFullCache();
+        var series = new GrowingSeries();
+        var policy = DatastoreTimeToFullPolicy.Default;
+        var retention = SeriesRetentionPolicy.Default;
+
+        var first = DatastoreTimeToFull.Read(series, Ds, 100 * Gb, T0, policy, retention, cache);
+        var again = DatastoreTimeToFull.Read(series, Ds, 100 * Gb, T0, policy, retention, cache);
+
+        Assert.Equal(1, cache.Computations);
+        Assert.Equal(first, again);
+        Assert.Equal(2, series.Queries);
+
+        // A different capacity is a different answer.
+        DatastoreTimeToFull.Read(series, Ds, 120 * Gb, T0, policy, retention, cache);
+        Assert.Equal(2, cache.Computations);
+
+        // So is a new bucket.
+        series.Days = 22;
+        DatastoreTimeToFull.Read(series, Ds, 120 * Gb, T0, policy, retention, cache);
+        Assert.Equal(3, cache.Computations);
+
+        Assert.Equal(1, cache.Count);
+    }
+
+    [Fact]
+    public void A_cached_forecast_counts_its_days_from_when_it_is_asked()
+    {
+        var cache = new TimeToFullCache();
+        var series = new GrowingSeries();
+        var policy = DatastoreTimeToFullPolicy.Default;
+        var retention = SeriesRetentionPolicy.Default;
+
+        var first = Assert.IsType<TimeToFullResult.Forecast>(
+            DatastoreTimeToFull.Read(series, Ds, 100 * Gb, T0, policy, retention, cache));
+        var later = Assert.IsType<TimeToFullResult.Forecast>(
+            DatastoreTimeToFull.Read(series, Ds, 100 * Gb, T0.AddMinutes(30), policy, retention, cache));
+
+        Assert.Equal(1, cache.Computations);
+        Assert.Equal(first.FullAtUtc, later.FullAtUtc);
+        Assert.Equal(first.Days - (30d / 60 / 24), later.Days, 6);
+
+        // The next hour is recomputed.
+        DatastoreTimeToFull.Read(series, Ds, 100 * Gb, T0.AddHours(1), policy, retention, cache);
+        Assert.Equal(2, cache.Computations);
+    }
+
+    [Fact]
+    public void The_cache_is_bounded()
+    {
+        var cache = new TimeToFullCache(maxEntries: 2);
+        var series = new GrowingSeries();
+
+        foreach (var id in new[] { "a", "b", "c" })
+        {
+            DatastoreTimeToFull.Read(
+                series, new EntityId(id), 100 * Gb, T0,
+                DatastoreTimeToFullPolicy.Default, SeriesRetentionPolicy.Default, cache);
+        }
+
+        Assert.True(cache.Count <= 2);
+    }
+
+    /// <summary>
+    /// Used space rising 2 GB a day from 10 GB, one bucket a day, ending at
+    /// <see cref="T0"/>; throws for <see cref="Failing"/>.
+    /// </summary>
+    private sealed class GrowingSeries : ISeriesReader
+    {
+        public EntityId? Failing { get; init; }
+
+        public int Days { get; set; } = 21;
+
+        public int Queries { get; private set; }
+
+        public SeriesResult Query(SeriesQuery query)
+        {
+            Queries++;
+
+            if (query.Key.Entity == Failing)
+            {
+                throw new TimeoutException("statement timeout");
+            }
+
+            return new SeriesResult
+            {
+                Key = query.Key,
+                Resolution = SeriesResolution.OneHour,
+                Exists = true,
+                Points =
+                [
+                    .. Enumerable.Range(0, Days).Select(i => new AggregatedSample
+                    {
+                        StartUtc = T0.AddDays(i - Days + 1),
+                        Min = (10 + 2 * i) * Gb,
+                        Max = (10 + 2 * i) * Gb,
+                        Sum = (10 + 2 * i) * Gb,
+                        Count = 1,
+                        Last = (10 + 2 * i) * Gb,
+                    }),
+                ],
+            };
+        }
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
     private sealed class CountingSeries : ISeriesReader
     {
         public List<SeriesQuery> Queries { get; } = [];

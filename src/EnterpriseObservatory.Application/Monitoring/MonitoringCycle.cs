@@ -187,6 +187,8 @@ public sealed class MonitoringCycle(
                 "the capacity readings taken with the inventory",
                 () => _observationStore.Append(samples));
 
+        var unevaluated = new List<AlertFingerprint>();
+
         IReadOnlyList<AlertDefinition> observed =
         [
             .. coverageFailures,
@@ -209,10 +211,23 @@ public sealed class MonitoringCycle(
                 Options = options,
                 Series = _observationStore,
                 Events = _events,
+                Unevaluated = unevaluated,
             }),
         ];
 
-        var reconciliation = Reconcile(AlertScopes.Inventory, observed, options, now);
+        // A vCenter that did not answer keeps its alerts as they were, for the
+        // reason EntityGraph.Merge keeps its entities: we did not look. Judged
+        // by the entity's owner in the graph this cycle merged, which is the
+        // same graph that decided the entities stay.
+        var reconciliation = Reconcile(
+            AlertScopes.Inventory,
+            observed,
+            options,
+            now,
+            new CarryForward(
+                silent,
+                entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
+                unevaluated));
 
         await NotifyAsync(AlertScopes.Inventory, reconciliation, cancellationToken)
             .ConfigureAwait(false);
@@ -264,6 +279,8 @@ public sealed class MonitoringCycle(
         // else. Collection sources and storage have always been isolated this
         // way; rules were the one part of the cycle that could still take the
         // whole thing down with them.
+        var unevaluated = new List<AlertFingerprint>();
+
         IReadOnlyList<AlertDefinition> observed =
         [
             .. cycle.CollectionAlerts,
@@ -279,10 +296,19 @@ public sealed class MonitoringCycle(
                 Options = options,
                 Series = _observationStore,
                 Events = _events,
+                Unevaluated = unevaluated,
             }),
         ];
 
-        var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
+        // Silent sources are not carried here: the metric scope's absence
+        // semantics are unchanged. Only what a rule said it could not
+        // evaluate is.
+        var reconciliation = Reconcile(
+            AlertScopes.Observation,
+            observed,
+            options,
+            now,
+            new CarryForward([], null, unevaluated));
 
         await NotifyAsync(AlertScopes.Observation, reconciliation, cancellationToken)
             .ConfigureAwait(false);
@@ -545,7 +571,8 @@ public sealed class MonitoringCycle(
         string scope,
         IReadOnlyList<AlertDefinition> observed,
         MonitoringOptions options,
-        DateTimeOffset now) =>
+        DateTimeOffset now,
+        CarryForward carry) =>
         _alertStore.Reconcile(scope, (stored, flaps) => AlertReconciler.Reconcile(
             new AlertReconciliationRequest
             {
@@ -566,7 +593,16 @@ public sealed class MonitoringCycle(
                 // stamped on once.
                 MaintenanceWindows = _maintenance.ActiveAt(now),
                 NowUtc = now,
+                SilentSources = carry.SilentSources,
+                SourceOf = carry.SourceOf,
+                Unevaluated = carry.Unevaluated,
             }));
+
+    /// <summary>What reconciliation must keep rather than resolve; see <see cref="AlertReconciliationRequest"/>.</summary>
+    private sealed record CarryForward(
+        IReadOnlyCollection<string> SilentSources,
+        Func<EntityId, string?>? SourceOf,
+        IReadOnlyCollection<AlertFingerprint> Unevaluated);
 
     /// <summary>
     /// Links records that describe the same real machine.

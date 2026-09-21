@@ -320,4 +320,75 @@ public class AlertReconcilerTests
         Assert.Empty(result.ToNotify);
         Assert.Empty(result.Retired);
     }
+
+    // --- carried forward, not resolved -----------------------------------
+
+    private static AlertReconciliationResult Raised(params AlertDefinition[] observed) =>
+        AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = AlertScopes.Inventory,
+            Observed = observed,
+            NowUtc = Cycle(0),
+        });
+
+    private static AlertReconciliationResult Absent(
+        AlertReconciliationResult previous,
+        IReadOnlyCollection<string>? silent = null,
+        IReadOnlyCollection<AlertFingerprint>? unevaluated = null) =>
+        AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = AlertScopes.Inventory,
+            Observed = [],
+            Stored = previous.Instances,
+            FlapHistories = previous.FlapHistories,
+            NowUtc = Cycle(1),
+            SilentSources = silent ?? [],
+            SourceOf = entity => entity.Value == "esx01" ? "vc-1" : null,
+            Unevaluated = unevaluated ?? [],
+        });
+
+    [Fact]
+    public void An_alert_on_an_entity_of_a_source_that_did_not_report_is_carried_forward_unchanged()
+    {
+        // EntityGraph.Merge keeps a silent vCenter's entities because we did
+        // not look. Resolving their alerts on the same cycle said the opposite
+        // about the same machines: every finding closed after one missed read.
+        var first = Raised(Psu());
+
+        var second = Absent(first, silent: ["vc-1"]);
+
+        var instance = Assert.Single(second.Instances);
+        Assert.Equal(first.Instances[0], instance);
+        Assert.Equal(AlertLifecycleState.Open, instance.State);
+        Assert.Empty(second.Retired);
+
+        // Not a cessation either: nobody saw it stop.
+        Assert.Empty(second.FlapHistories);
+    }
+
+    [Fact]
+    public void An_alert_on_an_entity_of_a_source_that_did_report_still_resolves()
+    {
+        // Only the silent sources are held; another vCenter being down must
+        // not keep this one's findings open.
+        var first = Raised(Psu());
+
+        var second = Absent(first, silent: ["vc-2"]);
+
+        Assert.Equal(AlertLifecycleState.Resolved, Assert.Single(second.Instances).State);
+    }
+
+    [Fact]
+    public void An_alert_a_rule_could_not_evaluate_is_carried_forward_unchanged()
+    {
+        var first = Raised(Psu(), Fan() with { Severity = AlertSeverity.Critical });
+
+        var second = Absent(first, unevaluated: [Psu().Fingerprint]);
+
+        var psu = second.Instances.Single(i => i.Title == "PSU 2 failed");
+        var fan = second.Instances.Single(i => i.Title == "Fan 3 degraded");
+
+        Assert.Equal(first.Instances.Single(i => i.Title == "PSU 2 failed"), psu);
+        Assert.Equal(AlertLifecycleState.Resolved, fan.State);
+    }
 }

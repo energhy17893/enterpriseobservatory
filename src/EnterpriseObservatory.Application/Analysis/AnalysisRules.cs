@@ -307,6 +307,11 @@ public sealed class EventAlertsRule : IAnalysisRule
 /// One history query per datastore, and only for those. The series reader
 /// answers one series per call, so there is nothing to batch into.
 /// </para>
+/// <para>
+/// Each query is guarded on its own: a datastore whose history cannot be read
+/// keeps the alerts it had (through <see cref="RuleContext.Unevaluated"/>),
+/// the failure is raised as an alert, and the others are estimated as usual.
+/// </para>
 /// </remarks>
 public sealed class DatastoreTimeToFullRule : IAnalysisRule
 {
@@ -322,16 +327,16 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
         var readings = DatastoreTimeToFull.CurrentReadings(
             context.Snapshots.SelectMany(s => s.Observations), context.Graph);
 
-        return DatastoreTimeToFull.Evaluate(
-            [
-                .. readings.Select(d => (d, DatastoreTimeToFull.Read(
-                    context.Series,
-                    d.Datastore,
-                    d.CapacityBytes,
-                    context.NowUtc,
-                    policy,
-                    context.Options.Retention))),
-            ],
+        return DatastoreTimeToFull.EvaluateEach(
+            readings,
+            d => DatastoreTimeToFull.Read(
+                context.Series,
+                d.Datastore,
+                d.CapacityBytes,
+                context.NowUtc,
+                policy,
+                context.Options.Retention),
+            context.Unevaluated,
             policy);
     }
 }

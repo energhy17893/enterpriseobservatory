@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Alerts;
@@ -55,6 +56,47 @@ public sealed record AlertReconciliationRequest
     public FlapPolicy Flap { get; init; } = FlapPolicy.Default;
 
     public required DateTimeOffset NowUtc { get; init; }
+
+    /// <summary>
+    /// Sources expected to report in this scope that did not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The rule <c>EntityGraph.Merge</c> applies to entities, applied to
+    /// alerts: a vCenter that did not answer has told us nothing, so nothing
+    /// it would have re-reported may be taken to have stopped. A stored
+    /// instance whose <see cref="AlertInstance.Entity"/> belongs to one of
+    /// these (see <see cref="SourceOf"/>) and that was not observed is carried
+    /// forward unchanged — not resolved, not counted as a cessation.
+    /// </para>
+    /// <para>
+    /// Only the sources that were asked and did not answer, not every source
+    /// absent from the reports: an entity left behind by a vCenter that was
+    /// removed from configuration must not hold its alerts open forever.
+    /// Alerts with no entity are judged as before; a silent source's own
+    /// "unreachable" alert is observed, not carried.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyCollection<string> SilentSources { get; init; } = [];
+
+    /// <summary>
+    /// Which source an entity belongs to, or null when it is not known.
+    /// Needed only with <see cref="SilentSources"/>.
+    /// </summary>
+    public Func<EntityId, string?>? SourceOf { get; init; }
+
+    /// <summary>
+    /// Fingerprints a rule could not evaluate this cycle.
+    /// </summary>
+    /// <remarks>
+    /// A rule that could not read its input for one entity says so here
+    /// rather than going quiet about it: a stored instance with one of these
+    /// fingerprints that was not observed is carried forward unchanged, like
+    /// one belonging to a silent source. The rule still has to report the
+    /// failure itself — carrying forward keeps the finding, it does not
+    /// explain why it stopped being rechecked.
+    /// </remarks>
+    public IReadOnlyCollection<AlertFingerprint> Unevaluated { get; init; } = [];
 }
 
 /// <summary>What the caller must persist and act on.</summary>
@@ -140,14 +182,18 @@ public static class AlertReconciler
             // worse reading rather than letting collector order decide.
             .ToDictionary(g => g.Key, g => g.MaxBy(a => a.Severity)!);
 
+        var carried = CarriedForward(request);
+
         // Count this cycle's cessations before deciding what is flapping, so a
         // signal that stops on this very cycle is judged on current evidence.
         foreach (var (fingerprint, instance) in stored)
         {
             // Derived alerts are excluded: tracking the instability of the
             // instability detector recurses and tells an operator nothing.
+            // A carried instance did not cease; nobody looked.
             if (instance.IsDerived ||
                 observed.ContainsKey(fingerprint) ||
+                carried(instance) ||
                 !AlertLifecycle.OnAbsent(instance, request.NowUtc).CeasedFiring)
             {
                 continue;
@@ -204,6 +250,16 @@ public static class AlertReconciler
                 continue;
             }
 
+            // Not observed because it was not looked for: kept exactly as it
+            // was. Resolving it would say "the problem went away" when the
+            // truth is "we could not look", and the two lead to opposite
+            // actions — the second is already its own alert.
+            if (carried(instance))
+            {
+                next[fingerprint] = instance;
+                continue;
+            }
+
             var absence = AlertLifecycle.OnAbsent(instance, request.NowUtc);
 
             if (absence.Instance is null)
@@ -233,5 +289,30 @@ public static class AlertReconciler
             ToNotify = [.. instances.Where(i => i.ShouldNotify)],
             FlapHistories = [.. flaps.Values.Select(f => f with { Scope = request.Scope })],
         };
+    }
+
+    /// <summary>
+    /// Whether a stored instance that was not observed was simply not looked
+    /// for this cycle. See <see cref="AlertReconciliationRequest.SilentSources"/>
+    /// and <see cref="AlertReconciliationRequest.Unevaluated"/>.
+    /// </summary>
+    private static Func<AlertInstance, bool> CarriedForward(AlertReconciliationRequest request)
+    {
+        var unevaluated = request.Unevaluated.ToHashSet();
+        var silent = new HashSet<string>(request.SilentSources, StringComparer.Ordinal);
+        var sourceOf = request.SourceOf;
+
+        if (unevaluated.Count == 0 && (silent.Count == 0 || sourceOf is null))
+        {
+            return static _ => false;
+        }
+
+        return instance =>
+            unevaluated.Contains(instance.Fingerprint) ||
+            (silent.Count > 0 &&
+             sourceOf is not null &&
+             instance.Entity is { } entity &&
+             sourceOf(entity) is { } source &&
+             silent.Contains(source));
     }
 }
