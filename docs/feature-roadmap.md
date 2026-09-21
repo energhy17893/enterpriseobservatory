@@ -60,9 +60,9 @@ Broadcom SCG CSV'si **veri olarak** yutulur; kod içine kontrol gömülmez.
 | ✅ M4.3 | **Dolma tarihi** — ya "N gün" ya "söyleyemem, sebebi şu" | datastore'da tahmin |
 | ✅ M4.4 | Aşırı taahhüt bulgusuna tarih | bulguda "X tarihinde dolar" |
 
-**▶ Mimari kontrol #2** (M3 + M4 sonrası) *(sürüyor)*
+**✅ Mimari kontrol #2** *(tamam: sessiz kaynağın alarmları korunuyor, yalnızca değişen uygunluk bulguları yazılıyor + geçiş geçmişi, istisna denetim izi, Theil-Sen bellek yükü düşürüldü; şema 7)*
 
-## M5 — Raporlama
+## ▶ M5 — Raporlama *(sürüyor)*
 
 Pazar araştırmasında alıcının ilk baktığı şey.
 
