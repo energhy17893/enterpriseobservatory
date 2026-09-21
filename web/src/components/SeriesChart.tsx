@@ -250,7 +250,7 @@ function Plot({ series }: { series: SeriesView }) {
               fontSize="11"
               fill="var(--muted-foreground)"
             >
-              {format(lo + span * fraction)}
+              {format(lo + span * fraction, series.unit)}
             </text>
           </g>
         ))}
@@ -281,8 +281,22 @@ function Plot({ series }: { series: SeriesView }) {
   )
 }
 
-function format(value: number): string {
+// Binary, as vSphere itself shows a datastore's size. Plain thousands would
+// label a ten-terabyte volume "10995116.3M", which is a number nobody reads.
+const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'] as const
+
+function format(value: number, unit = ''): string {
   const magnitude = Math.abs(value)
+
+  if (unit === 'bytes') {
+    let scaled = value
+    let step = 0
+    while (Math.abs(scaled) >= 1024 && step < BYTE_UNITS.length - 1) {
+      scaled /= 1024
+      step++
+    }
+    return `${scaled.toFixed(Math.abs(scaled) >= 10 || step === 0 ? 0 : 1)} ${BYTE_UNITS[step]}`
+  }
 
   if (magnitude >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (magnitude >= 1_000) return `${(value / 1_000).toFixed(1)}k`
