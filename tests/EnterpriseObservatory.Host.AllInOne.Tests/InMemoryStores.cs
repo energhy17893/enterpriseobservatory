@@ -789,11 +789,11 @@ internal sealed class InMemorySmtpSettingsStore : ISmtpSettingsStore
 
         lock (_gate)
         {
-            // Same "blank means keep it" rule the real store follows -- see
-            // PostgresSmtpSettingsStore.Save.
-            _settings = settings.Password.IsEmpty
+            // Same "blank means keep it, but only for the same relay" rule
+            // the real store follows -- see PostgresSmtpSettingsStore.Save.
+            _settings = settings.Password.IsEmpty && settings.HasSameConnectionDetails(_settings)
                 ? settings with { Password = _settings.Password, PasswordSetUtc = _settings.PasswordSetUtc }
-                : settings with { PasswordSetUtc = DateTimeOffset.UtcNow };
+                : settings with { PasswordSetUtc = settings.Password.IsEmpty ? null : DateTimeOffset.UtcNow };
         }
     }
 }

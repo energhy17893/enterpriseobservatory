@@ -16,8 +16,9 @@ public class ContinuityReportCsvTests
         var csv = ContinuityReportCsv.Write([]);
 
         Assert.StartsWith(
-            "Cluster,Source,HA settings collected,HA critical,HA warning,DRS critical,DRS warning," +
-            "Storage path critical,Storage path warning,Storage path affected hosts,N+1 critical,N+1 warning\r\n",
+            "\"Cluster\",\"Source\",\"HA settings collected\",\"HA critical\",\"HA warning\",\"DRS critical\"," +
+            "\"DRS warning\",\"Storage path critical\",\"Storage path warning\",\"Storage path affected hosts\"," +
+            "\"N+1 critical\",\"N+1 warning\"\r\n",
             csv,
             StringComparison.Ordinal);
     }
@@ -28,7 +29,8 @@ public class ContinuityReportCsvTests
         var csv = ContinuityReportCsv.Write([Row()]);
 
         Assert.Contains(
-            "Prod-Cluster,vc-1,yes,1,2,0,1,1,0,esx-01.corp.local; esx-02.corp.local,0,0\r\n",
+            "\"Prod-Cluster\",\"vc-1\",\"yes\",\"1\",\"2\",\"0\",\"1\",\"1\",\"0\"," +
+            "\"esx-01.corp.local; esx-02.corp.local\",\"0\",\"0\"\r\n",
             csv,
             StringComparison.Ordinal);
     }
@@ -38,7 +40,7 @@ public class ContinuityReportCsvTests
     {
         var csv = ContinuityReportCsv.Write([Row() with { HaSettingsCollected = false }]);
 
-        Assert.Contains(",no,", csv, StringComparison.Ordinal);
+        Assert.Contains("\"no\"", csv, StringComparison.Ordinal);
     }
 
     [Fact]

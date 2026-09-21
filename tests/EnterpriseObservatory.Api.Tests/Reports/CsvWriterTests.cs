@@ -11,11 +11,14 @@ namespace EnterpriseObservatory.Api.Tests.Reports;
 public class CsvWriterTests
 {
     [Fact]
-    public void A_plain_cell_is_written_unquoted()
+    public void A_plain_cell_is_still_quoted()
     {
+        // Every field is quoted unconditionally now, RFC 4180 permits it, and
+        // it is what closes the semicolon-locale formula-injection hole: see
+        // A_semicolon_does_not_let_a_later_cell_read_as_a_formula below.
         var row = CsvWriter.WriteRow(["Critical", "Host down", "EsxiHost"]);
 
-        Assert.Equal("Critical,Host down,EsxiHost\r\n", row);
+        Assert.Equal("\"Critical\",\"Host down\",\"EsxiHost\"\r\n", row);
     }
 
     [Fact]
@@ -53,11 +56,11 @@ public class CsvWriterTests
     }
 
     [Fact]
-    public void A_null_cell_is_written_as_empty()
+    public void A_null_cell_is_written_as_an_empty_quoted_cell()
     {
         var row = CsvWriter.WriteRow([null, "x"]);
 
-        Assert.Equal(",x\r\n", row);
+        Assert.Equal("\"\",\"x\"\r\n", row);
     }
 
     // --- formula-injection guard --------------------------------------------
@@ -76,7 +79,7 @@ public class CsvWriterTests
     {
         var row = CsvWriter.WriteRow([input]);
 
-        Assert.Equal(expectedContent + "\r\n", row);
+        Assert.Equal("\"" + expectedContent + "\"\r\n", row);
     }
 
     [Fact]
@@ -84,7 +87,7 @@ public class CsvWriterTests
     {
         var row = CsvWriter.WriteRow(["\tmalicious"]);
 
-        Assert.Equal("'\tmalicious\r\n", row);
+        Assert.Equal("\"'\tmalicious\"\r\n", row);
     }
 
     [Fact]
@@ -94,7 +97,7 @@ public class CsvWriterTests
         // negative number or a hyphenated name must not be mangled.
         var row = CsvWriter.WriteRow(["vm-01"]);
 
-        Assert.Equal("vm-01\r\n", row);
+        Assert.Equal("\"vm-01\"\r\n", row);
     }
 
     [Fact]
@@ -103,6 +106,33 @@ public class CsvWriterTests
         var row = CsvWriter.WriteRow(["=A1,B1"]);
 
         Assert.Equal("\"'=A1,B1\"\r\n", row);
+    }
+
+    // --- semicolon-locale formula injection -----------------------------------
+    //
+    // A Turkish (or other semicolon-locale) Excel treats ';' as the field
+    // separator when a .csv file is opened directly. Before every field was
+    // quoted unconditionally, an unquoted cell like "x;=1+1" was written
+    // as-is because it neither started with a formula trigger nor contained
+    // one of the old quoting triggers (comma/quote/newline) — Excel would
+    // then split it on ';' into two cells, "x" and "=1+1", and open the
+    // second cell as a live formula. Quoting the whole field keeps the
+    // embedded ';' inside one cell.
+
+    [Fact]
+    public void A_semicolon_does_not_let_a_later_cell_read_as_a_formula()
+    {
+        var row = CsvWriter.WriteRow(["x;=1+1"]);
+
+        Assert.Equal("\"x;=1+1\"\r\n", row);
+    }
+
+    [Fact]
+    public void A_tab_in_the_middle_of_a_cell_stays_inside_the_quoted_field()
+    {
+        var row = CsvWriter.WriteRow(["a\t=cmd"]);
+
+        Assert.Equal("\"a\t=cmd\"\r\n", row);
     }
 
     // --- the whole document --------------------------------------------------
@@ -115,7 +145,7 @@ public class CsvWriterTests
             [["Critical", "Host down"], ["Warning", "Datastore filling"]]);
 
         Assert.Equal(
-            "Severity,Title\r\nCritical,Host down\r\nWarning,Datastore filling\r\n",
+            "\"Severity\",\"Title\"\r\n\"Critical\",\"Host down\"\r\n\"Warning\",\"Datastore filling\"\r\n",
             csv);
     }
 
@@ -124,7 +154,7 @@ public class CsvWriterTests
     {
         var csv = CsvWriter.Write(["Severity", "Title"], []);
 
-        Assert.Equal("Severity,Title\r\n", csv);
+        Assert.Equal("\"Severity\",\"Title\"\r\n", csv);
     }
 
     // --- BOM -------------------------------------------------------------------

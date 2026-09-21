@@ -60,17 +60,26 @@ public sealed class MailKitMailSender : IMailSender
             // Our own timeout fired, not the caller's token -- reported as an
             // ordinary failure rather than left to propagate as a
             // cancellation the caller never asked for.
-            return MailSendResult.Failed($"The relay at {settings.Host}:{settings.Port} did not respond in time.");
+            return MailSendResult.Failed(
+                $"The relay at {settings.Host}:{settings.Port} did not respond in time.",
+                MailFailureKind.TimedOut);
         }
         catch (AuthenticationException)
         {
-            return MailSendResult.Failed("The relay rejected the username or password.");
+            return MailSendResult.Failed("The relay rejected the username or password.", MailFailureKind.AuthenticationFailed);
+        }
+        catch (SslHandshakeException ex)
+        {
+            return MailSendResult.Failed($"The TLS handshake with the relay failed: {ex.Message}", MailFailureKind.TlsFailed);
         }
         catch (SmtpCommandException ex)
         {
             // The relay's own words, which is what an operator needs to fix
             // "550 relaying denied" or a bad from-address -- a generic
-            // "send failed" would send them looking at the wrong thing.
+            // "send failed" would send them looking at the wrong thing. Kept
+            // out of the client-facing MailTestView by EmailApi, which uses
+            // FailureKind instead; this Detail is for the server log and the
+            // subscription's own failure record.
             return MailSendResult.Failed($"The relay refused the message: {ex.Message}");
         }
         catch (SmtpProtocolException ex)
@@ -79,11 +88,40 @@ public sealed class MailKitMailSender : IMailSender
         }
         catch (SocketException ex)
         {
-            return MailSendResult.Failed($"Could not reach {settings.Host}:{settings.Port} ({ex.Message}).");
+            return MailSendResult.Failed($"Could not reach {settings.Host}:{settings.Port} ({ex.Message}).", MailFailureKind.ConnectionFailed);
         }
         catch (System.IO.IOException ex)
         {
-            return MailSendResult.Failed($"The connection to the relay was lost: {ex.Message}");
+            return MailSendResult.Failed($"The connection to the relay was lost: {ex.Message}", MailFailureKind.ConnectionFailed);
+        }
+        catch (NotSupportedException ex)
+        {
+            // The relay does not offer STARTTLS, or none of its AUTH
+            // mechanisms are ones MailKit can use -- a configuration
+            // mismatch, not a bug, and MailKit reports it as this rather
+            // than one of the exceptions above.
+            return MailSendResult.Failed($"The relay does not support what this connection needs: {ex.Message}");
+        }
+        catch (MimeKit.ParseException ex)
+        {
+            // A malformed address or message -- from-address, a recipient,
+            // or the content itself. Should be caught by validation before
+            // this point, but a library-level parse failure must still come
+            // back as a declined send, not an unhandled exception that
+            // leaves the caller's subscription looking like it silently
+            // succeeded.
+            return MailSendResult.Failed($"The message could not be built: {ex.Message}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Catch-all: anything this library or its transport throws that
+            // was not one of the specific cases above must still come back
+            // as a MailSendResult.Failed, never escape as an exception. An
+            // uncaught exception here previously propagated out of
+            // ReportDispatchService.SendOneAsync after the subscription had
+            // already been MarkDispatched, so it showed as sent with no
+            // error recorded anywhere.
+            return MailSendResult.Failed($"The message could not be sent: {ex.Message}");
         }
     }
 
