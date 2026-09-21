@@ -329,6 +329,68 @@ public sealed class CompositionRootSmokeTests : IDisposable
 
         Assert.Equal(Domain.Compliance.FindingState.Accepted, finding!.State);
         Assert.Equal("operator", finding.AcceptedBy);
+        Assert.False(finding.Stale);
+
+        // A second acceptance is a conflict, not an overwrite.
+        Assert.Equal(HttpStatusCode.Conflict, (await AcceptFinding(client)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Removing_an_exception_over_http_records_who_removed_it_and_keeps_it_listed()
+    {
+        Account("operator", Role.Operator);
+        var client = await SignedIn(Client(), "operator");
+
+        var added = await client.PostAsJsonAsync("/api/compliance/exceptions", new
+        {
+            controlId = "esxi-8.logs-remote",
+            entityId = (string?)null,
+            reason = "smoke",
+            owner = "infra",
+            expiresUtc = DateTimeOffset.UtcNow.AddDays(7),
+        });
+
+        Assert.Equal(HttpStatusCode.OK, added.StatusCode);
+
+        var exception = await added.Content.ReadFromJsonAsync<Api.ComplianceExceptionView>(Json);
+
+        var removed = await client.PostAsJsonAsync("/api/compliance/exceptions/remove", new { id = exception!.Id });
+
+        Assert.Equal(HttpStatusCode.OK, removed.StatusCode);
+
+        var summary = await client.GetFromJsonAsync<Api.ComplianceView>("/api/compliance", Json);
+
+        Assert.DoesNotContain(summary!.Exceptions, e => e.Id == exception.Id);
+
+        var all = await client.GetFromJsonAsync<List<Api.ComplianceExceptionView>>(
+            "/api/compliance/exceptions?includeRemoved=true", Json);
+
+        var kept = Assert.Single(all!, e => e.Id == exception.Id);
+
+        Assert.Equal("operator", kept.RemovedBy);
+        Assert.NotNull(kept.RemovedAtUtc);
+    }
+
+    [Fact]
+    public async Task An_over_long_exception_reason_is_refused_with_a_reason()
+    {
+        Account("operator", Role.Operator);
+        var client = await SignedIn(Client(), "operator");
+
+        var response = await client.PostAsJsonAsync("/api/compliance/exceptions", new
+        {
+            controlId = "esxi-8.logs-remote",
+            entityId = (string?)null,
+            reason = new string('x', ComplianceService.MaximumReasonLength + 1),
+            owner = "infra",
+            expiresUtc = DateTimeOffset.UtcNow.AddDays(7),
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(
+            ComplianceService.MaximumReasonLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
     }
 
     // --- the host itself ----------------------------------------------------

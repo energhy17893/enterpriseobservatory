@@ -434,6 +434,50 @@ internal static class PostgresSchema
             expires_utc    timestamptz NOT NULL
         );
         """,
+
+        // --- 7: compliance history and staleness (architecture review 2) -----
+        //
+        // compliance_transition is the audit trail M5's reports read: one row
+        // each time a finding's verdict changes, including the first verdict a
+        // finding ever had (from_verdict NULL) and its withdrawal when the host
+        // or control leaves the evaluation (to_verdict NULL). Only changes are
+        // written — a verdict that holds for a year is one row, not one per
+        // cycle. evidence_utc is when the setting behind the new verdict was
+        // read; at_utc is when the evaluation recorded it. Pruned by at_utc on
+        // every evaluation; the retention is PostgresComplianceStore's.
+        //
+        // stale marks a finding whose host's source did not report in the
+        // cycle that produced it: the last verdict that could be reached, not
+        // a current one. DEFAULT false fills the rows already there, which
+        // were all written by an evaluation that did not know the difference.
+        //
+        // removed_by / removed_at_utc make withdrawing an exception a fact on
+        // the record rather than a DELETE. A withdrawn exception covers
+        // nothing from that moment and stays readable afterwards.
+        """
+        CREATE TABLE compliance_transition (
+            id                bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            catalogue_release text        NOT NULL,
+            control_id        text        NOT NULL,
+            entity_id         text        NOT NULL,
+            from_verdict      text        NULL,
+            to_verdict        text        NULL,
+            observed          text        NULL,
+            evidence_utc      timestamptz NULL,
+            at_utc            timestamptz NOT NULL,
+            CHECK (from_verdict IS NOT NULL OR to_verdict IS NOT NULL)
+        );
+
+        -- The report reads one finding's history; retention sweeps by age.
+        CREATE INDEX ix_compliance_transition_finding
+            ON compliance_transition (catalogue_release, control_id, entity_id, at_utc);
+        CREATE INDEX ix_compliance_transition_at ON compliance_transition (at_utc);
+
+        ALTER TABLE compliance_finding ADD COLUMN stale boolean NOT NULL DEFAULT false;
+
+        ALTER TABLE compliance_exception ADD COLUMN removed_by     text        NULL;
+        ALTER TABLE compliance_exception ADD COLUMN removed_at_utc timestamptz NULL;
+        """,
     ];
 
     public static int Current => Migrations.Length;

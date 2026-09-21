@@ -13,6 +13,62 @@ public class TrendTests
     private static TrendPoint[] Daily(params double[] values) =>
         values.Select((v, i) => new TrendPoint(T0.AddDays(i), v)).ToArray();
 
+    // --- what an estimate costs ----------------------------------------------
+
+    [Fact]
+    public void Theil_sen_over_thirty_days_of_hourly_points_does_not_allocate_its_pairs()
+    {
+        // 720 points are 258,840 pairwise slopes. Held in a fresh list and
+        // sorted into another for the median, that was over 4 MB per
+        // datastore per estimate; 41 datastores every five minutes is a lot of
+        // garbage for one number each.
+        var random = new Random(7);
+        var points = Enumerable.Range(0, 720)
+            .Select(i => new TrendPoint(T0.AddHours(i), 1000 + i * 0.5 + random.NextDouble()))
+            .ToArray();
+
+        Trend.TheilSen(points); // warm: the pooled buffer is rented once
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Trend.TheilSen(points);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(allocated < 256 * 1024, $"Theil–Sen allocated {allocated:N0} bytes.");
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(1000)]
+    [InlineData(1001)]
+    public void The_median_selected_in_place_is_exactly_the_sorted_median(int count)
+    {
+        // Duplicates on purpose: a flat datastore's slopes are all equal, and
+        // that is the case a careless quickselect goes quadratic on.
+        var random = new Random(count);
+        var values = Enumerable.Range(0, count)
+            .Select(_ => random.Next(4) == 0 ? 0d : Math.Round(random.NextDouble() * 50, 1))
+            .ToArray();
+        var copy = values.ToArray();
+
+        var sorted = values.Order().ToList();
+        var expected = count % 2 == 1
+            ? sorted[count / 2]
+            : (sorted[count / 2 - 1] + sorted[count / 2]) / 2d;
+
+        Assert.Equal(expected, Stats.Median(values));
+        Assert.Equal(copy, values); // the caller's list is not reordered
+        Assert.Equal(expected, Stats.MedianInPlace(values.AsSpan()));
+    }
+
+    [Fact]
+    public void The_median_of_many_equal_values_is_that_value()
+    {
+        Assert.Equal(3d, Stats.MedianInPlace(Enumerable.Repeat(3d, 258_840).ToArray()));
+    }
+
     [Fact]
     public void Mann_kendall_s_and_tie_corrected_variance_by_hand()
     {

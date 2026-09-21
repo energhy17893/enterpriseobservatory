@@ -195,21 +195,133 @@ public static class DatastoreTimeToFull
     }
 
     /// <summary>Reads one datastore's history (one query) and estimates.</summary>
+    /// <remarks>
+    /// The query runs every time; the estimate does not. Its input is the
+    /// hourly tier, whose buckets are written once, after the hour closes, so
+    /// the five-minute cycle and every page load in between would otherwise
+    /// fit the same 720 points again — about 260 000 pairwise slopes each.
+    /// The estimate is kept in <paramref name="cache"/> (the process-wide
+    /// <see cref="TimeToFullCache.Shared"/> unless one is given), shared by
+    /// the rule and the datastore's page, and recomputed when the history,
+    /// the capacity, the policy or the hour changes.
+    /// </remarks>
     public static TimeToFullResult Read(
         ISeriesReader series,
         EntityId datastore,
         double capacityBytes,
         DateTimeOffset nowUtc,
         DatastoreTimeToFullPolicy policy,
-        SeriesRetentionPolicy retention)
+        SeriesRetentionPolicy retention,
+        TimeToFullCache? cache = null)
     {
         ArgumentNullException.ThrowIfNull(series);
+        ArgumentNullException.ThrowIfNull(policy);
 
-        return Estimate(
-            series.Query(HistoryQuery(datastore, nowUtc, policy, retention)),
-            capacityBytes,
+        var history = series.Query(HistoryQuery(datastore, nowUtc, policy, retention));
+
+        return (cache ?? TimeToFullCache.Shared).GetOrAdd(
+            datastore,
+            TimeToFullCache.KeyOf(history, capacityBytes, nowUtc, policy),
             nowUtc,
-            policy);
+            () => Estimate(history, capacityBytes, nowUtc, policy));
+    }
+
+    /// <summary>
+    /// Estimates each datastore and returns the alerts, so that one whose
+    /// history cannot be read costs that datastore and not the others.
+    /// </summary>
+    /// <param name="datastores">This cycle's capacity readings.</param>
+    /// <param name="estimate">Reads and estimates one datastore; may throw.</param>
+    /// <param name="unevaluated">
+    /// Receives the fingerprints of every datastore that could not be read,
+    /// so reconciliation keeps their alerts as they were rather than resolving
+    /// them unchecked.
+    /// </param>
+    /// <param name="policy">The thresholds.</param>
+    /// <remarks>
+    /// The failure is reported, never swallowed: a datastore whose alerts are
+    /// being held without being rechecked is itself something an operator
+    /// has to know, so it raises <see cref="HistoryUnreadableTitle"/>.
+    /// </remarks>
+    public static IReadOnlyList<AlertDefinition> EvaluateEach(
+        IReadOnlyList<DatastoreCapacity> datastores,
+        Func<DatastoreCapacity, TimeToFullResult> estimate,
+        ICollection<AlertFingerprint> unevaluated,
+        DatastoreTimeToFullPolicy? policy = null)
+    {
+        ArgumentNullException.ThrowIfNull(datastores);
+        ArgumentNullException.ThrowIfNull(estimate);
+        ArgumentNullException.ThrowIfNull(unevaluated);
+
+        var estimated = new List<(DatastoreCapacity, TimeToFullResult)>(datastores.Count);
+        var failed = new List<(DatastoreCapacity Datastore, Exception Error)>();
+
+        foreach (var datastore in datastores)
+        {
+            try
+            {
+                estimated.Add((datastore, estimate(datastore)));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+#pragma warning disable CA1031 // Justified: the query crosses a network to a
+            // database and may throw anything; one datastore's history must
+            // not cost every other datastore its fill date.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                failed.Add((datastore, ex));
+
+                foreach (var fingerprint in Fingerprints(datastore))
+                {
+                    unevaluated.Add(fingerprint);
+                }
+            }
+        }
+
+        var alerts = Evaluate(estimated, policy).ToList();
+
+        if (failed.Count > 0)
+        {
+            alerts.Add(HistoryUnreadable(failed));
+        }
+
+        return alerts;
+    }
+
+    public const string HistoryUnreadableTitle = "Datastore history could not be read";
+
+    private static AlertDefinition HistoryUnreadable(
+        List<(DatastoreCapacity Datastore, Exception Error)> failed)
+    {
+        const int named = 5;
+        var names = string.Join(", ", failed.Take(named).Select(f => $"'{f.Datastore.Name}'"));
+        var more = failed.Count > named ? $" and {failed.Count - named} more" : string.Empty;
+        var (_, first) = failed[0];
+
+        return new AlertDefinition
+        {
+            // One alert for the rule, not one per datastore: it is about this
+            // product's reading, and it must not belong to a datastore's
+            // source, or a silent vCenter would hold it open.
+            Fingerprint = AlertFingerprint.Create(
+                "platform", HistoryUnreadableTitle, GuardedRule.Category, RuleId, "datastore-history-unreadable"),
+
+            // Warning, for the reason a failed rule is one: nothing says the
+            // estate is broken, only that part of it is not being rechecked.
+            Severity = AlertSeverity.Warning,
+            Title = HistoryUnreadableTitle,
+            Description = string.Create(CultureInfo.InvariantCulture,
+                $"The used-space history of {failed.Count} datastore(s) could not be read this cycle " +
+                $"({names}{more}); the first threw {first.GetType().Name}: {first.Message} " +
+                $"Their fill-date and over-commit alerts are kept as they were, not rechecked, until " +
+                $"the history can be read again. The other datastores were estimated normally."),
+            Category = GuardedRule.Category,
+            Source = "platform",
+            IsDerived = true,
+        };
     }
 
     /// <summary>
@@ -297,6 +409,37 @@ public static class DatastoreTimeToFull
 
     public static double Gigabytes(double bytes) => bytes / 1024d / 1024d / 1024d;
 
+    /// <summary>
+    /// Every fingerprint this rule can raise for one datastore — what a
+    /// datastore whose history could not be read holds open.
+    /// </summary>
+    public static IReadOnlyList<AlertFingerprint> Fingerprints(DatastoreCapacity datastore)
+    {
+        ArgumentNullException.ThrowIfNull(datastore);
+
+        return [FillingFingerprint(datastore), OvercommitFingerprint(datastore)];
+    }
+
+    // Per datastore and nothing else: the date moves every cycle and is in
+    // the description, so the inbox holds one alert whose wording updates,
+    // not a new alert each time the slope shifts. One fingerprint across both
+    // severities, as the fullness alert. The entity id rather than the name,
+    // so a rename does not close one alert and open another.
+    private static AlertFingerprint FillingFingerprint(DatastoreCapacity datastore) =>
+        AlertFingerprint.Create(
+            datastore.Source, FillingTitle, Category, datastore.Datastore.Value, RuleId);
+
+    // Exactly the collector's fingerprint, so an alert opened before this rule
+    // owned the finding is the same alert now. It is keyed by the display
+    // name, unlike the fill-date alert, and that is kept on purpose: moving
+    // it to the entity id would close and reopen every over-commit alert
+    // open today. The cost is that renaming a datastore resolves its alert
+    // and raises a new one — accepted, because renames are rare and the new
+    // alert says the same thing.
+    private static AlertFingerprint OvercommitFingerprint(DatastoreCapacity datastore) =>
+        AlertFingerprint.Create(
+            datastore.Source, OvercommitTitle, Category, datastore.Name, "datastore-overcommitted");
+
     private static AlertDefinition? Filling(
         DatastoreCapacity datastore, TimeToFullResult estimate, DatastoreTimeToFullPolicy policy)
     {
@@ -319,14 +462,7 @@ public static class DatastoreTimeToFull
 
         return new AlertDefinition
         {
-            // Per datastore and nothing else: the date moves every cycle and
-            // is in the description, so the inbox holds one alert whose
-            // wording updates, not a new alert each time the slope shifts.
-            // One fingerprint across both severities, as the fullness alert.
-            // The entity id rather than the name, so a rename does not close
-            // one alert and open another.
-            Fingerprint = AlertFingerprint.Create(
-                datastore.Source, FillingTitle, Category, datastore.Datastore.Value, RuleId),
+            Fingerprint = FillingFingerprint(datastore),
             Severity = level,
             Title = FillingTitle,
             Description = string.Create(CultureInfo.InvariantCulture, 
@@ -383,10 +519,7 @@ public static class DatastoreTimeToFull
 
         return new AlertDefinition
         {
-            // Exactly the collector's fingerprint, so an alert opened before
-            // this rule owned the finding is the same alert now.
-            Fingerprint = AlertFingerprint.Create(
-                datastore.Source, OvercommitTitle, Category, datastore.Name, "datastore-overcommitted"),
+            Fingerprint = OvercommitFingerprint(datastore),
             Severity = AlertSeverity.Warning,
             Title = OvercommitTitle,
             Description = string.Create(CultureInfo.InvariantCulture, 

@@ -106,7 +106,24 @@ public sealed record ComplianceFinding
     /// </remarks>
     public required DateTimeOffset FirstSeenUtc { get; init; }
 
+    /// <summary>When the evidence this verdict rests on was read.</summary>
+    /// <remarks>
+    /// The host's last-seen time, not the moment the judgement ran. A verdict
+    /// re-derived from settings read yesterday is yesterday's verdict, and
+    /// stamping it with today's date would present it as a fresh reading.
+    /// </remarks>
     public required DateTimeOffset LastEvaluatedUtc { get; init; }
+
+    /// <summary>
+    /// Whether the host's source did not report in the cycle that produced this finding.
+    /// </summary>
+    /// <remarks>
+    /// The verdict is then the last one this product could reach, carried
+    /// rather than dropped — a vCenter being unreachable is not the host
+    /// becoming compliant — but it is not current, and must never be shown as
+    /// if it were. <see cref="LastEvaluatedUtc"/> says how old it is.
+    /// </remarks>
+    public bool Stale { get; init; }
 
     /// <summary>Set while somebody owns this failure; cleared when it passes.</summary>
     public FindingAcceptance? Acceptance { get; init; }
@@ -190,10 +207,56 @@ public sealed record ComplianceWaiver
 
     public required DateTimeOffset ExpiresUtc { get; init; }
 
+    /// <summary>Who withdrew it, as their audit name; null while it stands.</summary>
+    /// <remarks>
+    /// Withdrawn rather than deleted. An auditor asking why a host was not
+    /// counted as failing in March needs the exception that covered it then,
+    /// and who ended it, long after it stopped applying.
+    /// </remarks>
+    public string? RemovedBy { get; init; }
+
+    public DateTimeOffset? RemovedAtUtc { get; init; }
+
+    public bool IsRemovedAt(DateTimeOffset nowUtc) => RemovedAtUtc is { } removed && nowUtc >= removed;
+
     public bool IsExpiredAt(DateTimeOffset nowUtc) => nowUtc >= ExpiresUtc;
 
     public bool Covers(string controlId, EntityId entity, DateTimeOffset nowUtc) =>
         !IsExpiredAt(nowUtc) &&
+        !IsRemovedAt(nowUtc) &&
         string.Equals(ControlId, controlId, StringComparison.Ordinal) &&
         (Entity is null || Entity == entity);
+}
+
+/// <summary>
+/// A finding's verdict changing, as the audit trail records it.
+/// </summary>
+/// <remarks>
+/// Written only when the verdict changes, never per evaluation: a control
+/// that failed for a year is one row saying when it started. The first verdict
+/// a finding ever has comes from null, and a finding that leaves the
+/// evaluation — its host gone, its control no longer judged — goes to null.
+/// </remarks>
+public sealed record ComplianceTransition
+{
+    public required string CatalogueRelease { get; init; }
+
+    public required string ControlId { get; init; }
+
+    public required EntityId Entity { get; init; }
+
+    /// <summary>The verdict before; null when the finding is new.</summary>
+    public ComplianceVerdict? From { get; init; }
+
+    /// <summary>The verdict after; null when the finding left the evaluation.</summary>
+    public ComplianceVerdict? To { get; init; }
+
+    /// <summary>What the entity reported behind the new verdict, verbatim; null when nothing was read.</summary>
+    public string? Observed { get; init; }
+
+    /// <summary>When the setting behind the new verdict was read; null when the finding left.</summary>
+    public DateTimeOffset? EvidenceUtc { get; init; }
+
+    /// <summary>When the evaluation that saw the change ran.</summary>
+    public required DateTimeOffset AtUtc { get; init; }
 }

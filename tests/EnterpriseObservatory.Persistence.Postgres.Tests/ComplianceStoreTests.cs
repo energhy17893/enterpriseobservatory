@@ -10,11 +10,14 @@ namespace EnterpriseObservatory.Persistence.Postgres.Tests;
 /// The claims are the ones a restart would break: that an acceptance and its
 /// author come back, that a null observation stays null rather than becoming
 /// an empty string (the difference between "not read" and "not configured"),
-/// and that an evaluation replaces the whole set rather than leaving findings
-/// for a host that has gone.
+/// that an evaluation replaces its own release's findings and nobody else's,
+/// that a verdict change leaves a transition behind, and that a withdrawn
+/// exception is still on the record.
 /// </remarks>
 public class ComplianceStoreTests : IDisposable
 {
+    private const string Release = "803-20260612-01";
+
     private static readonly DateTimeOffset T0 = new(2026, 9, 21, 12, 0, 0, TimeSpan.Zero);
 
     private readonly LiveDatabase _live = new();
@@ -31,10 +34,11 @@ public class ComplianceStoreTests : IDisposable
     private static ComplianceFinding Finding(
         string entity = "vc-1:host-1",
         ComplianceVerdict verdict = ComplianceVerdict.Failing,
-        string? observed = "") => new()
+        string? observed = "",
+        string release = Release) => new()
         {
             ControlId = "esxi-8.logs-remote",
-            CatalogueRelease = "803-20260612-01",
+            CatalogueRelease = release,
             Entity = new EntityId(entity),
             EntityName = "esx-01",
             Verdict = verdict,
@@ -45,14 +49,21 @@ public class ComplianceStoreTests : IDisposable
             LastEvaluatedUtc = T0.AddMinutes(5),
         };
 
+    private long Count(string sql) => _live.Database.Read(connection =>
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    });
+
     [SkippableFact]
     public void Findings_and_their_acceptance_survive_a_restart()
     {
         RequireDatabase();
 
         var store = new PostgresComplianceStore(_live.Database);
-        store.Evaluate(_ => [Finding(), Finding("vc-1:host-2", ComplianceVerdict.NotEvaluated, null)]);
-        store.Mutate("esxi-8.logs-remote", new EntityId("vc-1:host-1"), f => f with
+        store.Evaluate(Release, T0, _ => [Finding(), Finding("vc-1:host-2", ComplianceVerdict.NotEvaluated, null)]);
+        store.Mutate(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"), f => f with
         {
             Acceptance = new FindingAcceptance { By = "ertugrul", AtUtc = T0.AddHours(1), Reason = "CHG-1" },
         });
@@ -76,13 +87,13 @@ public class ComplianceStoreTests : IDisposable
     }
 
     [SkippableFact]
-    public void An_evaluation_replaces_every_finding()
+    public void An_evaluation_removes_findings_that_left_it()
     {
         RequireDatabase();
 
         var store = new PostgresComplianceStore(_live.Database);
-        store.Evaluate(_ => [Finding("vc-1:host-1"), Finding("vc-1:host-2")]);
-        store.Evaluate(previous => [.. previous.Where(f => f.Entity.Value == "vc-1:host-1")]);
+        store.Evaluate(Release, T0, _ => [Finding("vc-1:host-1"), Finding("vc-1:host-2")]);
+        store.Evaluate(Release, T0, previous => [.. previous.Where(f => f.Entity.Value == "vc-1:host-1")]);
 
         _live.Restart();
 
@@ -92,7 +103,168 @@ public class ComplianceStoreTests : IDisposable
     }
 
     [SkippableFact]
-    public void An_exception_survives_a_restart_and_can_be_removed()
+    public void An_evaluation_leaves_another_catalogue_releases_findings_alone()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+        store.Evaluate("other-vendor-2026", T0, _ => [Finding(release: "other-vendor-2026")]);
+
+        store.Evaluate(Release, T0, previous =>
+        {
+            // Handed only its own release's findings.
+            Assert.Empty(previous);
+            return [Finding()];
+        });
+        store.Evaluate(Release, T0, _ => []);
+
+        _live.Restart();
+
+        Assert.Equal(
+            "other-vendor-2026",
+            Assert.Single(new PostgresComplianceStore(_live.Database).Findings).CatalogueRelease);
+    }
+
+    [SkippableFact]
+    public void An_evaluation_that_returns_another_releases_finding_is_refused()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+
+        Assert.Throws<ArgumentException>(() =>
+            store.Evaluate(Release, T0, _ => [Finding(release: "other-vendor-2026")]));
+        Assert.Empty(store.Findings);
+    }
+
+    [SkippableFact]
+    public void An_unchanged_evaluation_writes_only_the_evidence_time()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+        IReadOnlyList<ComplianceFinding> estate =
+        [
+            .. Enumerable.Range(1, 50).Select(i => Finding($"vc-1:host-{i}")),
+        ];
+
+        store.Evaluate(Release, T0, _ => estate);
+
+        // How many rows that costs is ComplianceFindingChangesTests' claim;
+        // this one is that the set-based update lands on every row.
+        var later = T0.AddMinutes(10);
+
+        store.Evaluate(Release, later, previous =>
+            [.. previous.Select(f => f with { LastEvaluatedUtc = later })]);
+
+        var reopened = new PostgresComplianceStore(_live.Database);
+
+        Assert.All(reopened.Findings, f => Assert.Equal(later, f.LastEvaluatedUtc));
+
+        // Nothing changed verdict, so nothing beyond the first verdicts was
+        // recorded as history.
+        Assert.Equal(50, Count("SELECT count(*) FROM compliance_transition;"));
+    }
+
+    [SkippableFact]
+    public void A_verdict_change_is_recorded_as_a_transition()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+        var host = new EntityId("vc-1:host-1");
+
+        store.Evaluate(Release, T0, _ => [Finding()]);
+        store.Evaluate(Release, T0.AddMinutes(5), _ => [Finding() with { LastEvaluatedUtc = T0.AddMinutes(5) }]);
+        store.Evaluate(Release, T0.AddHours(1), _ =>
+        [
+            Finding(verdict: ComplianceVerdict.Passing, observed: "udp://10.0.0.5:514") with
+            {
+                FirstSeenUtc = T0.AddHours(1),
+                LastEvaluatedUtc = T0.AddHours(1),
+            },
+        ]);
+        store.Evaluate(Release, T0.AddHours(2), _ => []);
+
+        var history = store.Transitions(Release, "esxi-8.logs-remote", host);
+
+        Assert.Collection(
+            history,
+            first =>
+            {
+                Assert.Null(first.From);
+                Assert.Equal(ComplianceVerdict.Failing, first.To);
+                Assert.Equal(string.Empty, first.Observed);
+                Assert.Equal(T0, first.AtUtc);
+            },
+            fixedIt =>
+            {
+                Assert.Equal(ComplianceVerdict.Failing, fixedIt.From);
+                Assert.Equal(ComplianceVerdict.Passing, fixedIt.To);
+                Assert.Equal("udp://10.0.0.5:514", fixedIt.Observed);
+                Assert.Equal(T0.AddHours(1), fixedIt.EvidenceUtc);
+            },
+            gone =>
+            {
+                Assert.Equal(ComplianceVerdict.Passing, gone.From);
+                Assert.Null(gone.To);
+                Assert.Equal(T0.AddHours(2), gone.AtUtc);
+            });
+    }
+
+    [SkippableFact]
+    public void Transitions_older_than_the_retention_are_pruned()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+
+        store.Evaluate(Release, T0, _ => [Finding()]);
+        store.Evaluate(Release, T0 + PostgresComplianceStore.TransitionRetention + TimeSpan.FromDays(1), _ =>
+            [Finding(verdict: ComplianceVerdict.Passing, observed: "udp://x:514")]);
+
+        var history = store.Transitions(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"));
+
+        Assert.Equal(ComplianceVerdict.Passing, Assert.Single(history).To);
+    }
+
+    [SkippableFact]
+    public void A_stale_finding_stays_stale_across_a_restart()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+        store.Evaluate(Release, T0, _ => [Finding() with { Stale = true }]);
+
+        _live.Restart();
+
+        Assert.True(Assert.Single(new PostgresComplianceStore(_live.Database).Findings).Stale);
+    }
+
+    [SkippableFact]
+    public void An_acceptance_is_written_to_its_own_releases_finding_only()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+        store.Evaluate("803-20250101-01", T0, _ => [Finding(release: "803-20250101-01")]);
+        store.Evaluate(Release, T0, _ => [Finding()]);
+
+        store.Mutate(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"), f => f with
+        {
+            Acceptance = new FindingAcceptance { By = "ertugrul", AtUtc = T0 },
+        });
+
+        _live.Restart();
+
+        var findings = new PostgresComplianceStore(_live.Database).Findings;
+
+        Assert.NotNull(findings.Single(f => f.CatalogueRelease == Release).Acceptance);
+        Assert.Null(findings.Single(f => f.CatalogueRelease == "803-20250101-01").Acceptance);
+    }
+
+    [SkippableFact]
+    public void A_withdrawn_exception_stays_on_the_record_with_who_withdrew_it()
     {
         RequireDatabase();
 
@@ -116,11 +288,19 @@ public class ComplianceStoreTests : IDisposable
 
         Assert.Null(exception.Entity);
         Assert.Equal(T0.AddDays(30), exception.ExpiresUtc);
-        Assert.True(reopened.RemoveException("x1"));
-        Assert.False(reopened.RemoveException("x1"));
+        Assert.Null(exception.RemovedAtUtc);
+
+        Assert.True(reopened.RemoveException("x1", "second-operator", T0.AddDays(1)));
+
+        // A second withdrawal does not rewrite who did the first.
+        Assert.False(reopened.RemoveException("x1", "third-operator", T0.AddDays(2)));
 
         _live.Restart();
 
-        Assert.Empty(new PostgresComplianceStore(_live.Database).Exceptions);
+        var withdrawn = Assert.Single(new PostgresComplianceStore(_live.Database).Exceptions);
+
+        Assert.Equal("second-operator", withdrawn.RemovedBy);
+        Assert.Equal(T0.AddDays(1), withdrawn.RemovedAtUtc);
+        Assert.False(withdrawn.Covers("esxi-8.logs-remote", new EntityId("vc-1:host-1"), T0.AddDays(1)));
     }
 }

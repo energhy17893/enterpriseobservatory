@@ -50,8 +50,10 @@ public class ComplianceEvaluationTests
             Settings = settings.ToDictionary(s => s.Key, s => s.Value, StringComparer.OrdinalIgnoreCase),
         };
 
+    /// <summary>One control against one host read at <paramref name="at"/>, evaluated then.</summary>
     private static ComplianceFinding One(ComplianceControl control, Entity host, IReadOnlyList<ComplianceFinding>? previous = null, DateTimeOffset? at = null) =>
-        Assert.Single(ComplianceEvaluation.Evaluate(Catalogue(control), [host], previous ?? [], at ?? T0));
+        Assert.Single(ComplianceEvaluation.Evaluate(
+            Catalogue(control), [host with { LastSeenUtc = at ?? T0 }], previous ?? [], at ?? T0));
 
     // --- binding ---------------------------------------------------------------
 
@@ -265,6 +267,74 @@ public class ComplianceEvaluationTests
         var regressed = One(
             LogForwarding, Host(settings: ("Syslog.global.logHost", "")), [passing], T0.AddHours(3));
         Assert.Null(regressed.Acceptance);
+    }
+
+    // --- freshness ----------------------------------------------------------------
+
+    [Fact]
+    public void A_finding_is_dated_when_its_host_was_read_not_when_it_was_judged()
+    {
+        // The graph keeps a silent vCenter's hosts exactly as last read, so
+        // judging one a day later re-derives yesterday's verdict. It must say
+        // it is yesterday's.
+        var host = Host(settings: ("Syslog.global.logHost", "")) with { LastSeenUtc = T0 };
+
+        var finding = Assert.Single(ComplianceEvaluation.Evaluate(
+            Catalogue(LogForwarding), [host], [], T0.AddDays(1)));
+
+        Assert.Equal(T0, finding.LastEvaluatedUtc);
+        Assert.Equal(T0, finding.FirstSeenUtc);
+    }
+
+    [Fact]
+    public void A_host_whose_source_did_not_report_this_cycle_is_marked_stale()
+    {
+        IReadOnlyList<Entity> estate =
+        [
+            Host("vc-1:host-1", settings: ("Syslog.global.logHost", "")) with { SourceInstanceId = "vc-1" },
+            Host("vc-2:host-1", settings: ("Syslog.global.logHost", "")) with { SourceInstanceId = "vc-2" },
+        ];
+
+        var findings = ComplianceEvaluation.Evaluate(
+            Catalogue(LogForwarding), estate, [], T0, reportingSources: ["vc-1"]);
+
+        Assert.False(findings.Single(f => f.Entity.Value == "vc-1:host-1").Stale);
+
+        // Still judged — an unreachable vCenter does not make its hosts
+        // compliant — but not presented as current.
+        var silent = findings.Single(f => f.Entity.Value == "vc-2:host-1");
+
+        Assert.True(silent.Stale);
+        Assert.Equal(ComplianceVerdict.Failing, silent.Verdict);
+    }
+
+    [Fact]
+    public void A_stale_finding_keeps_its_first_seen_date_and_acceptance()
+    {
+        var accepted = One(LogForwarding, Host(settings: ("Syslog.global.logHost", ""))) with
+        {
+            Acceptance = new FindingAcceptance { By = "ertugrul", AtUtc = T0 },
+        };
+
+        var host = Host(settings: ("Syslog.global.logHost", "")) with { SourceInstanceId = "vc-1" };
+
+        var stale = Assert.Single(ComplianceEvaluation.Evaluate(
+            Catalogue(LogForwarding), [host], [accepted], T0.AddHours(3), reportingSources: []));
+
+        Assert.True(stale.Stale);
+        Assert.Equal(T0, stale.FirstSeenUtc);
+        Assert.Equal(T0, stale.LastEvaluatedUtc);
+        Assert.NotNull(stale.Acceptance);
+    }
+
+    [Fact]
+    public void A_reading_dated_in_the_future_is_stamped_no_later_than_now()
+    {
+        var host = Host(settings: ("Syslog.global.logHost", "")) with { LastSeenUtc = T0.AddMinutes(10) };
+
+        var finding = Assert.Single(ComplianceEvaluation.Evaluate(Catalogue(LogForwarding), [host], [], T0));
+
+        Assert.Equal(T0, finding.LastEvaluatedUtc);
     }
 
     [Fact]

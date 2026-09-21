@@ -19,6 +19,13 @@ public sealed record FindingCountsView
     public int Accepted { get; init; }
 
     public int Excepted { get; init; }
+
+    /// <summary>
+    /// How many of the findings above rest on a host whose source did not
+    /// report in the last cycle. Not a state of its own: a stale failing
+    /// finding is still counted as failing, and also here.
+    /// </summary>
+    public int Stale { get; init; }
 }
 
 /// <summary>One catalogue control, as the compliance screen groups by it.</summary>
@@ -70,6 +77,11 @@ public sealed record ComplianceExceptionView
     public required DateTimeOffset ExpiresUtc { get; init; }
 
     public required bool Expired { get; init; }
+
+    /// <summary>Who withdrew it; null while it stands.</summary>
+    public string? RemovedBy { get; init; }
+
+    public DateTimeOffset? RemovedAtUtc { get; init; }
 }
 
 /// <summary>The whole compliance screen's summary.</summary>
@@ -88,6 +100,7 @@ public sealed record ComplianceView
 
     public required FindingCountsView Totals { get; init; }
 
+    /// <summary>The exceptions that stand, expired or not; withdrawn ones are listed separately.</summary>
     public required IReadOnlyList<ComplianceExceptionView> Exceptions { get; init; }
 
     /// <summary>When findings were last evaluated, or null when never.</summary>
@@ -115,7 +128,14 @@ public sealed record ComplianceFindingView
 
     public required DateTimeOffset FirstSeenUtc { get; init; }
 
+    /// <summary>When the evidence was read: the host's last-seen time.</summary>
     public required DateTimeOffset LastEvaluatedUtc { get; init; }
+
+    /// <summary>
+    /// The host's source did not report in the last cycle: this is the last
+    /// verdict that could be reached, not a current one.
+    /// </summary>
+    public required bool Stale { get; init; }
 
     public string? AcceptedBy { get; init; }
 
@@ -219,10 +239,22 @@ public static class ComplianceApi
             .RequireAuthorization(ObservatoryApi.Policies.Operator)
             .WithName("AddComplianceException");
 
+        compliance.MapGet("/exceptions", (ComplianceService service, bool? includeRemoved) =>
+                ExceptionList(service, includeRemoved ?? false))
+            .WithName("GetComplianceExceptions");
+
         compliance.MapPost("/exceptions/remove", (
+                HttpContext context,
                 ComplianceService service,
                 RemoveExceptionCommand command) =>
-                Respond(service, service.RemoveException(command.Id)))
+            {
+                if (AuthenticationApi.OperatorFor(context) is not { } actor)
+                {
+                    return Results.Unauthorized();
+                }
+
+                return Respond(service, service.RemoveException(command.Id, actor));
+            })
             .RequireAuthorization(ObservatoryApi.Policies.Operator)
             .WithName("RemoveComplianceException");
 
@@ -273,6 +305,7 @@ public static class ComplianceApi
             Exceptions =
             [
                 .. exceptions
+                    .Where(e => e.RemovedAtUtc is null)
                     .OrderBy(e => e.ExpiresUtc)
                     .Select(e => ToView(e, now)),
             ],
@@ -302,12 +335,38 @@ public static class ComplianceApi
         ];
     }
 
+    /// <summary>
+    /// The exceptions on the record: the standing ones, and the withdrawn ones when asked.
+    /// </summary>
+    /// <remarks>
+    /// A withdrawn exception covers nothing, but it is kept and listed here
+    /// with who withdrew it: an audit asks what was excepted at a date, not
+    /// only what is excepted now.
+    /// </remarks>
+    public static IReadOnlyList<ComplianceExceptionView> ExceptionList(
+        ComplianceService service, bool includeRemoved)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+
+        var now = service.Now;
+
+        return
+        [
+            .. service.Exceptions()
+                .Where(e => includeRemoved || e.RemovedAtUtc is null)
+                .OrderBy(e => e.RemovedAtUtc is null ? 0 : 1)
+                .ThenBy(e => e.ExpiresUtc)
+                .Select(e => ToView(e, now)),
+        ];
+    }
+
     private static FindingCountsView Count(
         IEnumerable<ComplianceFinding> findings,
         IReadOnlyList<ComplianceWaiver> exceptions,
         DateTimeOffset now)
     {
-        var states = findings.Select(f => f.StateAt(exceptions, now)).ToList();
+        var all = findings.ToList();
+        var states = all.Select(f => f.StateAt(exceptions, now)).ToList();
 
         return new FindingCountsView
         {
@@ -316,6 +375,7 @@ public static class ComplianceApi
             NotEvaluated = states.Count(s => s == FindingState.NotEvaluated),
             Accepted = states.Count(s => s == FindingState.Accepted),
             Excepted = states.Count(s => s == FindingState.Excepted),
+            Stale = all.Count(f => f.Stale),
         };
     }
 
@@ -332,6 +392,7 @@ public static class ComplianceApi
             Expected = finding.Expected,
             FirstSeenUtc = finding.FirstSeenUtc,
             LastEvaluatedUtc = finding.LastEvaluatedUtc,
+            Stale = finding.Stale,
             AcceptedBy = finding.Acceptance?.By,
             AcceptedAtUtc = finding.Acceptance?.AtUtc,
             AcceptedReason = finding.Acceptance?.Reason,
@@ -351,6 +412,8 @@ public static class ComplianceApi
         CreatedAtUtc = exception.CreatedAtUtc,
         ExpiresUtc = exception.ExpiresUtc,
         Expired = exception.IsExpiredAt(now),
+        RemovedBy = exception.RemovedBy,
+        RemovedAtUtc = exception.RemovedAtUtc,
     };
 
     private static IResult Respond(ComplianceService service, ComplianceResult result)
@@ -367,9 +430,12 @@ public static class ComplianceApi
         return Results.Problem(
             title: "Not applied",
             detail: Explain(result.Failure),
-            statusCode: result.Failure == ComplianceFailure.NotFound
-                ? StatusCodes.Status404NotFound
-                : StatusCodes.Status400BadRequest);
+            statusCode: result.Failure switch
+            {
+                ComplianceFailure.NotFound => StatusCodes.Status404NotFound,
+                ComplianceFailure.AlreadyAccepted => StatusCodes.Status409Conflict,
+                _ => StatusCodes.Status400BadRequest,
+            });
     }
 
     private static string Explain(ComplianceFailure failure) => failure switch
@@ -386,6 +452,13 @@ public static class ComplianceApi
         ComplianceFailure.MissingDetail =>
             "An exception needs a reason and an owner — somebody has to be able to explain it and " +
             "answer for it when it comes up for renewal.",
+        ComplianceFailure.TooLong =>
+            $"A reason can be at most {ComplianceService.MaximumReasonLength} characters and an owner " +
+            $"at most {ComplianceService.MaximumOwnerLength}. Cite the change ticket rather than " +
+            "copying it.",
+        ComplianceFailure.AlreadyAccepted =>
+            "Somebody has already accepted this finding. Their acceptance stays on the record until " +
+            "the finding passes; it is not overwritten.",
         _ => "The change was not applied.",
     };
 }

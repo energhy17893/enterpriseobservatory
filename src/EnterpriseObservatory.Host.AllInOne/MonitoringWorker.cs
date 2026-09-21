@@ -70,7 +70,7 @@ public sealed class MonitoringWorker(
 
                 WarnAboutSilence(result);
 
-                EvaluateCompliance();
+                EvaluateCompliance(result.ReportingSources);
 
                 // Same rhythm, after the inventory: the stream is read from a
                 // mark, so a five-minute cadence loses nothing, and the event
@@ -139,8 +139,13 @@ public sealed class MonitoringWorker(
     /// is not the inventory cycle failing, and the findings already stored
     /// stay on the screen until an evaluation succeeds.
     /// </para>
+    /// <para>
+    /// Told which sources answered, so that a host whose vCenter was silent
+    /// is judged on what it last reported and shown as stale rather than
+    /// re-dated as a fresh reading.
+    /// </para>
     /// </remarks>
-    private void EvaluateCompliance()
+    private void EvaluateCompliance(IReadOnlyList<string> reportingSources)
     {
         if (_compliance.Catalogue.Problem is not null)
         {
@@ -149,7 +154,7 @@ public sealed class MonitoringWorker(
 
         try
         {
-            var findings = _compliance.Evaluate([.. _graph.Current.Active]);
+            var findings = _compliance.Evaluate([.. _graph.Current.Active], reportingSources);
 
             HostLog.ComplianceEvaluated(
                 _logger, findings, _compliance.Catalogue.Name, _compliance.Catalogue.Release);

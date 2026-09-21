@@ -1325,6 +1325,106 @@ public class MonitoringCycleTests : IDisposable
         Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
     }
 
+    /// <summary>
+    /// A vCenter reporting one datastore filling at 2 GB a day with 10 GB
+    /// left, over twenty days of recorded history in <paramref name="store"/>.
+    /// </summary>
+    private FakeInventorySource FillingDatastore(IObservationStore store, Func<bool> reachable)
+    {
+        const double gb = 1024d * 1024 * 1024;
+        var datastore = new EntityId("vc-1:datastore-41");
+
+        store.Append(
+        [
+            .. Enumerable.Range(0, 20).Select(i => CapacityCounters.Reading(
+                datastore, CapacityCounters.DatastoreUsed, (10 + 2 * i) * gb, T0.AddDays(i - 20), "vc-1")),
+        ]);
+
+        return new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => !reachable()
+                ? throw new InvalidOperationException("unreachable")
+                : Snapshot(
+                    "vc-1",
+                    _clock.UtcNow,
+                    entities: [Node(datastore.Value, EntityKind.Datastore, "vmfs01")]) with
+                {
+                    Observations =
+                    [
+                        CapacityCounters.Reading(
+                            datastore, CapacityCounters.DatastoreCapacity, 60 * gb, _clock.UtcNow, "vc-1"),
+                        CapacityCounters.Reading(
+                            datastore, CapacityCounters.DatastoreFree, 10 * gb, _clock.UtcNow, "vc-1"),
+                        CapacityCounters.Reading(
+                            datastore, CapacityCounters.DatastoreUsed, 50 * gb, _clock.UtcNow, "vc-1"),
+                    ],
+                },
+        };
+    }
+
+    [Fact]
+    public async Task A_vcenter_that_misses_an_inventory_read_keeps_its_datastores_alerts()
+    {
+        // The graph keeps a silent vCenter's datastores because we did not
+        // look. The alerts on them used to resolve on the same cycle -- the
+        // rule has no reading for them, so it says nothing -- and every fill
+        // date on that vCenter closed after one missed read, to reopen and
+        // notify again on the next.
+        var reachable = true;
+        var inventory = FillingDatastore(_observations, () => reachable);
+        var cycle = Cycle();
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        var raised = Assert.Single(_alerts.All, a => a.Title == DatastoreTimeToFull.FillingTitle);
+        Assert.Equal(AlertLifecycleState.Open, raised.State);
+
+        reachable = false;
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        var result = await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Contains("vc-1", result.SilentSources);
+        var held = Assert.Single(_alerts.All, a => a.Title == DatastoreTimeToFull.FillingTitle);
+        Assert.Equal(AlertLifecycleState.Open, held.State);
+        Assert.Equal(raised.LastSeenUtc, held.LastSeenUtc);
+
+        // And once it answers without the problem, it resolves as before.
+        reachable = true;
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        var answered = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot(
+                "vc-1", _clock.UtcNow, entities: [Node("vc-1:datastore-41", EntityKind.Datastore, "vmfs01")]),
+        };
+        await cycle.RunInventoryAsync([answered], Options, CancellationToken.None);
+
+        Assert.Equal(
+            AlertLifecycleState.Resolved,
+            Assert.Single(_alerts.All, a => a.Title == DatastoreTimeToFull.FillingTitle).State);
+    }
+
+    [Fact]
+    public async Task A_datastore_whose_history_cannot_be_read_keeps_its_alert_and_says_why()
+    {
+        var store = new FlakyObservationStore();
+        var inventory = FillingDatastore(store, () => true);
+        var cycle = Cycle(observations: store);
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        Assert.Equal(
+            AlertLifecycleState.Open,
+            Assert.Single(_alerts.All, a => a.Title == DatastoreTimeToFull.FillingTitle).State);
+
+        store.QueryFails = true;
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Equal(
+            AlertLifecycleState.Open,
+            Assert.Single(_alerts.All, a => a.Title == DatastoreTimeToFull.FillingTitle).State);
+        Assert.Contains(_alerts.All, a => a.Title == DatastoreTimeToFull.HistoryUnreadableTitle);
+        Assert.DoesNotContain(_alerts.All, a => a.Title == "Analysis rule failed");
+    }
+
     [Fact]
     public async Task The_coverage_rule_is_reached_by_the_inventory_cycle()
     {
@@ -1931,7 +2031,12 @@ internal sealed class FlakyObservationStore : IObservationStore
         _kept.Append(observations);
     }
 
-    public SeriesResult Query(SeriesQuery query) => _kept.Query(query);
+    /// <summary>Whether reading history fails, as a statement timeout does.</summary>
+    public bool QueryFails { get; set; }
+
+    public SeriesResult Query(SeriesQuery query) => QueryFails
+        ? throw new TimeoutException("canceling statement due to statement timeout")
+        : _kept.Query(query);
 
     public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => _kept.SeriesFor(entity);
 

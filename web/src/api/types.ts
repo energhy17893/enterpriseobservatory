@@ -445,6 +445,8 @@ export interface FindingCountsView {
   notEvaluated: number
   accepted: number
   excepted: number
+  /** Of the above, how many rest on a host whose source did not report last cycle. */
+  stale: number
 }
 
 export interface ComplianceControlView {
@@ -473,6 +475,9 @@ export interface ComplianceExceptionView {
   createdAtUtc: string
   expiresUtc: string
   expired: boolean
+  /** Who withdrew it; null while it stands. */
+  removedBy: string | null
+  removedAtUtc: string | null
 }
 
 export interface ComplianceView {
@@ -496,7 +501,10 @@ export interface ComplianceFindingView {
   observed: string | null
   expected: string
   firstSeenUtc: string
+  /** When the evidence was read: the host's last-seen time. */
   lastEvaluatedUtc: string
+  /** The host's source did not report last cycle: the last verdict reached, not a current one. */
+  stale: boolean
   acceptedBy: string | null
   acceptedAtUtc: string | null
   acceptedReason: string | null
