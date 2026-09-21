@@ -15,6 +15,9 @@ public enum ReportKind
     Compliance,
 
     Capacity,
+
+    /// <summary>M8.10: HA, DRS and storage-path continuity, one row per cluster.</summary>
+    Continuity,
 }
 
 /// <summary>How often a report goes out.</summary>

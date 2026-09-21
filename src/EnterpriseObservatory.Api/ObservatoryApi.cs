@@ -157,6 +157,23 @@ public static class ObservatoryApi
         })
             .WithName("GetCapacityReportCsv");
 
+        // Same read-for-any-signed-in-user rule. M8.10: one row per cluster,
+        // its HA scorecard (M8.1) and DRS compliance (M8.3) findings beside
+        // the storage-path redundancy of the hosts under it, plus the N+1
+        // placeholder -- see ReadModel.ContinuityReport.
+        api.MapGet("/reports/continuity", (ReadModel model) => model.ContinuityReport())
+            .WithName("GetContinuityReport");
+
+        api.MapGet("/reports/continuity.csv", (ReadModel model) =>
+        {
+            var report = model.ContinuityReport();
+            var csv = ContinuityReportCsv.Write(report.Rows);
+            var fileName = $"continuity-{report.GeneratedAtUtc:yyyyMMdd-HHmm}.csv";
+
+            return Results.File(CsvWriter.ToUtf8WithBom(csv), "text/csv", fileName);
+        })
+            .WithName("GetContinuityReportCsv");
+
         // --- operator commands ---------------------------------------------
         //
         // POST rather than PATCH on a resource, and the fingerprint in the body
