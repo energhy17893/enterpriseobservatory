@@ -370,13 +370,13 @@ public enum DrsRuleKind
 /// changes at the same rhythm as the cluster's other configuration.
 /// </para>
 /// <para>
-/// <see cref="VirtualMachineMoRefs"/> and <see cref="HostMoRefs"/> hold
-/// managed object references rather than resolved <see cref="EntityId"/>s,
-/// matching every other wire-shaped reference this collector carries (compare
-/// <see cref="StoragePath.StorageDeviceId"/>): resolving them into entity ids
-/// needs the source's instance id, which is the collector's business, and a
-/// rule evaluated against entities that no longer exist should say so rather
-/// than silently drop the reference.
+/// <see cref="VirtualMachineEntityIds"/> and <see cref="HostEntityIds"/> hold
+/// already-resolved <see cref="EntityId.Value"/>s, not the bare vim25 managed
+/// object references the wire carries: resolving them needs the source's
+/// instance id, which is the collector's business, so a rule stored here has
+/// already been through that step -- unlike, for example,
+/// <see cref="StoragePath.StorageDeviceId"/>, which stays wire-shaped because
+/// it identifies hardware rather than another entity.
 /// </para>
 /// </remarks>
 public sealed record DrsRule
