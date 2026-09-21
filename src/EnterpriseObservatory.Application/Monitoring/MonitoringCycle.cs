@@ -292,6 +292,21 @@ public sealed class MonitoringCycle(
         // they are kept or lost together with the values they came with.
         StoreObservations([.. cycle.Observations, .. cycle.Backfill]);
 
+        // Only sources that actually answered may have their entities' metric
+        // alerts judged on this cycle's silence. A source we could not reach
+        // told us nothing about whether the fault it reported last cycle is
+        // still there -- the same rule RunInventoryAsync applies to entities
+        // and coverage, applied here to what the metric rules found. Read
+        // from the graph as it stands now: this cycle merges nothing into it,
+        // so a discovery made by the inventory cycle is visible immediately
+        // and nothing here can go stale within a single pass.
+        var graph = _graphStore.Current;
+        var answered = cycle.Batches.Select(b => b.SourceInstanceId).ToList();
+        var silent = sources
+            .Select(s => s.InstanceId)
+            .Where(id => !answered.Contains(id, StringComparer.Ordinal))
+            .ToList();
+
         // What the collectors could not read, and what the numbers themselves
         // say. Both belong to this scope because both are decided by this
         // cycle: reconciliation treats what it is given as the whole truth, so
@@ -313,7 +328,7 @@ public sealed class MonitoringCycle(
             .. Analyse(RuleScope.Metric, new RuleContext
             {
                 Observations = cycle.Observations,
-                ReadGraph = () => _graphStore.Current,
+                ReadGraph = () => graph,
                 NowUtc = now,
                 Options = options,
                 Series = _observationStore,
@@ -322,21 +337,25 @@ public sealed class MonitoringCycle(
             }),
         ];
 
-        // Silent sources are not carried here: the metric scope's absence
-        // semantics are unchanged. Only what a rule said it could not
-        // evaluate is.
+        // A source that did not answer keeps its metric alerts as they were,
+        // for the same reason RunInventoryAsync keeps its entities and
+        // coverage: we did not look. A rule evaluates only the observations
+        // this cycle collected, so a source's silence leaves its faults out of
+        // `observed` -- indistinguishable, to reconciliation, from the fault
+        // having cleared -- unless the entity is known here to belong to a
+        // source this cycle could not reach.
         var reconciliation = Reconcile(
             AlertScopes.Observation,
             observed,
             options,
             now,
-            new CarryForward([], null, unevaluated));
+            new CarryForward(
+                silent,
+                entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
+                unevaluated));
 
         await NotifyAsync(AlertScopes.Observation, reconciliation, cancellationToken)
             .ConfigureAwait(false);
-
-        var graph = _graphStore.Current;
-        var answered = cycle.Batches.Select(b => b.SourceInstanceId).ToList();
 
         return new MonitoringCycleResult
         {
@@ -347,11 +366,7 @@ public sealed class MonitoringCycle(
             StorageFailure = _lastStorageFailure,
             ActiveEntities = graph.Active.Count(),
             VanishedEntities = graph.Vanished.Count(),
-            SilentSources =
-            [
-                .. sources.Select(s => s.InstanceId)
-                    .Where(id => !answered.Contains(id, StringComparer.Ordinal)),
-            ],
+            SilentSources = silent,
         };
     }
 

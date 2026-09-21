@@ -306,6 +306,7 @@ public class CompactionVisibilityTests
     private static object Sample(Type type) =>
         type == typeof(string) ? "sample"
         : type == typeof(int) ? 0
+        : type == typeof(double) ? 0d
         : type == typeof(Uri) ? new Uri("https://vcenter.invalid")
         : typeof(Exception).IsAssignableFrom(type) ? new InvalidOperationException("sample")
         : type.IsEnum ? Enum.GetValues(type).GetValue(0)!
