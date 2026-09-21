@@ -19,6 +19,8 @@ import { Reports } from '@/routes/Reports'
 import { AlertsReport } from '@/routes/reports/AlertsReport'
 import { Email } from '@/routes/Email'
 import { ScheduledReports } from '@/routes/ScheduledReports'
+import { ComplianceReport } from '@/routes/reports/ComplianceReport'
+import { CapacityReport } from '@/routes/reports/CapacityReport'
 import './styles/index.css'
 
 const queryClient = new QueryClient({
@@ -78,6 +80,8 @@ function Application() {
           <Route path="compliance" element={<Compliance identity={data} />} />
           <Route path="reports" element={<Reports />} />
           <Route path="reports/alerts" element={<AlertsReport />} />
+          <Route path="reports/compliance" element={<ComplianceReport />} />
+          <Route path="reports/capacity" element={<CapacityReport />} />
           <Route path="maintenance" element={<Maintenance identity={data} />} />
           <Route path="connections" element={<Connections identity={data} />} />
           <Route path="reports/scheduled" element={<ScheduledReports />} />

@@ -1,5 +1,6 @@
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
+using EnterpriseObservatory.Domain.Compliance;
 
 namespace EnterpriseObservatory.Api.Contracts;
 
@@ -663,4 +664,240 @@ public sealed record AlertReportView
 
     /// <summary>Worst first, then most recent — the same order the inbox uses.</summary>
     public required IReadOnlyList<AlertReportRow> Rows { get; init; }
+}
+
+// --- compliance report (M5.2) --------------------------------------------
+//
+// The auditor-facing sibling of the alert report: a header that states its
+// own freshness, a summary per control, a detail per finding (including the
+// exception or acceptance that covers it), removed exceptions as their own
+// section, verdict history over a period, and the controls this product did
+// not evaluate at all. Nothing here recomputes a verdict -- everything is
+// read from ComplianceService and IComplianceStore, the same engine the
+// compliance screen and its accept/except endpoints use, so the report can
+// never disagree with the screen an operator worked from.
+
+/// <summary>One finding on the compliance report, with the decision that covers it spelled out in full.</summary>
+/// <remarks>
+/// <see cref="ComplianceFindingView"/> (the compliance screen's row) carries
+/// only the covering exception's id, because the screen looks it up in the
+/// list it already has. A report stands alone -- printed, or opened a year
+/// later -- so it carries the exception's owner, reason, expiry and who
+/// recorded it, not a key into a table that may not be there anymore.
+/// </remarks>
+public sealed record ComplianceReportFindingRow
+{
+    public required string ControlId { get; init; }
+
+    public required string ControlTitle { get; init; }
+
+    public required string Priority { get; init; }
+
+    public required string EntityId { get; init; }
+
+    public required string EntityName { get; init; }
+
+    public required FindingState State { get; init; }
+
+    /// <summary>Why nothing was concluded; set only when <see cref="State"/> is NotEvaluated.</summary>
+    public string? NotEvaluatedReason { get; init; }
+
+    public string? Observed { get; init; }
+
+    public required string Expected { get; init; }
+
+    public required DateTimeOffset FirstSeenUtc { get; init; }
+
+    public required DateTimeOffset LastEvaluatedUtc { get; init; }
+
+    /// <summary>
+    /// The host's source did not report in the cycle behind this verdict --
+    /// called out per row, never silently rolled into a passing count.
+    /// </summary>
+    public required bool Stale { get; init; }
+
+    public string? AcceptedBy { get; init; }
+
+    public DateTimeOffset? AcceptedAtUtc { get; init; }
+
+    public string? AcceptedReason { get; init; }
+
+    public string? ExceptionId { get; init; }
+
+    public string? ExceptionOwner { get; init; }
+
+    public string? ExceptionReason { get; init; }
+
+    public string? ExceptionCreatedBy { get; init; }
+
+    public DateTimeOffset? ExceptionCreatedAtUtc { get; init; }
+
+    public DateTimeOffset? ExceptionExpiresUtc { get; init; }
+}
+
+/// <summary>One verdict change from <c>compliance_transition</c>, as the report's change-history section shows it.</summary>
+public sealed record ComplianceReportTransitionRow
+{
+    public required string ControlId { get; init; }
+
+    /// <summary>
+    /// The raw entity id the transition was recorded against. The finding it
+    /// belonged to may since have left the evaluation -- its host retired, its
+    /// control dropped from a new catalogue release -- so a name is not always
+    /// resolvable; the detail section above, for entities still present, is
+    /// where a name is shown.
+    /// </summary>
+    public required string EntityId { get; init; }
+
+    /// <summary>Null when the finding was new at this change.</summary>
+    public ComplianceVerdict? From { get; init; }
+
+    /// <summary>Null when the finding left the evaluation at this change.</summary>
+    public ComplianceVerdict? To { get; init; }
+
+    public string? Observed { get; init; }
+
+    public required DateTimeOffset AtUtc { get; init; }
+}
+
+/// <summary>
+/// The compliance report: header, per-control summary, per-finding detail,
+/// removed exceptions, verdict history over a period, and the controls not
+/// evaluated at all.
+/// </summary>
+public sealed record ComplianceReportView
+{
+    public required DateTimeOffset GeneratedAtUtc { get; init; }
+
+    public required string CatalogueName { get; init; }
+
+    public required string CatalogueRelease { get; init; }
+
+    /// <summary>"All hosts", or what the caller scoped the report to.</summary>
+    public required string Scope { get; init; }
+
+    /// <summary>
+    /// When the most recent evaluation behind this report ran; null when
+    /// nothing has been evaluated yet. The single freshness date a printed
+    /// page can show for the report as a whole.
+    /// </summary>
+    public DateTimeOffset? LastEvaluatedUtc { get; init; }
+
+    /// <summary>How many findings in scope rest on a host whose source did not report in the last cycle.</summary>
+    public required int StaleCount { get; init; }
+
+    /// <summary>The hosts behind <see cref="StaleCount"/>, by name -- an auditor asks which ones, not only how many.</summary>
+    public required IReadOnlyList<string> StaleEntityNames { get; init; }
+
+    /// <summary>Every control the catalogue names, evaluated or not, with its counts.</summary>
+    public required IReadOnlyList<ComplianceControlView> Controls { get; init; }
+
+    public required FindingCountsView Totals { get; init; }
+
+    public required IReadOnlyList<ComplianceReportFindingRow> Findings { get; init; }
+
+    /// <summary>The exceptions standing now, in scope.</summary>
+    public required IReadOnlyList<ComplianceExceptionView> Exceptions { get; init; }
+
+    /// <summary>
+    /// Exceptions somebody withdrew -- audit evidence in their own right, kept
+    /// apart from the standing ones so a reader does not mistake one for the
+    /// other.
+    /// </summary>
+    public required IReadOnlyList<ComplianceExceptionView> RemovedExceptions { get; init; }
+
+    public required DateTimeOffset HistoryFromUtc { get; init; }
+
+    public required DateTimeOffset HistoryToUtc { get; init; }
+
+    /// <summary>Verdict changes in [<see cref="HistoryFromUtc"/>, <see cref="HistoryToUtc"/>], oldest first.</summary>
+    public required IReadOnlyList<ComplianceReportTransitionRow> History { get; init; }
+}
+
+/// <summary>
+/// One datastore on the capacity report: its latest reading and the same
+/// fill-date answer <see cref="TimeToFullView"/> gives the datastore's own
+/// page — never recomputed differently. See
+/// EnterpriseObservatory.Application.Analysis.DatastoreTimeToFull.
+/// </summary>
+public sealed record CapacityReportRow
+{
+    public required string Name { get; init; }
+
+    /// <summary>VMFS, NFS, vsan and so on, as vSphere words it. Null when not read.</summary>
+    public string? DatastoreType { get; init; }
+
+    public required string Source { get; init; }
+
+    /// <summary>
+    /// The latest reading of each, or null when this cycle never recorded one
+    /// -- absent, never a zero standing in for "we did not look".
+    /// </summary>
+    public double? CapacityBytes { get; init; }
+
+    public double? UsedBytes { get; init; }
+
+    public double? FreeBytes { get; init; }
+
+    /// <summary><see cref="UsedBytes"/> over <see cref="CapacityBytes"/>, in percent.</summary>
+    public double? PercentUsed { get; init; }
+
+    /// <summary>
+    /// Used plus what has been promised to thin disks. Null when uncommitted
+    /// space was never read -- not the same as a datastore with no thin disks.
+    /// </summary>
+    public double? ProvisionedBytes { get; init; }
+
+    /// <summary><see cref="ProvisionedBytes"/> over <see cref="CapacityBytes"/>. Above 1 is over-committed.</summary>
+    public double? OvercommitRatio { get; init; }
+
+    /// <summary>The same estimate the datastore's own page and the filling rule use.</summary>
+    public required TimeToFullView TimeToFull { get; init; }
+}
+
+/// <summary>Totals and counts across every datastore on the report.</summary>
+public sealed record CapacityReportSummary
+{
+    public required int TotalDatastores { get; init; }
+
+    public required double TotalCapacityBytes { get; init; }
+
+    public required double TotalUsedBytes { get; init; }
+
+    public required double TotalFreeBytes { get; init; }
+
+    /// <summary>Filling inside 30 days, the product's warning threshold. See <c>DatastoreTimeToFullPolicy</c>.</summary>
+    public required int FillingWithin30Days { get; init; }
+
+    /// <summary>Filling inside 7 days, the product's critical threshold.</summary>
+    public required int FillingWithin7Days { get; init; }
+
+    /// <summary>Promised more than capacity: <see cref="CapacityReportRow.OvercommitRatio"/> above 1.</summary>
+    public required int OvercommittedCount { get; init; }
+
+    /// <summary>No fill-date estimate yet -- a refusal is counted here, never left blank.</summary>
+    public required int NoEstimateCount { get; init; }
+
+    /// <summary>
+    /// Why, for every datastore counted in <see cref="NoEstimateCount"/>. Keyed
+    /// by the machine-readable reason, e.g. <c>WindowTooShort</c> -- "less than
+    /// a week of history" on a live estate whose capacity series only started
+    /// recently is the expected, correct answer, not a bug.
+    /// </summary>
+    public required IReadOnlyDictionary<string, int> NoEstimateByReason { get; init; }
+}
+
+/// <summary>
+/// The capacity report: every live datastore, worst first, for the printable
+/// page and the CSV export. See <see cref="AlertReportView"/> for the shape
+/// this copies.
+/// </summary>
+public sealed record CapacityReportView
+{
+    public required DateTimeOffset GeneratedAtUtc { get; init; }
+
+    public required CapacityReportSummary Summary { get; init; }
+
+    /// <summary>Soonest fill date first, then highest percent used among the rest.</summary>
+    public required IReadOnlyList<CapacityReportRow> Rows { get; init; }
 }

@@ -214,6 +214,27 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_viewer_can_read_the_capacity_report_as_csv()
+    {
+        // M5.3, the same read-for-any-signed-in-user rule as the alert report.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/capacity.csv");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_the_capacity_report_csv_with_401()
+    {
+        var response = await Client().GetAsync("/api/reports/capacity.csv");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task A_viewer_who_tries_to_change_something_is_refused_with_403()
     {
         Account("viewer", Role.Viewer);
@@ -322,6 +343,64 @@ public sealed class CompositionRootSmokeTests : IDisposable
         var client = await SignedIn(Client(), "viewer");
 
         Assert.Equal(HttpStatusCode.Forbidden, (await AcceptFinding(client)).StatusCode);
+    }
+
+    // --- compliance report (M5.2) -------------------------------------------
+
+    [Fact]
+    public async Task A_viewer_can_read_the_compliance_report()
+    {
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/compliance");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<Api.Contracts.ComplianceReportView>(Json);
+
+        Assert.NotNull(body);
+        Assert.Equal("All hosts", body.Scope);
+    }
+
+    [Fact]
+    public async Task A_viewer_can_read_the_compliance_report_as_csv()
+    {
+        // Reads are for any signed-in user, the same line the compliance
+        // screen and the alert report both draw: exporting a finding for an
+        // auditor is not a more sensitive act than reading it.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/compliance.csv");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task A_viewer_can_read_the_compliance_report_history_as_csv()
+    {
+        // The report's other CSV section -- see ComplianceApi.cs for why it
+        // is a query param on the same endpoint rather than a second one.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/compliance.csv?section=history");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_the_compliance_report_csv_with_401()
+    {
+        // Covered by the sweep above too, but named: it is the export an
+        // auditor is handed, and it carries the estate's compliance history,
+        // not only its current state.
+        var response = await Client().GetAsync("/api/reports/compliance.csv");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]

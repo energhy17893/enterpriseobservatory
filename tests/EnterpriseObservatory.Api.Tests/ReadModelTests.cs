@@ -819,6 +819,72 @@ public class ReadModelTests
         Assert.Empty(_observations.Queries);
     }
 
+    // --- capacity report (M5.3) --------------------------------------------
+
+    private void GivenFree(double bytes) =>
+        _observations.Recorded[CapacityCounters.DatastoreFree] = [Bucket(T0.AddMinutes(-5), bytes)];
+
+    private void GivenProvisioned(double bytes) =>
+        _observations.Recorded[CapacityCounters.DatastoreProvisioned] = [Bucket(T0.AddMinutes(-5), bytes)];
+
+    [Fact]
+    public void A_datastore_with_no_capacity_reading_is_a_refusal_row_not_a_blank_one()
+    {
+        GivenEntities(Datastore("vc-1:ds-1"));
+
+        var row = Assert.Single(Model().CapacityReport().Rows);
+
+        Assert.False(row.TimeToFull.IsForecast);
+        Assert.Equal("NoCapacity", row.TimeToFull.Reason);
+        Assert.StartsWith("Cannot estimate", row.TimeToFull.Summary, StringComparison.Ordinal);
+        Assert.Null(row.CapacityBytes);
+        Assert.Equal(1, Model().CapacityReport().Summary.NoEstimateCount);
+        Assert.Equal(1, Model().CapacityReport().Summary.NoEstimateByReason["NoCapacity"]);
+    }
+
+    [Fact]
+    public void The_capacity_report_computes_used_percent_and_overcommit_ratio()
+    {
+        GivenEntities(Datastore("vc-1:ds-1"));
+        GivenCapacity(100 * Gb);
+        GivenFree(20 * Gb);
+        GivenProvisioned(120 * Gb);
+
+        var row = Assert.Single(Model().CapacityReport().Rows);
+
+        Assert.Equal(80 * Gb, row.UsedBytes);
+        Assert.Equal(80d, row.PercentUsed);
+        Assert.Equal(1.2d, row.OvercommitRatio);
+        Assert.Equal(1, Model().CapacityReport().Summary.OvercommittedCount);
+    }
+
+    [Fact]
+    public void The_capacity_report_counts_datastores_filling_soon()
+    {
+        // 1 GB a day for twenty days, ninety of a hundred now: ten days left --
+        // inside the 30-day warning window, outside the 7-day critical one.
+        GivenEntities(Datastore("vc-1:ds-1"));
+        GivenCapacity(100 * Gb);
+        _observations.Recorded[CapacityCounters.DatastoreUsed] =
+        [
+            .. Enumerable.Range(0, 21).Select(i => Bucket(T0.AddDays(i - 21), (70 + i) * Gb)),
+        ];
+
+        var summary = Model().CapacityReport().Summary;
+
+        Assert.Equal(1, summary.FillingWithin30Days);
+        Assert.Equal(0, summary.FillingWithin7Days);
+    }
+
+    [Fact]
+    public void A_vanished_datastore_is_not_on_the_capacity_report()
+    {
+        GivenEntities(Datastore("vc-1:ds-1") with { ObservationState = ObservationState.Vanished });
+        GivenCapacity(100 * Gb);
+
+        Assert.Empty(Model().CapacityReport().Rows);
+    }
+
     /// <summary>
     /// Measurements are covered by the persistence tests against the real
     /// store; the read model only passes them through.
