@@ -158,6 +158,45 @@ public sealed record EntityDetailView
     /// Filtered, never recomputed. See ADR-0007 §1.
     /// </remarks>
     public required IReadOnlyList<AlertView> Alerts { get; init; }
+
+    /// <summary>
+    /// When a datastore fills at its current growth, or why that cannot be
+    /// said. Null for every other kind of entity.
+    /// </summary>
+    public TimeToFullView? TimeToFull { get; init; }
+}
+
+/// <summary>
+/// A datastore's fill date with the window it rests on, or a refusal.
+/// </summary>
+/// <remarks>
+/// A refusal is an answer and is shown as one. Omitting it would leave an
+/// operator unable to tell "not filling" from "not computed".
+/// </remarks>
+public sealed record TimeToFullView
+{
+    /// <summary><c>true</c> when there is a date; otherwise see <see cref="Reason"/>.</summary>
+    public required bool IsForecast { get; init; }
+
+    public DateTimeOffset? FullAtUtc { get; init; }
+
+    public double? Days { get; init; }
+
+    /// <summary>Growth in bytes per day, when a slope was computed.</summary>
+    public double? GrowthBytesPerDay { get; init; }
+
+    /// <summary>The span the estimate looked at; absent only when there were no points.</summary>
+    public DateTimeOffset? WindowFromUtc { get; init; }
+
+    public DateTimeOffset? WindowToUtc { get; init; }
+
+    public required int PointsUsed { get; init; }
+
+    /// <summary>Machine-readable refusal reason, e.g. <c>TooFewPoints</c>; null on a forecast.</summary>
+    public string? Reason { get; init; }
+
+    /// <summary>The sentence the product says, forecast or refusal.</summary>
+    public required string Summary { get; init; }
 }
 
 public sealed record IdentityMarkView

@@ -552,6 +552,98 @@ public class ReadModelTests
         Assert.Equal(SeriesResolution.OneHour, _observations.LastQuery!.Resolution);
     }
 
+    // --- time to full ----------------------------------------------------
+
+    private const double Gb = 1024d * 1024 * 1024;
+
+    private static Entity Datastore(string id) => new()
+    {
+        Id = new EntityId(id),
+        Kind = EntityKind.Datastore,
+        DisplayName = "vmfs01",
+        SourceInstanceId = "vc-1",
+        Health = HealthState.Healthy,
+        LastSeenUtc = T0,
+    };
+
+    private static AggregatedSample Bucket(DateTimeOffset at, double value) => new()
+    {
+        StartUtc = at,
+        Min = value,
+        Max = value,
+        Sum = value,
+        Count = 1,
+        Last = value,
+    };
+
+    private void GivenCapacity(double bytes) =>
+        _observations.Recorded[CapacityCounters.DatastoreCapacity] = [Bucket(T0.AddMinutes(-5), bytes)];
+
+    [Fact]
+    public void A_datastore_page_says_when_it_fills_and_over_what_window()
+    {
+        // 1 GB a day for twenty days, on course for 50 GB of 100 now: fifty
+        // days left, and the window it was measured over travels with it.
+        GivenEntities(Datastore("vc-1:ds-1"));
+        GivenCapacity(100 * Gb);
+        _observations.Recorded[CapacityCounters.DatastoreUsed] =
+        [
+            .. Enumerable.Range(0, 21).Select(i => Bucket(T0.AddDays(i - 21), (29 + i) * Gb)),
+        ];
+
+        var forecast = Model().Entity("vc-1:ds-1")!.TimeToFull!;
+
+        Assert.True(forecast.IsForecast);
+        Assert.Equal(50d, forecast.Days!.Value, 3);
+        Assert.Equal(T0.AddDays(50), forecast.FullAtUtc!.Value, TimeSpan.FromMinutes(1));
+        Assert.Equal(T0.AddDays(-21), forecast.WindowFromUtc);
+        Assert.Equal(T0.AddDays(-1), forecast.WindowToUtc);
+        Assert.Equal(21, forecast.PointsUsed);
+        Assert.StartsWith("Fills in 50 days (on ", forecast.Summary, StringComparison.Ordinal);
+        Assert.Contains("20 days of history", forecast.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_datastore_page_shows_a_refusal_as_an_answer()
+    {
+        // A day of history is not a trend. The page must say so rather than
+        // show nothing, or "not filling" and "not computed" look the same.
+        GivenEntities(Datastore("vc-1:ds-1"));
+        GivenCapacity(100 * Gb);
+        _observations.Recorded[CapacityCounters.DatastoreUsed] =
+        [
+            .. Enumerable.Range(0, 24).Select(i => Bucket(T0.AddHours(i - 24), (30 + i) * Gb)),
+        ];
+
+        var refusal = Model().Entity("vc-1:ds-1")!.TimeToFull!;
+
+        Assert.False(refusal.IsForecast);
+        Assert.Equal("WindowTooShort", refusal.Reason);
+        Assert.Null(refusal.FullAtUtc);
+        Assert.StartsWith("Cannot estimate a fill date: ", refusal.Summary, StringComparison.Ordinal);
+        Assert.DoesNotContain("..", refusal.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_datastore_with_no_capacity_recorded_says_so()
+    {
+        GivenEntities(Datastore("vc-1:ds-1"));
+
+        var refusal = Model().Entity("vc-1:ds-1")!.TimeToFull!;
+
+        Assert.False(refusal.IsForecast);
+        Assert.Equal("NoCapacity", refusal.Reason);
+    }
+
+    [Fact]
+    public void Only_a_datastore_carries_a_fill_date()
+    {
+        GivenEntities(Host("h1", HealthState.Healthy));
+
+        Assert.Null(Model().Entity("h1")!.TimeToFull);
+        Assert.Empty(_observations.Queries);
+    }
+
     /// <summary>
     /// Measurements are covered by the persistence tests against the real
     /// store; the read model only passes them through.
@@ -565,15 +657,38 @@ public class ReadModelTests
         /// <summary>The last query it was handed, so the caller's choice is checkable.</summary>
         public SeriesQuery? LastQuery { get; private set; }
 
+        /// <summary>Points to answer with, by counter; anything absent was never recorded.</summary>
+        public Dictionary<string, List<AggregatedSample>> Recorded { get; } = new(StringComparer.Ordinal);
+
+        public List<SeriesQuery> Queries { get; } = [];
+
         public SeriesResult Query(SeriesQuery query)
         {
             LastQuery = query;
+            Queries.Add(query);
+
+            if (!Recorded.TryGetValue(query.Key.Counter, out var points))
+            {
+                return new SeriesResult
+                {
+                    Key = query.Key,
+                    Resolution = query.Resolution ?? SeriesResolution.Raw,
+                    Exists = false,
+                };
+            }
+
+            // The newest end is kept when truncating, as the real store does.
+            var inWindow = points
+                .Where(p => p.StartUtc >= query.FromUtc && p.StartUtc < query.ToUtc)
+                .OrderBy(p => p.StartUtc)
+                .ToList();
 
             return new SeriesResult
             {
                 Key = query.Key,
                 Resolution = query.Resolution ?? SeriesResolution.Raw,
-                Exists = false,
+                Points = [.. inWindow.Skip(Math.Max(0, inWindow.Count - query.MaxPoints))],
+                Exists = true,
             };
         }
 
