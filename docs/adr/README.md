@@ -63,6 +63,7 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0021](0021-blind-spot-stays-per-datastore.md) | Depolama gecikmesi kör noktası datastore başına raporlanır | Kabul edildi |
 | [0022](0022-postgres-tests-run-in-a-linux-job.md) | PostgreSQL testleri ayrı bir Linux işinde, tek kullanımlık parolayla çalışır | Kabul edildi |
 | [0023](0023-postgres-dependency-rejustified.md) | PostgreSQL bağımlılığının gerekçesi yeniden kuruldu | Kabul edildi |
+| [0024](0024-configuration-checks-are-findings.md) | Yapılandırma ve süreklilik kontrolleri alarm değil bulgudur | Kabul edildi |
 
 ## Şablon
 
