@@ -441,6 +441,94 @@ public class CompactionTests : IDisposable
     }
 
     [SkippableFact]
+    public void A_large_dirty_range_is_rebuilt_in_bounded_slices_with_exact_aggregates()
+    {
+        RequireDatabase();
+
+        // A backfill after downtime dirties hours at once. Rebuilt in one
+        // transaction it would hold the watermark lock — which an append takes
+        // before commit — for as long as the whole range takes, and a cycle
+        // that waits past its thirty-second timeout is dropped. So the range
+        // is rebuilt a bounded number of buckets at a time.
+        var slices = new List<FoldSlice>();
+        var store = new PostgresObservationStore(_live.Database)
+        {
+            BucketsPerSlice = 2,
+            SliceCommitted = slices.Add,
+        };
+        var entity = Subject("sliced");
+
+        // Three hours, one sample every five minutes, all folded.
+        AppendEvery(store, entity, TimeSpan.FromMinutes(5), T0, [.. Enumerable.Repeat(1d, 36)]);
+        store.Compact(T0.AddHours(4), new SeriesRetentionPolicy());
+
+        // Then a second sample into every one of those buckets, late.
+        AppendEvery(store, entity, TimeSpan.FromMinutes(5), T0.AddMinutes(1), [.. Enumerable.Repeat(3d, 36)]);
+        slices.Clear();
+        store.Compact(T0.AddHours(4), new SeriesRetentionPolicy());
+
+        var fives = slices.Where(s => s.Resolution == SeriesResolution.FiveMinutes).ToList();
+
+        Assert.True(fives.Count >= 18, $"Only {fives.Count} five-minute slices.");
+        // A slice that found nothing to fold may skip the empty stretch after
+        // it in one step; every slice that rebuilt something stays bounded.
+        Assert.All(slices.Where(s => s.BucketsWritten > 0), s => Assert.True(
+            s.ToUtc - s.FromUtc <= SeriesResolutions.Width(s.Resolution) * 2,
+            $"A {s.Resolution} slice spanned {s.FromUtc:O} to {s.ToUtc:O}."));
+
+        var buckets = Read(store, entity, T0, T0.AddHours(3), SeriesResolution.FiveMinutes).Points;
+
+        Assert.Equal(36, buckets.Count);
+        Assert.All(buckets, b => Assert.Equal((2, 4d, 3d), (b.Count, b.Sum, b.Last)));
+
+        var hours = Read(store, entity, T0, T0.AddHours(3), SeriesResolution.OneHour).Points;
+
+        Assert.Equal(3, hours.Count);
+        Assert.All(hours, h => Assert.Equal((24, 48d, 1d, 3d), (h.Count, h.Sum, h.Min, h.Max)));
+    }
+
+    [SkippableFact]
+    public void An_append_between_slices_is_not_blocked_and_is_folded_by_the_same_pass()
+    {
+        RequireDatabase();
+
+        // The lock is released between slices, so a cycle arriving mid-fold
+        // commits at once instead of waiting for the whole range. This append
+        // runs from the slice callback on the same thread: were the lock still
+        // held it could never finish. Its sample lands behind where the fold
+        // has got to, lowers the marker again, and the same pass goes back
+        // for it.
+        var entity = Subject("between");
+        var appended = false;
+        PostgresObservationStore? store = null;
+
+        store = new PostgresObservationStore(_live.Database)
+        {
+            BucketsPerSlice = 1,
+            SliceCommitted = slice =>
+            {
+                if (!appended && slice.Resolution == SeriesResolution.FiveMinutes
+                    && slice.FromUtc >= T0.AddMinutes(30))
+                {
+                    appended = true;
+                    AppendEvery(store!, entity, TimeSpan.FromSeconds(30), T0.AddMinutes(2), 900);
+                }
+            },
+        };
+
+        AppendEvery(store, entity, TimeSpan.FromMinutes(5), T0, [.. Enumerable.Repeat(1d, 12)]);
+        store.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+
+        Assert.True(appended);
+
+        var first = Read(store, entity, T0, T0.AddMinutes(5), SeriesResolution.FiveMinutes).Points;
+        Assert.Equal((2, 900d), (Assert.Single(first).Count, first[0].Max));
+
+        var hour = Assert.Single(Read(store, entity, T0, T0.AddHours(1), SeriesResolution.OneHour).Points);
+        Assert.Equal((13, 900d), (hour.Count, hour.Max));
+    }
+
+    [SkippableFact]
     public void A_watermark_stops_the_second_pass_redoing_the_first()
     {
         RequireDatabase();

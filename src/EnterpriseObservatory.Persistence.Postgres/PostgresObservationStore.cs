@@ -78,6 +78,36 @@ public sealed class PostgresObservationStore : IObservationStore
     /// </remarks>
     private readonly ConcurrentDictionary<SeriesKey, long> _seriesIds = new();
 
+    /// <summary>The default for <see cref="BucketsPerSlice"/>.</summary>
+    public const int DefaultBucketsPerSlice = 12;
+
+    /// <summary>
+    /// The most buckets of one tier a single fold transaction rebuilds.
+    /// </summary>
+    /// <remarks>
+    /// Twelve: an hour of raw samples for the five-minute tier, twelve hours of
+    /// five-minute buckets for the hourly one — each about 1.5 million source
+    /// rows on the measured estate, seconds of work, against an append that
+    /// waits at most one slice with a thirty-second timeout. See
+    /// <see cref="Fold"/>.
+    /// </remarks>
+    public int BucketsPerSlice
+    {
+        get;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(value);
+            field = value;
+        }
+    }
+        = DefaultBucketsPerSlice;
+
+    /// <summary>
+    /// Called after each fold slice commits. For diagnostics and tests; the
+    /// watermark lock is not held while it runs.
+    /// </summary>
+    public Action<FoldSlice>? SliceCommitted { get; init; }
+
     public PostgresObservationStore(PostgresDatabase database)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
@@ -574,6 +604,31 @@ public sealed class PostgresObservationStore : IObservationStore
     /// re-folds two days once, about 76 million samples, then the marker is
     /// cleared.
     /// </para>
+    /// <para>
+    /// In slices, never in one transaction. The watermark row is locked while
+    /// a slice runs and an append that adds samples takes the same lock just
+    /// before it commits (see <see cref="NoteLateSamples"/>), so a fold's
+    /// transaction is the longest an ingest cycle can be made to wait. Append
+    /// runs with a thirty-second command timeout and a cycle that times out is
+    /// dropped whole, so that wait has to stay small however large the range
+    /// is: two days folded in one transaction would take the fold's own
+    /// statement past the same timeout, fail every pass, and drop cycles while
+    /// doing it. A slice is at most <see cref="BucketsPerSlice"/> buckets of
+    /// the target tier — by default an hour of raw, about 1.6 million samples,
+    /// for the five-minute tier and twelve hours of five-minute buckets, about
+    /// 1.3 million rows, for the hourly one — and the lock is released between
+    /// slices.
+    /// </para>
+    /// <para>
+    /// Every slice is complete on its own: its buckets, the next tier's marker
+    /// and this tier's watermark and marker are written together, and the
+    /// marker only moves past buckets that slice rebuilt whole. An interrupted
+    /// pass therefore resumes where the last committed slice stopped, and a
+    /// late sample appended between two slices lowers the marker again and is
+    /// picked up by the next one. The loop runs to the end within this pass,
+    /// not across passes, because the deletes that follow in the same sweep
+    /// would otherwise remove raw samples that were never folded.
+    /// </para>
     /// </remarks>
     private int Fold(DateTimeOffset nowUtc, SeriesRetentionPolicy policy, SeriesResolution target)
     {
@@ -583,42 +638,84 @@ public sealed class PostgresObservationStore : IObservationStore
         // while still filling would be a summary of half of it, and nothing
         // ever revisits it.
         var completeTo = SeriesResolutions.BucketStart(nowUtc - policy.CompactionGrace, target);
+        var floor = RefoldWindow.Floor(nowUtc, policy, target);
+        var total = 0;
 
-        return _database.Write(connection =>
+        while (_database.Write(connection =>
+            FoldOneSlice(connection, source, target, floor, completeTo)) is { } slice)
         {
-            // Locked for the whole pass, so an append noting a late sample
-            // either lands before this reads or waits and sees the watermark
-            // this writes. See NoteLateSamples.
-            var from = LockWatermark(connection, target) is { } mark
-                ? RefoldWindow.Start(
-                    mark.CompletedTo, mark.DirtyFrom, RefoldWindow.Floor(nowUtc, policy, target))
-                : EarliestSource(connection, source, target);
+            total += slice.BucketsWritten;
+            SliceCommitted?.Invoke(slice);
+        }
 
-            if (from is not { } start || start >= completeTo)
+        return total;
+    }
+
+    /// <summary>
+    /// Folds one slice in its own transaction, or returns null when there is
+    /// nothing left to fold.
+    /// </summary>
+    private FoldSlice? FoldOneSlice(
+        NpgsqlConnection connection,
+        SeriesResolution source,
+        SeriesResolution target,
+        DateTimeOffset floor,
+        DateTimeOffset completeTo)
+    {
+        // Locked for the slice, so an append noting a late sample either lands
+        // before this reads or waits and sees the watermark this writes. See
+        // NoteLateSamples.
+        var mark = LockWatermark(connection, target);
+
+        var from = mark is { } found
+            ? RefoldWindow.Start(found.CompletedTo, found.DirtyFrom, floor)
+            : EarliestSource(connection, source, target);
+
+        if (from is not { } start || start >= completeTo)
+        {
+            return null;
+        }
+
+        var end = RefoldWindow.SliceEnd(start, completeTo, target, BucketsPerSlice);
+
+        var written = source == SeriesResolution.Raw
+            ? FoldFromSamples(connection, target, start, end)
+            : FoldFromBuckets(connection, target, source, start, end);
+
+        // An empty slice skips to the next source row rather than walking the
+        // gap an hour at a time: a watermark days behind — a service that was
+        // stopped, or a first pass on old data — would otherwise cost one
+        // transaction per empty slice. Sound because the gap has no source rows
+        // and, being above the floor, never had any, so it has no buckets to
+        // rebuild; a sample appended into it after this commits lowers the
+        // marker again like any other late one.
+        if (written == 0 && end < completeTo)
+        {
+            var next = NextSource(connection, source, end);
+            var skipTo = next is { } row ? SeriesResolutions.BucketStart(row, target) : completeTo;
+
+            if (skipTo > end)
             {
-                return 0;
+                end = skipTo < completeTo ? skipTo : completeTo;
             }
+        }
 
-            var written = source == SeriesResolution.Raw
-                ? FoldFromSamples(connection, target, start, completeTo)
-                : FoldFromBuckets(connection, target, source, start, completeTo);
-
-            // The buckets just written are the next tier's source. If any lie
-            // below what that tier has already folded, it has to fold them
-            // again — this is how a late raw sample reaches the hourly tier.
-            // Nothing written means nothing changed, so nothing to mark.
-            if (written > 0)
+        // The buckets just written are the next tier's source. If any lie
+        // below what that tier has already folded, it has to fold them again —
+        // this is how a late raw sample reaches the hourly tier. Nothing
+        // written means nothing changed, so nothing to mark.
+        if (written > 0)
+        {
+            foreach (var coarser in CoarserThan(target))
             {
-                foreach (var coarser in CoarserThan(target))
-                {
-                    MarkSourceChanged(connection, coarser, start);
-                }
+                MarkSourceChanged(connection, coarser, start);
             }
+        }
 
-            SetWatermark(connection, target, completeTo);
+        var (completedTo, dirtyFrom) = RefoldWindow.After(mark?.CompletedTo, end);
+        SetWatermark(connection, target, completedTo, dirtyFrom);
 
-            return written;
-        });
+        return new FoldSlice(target, start, end, written);
     }
 
     /// <summary>The tiers folded from this one.</summary>
@@ -772,25 +869,32 @@ public sealed class PostgresObservationStore : IObservationStore
             reader.IsDBNull(1) ? null : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(1)));
     }
 
-    /// <summary>Moves the watermark and clears the late-data marker it has just dealt with.</summary>
+    /// <summary>Moves the watermark and the late-data marker past what a slice rebuilt.</summary>
     /// <remarks>
-    /// Clearing is safe only because the row has been locked since the fold
-    /// read the marker: nothing can have lowered it in between.
+    /// Overwriting the marker is safe only because the row has been locked
+    /// since the slice read it: nothing can have lowered it in between.
     /// </remarks>
     private static void SetWatermark(
-        NpgsqlConnection connection, SeriesResolution resolution, DateTimeOffset completedTo)
+        NpgsqlConnection connection,
+        SeriesResolution resolution,
+        DateTimeOffset completedTo,
+        DateTimeOffset? dirtyFrom)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO compaction (resolution, completed_to_utc, dirty_from_utc)
-            VALUES (@resolution, @to, NULL)
+            VALUES (@resolution, @to, @dirty)
             ON CONFLICT (resolution) DO UPDATE SET
                 completed_to_utc = EXCLUDED.completed_to_utc,
-                dirty_from_utc = NULL;
+                dirty_from_utc = EXCLUDED.dirty_from_utc;
             """;
 
         command.Parameters.AddWithValue("resolution", resolution.ToString());
         command.Parameters.AddWithValue("to", Seconds(completedTo));
+        command.Parameters.Add(new NpgsqlParameter("dirty", NpgsqlDbType.Bigint)
+        {
+            Value = dirtyFrom is { } dirty ? Seconds(dirty) : DBNull.Value,
+        });
         command.ExecuteNonQuery();
     }
 
@@ -805,6 +909,31 @@ public sealed class PostgresObservationStore : IObservationStore
         command.Parameters.AddWithValue("resolution", resolution.ToString());
         command.Parameters.AddWithValue("dirty", Seconds(dirtyFrom));
         command.ExecuteNonQuery();
+    }
+
+    /// <summary>The earliest source row at or after a point, if there is one.</summary>
+    private static DateTimeOffset? NextSource(
+        NpgsqlConnection connection, SeriesResolution source, DateTimeOffset from)
+    {
+        using var command = connection.CreateCommand();
+
+        if (source == SeriesResolution.Raw)
+        {
+            command.CommandText = "SELECT MIN(at_utc) FROM sample WHERE at_utc >= @from;";
+        }
+        else
+        {
+            command.CommandText = """
+                SELECT MIN(start_utc) FROM bucket WHERE resolution = @source AND start_utc >= @from;
+                """;
+            command.Parameters.AddWithValue("source", source.ToString());
+        }
+
+        command.Parameters.AddWithValue("from", Seconds(from));
+
+        return command.ExecuteScalar() is long seconds
+            ? DateTimeOffset.FromUnixTimeSeconds(seconds)
+            : null;
     }
 
     /// <summary>The first bucket that could be built, on a database with no watermark.</summary>
@@ -1239,7 +1368,51 @@ public static class RefoldWindow
 
         return dirtyFrom is { } existing && existing <= bucket ? null : bucket;
     }
+
+    /// <summary>Where one slice starting at <paramref name="start"/> stops.</summary>
+    /// <remarks>
+    /// On a bucket boundary, so a slice only ever rebuilds whole buckets and the
+    /// marker it leaves behind names one.
+    /// </remarks>
+    public static DateTimeOffset SliceEnd(
+        DateTimeOffset start, DateTimeOffset completeTo, SeriesResolution target, int bucketsPerSlice)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bucketsPerSlice);
+
+        var end = SeriesResolutions.BucketStart(start, target)
+            + (SeriesResolutions.Width(target) * bucketsPerSlice);
+
+        return end < completeTo ? end : completeTo;
+    }
+
+    /// <summary>
+    /// The watermark and marker to store once a slice ending at
+    /// <paramref name="sliceEnd"/> has committed.
+    /// </summary>
+    /// <param name="completedTo">The watermark the slice started from, if there was one.</param>
+    /// <param name="sliceEnd">Where the slice stopped.</param>
+    /// <remarks>
+    /// A slice below the watermark leaves the marker where it stopped: every
+    /// bucket before that was rebuilt whole, the rest of the dirty range is
+    /// still to do. A slice that reached the watermark clears it and, if it
+    /// went further, moves the watermark with it. The watermark never moves
+    /// back — a pass given an earlier clock folds nothing rather than undoing
+    /// what a later one recorded.
+    /// </remarks>
+    public static (DateTimeOffset CompletedTo, DateTimeOffset? DirtyFrom) After(
+        DateTimeOffset? completedTo, DateTimeOffset sliceEnd) =>
+        completedTo is { } watermark && sliceEnd < watermark
+            ? (watermark, sliceEnd)
+            : (sliceEnd, null);
 }
+
+/// <summary>One committed fold transaction.</summary>
+/// <param name="Resolution">The tier it wrote.</param>
+/// <param name="FromUtc">The first bucket it rebuilt.</param>
+/// <param name="ToUtc">Where it stopped, exclusive.</param>
+/// <param name="BucketsWritten">Rows written, across every series.</param>
+public sealed record FoldSlice(
+    SeriesResolution Resolution, DateTimeOffset FromUtc, DateTimeOffset ToUtc, int BucketsWritten);
 
 /// <summary>
 /// The order of one compaction sweep, separated from the SQL that carries it out.
