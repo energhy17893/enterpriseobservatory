@@ -247,13 +247,14 @@ public sealed record ComplianceWaiver
 
     public bool IsExpiredAt(DateTimeOffset nowUtc) => nowUtc >= ExpiresUtc;
 
-    /// <summary>Whether it covers the finding of a control on an entity that has no subject.</summary>
-    public bool Covers(string controlId, EntityId entity, DateTimeOffset nowUtc) =>
-        Covers(controlId, entity, string.Empty, nowUtc);
-
     /// <summary>
     /// Whether it covers one finding: control ∧ (entity null or equal) ∧ (subject null or equal).
     /// </summary>
+    /// <remarks>
+    /// The finding's subject is always named, empty only for a finding about
+    /// the entity itself; an overload assuming it would misjudge every
+    /// subject-bearing finding.
+    /// </remarks>
     public bool Covers(string controlId, EntityId entity, string subject, DateTimeOffset nowUtc) =>
         !IsExpiredAt(nowUtc) &&
         !IsRemovedAt(nowUtc) &&

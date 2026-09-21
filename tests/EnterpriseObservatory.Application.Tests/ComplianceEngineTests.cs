@@ -422,10 +422,6 @@ public class ComplianceEngineTests
         }
 
         public ComplianceFinding? Mutate(
-            string catalogueRelease, string controlId, EntityId entity, Func<ComplianceFinding, ComplianceFinding> change) =>
-            Mutate(catalogueRelease, controlId, entity, string.Empty, change);
-
-        public ComplianceFinding? Mutate(
             string catalogueRelease,
             string controlId,
             EntityId entity,
@@ -556,7 +552,7 @@ public class ComplianceEngineTests
     [Fact]
     public void A_continuity_control_is_known_to_the_exception_check()
     {
-        var result = Service().AddException(HaControl, null, "why", "who", T0.AddDays(7), Operator);
+        var result = Service().AddException(HaControl, null, null, "why", "who", T0.AddDays(7), Operator);
 
         Assert.True(result.Applied);
     }
