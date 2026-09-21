@@ -51,10 +51,12 @@ public class ComplianceServiceTests
             string catalogueRelease,
             string controlId,
             EntityId entity,
+            string subject,
             Func<ComplianceFinding, ComplianceFinding> change)
         {
             var index = _findings.FindIndex(f =>
-                f.CatalogueRelease == catalogueRelease && f.ControlId == controlId && f.Entity == entity);
+                f.CatalogueRelease == catalogueRelease && f.ControlId == controlId && f.Entity == entity &&
+                f.Subject == subject);
 
             if (index < 0)
             {
@@ -132,7 +134,7 @@ public class ComplianceServiceTests
     {
         Evaluate("");
 
-        var result = _service.Accept("esx-9.log-forwarding", Host1, "CHG-1234", Operator);
+        var result = _service.Accept("esx-9.log-forwarding", Host1, "", "CHG-1234", Operator);
 
         Assert.True(result.Applied);
         Assert.Equal("ertugrul", result.Finding!.Acceptance!.By);
@@ -145,7 +147,7 @@ public class ComplianceServiceTests
     public void An_acceptance_survives_the_next_evaluation()
     {
         Evaluate("");
-        _service.Accept("esx-9.log-forwarding", Host1, "", Operator);
+        _service.Accept("esx-9.log-forwarding", Host1, "", "", Operator);
 
         _clock.UtcNow = T0.AddMinutes(5);
         Evaluate("");
@@ -158,7 +160,7 @@ public class ComplianceServiceTests
     {
         Evaluate("udp://10.0.0.5:514");
 
-        var result = _service.Accept("esx-9.log-forwarding", Host1, "", Operator);
+        var result = _service.Accept("esx-9.log-forwarding", Host1, "", "", Operator);
 
         Assert.False(result.Applied);
         Assert.Equal(ComplianceFailure.NotFailing, result.Failure);
@@ -167,7 +169,7 @@ public class ComplianceServiceTests
     [Fact]
     public void A_finding_that_does_not_exist_cannot_be_accepted()
     {
-        var result = _service.Accept("esx-9.log-forwarding", Host1, "", Operator);
+        var result = _service.Accept("esx-9.log-forwarding", Host1, "", "", Operator);
 
         Assert.Equal(ComplianceFailure.NotFound, result.Failure);
     }
@@ -178,7 +180,7 @@ public class ComplianceServiceTests
         Evaluate("");
 
         var added = _service.AddException(
-            "esx-9.log-forwarding", Host1, "Lab host, logs not retained", "infra-team", T0.AddDays(30), Operator);
+            "esx-9.log-forwarding", Host1, null, "Lab host, logs not retained", "infra-team", T0.AddDays(30), Operator);
 
         Assert.True(added.Applied);
         Assert.Equal("ertugrul", added.Exception!.CreatedBy);
@@ -198,7 +200,7 @@ public class ComplianceServiceTests
             Host("vc-1:host-2", settings: ("Syslog.global.logHost", "")),
         ]);
 
-        _service.AddException("esx-9.log-forwarding", null, "Pilot", "owner", T0.AddDays(7), Operator);
+        _service.AddException("esx-9.log-forwarding", null, null, "Pilot", "owner", T0.AddDays(7), Operator);
 
         Assert.All(
             _service.Findings(),
@@ -209,7 +211,7 @@ public class ComplianceServiceTests
     public void An_exception_does_not_cover_a_finding_that_was_not_evaluated()
     {
         _service.Evaluate([Host()]);
-        _service.AddException("esx-9.log-forwarding", Host1, "why", "who", T0.AddDays(7), Operator);
+        _service.AddException("esx-9.log-forwarding", Host1, null, "why", "who", T0.AddDays(7), Operator);
 
         Assert.Equal(FindingState.NotEvaluated, State());
     }
@@ -218,7 +220,7 @@ public class ComplianceServiceTests
     public void Removing_an_exception_makes_the_finding_fail_again_at_once()
     {
         Evaluate("");
-        var added = _service.AddException("esx-9.log-forwarding", Host1, "why", "who", T0.AddDays(7), Operator);
+        var added = _service.AddException("esx-9.log-forwarding", Host1, null, "why", "who", T0.AddDays(7), Operator);
 
         Assert.True(_service.RemoveException(added.Exception!.Id, Operator).Applied);
         Assert.Equal(FindingState.Failing, State());
@@ -229,7 +231,7 @@ public class ComplianceServiceTests
     public void A_removed_exception_stays_on_the_record_with_who_removed_it()
     {
         Evaluate("");
-        var added = _service.AddException("esx-9.log-forwarding", Host1, "why", "who", T0.AddDays(7), Operator);
+        var added = _service.AddException("esx-9.log-forwarding", Host1, null, "why", "who", T0.AddDays(7), Operator);
 
         _clock.UtcNow = T0.AddHours(2);
         var removed = _service.RemoveException(
@@ -243,19 +245,19 @@ public class ComplianceServiceTests
         Assert.Equal(T0.AddHours(2), kept.RemovedAtUtc);
 
         // It covered the finding until it was withdrawn, and not after.
-        Assert.True(kept.Covers("esx-9.log-forwarding", Host1, T0.AddHours(1)));
-        Assert.False(kept.Covers("esx-9.log-forwarding", Host1, T0.AddHours(2)));
+        Assert.True(kept.Covers("esx-9.log-forwarding", Host1, "", T0.AddHours(1)));
+        Assert.False(kept.Covers("esx-9.log-forwarding", Host1, "", T0.AddHours(2)));
     }
 
     [Fact]
     public void Accepting_an_accepted_finding_is_refused_rather_than_overwriting_it()
     {
         Evaluate("");
-        _service.Accept("esx-9.log-forwarding", Host1, "CHG-1", Operator);
+        _service.Accept("esx-9.log-forwarding", Host1, "", "CHG-1", Operator);
 
         _clock.UtcNow = T0.AddHours(1);
         var second = _service.Accept(
-            "esx-9.log-forwarding", Host1, "CHG-2", OperatorIdentity.Verified("second-operator"));
+            "esx-9.log-forwarding", Host1, "", "CHG-2", OperatorIdentity.Verified("second-operator"));
 
         Assert.False(second.Applied);
         Assert.Equal(ComplianceFailure.AlreadyAccepted, second.Failure);
@@ -273,13 +275,13 @@ public class ComplianceServiceTests
         Evaluate("");
 
         var tooLong = _service.Accept(
-            "esx-9.log-forwarding", Host1, new string('x', ComplianceService.MaximumReasonLength + 1), Operator);
+            "esx-9.log-forwarding", Host1, "", new string('x', ComplianceService.MaximumReasonLength + 1), Operator);
 
         Assert.Equal(ComplianceFailure.TooLong, tooLong.Failure);
         Assert.Null(_service.Findings()[0].Acceptance);
 
         Assert.True(_service.Accept(
-            "esx-9.log-forwarding", Host1, new string('x', ComplianceService.MaximumReasonLength), Operator).Applied);
+            "esx-9.log-forwarding", Host1, "", new string('x', ComplianceService.MaximumReasonLength), Operator).Applied);
     }
 
     [Theory]
@@ -288,7 +290,7 @@ public class ComplianceServiceTests
     public void An_exception_reason_or_owner_longer_than_the_record_keeps_is_refused(int reason, int owner)
     {
         var result = _service.AddException(
-            "esx-9.log-forwarding", Host1, new string('r', reason), new string('o', owner), T0.AddDays(7), Operator);
+            "esx-9.log-forwarding", Host1, null, new string('r', reason), new string('o', owner), T0.AddDays(7), Operator);
 
         Assert.Equal(ComplianceFailure.TooLong, result.Failure);
         Assert.Empty(_service.Exceptions());
@@ -300,6 +302,7 @@ public class ComplianceServiceTests
         var result = _service.AddException(
             "esx-9.log-forwarding",
             Host1,
+            null,
             new string('r', ComplianceService.MaximumReasonLength),
             new string('o', ComplianceService.MaximumOwnerLength),
             T0.AddDays(7),
@@ -360,7 +363,7 @@ public class ComplianceServiceTests
     public void An_exception_must_end_in_the_future_and_within_a_year(int days)
     {
         var result = _service.AddException(
-            "esx-9.log-forwarding", Host1, "why", "who", T0.AddDays(days), Operator);
+            "esx-9.log-forwarding", Host1, null, "why", "who", T0.AddDays(days), Operator);
 
         Assert.Equal(ComplianceFailure.BadExpiry, result.Failure);
     }
@@ -371,7 +374,7 @@ public class ComplianceServiceTests
     public void An_exception_needs_a_reason_and_an_owner(string reason, string owner)
     {
         var result = _service.AddException(
-            "esx-9.log-forwarding", Host1, reason, owner, T0.AddDays(7), Operator);
+            "esx-9.log-forwarding", Host1, null, reason, owner, T0.AddDays(7), Operator);
 
         Assert.Equal(ComplianceFailure.MissingDetail, result.Failure);
     }
@@ -379,7 +382,7 @@ public class ComplianceServiceTests
     [Fact]
     public void An_exception_to_a_control_not_in_the_catalogue_is_refused()
     {
-        var result = _service.AddException("esx-9.made-up", Host1, "why", "who", T0.AddDays(7), Operator);
+        var result = _service.AddException("esx-9.made-up", Host1, null, "why", "who", T0.AddDays(7), Operator);
 
         Assert.Equal(ComplianceFailure.UnknownControl, result.Failure);
     }
@@ -388,8 +391,8 @@ public class ComplianceServiceTests
     public void The_narrower_exception_is_the_one_shown()
     {
         Evaluate("");
-        _service.AddException("esx-9.log-forwarding", null, "estate", "a", T0.AddDays(60), Operator);
-        var narrow = _service.AddException("esx-9.log-forwarding", Host1, "host", "b", T0.AddDays(7), Operator);
+        _service.AddException("esx-9.log-forwarding", null, null, "estate", "a", T0.AddDays(60), Operator);
+        var narrow = _service.AddException("esx-9.log-forwarding", Host1, null, "host", "b", T0.AddDays(7), Operator);
 
         var covering = _service.Findings()[0].CoveringException(_service.Exceptions(), _clock.UtcNow);
 

@@ -183,7 +183,19 @@ builder.Services.AddSingleton<ReadModel>();
 var complianceCatalogue = ComplianceCatalogueSource.Load(builder.Configuration);
 builder.Services.AddSingleton(complianceCatalogue);
 builder.Services.AddSingleton<IComplianceStore, PostgresComplianceStore>();
-builder.Services.AddSingleton<ComplianceService>();
+
+// The product's own catalogue, eo-continuity, is evaluated beside the vendor
+// guide and never inside it (K1). SCG stays first and is judged exactly as
+// before; the continuity catalogue registers no check until K2 moves the M8
+// rules in, so it has no controls and writes no findings yet.
+builder.Services.AddSingleton(services => new ComplianceService(
+    [
+        complianceCatalogue,
+        ContinuityCatalogue.Build(ContinuityCatalogue.Production),
+    ],
+    services.GetRequiredService<IComplianceStore>(),
+    services.GetRequiredService<IClock>(),
+    ContinuityCatalogue.ChecksById(ContinuityCatalogue.Production)));
 
 // --- who may do what -----------------------------------------------------
 //

@@ -35,6 +35,10 @@ public static class ComplianceFindingsReportCsv
         "Exception created by",
         "Exception created at (UTC)",
         "Exception expires (UTC)",
+
+        // Added with K1, after the columns an existing import already reads.
+        "Subject",
+        "Subject label",
     ];
 
     public static string Write(IEnumerable<ComplianceReportFindingRow> rows) =>
@@ -62,6 +66,8 @@ public static class ComplianceFindingsReportCsv
         row.ExceptionCreatedBy,
         Iso(row.ExceptionCreatedAtUtc),
         Iso(row.ExceptionExpiresUtc),
+        row.Subject,
+        row.SubjectLabel,
     ];
 
     private static string? Iso(DateTimeOffset? value) =>

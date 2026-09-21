@@ -87,6 +87,25 @@ public sealed record ComplianceFinding
     /// <summary>For display only; see <see cref="Domain.Entity.DisplayName"/>.</summary>
     public string EntityName { get; init; } = string.Empty;
 
+    /// <summary>
+    /// The thing on the entity the operator will fix — a DRS rule's uuid, an
+    /// HBA — or empty when the finding is about the entity itself (every
+    /// vendor-guide finding).
+    /// </summary>
+    /// <remarks>
+    /// Part of the identity: (release, control, entity, subject). One cause is
+    /// one finding however many things it affects, so the subject is the
+    /// cause, never the symptom.
+    /// </remarks>
+    public string Subject { get; init; } = string.Empty;
+
+    /// <summary>
+    /// How the subject is shown, e.g. a DRS rule's name. Display only, never
+    /// identity: renaming the rule changes this and keeps the finding and its
+    /// acceptance.
+    /// </summary>
+    public string? SubjectLabel { get; init; }
+
     public required ComplianceVerdict Verdict { get; init; }
 
     /// <summary>Why nothing was concluded. Set for <see cref="ComplianceVerdict.NotEvaluated"/>.</summary>
@@ -157,8 +176,9 @@ public sealed record ComplianceFinding
         ArgumentNullException.ThrowIfNull(exceptions);
 
         return exceptions
-            .Where(e => e.Covers(ControlId, Entity, nowUtc))
+            .Where(e => e.Covers(ControlId, Entity, Subject, nowUtc))
             .OrderBy(e => e.Entity is null ? 1 : 0)
+            .ThenBy(e => e.Subject is null ? 1 : 0)
             .ThenByDescending(e => e.ExpiresUtc)
             .FirstOrDefault();
     }
@@ -195,6 +215,12 @@ public sealed record ComplianceWaiver
     /// <summary>The one entity it covers, or null for every entity the control applies to.</summary>
     public EntityId? Entity { get; init; }
 
+    /// <summary>
+    /// The one subject it covers, or null for every subject — which is what
+    /// every exception written before subjects existed means, and keeps meaning.
+    /// </summary>
+    public string? Subject { get; init; }
+
     public required string Reason { get; init; }
 
     /// <summary>The person accountable for the exception, who is not necessarily who typed it.</summary>
@@ -221,11 +247,20 @@ public sealed record ComplianceWaiver
 
     public bool IsExpiredAt(DateTimeOffset nowUtc) => nowUtc >= ExpiresUtc;
 
-    public bool Covers(string controlId, EntityId entity, DateTimeOffset nowUtc) =>
+    /// <summary>
+    /// Whether it covers one finding: control ∧ (entity null or equal) ∧ (subject null or equal).
+    /// </summary>
+    /// <remarks>
+    /// The finding's subject is always named, empty only for a finding about
+    /// the entity itself; an overload assuming it would misjudge every
+    /// subject-bearing finding.
+    /// </remarks>
+    public bool Covers(string controlId, EntityId entity, string subject, DateTimeOffset nowUtc) =>
         !IsExpiredAt(nowUtc) &&
         !IsRemovedAt(nowUtc) &&
         string.Equals(ControlId, controlId, StringComparison.Ordinal) &&
-        (Entity is null || Entity == entity);
+        (Entity is null || Entity == entity) &&
+        (Subject is null || string.Equals(Subject, subject, StringComparison.Ordinal));
 }
 
 /// <summary>
@@ -245,14 +280,38 @@ public sealed record ComplianceTransition
 
     public required EntityId Entity { get; init; }
 
+    /// <summary>The finding's subject; empty when it has none. See <see cref="ComplianceFinding.Subject"/>.</summary>
+    public string Subject { get; init; } = string.Empty;
+
+    /// <summary>How the subject was shown at the time; display only.</summary>
+    public string? SubjectLabel { get; init; }
+
     /// <summary>The verdict before; null when the finding is new.</summary>
     public ComplianceVerdict? From { get; init; }
 
     /// <summary>The verdict after; null when the finding left the evaluation.</summary>
     public ComplianceVerdict? To { get; init; }
 
-    /// <summary>What the entity reported behind the new verdict, verbatim; null when nothing was read.</summary>
+    /// <summary>
+    /// What the entity reported behind the new verdict, verbatim; null when
+    /// nothing was read. For a finding that left the evaluation, the last
+    /// thing it observed.
+    /// </summary>
     public string? Observed { get; init; }
+
+    /// <summary>
+    /// Who had accepted the finding, carried only when it left the evaluation.
+    /// </summary>
+    /// <remarks>
+    /// The row goes when its subject goes — the device removed, the rule
+    /// deleted — and the acceptance lived on the row. Carried here so the
+    /// history keeps the decision and the reason; the row goes, the record
+    /// does not.
+    /// </remarks>
+    public string? AcceptedBy { get; init; }
+
+    /// <summary>Why it had been accepted; carried with <see cref="AcceptedBy"/>.</summary>
+    public string? AcceptedReason { get; init; }
 
     /// <summary>When the setting behind the new verdict was read; null when the finding left.</summary>
     public DateTimeOffset? EvidenceUtc { get; init; }
