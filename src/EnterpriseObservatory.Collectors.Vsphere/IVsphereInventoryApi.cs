@@ -353,6 +353,17 @@ public sealed record VsphereCluster
 
     /// <summary>Whether DRS is enabled, or null when unreadable. See <see cref="HighAvailabilityEnabled"/>.</summary>
     public bool? DrsEnabled { get; init; }
+
+    /// <summary>
+    /// The cluster's HA configuration, by the keys <see cref="ClusterHaSettings"/>
+    /// declares -- admission control, host/VM monitoring, the APD/PDL response,
+    /// the heartbeat datastore count and the <c>das.ignoreRedundantNetWarning</c>
+    /// advanced option. Empty when <c>configurationEx.dasConfig</c> could not be
+    /// read, exactly as <see cref="VsphereHost.AdvancedSettings"/> is empty for
+    /// an unread host: a missing key is never the same fact as a reported empty
+    /// one.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> HaSettings { get; init; } = ClusterHaSettings.None;
 }
 
 /// <summary>A datastore as vCenter sees it.</summary>

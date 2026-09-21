@@ -109,6 +109,11 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // docs/live-verification.md.
                 Health = HealthState.Unknown,
                 LastSeenUtc = now,
+                // The platform's own words for its HA configuration, carried
+                // rather than judged -- the same contract host advanced
+                // settings and datastore type follow. The HA scorecard rule
+                // reads these; this collector only ever hands them over.
+                Settings = cluster.HaSettings,
             });
 
             if (cluster.HighAvailabilityEnabled is null || cluster.DrsEnabled is null)

@@ -165,6 +165,74 @@ public sealed record EntityDetailView
     /// said. Null for every other kind of entity.
     /// </summary>
     public TimeToFullView? TimeToFull { get; init; }
+
+    /// <summary>
+    /// The cluster's vSphere HA configuration, read from its settings. Null
+    /// for every entity kind but <see cref="EntityKind.Cluster"/>, and also
+    /// null for a cluster whose HA configuration could not be read at all.
+    /// </summary>
+    public HaScorecardView? HaScorecard { get; init; }
+}
+
+/// <summary>
+/// A cluster's HA configuration, in the platform's own words.
+/// </summary>
+/// <remarks>
+/// Every field is null when that one setting was not reported, which is not
+/// the same as the whole card being absent: a cluster that answered about
+/// some of its HA configuration and not all of it is shown with the gaps
+/// visible rather than filled in with a guess. See roadmap M8.1.
+/// </remarks>
+public sealed record HaScorecardView
+{
+    public bool? Enabled { get; init; }
+
+    public bool? AdmissionControlEnabled { get; init; }
+
+    /// <summary>
+    /// The concrete admission control policy's vim25 type name, e.g.
+    /// <c>ClusterFailoverResourceAdmissionControlPolicy</c>.
+    /// </summary>
+    public string? AdmissionControlPolicyType { get; init; }
+
+    /// <summary><c>enabled</c> or <c>disabled</c>.</summary>
+    public string? HostMonitoring { get; init; }
+
+    /// <summary>
+    /// <c>vmMonitoringDisabled</c>, <c>vmMonitoringOnly</c> or
+    /// <c>vmAndAppMonitoring</c>.
+    /// </summary>
+    public string? VmMonitoring { get; init; }
+
+    /// <summary>
+    /// The cluster-wide default response to an All-Paths-Down storage
+    /// failure.
+    /// </summary>
+    public string? ApdResponse { get; init; }
+
+    /// <summary>
+    /// The cluster-wide default response to a Permanent-Device-Loss storage
+    /// failure.
+    /// </summary>
+    public string? PdlResponse { get; init; }
+
+    public int? HeartbeatDatastoreCount { get; init; }
+
+    public string? HeartbeatDatastoreCandidatePolicy { get; init; }
+
+    /// <summary>
+    /// True when this cluster has silenced vCenter's own warning about a
+    /// non-redundant HA management network rather than fixing it -- a hidden
+    /// risk, not a resolved one. See <c>ClusterHighAvailability</c>.
+    /// </summary>
+    public bool? RedundantNetworkWarningSilenced { get; init; }
+
+    /// <summary>
+    /// The open findings from the HA scorecard rule, filtered to this
+    /// cluster. Filtered, never recomputed -- same rule as
+    /// <see cref="EntityDetailView.Alerts"/>.
+    /// </summary>
+    public required IReadOnlyList<AlertView> Findings { get; init; }
 }
 
 /// <summary>

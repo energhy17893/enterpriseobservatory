@@ -266,6 +266,10 @@ public sealed record MonitoringOptions
     public Analysis.RemoteLoggingPolicy RemoteLogging { get; init; } =
         Analysis.RemoteLoggingPolicy.Default;
 
+    /// <summary>How many heartbeat datastores an HA cluster should have.</summary>
+    public Analysis.ClusterHighAvailabilityPolicy ClusterHighAvailability { get; init; } =
+        Analysis.ClusterHighAvailabilityPolicy.Default;
+
     /// <summary>
     /// How far back a datastore's growth is read, and how near a fill date is
     /// an alert. See roadmap M4.3.

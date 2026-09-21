@@ -36,6 +36,7 @@ public static class AnalysisRules
         new StoragePathRedundancyRule(),
         new MultipathSinglePointOfFailureRule(),
         new RemoteLoggingRule(),
+        new ClusterHighAvailabilityRule(),
         new EventAlertsRule(),
         new DatastoreTimeToFullRule(),
         new CollectionCoverageRule(),
@@ -287,6 +288,27 @@ public sealed class RemoteLoggingRule : IAnalysisRule
         ArgumentNullException.ThrowIfNull(context);
 
         return RemoteLogging.Evaluate([.. context.Graph.Active], context.Options.RemoteLogging);
+    }
+}
+
+/// <summary>Adapts <see cref="ClusterHighAvailability"/>.</summary>
+/// <remarks>
+/// On the inventory rhythm because HA configuration is read on it and changes
+/// on it, same as <see cref="RemoteLoggingRule"/> above -- a setting nobody
+/// changes has nothing new to say every twenty seconds.
+/// </remarks>
+public sealed class ClusterHighAvailabilityRule : IAnalysisRule
+{
+    public string RuleId => ClusterHighAvailability.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return ClusterHighAvailability.Evaluate(
+            [.. context.Graph.Active], context.Options.ClusterHighAvailability);
     }
 }
 

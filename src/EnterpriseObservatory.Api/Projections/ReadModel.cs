@@ -450,6 +450,15 @@ public sealed class ReadModel(
 
         var counts = AlertCountsByEntity();
 
+        var entityAlerts =
+        (IReadOnlyList<AlertView>)
+        [
+            .. Visible()
+                .Where(a => a.Entity == entityId)
+                .OrderByDescending(a => a.Severity)
+                .Select(a => ToView(a, graph)),
+        ];
+
         return new EntityDetailView
         {
             Entity = ToView(entity, counts),
@@ -463,16 +472,50 @@ public sealed class ReadModel(
                 }),
             ],
             Relationships = RelationshipsOf(graph, entityId),
-            Alerts =
-            [
-                .. Visible()
-                    .Where(a => a.Entity == entityId)
-                    .OrderByDescending(a => a.Severity)
-                    .Select(a => ToView(a, graph)),
-            ],
+            Alerts = entityAlerts,
             TimeToFull = entity.Kind == EntityKind.Datastore ? TimeToFull(entityId) : null,
+            HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity, entityAlerts) : null,
         };
     }
+
+    /// <summary>
+    /// The HA scorecard, read from the same <c>Entity.Settings</c> the
+    /// collector filed under <c>ClusterHighAvailabilityPolicy</c>'s keys and
+    /// the same alerts the entity's own list already carries.
+    /// </summary>
+    /// <remarks>
+    /// Filtered, never recomputed -- ADR-0007 §1, same as
+    /// <see cref="EntityDetailView.Alerts"/> itself. The setting keys are read
+    /// from the rule's own default policy rather than restated here, so the
+    /// two can never drift apart: see <see cref="ClusterHighAvailabilityPolicy"/>.
+    /// </remarks>
+    private static HaScorecardView HaScorecard(Entity cluster, IReadOnlyList<AlertView> entityAlerts)
+    {
+        var rules = ClusterHighAvailabilityPolicy.Default;
+        var settings = cluster.Settings;
+
+        return new HaScorecardView
+        {
+            Enabled = Bool(settings, rules.EnabledSetting),
+            AdmissionControlEnabled = Bool(settings, rules.AdmissionControlEnabledSetting),
+            AdmissionControlPolicyType = settings.GetValueOrDefault("dasConfig.admissionControlPolicy.type"),
+            HostMonitoring = settings.GetValueOrDefault(rules.HostMonitoringSetting),
+            VmMonitoring = settings.GetValueOrDefault("dasConfig.vmMonitoring"),
+            ApdResponse = settings.GetValueOrDefault(rules.ApdResponseSetting),
+            PdlResponse = settings.GetValueOrDefault(rules.PdlResponseSetting),
+            HeartbeatDatastoreCount =
+                settings.TryGetValue(rules.HeartbeatDatastoreCountSetting, out var count) &&
+                int.TryParse(count, out var parsed)
+                    ? parsed
+                    : null,
+            HeartbeatDatastoreCandidatePolicy = settings.GetValueOrDefault("dasConfig.hBDatastoreCandidatePolicy"),
+            RedundantNetworkWarningSilenced = Bool(settings, rules.IgnoreRedundantNetworkWarningSetting),
+            Findings = [.. entityAlerts.Where(a => string.Equals(a.Category, "Configuration", StringComparison.Ordinal))],
+        };
+    }
+
+    private static bool? Bool(IReadOnlyDictionary<string, string> settings, string key) =>
+        settings.TryGetValue(key, out var raw) && bool.TryParse(raw, out var parsed) ? parsed : null;
 
     /// <summary>
     /// The same estimate the fill-date rule makes, from the same history.
