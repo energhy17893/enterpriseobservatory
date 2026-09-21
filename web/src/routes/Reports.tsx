@@ -53,6 +53,15 @@ export function Reports() {
             </div>
           </Card>
         </Link>
+
+        <Link to="/reports/continuity">
+          <Card className="h-full p-4 hover:border-primary">
+            <div className="font-medium">Continuity report</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              Every cluster's HA, DRS and storage-path redundancy posture, one row each. CSV and printable.
+            </div>
+          </Card>
+        </Link>
       </div>
     </div>
   )

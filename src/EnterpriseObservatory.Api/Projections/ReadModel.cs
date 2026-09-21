@@ -407,6 +407,187 @@ public sealed class ReadModel(
         };
     }
 
+    // --- continuity report (M8.10) -----------------------------------------
+
+    /// <summary>
+    /// The four rule ids this report reads, by the same string every rule
+    /// file bakes into its own fingerprints' check-id component. There is no
+    /// separate "which rule produced this" field on an alert -- see
+    /// <see cref="HasRule"/> for why that is enough.
+    /// </summary>
+    private static class ContinuityRuleIds
+    {
+        public const string Ha = "cluster-ha-scorecard";
+        public const string Drs = "drs-rule-violation";
+        public const string Multipath = "multipath-single-point-of-failure";
+        public const string StoragePath = "storage-path-redundancy";
+
+        /// <summary>
+        /// M8's next rule, still being built in a parallel change. Read the
+        /// same generic way as the other four so this report needs no change
+        /// the day it ships -- it is a rule id like any other, not a type
+        /// this file knows about.
+        /// </summary>
+        public const string NPlusOne = "n-plus-one";
+    }
+
+    /// <summary>
+    /// One row per live cluster: its HA scorecard (M8.1) and DRS compliance
+    /// (M8.3) findings, the storage-path redundancy findings of the hosts
+    /// under it, and the N+1 placeholder.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here recomputes a verdict -- every count is read from the same
+    /// visible alert list the inbox, the entity page's HA scorecard and the
+    /// alert report already agree on. See ADR-0007 §1.
+    /// </remarks>
+    public ContinuityReportView ContinuityReport()
+    {
+        var graph = _graphs.Current;
+        var visible = Visible();
+
+        var clusters = graph.Entities.Values
+            .Where(e => e.Kind == EntityKind.Cluster && e.ObservationState != ObservationState.Vanished)
+            .OrderBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Whether HA configuration has ever actually been read for this
+        // estate, judged across every cluster rather than per-cluster: a
+        // fresh install where the inventory collector has not reached
+        // ClusterComputeResource yet must read as "not collected", not as
+        // "every cluster passed".
+        var haInputsCollected = clusters.Any(HasHaSettings);
+
+        var rows = clusters
+            .Select(c => ToContinuityRow(c, graph, visible))
+            .ToList();
+
+        return new ContinuityReportView
+        {
+            GeneratedAtUtc = _clock.UtcNow,
+            Summary = SummarizeContinuity(rows, visible, haInputsCollected),
+            Rows = rows,
+        };
+    }
+
+    private static bool HasHaSettings(Entity cluster) =>
+        cluster.Settings.Keys.Any(k => k.StartsWith("dasConfig.", StringComparison.Ordinal));
+
+    private static ContinuityReportRow ToContinuityRow(
+        Entity cluster, EntityGraph graph, IReadOnlyList<AlertInstance> visible)
+    {
+        var onCluster = visible.Where(a => a.Entity == cluster.Id).ToList();
+        var ha = onCluster.Where(a => HasRule(a, ContinuityRuleIds.Ha)).ToList();
+        var drs = onCluster.Where(a => HasRule(a, ContinuityRuleIds.Drs)).ToList();
+        var nPlusOne = onCluster.Where(a => HasRule(a, ContinuityRuleIds.NPlusOne)).ToList();
+
+        var hostIds = HostsOf(graph, cluster.Id);
+
+        var storagePath = visible
+            .Where(a => a.Entity is { } id && hostIds.Contains(id))
+            .Where(a => HasRule(a, ContinuityRuleIds.Multipath) || HasRule(a, ContinuityRuleIds.StoragePath))
+            .ToList();
+
+        var affectedHosts = storagePath
+            .Select(a => a.Entity is { } id && graph.Entities.TryGetValue(id, out var host)
+                ? host.DisplayName
+                : null)
+            .OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var hasCritical =
+            ha.Concat(drs).Concat(storagePath).Concat(nPlusOne)
+                .Any(a => a.Severity == AlertSeverity.Critical);
+
+        return new ContinuityReportRow
+        {
+            ClusterId = cluster.Id.Value,
+            ClusterName = cluster.DisplayName,
+            Source = cluster.SourceInstanceId,
+            HaSettingsCollected = HasHaSettings(cluster),
+            HaCriticalCount = ha.Count(a => a.Severity == AlertSeverity.Critical),
+            HaWarningCount = ha.Count(a => a.Severity == AlertSeverity.Warning),
+            DrsCriticalCount = drs.Count(a => a.Severity == AlertSeverity.Critical),
+            DrsWarningCount = drs.Count(a => a.Severity == AlertSeverity.Warning),
+            StoragePathCriticalCount = storagePath.Count(a => a.Severity == AlertSeverity.Critical),
+            StoragePathWarningCount = storagePath.Count(a => a.Severity == AlertSeverity.Warning),
+            StoragePathAffectedHosts = affectedHosts,
+            NPlusOneCriticalCount = nPlusOne.Count(a => a.Severity == AlertSeverity.Critical),
+            NPlusOneWarningCount = nPlusOne.Count(a => a.Severity == AlertSeverity.Warning),
+            HasCritical = hasCritical,
+        };
+    }
+
+    /// <summary>
+    /// Every host <c>PartOf</c> this cluster -- the same edge the inventory
+    /// collector writes; see <c>VsphereInventorySource</c>.
+    /// </summary>
+    private static HashSet<EntityId> HostsOf(EntityGraph graph, EntityId clusterId) =>
+    [
+        .. graph.Relationships
+            .Where(r => r.Kind == RelationshipKind.PartOf && r.To == clusterId)
+            .Select(r => r.From),
+    ];
+
+    /// <summary>
+    /// Whether one rule produced this alert.
+    /// </summary>
+    /// <remarks>
+    /// There is no <c>RuleId</c> field on an alert: <see cref="AlertFingerprint.Create"/>
+    /// folds it into the check-id part of the fingerprint instead, and every
+    /// rule file passes its own <c>RuleId</c> constant there (see
+    /// <c>ClusterHighAvailability</c>, <c>DrsRuleViolations</c>,
+    /// <c>MultipathSinglePointOfFailure</c>, <c>StoragePathRedundancy</c>).
+    /// Reading it back as a substring of the fingerprint's already-normalised
+    /// value is the generic hook this report needs to pick up the N+1 rule
+    /// the day it ships, without this file knowing anything about it.
+    /// </remarks>
+    private static bool HasRule(AlertInstance alert, string ruleId) =>
+        alert.Fingerprint.Value.Contains(ruleId, StringComparison.Ordinal);
+
+    private static ContinuityReportSummary SummarizeContinuity(
+        List<ContinuityReportRow> rows, IReadOnlyList<AlertInstance> visible, bool haInputsCollected)
+    {
+        var byRule = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            [ContinuityRuleIds.Ha] = visible.Count(a => HasRule(a, ContinuityRuleIds.Ha)),
+            [ContinuityRuleIds.Drs] = visible.Count(a => HasRule(a, ContinuityRuleIds.Drs)),
+            [ContinuityRuleIds.Multipath] = visible.Count(a => HasRule(a, ContinuityRuleIds.Multipath)),
+            [ContinuityRuleIds.StoragePath] = visible.Count(a => HasRule(a, ContinuityRuleIds.StoragePath)),
+            [ContinuityRuleIds.NPlusOne] = visible.Count(a => HasRule(a, ContinuityRuleIds.NPlusOne)),
+        };
+
+        var continuityAlerts = visible.Where(a => byRule.Keys.Any(id => HasRule(a, id))).ToList();
+
+        var bySeverity = continuityAlerts.GroupBy(a => a.Severity.ToString())
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        foreach (var value in Enum.GetValues<AlertSeverity>())
+        {
+            bySeverity.TryAdd(value.ToString(), 0);
+        }
+
+        var critical = rows.Where(r => r.HasCritical).ToList();
+
+        return new ContinuityReportSummary
+        {
+            TotalClusters = rows.Count,
+            ByRule = byRule,
+            BySeverity = bySeverity,
+            ClustersWithCriticalCount = critical.Count,
+            ClustersWithCriticalNames = [.. critical.Select(r => r.ClusterName)],
+            HaInputsCollected = haInputsCollected,
+            Note = haInputsCollected
+                ? null
+                : "HA and DRS show zero because no cluster in this estate has reported HA settings " +
+                  "yet (no dasConfig.* key was read). That means the input was never collected, not " +
+                  "that every cluster is protected -- the collector wiring for cluster HA/DRS " +
+                  "configuration is still pending.",
+        };
+    }
+
     // --- entities ---------------------------------------------------------
 
     /// <summary>The entity explorer (tier 1 of ADR-0007).</summary>

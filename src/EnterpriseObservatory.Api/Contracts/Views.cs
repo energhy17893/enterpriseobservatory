@@ -969,3 +969,95 @@ public sealed record CapacityReportView
     /// <summary>Soonest fill date first, then highest percent used among the rest.</summary>
     public required IReadOnlyList<CapacityReportRow> Rows { get; init; }
 }
+
+// --- continuity report (M8.10) -------------------------------------------
+//
+// The fourth report: one row per cluster, its HA scorecard (M8.1) and DRS
+// rule compliance (M8.3) beside the storage-path redundancy of the hosts
+// under it, plus a placeholder column group for the N+1 capacity rule a
+// parallel change is still building. Nothing here recomputes a verdict --
+// every count is read from the same visible alert list the inbox and the
+// other three reports already agree on. See ReadModel.ContinuityReport.
+
+/// <summary>
+/// One cluster's continuity posture: HA, DRS, storage-path redundancy for
+/// its hosts, and the N+1 placeholder, all as counts by severity.
+/// </summary>
+public sealed record ContinuityReportRow
+{
+    public required string ClusterId { get; init; }
+
+    public required string ClusterName { get; init; }
+
+    public required string Source { get; init; }
+
+    /// <summary>
+    /// Whether this cluster's own inventory carried any <c>dasConfig.*</c>
+    /// setting -- whether HA configuration was actually read for it, as
+    /// opposed to a zero meaning nothing was ever collected.
+    /// </summary>
+    public required bool HaSettingsCollected { get; init; }
+
+    public required int HaCriticalCount { get; init; }
+
+    public required int HaWarningCount { get; init; }
+
+    public required int DrsCriticalCount { get; init; }
+
+    public required int DrsWarningCount { get; init; }
+
+    public required int StoragePathCriticalCount { get; init; }
+
+    public required int StoragePathWarningCount { get; init; }
+
+    /// <summary>Hosts under this cluster with a multipath or path-redundancy finding, by name.</summary>
+    public required IReadOnlyList<string> StoragePathAffectedHosts { get; init; }
+
+    /// <summary>N+1 capacity rule: a placeholder until that rule ships. Zero until then.</summary>
+    public required int NPlusOneCriticalCount { get; init; }
+
+    public required int NPlusOneWarningCount { get; init; }
+
+    /// <summary>Any Critical among the four groups above -- what the summary counts clusters by.</summary>
+    public required bool HasCritical { get; init; }
+}
+
+/// <summary>Counts by rule and by severity, and the input-not-collected note the rules cannot say for themselves.</summary>
+public sealed record ContinuityReportSummary
+{
+    public required int TotalClusters { get; init; }
+
+    /// <summary>Alert count per rule id -- cluster-ha-scorecard, drs-rule-violation, multipath-single-point-of-failure, storage-path-redundancy, n-plus-one.</summary>
+    public required IReadOnlyDictionary<string, int> ByRule { get; init; }
+
+    public required IReadOnlyDictionary<string, int> BySeverity { get; init; }
+
+    public required int ClustersWithCriticalCount { get; init; }
+
+    public required IReadOnlyList<string> ClustersWithCriticalNames { get; init; }
+
+    /// <summary>
+    /// Whether any cluster's inventory carried a <c>dasConfig.*</c> setting.
+    /// False means the HA/DRS collector wiring has not run against this
+    /// estate yet, so zero HA and DRS findings mean "not observed", not
+    /// "all clear" -- see <see cref="Note"/>.
+    /// </summary>
+    public required bool HaInputsCollected { get; init; }
+
+    /// <summary>Set only when <see cref="HaInputsCollected"/> is false.</summary>
+    public string? Note { get; init; }
+}
+
+/// <summary>
+/// The continuity report: every live cluster's HA, DRS and storage-path
+/// posture, for the printable page and the CSV export. See
+/// <see cref="AlertReportView"/> for the shape this copies.
+/// </summary>
+public sealed record ContinuityReportView
+{
+    public required DateTimeOffset GeneratedAtUtc { get; init; }
+
+    public required ContinuityReportSummary Summary { get; init; }
+
+    public required IReadOnlyList<ContinuityReportRow> Rows { get; init; }
+}

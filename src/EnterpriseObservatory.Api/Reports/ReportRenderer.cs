@@ -47,6 +47,7 @@ public sealed class ReportRenderer(ReadModel model, IClock clock, ComplianceServ
             ReportKind.Alerts => RenderAlerts(frequency),
             ReportKind.Compliance when compliance is not null => RenderCompliance(frequency, compliance),
             ReportKind.Capacity => RenderCapacity(),
+            ReportKind.Continuity => RenderContinuity(),
             _ => throw new NotSupportedException(
                 $"No report renderer is wired up for '{kind}' yet."),
         };
@@ -148,6 +149,43 @@ public sealed class ReportRenderer(ReadModel model, IClock clock, ComplianceServ
             Subject = $"Enterprise Observatory — capacity report {report.GeneratedAtUtc:yyyy-MM-dd}",
             BodyText = body,
             Attachments = [Csv($"capacity-{stamp}.csv", CapacityReportCsv.Write(report.Rows))],
+        };
+    }
+
+    /// <summary>
+    /// The continuity report as <c>GET /api/reports/continuity.csv</c> builds
+    /// it. A snapshot of the current alert list, same as capacity -- the
+    /// period does not apply.
+    /// </summary>
+    private ReportContent RenderContinuity()
+    {
+        var report = _model.ContinuityReport();
+        var s = report.Summary;
+        var stamp = report.GeneratedAtUtc.ToString("yyyyMMdd-HHmm", CultureInfo.InvariantCulture);
+
+        var bodyLines = new List<string>
+        {
+            $"Continuity report for {s.TotalClusters.ToString(CultureInfo.InvariantCulture)} clusters.",
+            string.Empty,
+            $"By rule: {FormatCounts(s.ByRule)}",
+            $"By severity: {FormatCounts(s.BySeverity)}",
+            $"Clusters with a critical finding: {s.ClustersWithCriticalCount.ToString(CultureInfo.InvariantCulture)}",
+        };
+
+        if (s.Note is { } note)
+        {
+            bodyLines.Add(string.Empty);
+            bodyLines.Add(note);
+        }
+
+        bodyLines.Add(string.Empty);
+        bodyLines.Add("The full list is attached as a CSV.");
+
+        return new ReportContent
+        {
+            Subject = $"Enterprise Observatory — continuity report {report.GeneratedAtUtc:yyyy-MM-dd}",
+            BodyText = string.Join("\n", bodyLines),
+            Attachments = [Csv($"continuity-{stamp}.csv", ContinuityReportCsv.Write(report.Rows))],
         };
     }
 

@@ -18,6 +18,7 @@ import type {
   AlertReportView,
   AuthStateView,
   CapacityReportView,
+  ContinuityReportView,
   BulkActionView,
   DeclareWindowCommand,
   EventBoardView,
@@ -320,4 +321,6 @@ export const api = {
   },
   capacityReport: () => get<CapacityReportView>('/api/reports/capacity'),
   capacityReportCsvUrl: () => new URL('/api/reports/capacity.csv', window.location.origin).toString(),
+  continuityReport: () => get<ContinuityReportView>('/api/reports/continuity'),
+  continuityReportCsvUrl: () => new URL('/api/reports/continuity.csv', window.location.origin).toString(),
 }

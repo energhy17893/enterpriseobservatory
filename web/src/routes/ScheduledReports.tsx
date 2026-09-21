@@ -217,6 +217,7 @@ function Editor({
               <option value="Alerts">Alerts</option>
               <option value="Compliance">Compliance</option>
               <option value="Capacity">Capacity</option>
+              <option value="Continuity">Continuity</option>
             </select>
           </label>
 
