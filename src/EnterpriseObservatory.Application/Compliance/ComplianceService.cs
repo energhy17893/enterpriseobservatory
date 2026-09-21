@@ -46,30 +46,20 @@ public interface IComplianceStore
         DateTimeOffset nowUtc,
         Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate);
 
-    /// <summary>Applies a change to one finding, atomically; null when there is no such finding.</summary>
-    ComplianceFinding? Mutate(
-        string catalogueRelease,
-        string controlId,
-        EntityId entity,
-        Func<ComplianceFinding, ComplianceFinding> change);
-
     /// <summary>
-    /// Applies a change to one finding of one subject, atomically; null when
-    /// there is no such finding.
+    /// Applies a change to one finding — (release, control, entity, subject) —
+    /// atomically; null when there is no such finding.
     /// </summary>
     /// <remarks>
-    /// The default serves a store that predates subjects: it knows only the
-    /// empty subject. The real stores key every finding by its subject.
+    /// The subject is always named, empty only for a finding about the entity
+    /// itself: a store that ignored it would change the wrong subject's row.
     /// </remarks>
     ComplianceFinding? Mutate(
         string catalogueRelease,
         string controlId,
         EntityId entity,
         string subject,
-        Func<ComplianceFinding, ComplianceFinding> change) =>
-        string.IsNullOrEmpty(subject)
-            ? Mutate(catalogueRelease, controlId, entity, change)
-            : null;
+        Func<ComplianceFinding, ComplianceFinding> change);
 
     void AddException(ComplianceWaiver exception);
 
@@ -358,11 +348,14 @@ public sealed class ComplianceService
     /// it on first and why, which is the part an auditor asks about; whoever
     /// wants to take it over says so to the person on the record.
     /// </remarks>
-    public ComplianceResult Accept(
-        string controlId, EntityId entity, string reason, OperatorIdentity actor) =>
-        Accept(controlId, entity, string.Empty, reason, actor);
-
-    /// <summary>Records that an operator owns one subject's failing finding.</summary>
+    /// <param name="controlId">The control.</param>
+    /// <param name="entity">The entity.</param>
+    /// <param name="subject">
+    /// The finding's subject; empty only for a finding about the entity itself.
+    /// Always named: there is deliberately no overload that assumes it.
+    /// </param>
+    /// <param name="reason">Why; may be empty.</param>
+    /// <param name="actor">Who.</param>
     public ComplianceResult Accept(
         string controlId, EntityId entity, string subject, string reason, OperatorIdentity actor)
     {
@@ -425,19 +418,11 @@ public sealed class ComplianceService
     }
 
     /// <summary>Records an exception to a control, for one entity or all of them.</summary>
-    public ComplianceResult AddException(
-        string controlId,
-        EntityId? entity,
-        string reason,
-        string owner,
-        DateTimeOffset expiresUtc,
-        OperatorIdentity actor) =>
-        AddException(controlId, entity, null, reason, owner, expiresUtc, actor);
-
-    /// <summary>
-    /// Records an exception to a control, for one entity or all of them, and
-    /// for one subject or all of them.
-    /// </summary>
+    /// <remarks>
+    /// Also for one subject or all of them. The subject is always named —
+    /// there is deliberately no overload that assumes "every subject", so an
+    /// exception meant for one DRS rule cannot silently cover them all.
+    /// </remarks>
     /// <param name="subject">The one subject it covers; null or blank for every subject.</param>
     public ComplianceResult AddException(
         string controlId,

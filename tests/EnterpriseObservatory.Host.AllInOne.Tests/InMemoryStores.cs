@@ -709,13 +709,6 @@ internal sealed class InMemoryComplianceStore : IComplianceStore
         string catalogueRelease,
         string controlId,
         EntityId entity,
-        Func<ComplianceFinding, ComplianceFinding> change) =>
-        Mutate(catalogueRelease, controlId, entity, string.Empty, change);
-
-    public ComplianceFinding? Mutate(
-        string catalogueRelease,
-        string controlId,
-        EntityId entity,
         string subject,
         Func<ComplianceFinding, ComplianceFinding> change)
     {

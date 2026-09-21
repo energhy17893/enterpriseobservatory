@@ -110,13 +110,6 @@ public sealed class PostgresComplianceStore : IComplianceStore
         string catalogueRelease,
         string controlId,
         EntityId entity,
-        Func<ComplianceFinding, ComplianceFinding> change) =>
-        Mutate(catalogueRelease, controlId, entity, string.Empty, change);
-
-    public ComplianceFinding? Mutate(
-        string catalogueRelease,
-        string controlId,
-        EntityId entity,
         string subject,
         Func<ComplianceFinding, ComplianceFinding> change)
     {
@@ -235,7 +228,7 @@ public sealed class PostgresComplianceStore : IComplianceStore
     /// rarely, and it grows with time where the findings do not.
     /// </remarks>
     public IReadOnlyList<ComplianceTransition> Transitions(
-        string catalogueRelease, string controlId, EntityId entity, string subject = "") =>
+        string catalogueRelease, string controlId, EntityId entity, string subject) =>
         _database.Read(connection =>
         {
             using var command = Command(connection, """
