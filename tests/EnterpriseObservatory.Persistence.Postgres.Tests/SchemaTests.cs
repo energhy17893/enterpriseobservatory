@@ -60,7 +60,14 @@ public class SchemaTests : IDisposable
 
         // Opening it is what applies the schema; there is no separate step an
         // operator could forget or a deployment could skip.
-        Assert.Equal(2, Version());
+        //
+        // A literal, and deliberately not PostgresSchema.Current. Comparing
+        // against Current would make this "the version is whatever the code
+        // says it is", which passes even if the migration list were truncated
+        // by accident. The literal makes adding a migration an event somebody
+        // has to acknowledge here -- which is exactly what it did when the
+        // coverage table arrived as migration 3.
+        Assert.Equal(3, Version());
 
         // Measurements and state both, from the same open. The two used to be
         // separate SQLite files and a half-applied schema would now be a
@@ -89,7 +96,7 @@ public class SchemaTests : IDisposable
 
         _live.Restart();
 
-        Assert.Equal(2, Version());
+        Assert.Equal(3, Version());
         Assert.Equal(tablesBefore, TableCount());
         Assert.NotNull(new PostgresUserAccountStore(_live.Database).Find("ertugrul"));
     }

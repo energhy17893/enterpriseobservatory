@@ -479,3 +479,28 @@ internal sealed class InMemoryObservationStore : IObservationStore
 
     public CompactionReport Compact(DateTimeOffset nowUtc, SeriesRetentionPolicy policy) => new();
 }
+
+/// <summary>Coverage, in memory.</summary>
+/// <remarks>
+/// Replace rather than merge, exactly as the Postgres store does: a property
+/// the collector stopped asking about must stop being reported, and a fake
+/// that accumulated would let a test pass against behaviour production does
+/// not have.
+/// </remarks>
+internal sealed class InMemoryCoverageStore : ICoverageStore
+{
+    private readonly Dictionary<string, SourceCoverage> _coverage = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<SourceCoverage> Current => [.. _coverage.Values];
+
+    public void Replace(
+        string sourceInstanceId,
+        IReadOnlyList<PropertyCoverage> coverage,
+        DateTimeOffset measuredAtUtc) =>
+        _coverage[sourceInstanceId] = new SourceCoverage
+        {
+            SourceInstanceId = sourceInstanceId,
+            MeasuredAtUtc = measuredAtUtc,
+            Properties = [.. coverage],
+        };
+}

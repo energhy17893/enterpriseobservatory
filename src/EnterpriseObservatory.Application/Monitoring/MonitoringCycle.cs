@@ -63,6 +63,7 @@ public sealed class MonitoringCycle(
     IEntityGraphStore graphStore,
     IAlertStateStore alertStore,
     ICollectorHealthStore healthStore,
+    ICoverageStore coverageStore,
     IAlertNotifier notifier,
     IObservationStore observations,
     IMaintenanceWindowStore maintenance,
@@ -79,6 +80,9 @@ public sealed class MonitoringCycle(
 
     private readonly IAlertStateStore _alertStore =
         alertStore ?? throw new ArgumentNullException(nameof(alertStore));
+
+    private readonly ICoverageStore _coverageStore =
+        coverageStore ?? throw new ArgumentNullException(nameof(coverageStore));
 
     private readonly ICollectorHealthStore _healthStore =
         healthStore ?? throw new ArgumentNullException(nameof(healthStore));
@@ -127,6 +131,20 @@ public sealed class MonitoringCycle(
             .Where(id => !reporting.Contains(id, StringComparer.Ordinal))
             .ToList();
 
+        // Recorded before anything reasons about the entities, so a rule that
+        // throws still leaves behind the account of what was readable. A
+        // coverage report is least useful exactly when the cycle went wrong.
+        // Guarded per source, and named per source: one vCenter's coverage
+        // failing to write must not resolve another's alert, for the reason
+        // health keeps the role in its fingerprint.
+        var coverageFailures = cycle.Snapshots
+            .SelectMany(snapshot => Guarded(
+                $"coverage:{snapshot.SourceInstanceId}",
+                $"the coverage measured by '{snapshot.SourceInstanceId}'",
+                () => _coverageStore.Replace(
+                    snapshot.SourceInstanceId, snapshot.Coverage, snapshot.ReadAtUtc)))
+            .ToList();
+
         var entities = cycle.Snapshots.SelectMany(s => s.Entities).ToList();
         var relationships = cycle.Snapshots.SelectMany(s => s.Relationships).ToList();
 
@@ -145,6 +163,7 @@ public sealed class MonitoringCycle(
 
         IReadOnlyList<AlertDefinition> observed =
         [
+            .. coverageFailures,
             .. cycle.Snapshots.SelectMany(s => s.Alerts),
             .. cycle.CollectionAlerts,
             .. healthFailure,

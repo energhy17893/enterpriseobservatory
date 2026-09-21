@@ -104,6 +104,89 @@ export function Collectors() {
           ))}
         </Card>
       )}
+
+      <Coverage />
+    </div>
+  )
+}
+
+/**
+ * What the collectors could actually read.
+ *
+ * The other half of "is the monitoring working", and the half nothing else can
+ * answer. Every rule in this product is entitled to be silent when the
+ * evidence is missing — which is correct, and which means a declined verdict
+ * and a clean bill of health look identical from the alert list. This is the
+ * only place that distinguishes them.
+ *
+ * Complete rows are shown, not filtered out. "This was checked and it is fine"
+ * is what makes the blind rows trustworthy, and a panel that only ever showed
+ * problems could not tell a healthy estate from a report that stopped running.
+ */
+function Coverage() {
+  const { data, isPending, isError, error } = useQuery({
+    queryKey: ['coverage'],
+    queryFn: api.coverage,
+    refetchInterval: 15_000,
+  })
+
+  if (isError) return <LoadFailure what="Coverage" error={error} />
+  if (isPending) return <Loading what="coverage" />
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold">What could be read</h2>
+
+      {data.length === 0 ? (
+        <Empty>
+          No source has measured its coverage yet.
+          <div className="mt-1">
+            Until one does, a rule's silence cannot be told apart from a gap.
+          </div>
+        </Empty>
+      ) : (
+        data.map((source) => (
+          <Card key={source.instanceId} className="divide-y divide-border">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 p-3">
+              <span className="font-medium">{source.instanceId}</span>
+              <span className="text-xs text-muted-foreground">
+                measured {ago(source.measuredAtUtc)}
+              </span>
+            </div>
+
+            {source.properties.length === 0 ? (
+              <div className="p-3 text-sm text-muted-foreground">
+                This source reported but measured no coverage. That is not a claim that
+                coverage was complete.
+              </div>
+            ) : (
+              source.properties.map((p) => (
+                <div
+                  key={`${p.objectType}-${p.property}`}
+                  className="flex flex-wrap items-center justify-between gap-3 p-3"
+                >
+                  <div className="min-w-0">
+                    <Identifier>{p.property}</Identifier>
+                    <div className="text-xs text-muted-foreground">{p.objectType}</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span className="tabular text-sm text-muted-foreground">
+                      {p.answered} of {p.asked}
+                    </span>
+                    {p.isBlind ? (
+                      <StatusBadge status="Critical">none answered</StatusBadge>
+                    ) : p.answered < p.asked ? (
+                      <StatusBadge status="Warning">partial</StatusBadge>
+                    ) : (
+                      <StatusBadge status="Healthy">complete</StatusBadge>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </Card>
+        ))
+      )}
     </div>
   )
 }

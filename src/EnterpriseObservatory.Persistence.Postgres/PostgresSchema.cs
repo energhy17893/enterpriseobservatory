@@ -285,6 +285,30 @@ internal static class PostgresSchema
             password_set_utc   timestamptz NULL
         );
         """,
+
+        // --- coverage --------------------------------------------------------
+        //
+        // What each source managed to read, property by property. State rather
+        // than history: one row per source, object type and property, replaced
+        // every inventory cycle. A time series of coverage would answer "was
+        // this readable last Tuesday", which is a real question and a later
+        // one; the question this table exists for is whether a rule's silence
+        // right now is a verdict or a gap.
+        //
+        // measured_at_utc is on every row rather than per source, because a
+        // report that cannot say when it was taken invites being read as
+        // current after the collector has stopped running.
+        """
+        CREATE TABLE property_coverage (
+            instance_id     text        NOT NULL,
+            object_type     text        NOT NULL,
+            property        text        NOT NULL,
+            asked           integer     NOT NULL,
+            answered        integer     NOT NULL,
+            measured_at_utc timestamptz NOT NULL,
+            PRIMARY KEY (instance_id, object_type, property)
+        );
+        """,
     ];
 
     public static int Current => Migrations.Length;

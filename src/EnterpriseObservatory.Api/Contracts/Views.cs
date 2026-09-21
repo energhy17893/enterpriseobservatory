@@ -500,3 +500,52 @@ public sealed record EventBoardView
     /// </remarks>
     public required int TotalAlerts { get; init; }
 }
+
+/// <summary>
+/// What one source managed to read, for the screen that asks whether the
+/// monitoring is working.
+/// </summary>
+/// <remarks>
+/// Beside the collectors rather than on a screen of its own, because it
+/// answers the same question from the other side. Health says whether a source
+/// answered; this says what was in the answer, and a perfectly healthy
+/// collector can be blind to half of what the product reasons about without
+/// anything appearing to go wrong.
+/// </remarks>
+public sealed record CoverageView
+{
+    public required string InstanceId { get; init; }
+
+    /// <summary>
+    /// When this was taken.
+    /// </summary>
+    /// <remarks>
+    /// Carried rather than implied. Coverage survives a restart so the screen
+    /// is not blank for a cycle — and a stale number presented without a
+    /// timestamp is worse than a blank one, because it reads as current.
+    /// </remarks>
+    public required DateTimeOffset MeasuredAtUtc { get; init; }
+
+    public IReadOnlyList<CoveragePropertyView> Properties { get; init; } = [];
+}
+
+/// <summary>One property's coverage on one object type.</summary>
+public sealed record CoveragePropertyView
+{
+    public required string ObjectType { get; init; }
+
+    public required string Property { get; init; }
+
+    public required int Asked { get; init; }
+
+    public required int Answered { get; init; }
+
+    /// <summary>Nothing answered, although something was asked.</summary>
+    /// <remarks>
+    /// Computed here rather than in the browser so the definition lives in one
+    /// place. A screen that decided this for itself would drift from the rule
+    /// that raises the alert, and the two disagreeing is worse than either
+    /// being wrong.
+    /// </remarks>
+    public bool IsBlind => Asked > 0 && Answered == 0;
+}

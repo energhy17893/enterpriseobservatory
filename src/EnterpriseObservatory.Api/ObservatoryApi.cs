@@ -80,6 +80,8 @@ public static class ObservatoryApi
 
         api.MapGet("/collectors", (ReadModel model) => model.Collectors())
             .WithName("GetCollectors");
+        api.MapGet("/coverage", (ReadModel model) => model.Coverage())
+            .WithName("GetCollectors");
 
         api.MapGet("/entities/{id}/series", (ReadModel model, string id) => model.SeriesFor(id))
             .WithName("GetEntitySeries");

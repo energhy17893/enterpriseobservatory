@@ -40,6 +40,7 @@ public class UnpollableConnectionTests : IDisposable
     private readonly InMemoryEntityGraphStore _graphs = new();
     private readonly InMemoryAlertStateStore _alerts = new();
     private readonly InMemoryCollectorHealthStore _health = new();
+    private readonly InMemoryCoverageStore _coverage = new();
     private readonly InMemoryObservationStore _observations = new();
     private readonly InMemoryMaintenanceWindowStore _maintenance = new();
     private readonly RecordingNotifier _notifier = new();
@@ -79,13 +80,14 @@ public class UnpollableConnectionTests : IDisposable
         _graphs,
         _alerts,
         _health,
+        _coverage,
         _notifier,
         _observations,
         _maintenance,
         _clock);
 
     private ReadModel Screens() => new(
-        _graphs, _alerts, _health, _observations, Options, _clock);
+        _graphs, _alerts, _health, _coverage, _observations, Options, _clock);
 
     // --- the connection is still there ------------------------------------
 
