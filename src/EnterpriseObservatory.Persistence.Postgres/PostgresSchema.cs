@@ -553,6 +553,34 @@ internal static class PostgresSchema
         ALTER TABLE report_subscription ADD COLUMN last_modified_by  text        NULL;
         ALTER TABLE report_subscription ADD COLUMN last_modified_utc timestamptz NULL;
         """,
+
+        // --- 11: the subject in a finding's identity (K1) ---------------------
+        //
+        // A check may judge several subjects of one entity -- a DRS rule by
+        // its uuid, an HBA -- so a finding is (release, control, entity,
+        // subject). The subject is the cause the operator will fix, never the
+        // symptom; subject_label is how it is shown and never identity, so a
+        // renamed rule keeps its finding and its acceptance. Existing rows get
+        // '' and every vendor-guide finding keeps it: their identity is
+        // unchanged in value, only wider in shape.
+        //
+        // A finding whose subject leaves the evaluation is deleted with a
+        // to_verdict NULL transition; accepted_by / accepted_reason carry its
+        // acceptance there, so the row goes and the decision stays on record.
+        //
+        // An exception's subject NULL means every subject -- what every
+        // exception written before this migration meant, and still means.
+        """
+        ALTER TABLE compliance_finding    ADD COLUMN subject       text NOT NULL DEFAULT '';
+        ALTER TABLE compliance_finding    ADD COLUMN subject_label text NULL;
+        ALTER TABLE compliance_finding    DROP CONSTRAINT compliance_finding_pkey;
+        ALTER TABLE compliance_finding    ADD PRIMARY KEY (catalogue_release, control_id, entity_id, subject);
+        ALTER TABLE compliance_transition ADD COLUMN subject         text NOT NULL DEFAULT '';
+        ALTER TABLE compliance_transition ADD COLUMN subject_label   text NULL;
+        ALTER TABLE compliance_transition ADD COLUMN accepted_by     text NULL;
+        ALTER TABLE compliance_transition ADD COLUMN accepted_reason text NULL;
+        ALTER TABLE compliance_exception  ADD COLUMN subject text NULL;
+        """,
     ];
 
     public static int Current => Migrations.Length;

@@ -152,14 +152,17 @@ public sealed class MonitoringWorker(
     /// </remarks>
     private void EvaluateCompliance(IReadOnlyList<string> reportingSources)
     {
-        if (_compliance.Catalogue.Problem is not null)
+        // Nothing to judge only when no catalogue loaded; one that failed to
+        // load is skipped by the service while the others are still judged.
+        if (_compliance.Catalogues.All(c => c.Problem is not null))
         {
             return;
         }
 
         try
         {
-            var findings = _compliance.Evaluate([.. _graph.Current.Active], reportingSources);
+            var graph = _graph.Current;
+            var findings = _compliance.Evaluate([.. graph.Active], reportingSources, graph);
 
             HostLog.ComplianceEvaluated(
                 _logger, findings, _compliance.Catalogue.Name, _compliance.Catalogue.Release);

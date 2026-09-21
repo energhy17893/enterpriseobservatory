@@ -89,6 +89,18 @@ public sealed record ComplianceCatalogue
     /// </remarks>
     public string? Diagnostic { get; init; }
 
+    /// <summary>
+    /// Whether controls bind to checks by their id rather than by the setting
+    /// the vendor's parameter column names.
+    /// </summary>
+    /// <remarks>
+    /// False for a vendor guide, whose ids change between editions while the
+    /// settings do not. True for this product's own catalogue
+    /// (<c>eo-continuity</c>), whose ids are ours and never change meaning —
+    /// a control whose meaning changes gets a new id instead.
+    /// </remarks>
+    public bool BindsById { get; init; }
+
     public static ComplianceCatalogue Unavailable(string problem, string? diagnostic = null) => new()
     {
         Release = string.Empty,

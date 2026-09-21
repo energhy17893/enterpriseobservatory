@@ -63,7 +63,7 @@ public class ComplianceStoreTests : IDisposable
 
         var store = new PostgresComplianceStore(_live.Database);
         store.Evaluate(Release, T0, _ => [Finding(), Finding("vc-1:host-2", ComplianceVerdict.NotEvaluated, null)]);
-        store.Mutate(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"), f => f with
+        store.Mutate(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"), "", f => f with
         {
             Acceptance = new FindingAcceptance { By = "ertugrul", AtUtc = T0.AddHours(1), Reason = "CHG-1" },
         });
@@ -186,7 +186,7 @@ public class ComplianceStoreTests : IDisposable
         ]);
         store.Evaluate(Release, T0.AddHours(2), _ => []);
 
-        var history = store.Transitions(Release, "esxi-8.logs-remote", host);
+        var history = store.Transitions(Release, "esxi-8.logs-remote", host, "");
 
         Assert.Collection(
             history,
@@ -223,7 +223,7 @@ public class ComplianceStoreTests : IDisposable
         store.Evaluate(Release, T0 + PostgresComplianceStore.TransitionRetention + TimeSpan.FromDays(1), _ =>
             [Finding(verdict: ComplianceVerdict.Passing, observed: "udp://x:514")]);
 
-        var history = store.Transitions(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"));
+        var history = store.Transitions(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"), "");
 
         Assert.Equal(ComplianceVerdict.Passing, Assert.Single(history).To);
     }
@@ -250,7 +250,7 @@ public class ComplianceStoreTests : IDisposable
         store.Evaluate("803-20250101-01", T0, _ => [Finding(release: "803-20250101-01")]);
         store.Evaluate(Release, T0, _ => [Finding()]);
 
-        store.Mutate(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"), f => f with
+        store.Mutate(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"), "", f => f with
         {
             Acceptance = new FindingAcceptance { By = "ertugrul", AtUtc = T0 },
         });
@@ -301,7 +301,7 @@ public class ComplianceStoreTests : IDisposable
 
         Assert.Equal("second-operator", withdrawn.RemovedBy);
         Assert.Equal(T0.AddDays(1), withdrawn.RemovedAtUtc);
-        Assert.False(withdrawn.Covers("esxi-8.logs-remote", new EntityId("vc-1:host-1"), T0.AddDays(1)));
+        Assert.False(withdrawn.Covers("esxi-8.logs-remote", new EntityId("vc-1:host-1"), "", T0.AddDays(1)));
     }
 
     // --- history: filters and the row cap (architecture review 3) ----------

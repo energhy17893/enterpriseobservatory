@@ -425,6 +425,20 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public void The_compliance_service_judges_the_vendor_guide_first_and_the_continuity_catalogue_beside_it()
+    {
+        // K1: the product's own catalogue is registered, and registers no
+        // check until K2 moves the M8 rules in -- so it has no controls and
+        // the vendor guide is judged exactly as before.
+        var compliance = _host.Services.GetRequiredService<ComplianceService>();
+
+        Assert.Equal(2, compliance.Catalogues.Count);
+        Assert.Same(_host.Services.GetRequiredService<Domain.Compliance.ComplianceCatalogue>(), compliance.Catalogue);
+        Assert.Equal(ContinuityCatalogue.Release, compliance.Catalogues[1].Release);
+        Assert.Empty(compliance.Catalogues[1].Controls);
+    }
+
+    [Fact]
     public async Task An_operator_can_accept_a_failing_finding_and_it_is_attributed()
     {
         // Evaluated through the real service the host registered, over a

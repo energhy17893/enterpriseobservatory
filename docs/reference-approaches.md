@@ -640,6 +640,258 @@ kararına dokunuyor — M10.7 ADR ile başlar.
 BIOS güç profili kuralları (alıntılanabilir nitelik adı yok); vDS Health Check
 (ek MAC ve trafik üretir — ilke 5).
 
+## 10. İlkeyi yapıya gömmek — tutarlılık neden tek tek testle bulunmamalı (22 Eylül 2026)
+
+21–22 Eylül'de denetim ve testle bir dizi açık bulundu; hepsi aynı cümlenin
+çeşidiydi: **ürün, okumadığı veri hakkında bir sonuca varıyordu.** Ertuğrul'un
+sorusu: *"Referans uygulamaların mimarilerinde belirlenmiş prensipleri
+edinemiyor muyuz; bu kadar teste gerek olmadan kanıtlanmış yöntemlerle daha
+tutarlı ve hızlı ilerleyebiliriz."*
+
+Dürüst cevabın iki yarısı var. **Bilginin bir kısmı zaten elimizdeydi** — §6
+"kural sustu"yu "her şey yolunda"dan ayırmayı altı üründe belgelemişti, ve o
+ilke envanter tarafında uygulanmıştı; metrik tarafı aynı fonksiyonu boş bir
+listeyle çağırıyordu (#63). Eksik olan ilke değil, ilkenin **atlanamaz**
+olmasıydı. İkinci yarı: olgun ürünler bu ilkeleri belgede değil **yapıda**
+tutuyor — bir tip, tek bir geçiş noktası, zorunlu bir parametre, ortak bir
+sözleşme takımı. Beş araştırma kolu bunu çıkardı. Doğrulama durumu: kaynak kod
+ve birincil belge okundu; "bulunamadı" denenler arandı ve yok.
+
+### 10.1 Yokluk ve alarm yaşam döngüsü
+
+İyi yapan ürünler **iki soruyu ayrı tutuyor**: değer ne (sorun / sorun yok), ve
+bunu şu an biliyor muyuz (normal / bilinmiyor, taze / bayat, ulaşılır /
+ulaşılamaz). Bulduğumuz dört açığın dördü ikisini tek soruya katlamaktan çıktı.
+
+| Ürün | "Veri yok" nasıl "iyi"den ayrılıyor | Kaynak |
+|---|---|---|
+| Zabbix | Tetikleyici **değeri** (OK/PROBLEM) ile **durumu** (normal/unknown) ayrı eksen; unknown üç değerli mantıkla yayılır, olay türü ayrıdır | [event sources](https://www.zabbix.com/documentation/current/en/manual/config/events/sources), [expression](https://www.zabbix.com/documentation/current/en/manual/config/triggers/expression) |
+| Nagios / Icinga | UNKNOWN dördüncü durum; host DOWN ≠ UNREACHABLE; servis bildirimi tek geçiş noktasında bastırılır (*"if the host is down or unreachable, don't notify contacts about service failures"*) | [reachability](https://assets.nagios.com/downloads/nagioscore/docs/nagioscore/4/en/networkreachability.html), [notifications.c](https://raw.githubusercontent.com/NagiosEnterprises/nagioscore/master/base/notifications.c) |
+| Prometheus | Ulaşılabilirlik kendi serisi: `up`. Yokluk **açıkça** sorulur: `absent()`. Varsayılanı ise boş sonuçta alarmı çözmek — `keep_firing_for` tam bu yüzden eklendi (#11570: geçici veri kaybında *"confusing resolved messages"*) | [jobs/instances](https://prometheus.io/docs/concepts/jobs_instances/), [#11570](https://github.com/prometheus/prometheus/issues/11570) |
+| Grafana | NoData ve Error ayrı durumlar, dört seçenek; *Keep Last State* *"preventing alerts from unintentionally firing, resolving, and re-firing"*. Eksik seri **2 değerlendirmeden** sonra bayat sayılır | [nodata/error](https://grafana.com/docs/grafana/latest/alerting/fundamentals/alert-rule-evaluation/nodata-and-error-states/), [stale instances](https://grafana.com/docs/grafana/latest/alerting/fundamentals/alert-rule-evaluation/stale-alert-instances/) |
+| Datadog | Eksik veri seçenekleri; sayım dışı sorgularda varsayılan "son bilinen durum" | [configuration](https://docs.datadoghq.com/monitors/configuration/) |
+
+Yeniden başlatma: Prometheus `ALERTS_FOR_STATE` ile alarmın başlangıç zamanını
+saklar ve **ilk değerlendirmeden önce** geri yükler
+(`--rules.alert.for-outage-tolerance` 1 sa)
+([PR 4061](https://github.com/prometheus/prometheus/pull/4061)); Nagios
+`retain_state_information`. Grafana'nın periyodik kaydı için belge açıkça
+*"alerts … might fire again"* diyor.
+
+**Benimsenen — yapıya gömülecek değişmezler:**
+
+1. **Değerlendirme üç değerlidir:** doğru / yanlış / bilinmiyor. Durum
+   makinesinde bilinmiyor → çözüldü kenarı **yoktur**; yalnızca taze veriyle
+   desteklenen "yanlış" bir alarmı çözer. (#63'ü ifade edilemez kılar.)
+2. **Toplama sonucu kaynak ve tur başına kaydedilen bir olgudur.** Kurallar
+   boş olabilecek bir küme değil, sonuç tipi alır. Ayrıştırma hatası boş küme
+   değildir. (T0.1.)
+3. **Çözülme histerezislidir ve değerlendirme sayısıyla ölçülür**; sayı kural
+   tipinin zorunlu parametresidir.
+4. **Yokluk kendi açık kuralıdır**, başka bir kuralın yan etkisi değil.
+5. **Ulaşamadığını yargılama**: tek bir bildirim geçiş noktası kaynağın
+   ulaşılabilirliğine bakar.
+6. **Alarm kimliği ve başlangıç zamanı kalıcıdır**; yeniden başlatmadan sonra
+   ilk değerlendirmeden **önce** geri yüklenir; zaten bildirilmiş bir alarm
+   yeniden bildirilmez.
+7. **Her durum kanıt zamanını ve sebebini taşır**; görünüm tipi tazelik
+   olmadan durum çizemez.
+8. **Kaybolan envanter aynı sayılı-tur kuralından geçer**, ve yalnızca
+   numaralandırmanın kendisi başarılıysa.
+
+**Ayrıştıkları yer** (bilerek seçeceğiz): kaynak sustuğunda varsayılan —
+Prometheus çözer, Datadog son durumu gösterir, Zabbix dondurur, Grafana ayrı bir
+NoData kaydı açar, Nagios kontrolü zorlar. Bağımlılık bastırması: Nagios yerleşik
+yapar, Google SRE karmaşık hiyerarşiler için *"limited success"* der — bizim
+toplayıcı → kaynak → varlık zincirimiz sabit olduğu için istisna.
+
+**Reddedilen:** boş sonuçta çözme varsayılanı; süre dolunca çözülmüş sayma
+(değerlendiricinin çökmesi "düzeldi" okunur); eksik veriyi sıfır ya da OK saymak;
+zamanlayıcıyla otomatik çözme; Nagios'un 60 dakikalık saklama aralığı.
+
+**Bulunamadı:** Aria'nın Collection Status değerleri ve sessizliğin aktif
+alarmlara etkisi; Datadog'un no-data penceresi ayrıntıları; tek bir adlandırılmış
+"bilinmiyor birinci sınıftır" ilkesi.
+
+### 10.2 Toplayıcı çatısı — atlanacak bir şey bırakmamak
+
+Olgun çatılarda eklenti yazarının elinde **atlayabileceği bir şey yok**:
+
+| Çatı | Yazarın yazdığı | Çatının yaptığı | Kaynak |
+|---|---|---|---|
+| OpenTelemetry Collector | yalnızca scrape fonksiyonu | zamanlayıcı denetleyicide; her scraper oluşturulduktan sonra öz-telemetri sarmalayıcısıyla sarılır; kısmi başarı bir **tip** (`PartialScrapeError{Failed int}`) | [controller.go](https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/main/scraper/scraperhelper/controller.go), [partialscrapeerror.go](https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/main/scraper/scrapererror/partialscrapeerror.go) |
+| Telegraf | yalnızca `Gather(Accumulator)` | zamanlayıcı, jitter, offset ajanda; aynı girdinin iki okuması **asla** eşzamanlı değil; yavaş girdi loglanır, sonraki tur atlanır ve **sayılır**; `internal` girdisi toplama süresi, hata ve düşen metriği bedavaya verir | [input.go](https://raw.githubusercontent.com/influxdata/telegraf/master/input.go), [agent.go](https://raw.githubusercontent.com/influxdata/telegraf/master/agent/agent.go), [internal](https://raw.githubusercontent.com/influxdata/telegraf/master/plugins/inputs/internal/README.md) |
+| Prometheus | — | kazıyıcının kendisi hedef başına `up`, `scrape_duration_seconds`, `scrape_samples_scraped` yazar | [jobs/instances](https://prometheus.io/docs/concepts/jobs_instances/) |
+| Datadog Agent | yalnızca `check()` | çalıştırıcı kontrol başına istatistik tutar (çalışma, hata, son 32 süre); kontrol bunlara **dokunamaz** | [check stats](https://pkg.go.dev/github.com/DataDog/datadog-agent/pkg/collector/check/stats) |
+
+Depo kapalıyken: OTel'de gönderim kuyruğu (1000) dolunca düşer, `storage` ile
+kalıcı olur ([exporterhelper](https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/main/exporter/exporterhelper/README.md));
+Telegraf çıktı başına tampon, dolunca en eskisi ezilir ve `metrics_dropped`
+sayılır; Datadog bellek kuyruğu + v7.27'den beri disk doluluğu %80 altındayken
+disk taşması ([network](https://docs.datadoghq.com/agent/configuration/network/));
+Zabbix proxy `ProxyOfflineBuffer` 1 saat, hybrid modda bellek → disk
+([proxy](https://www.zabbix.com/documentation/current/en/manual/appendix/config/zabbix_proxy)).
+
+Sözleşme takımları: OTel `receivertest.CheckConsumeContract` dört senaryoyu
+rastgele hatalarla koşturur ve **üretilen = kabul edilen + düşürülen** dengesini
+doğrular ([contract_checker.go](https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/main/receiver/receivertest/contract_checker.go));
+mdatagen her bileşene yaşam döngüsü testi üretir; Aria SDK'sında `mp-test`
+([mp-test](https://vmware.github.io/vmware-vcf-operations-integration-sdk/sdk/latest/references/mp-test/));
+Kubernetes CSI `sanity.Test`.
+
+**Benimsenen — hedef mimari** (bizdeki `SourceRunner` doğru kurulmuş bir geçiş
+noktasıdır ve denetimde sağlam çıkan tek katmandır; açıkların hepsi ondan
+**geçmeyen** yollardaydı):
+
+1. Toplayıcı saf bir fonksiyon olur: (oturum, kapsam, iptal) → sonuç. Veritabanı
+   tutamacı, zamanlayıcısı, kesici kurma yolu yoktur.
+2. Toplayıcıya verilen **tek** taşıma tutamacı zaten zaman aşımı, yeniden deneme
+   ve kesiciyle korunmuştur; olay okuyucusu da aynısını alır. (T0.3.)
+3. Kesici durumu ve öğrenilen batch boyutu çalıştırıcı belleğindedir; depoya
+   yazım eşzamansız ve "yapabilirsen"dir; kesici sıcak yolda depoyu okumaz.
+   (T0.2, T1.2.)
+4. Sonuç bir toplam tiptir: `Ok` / `Partial` / `Failed`. (T0.1.)
+5. Temizlik çalıştırıcının kapsamındadır: toplayıcı sunucu tarafı nesnelerini
+   **kaydeder**, çalıştırıcı taze ve sınırlı bir token'la yok eder. (T0.5.)
+6. Çalıştırıcı kaynak başına `up` karşılığı, süre, örnek, hatalı, atlanan tur,
+   son başarı ve tazeliği **kendisi** üretir. (D paketi.)
+7. Depo portu sınırlı bir kuyruğun arkasındadır; düşen ve kuyruk boyu sayılır;
+   kuyruk boyutla **ve yaşla** sınırlanır.
+8. Sözleşme takımı **ilk toplayıcıdan itibaren zorunludur** (OTel yalnızca
+   "stable" seviyesinde zorunlu tutuyor — o kısmı almıyoruz).
+
+**Asgari sözleşme vakaları:** başlat/kapat (başlatmadan kapatma dahil); tur
+ortasında iptal sunucu tarafında nesne sızdırmaz; depo hatasında kayıp ve çift
+yok; bozuk yanıt asla boş `Ok` değil; yavaş kaynak atlanır ve sayılır; her
+sonuçtan sonra öz-ölçüler mevcut; uzun koşuda durum ve bellek sabit. Bizden
+eklenen iki vaka: geçersiz tek özellik yolu (§10.3), süresi dolan oturumu iki
+çağrının birlikte fark etmesi (#53).
+
+**Reddedilen:** `enqueue_failed` alarmı olmadan dolunca düşürme; testlerin
+isteğe bağlı olması; yaşa bağlı olmayan çıktı tamponu.
+
+**Bulunamadı:** OTel denetleyicisinin ayar alan adları ve varsayılanları;
+Datadog öz-ölçü adları; Telegraf ve Datadog'da yeni eklentinin geçmesi gereken
+ortak bir test takımı; Aria adaptör öz-izleme nesnesinin ölçüleri.
+
+### 10.3 vSphere toplayıcılarının kanıtlanmış tasarımları
+
+Dört açık kaynak toplayıcının **güncel kaynak kodu** okundu. Bir düzeltme:
+govmomi `performance.Manager` `maxQueryMetrics`'e göre **parçalamıyor**;
+parçalama Telegraf ve OTel'de.
+
+| Sorun | Kanıtlanmış çözüm | Kaynak |
+|---|---|---|
+| Çiftleme, geri doldurma, saat farkı | (varlık, sayaç) başına **yüksek su işareti**; `StartTime` = işaret (**dışlayıcı**), `EndTime` = **sunucunun** şimdisi (`CurrentTime`, kapsayıcı) | Telegraf [endpoint.go](https://github.com/influxdata/telegraf/blob/master/plugins/inputs/vsphere/endpoint.go), [QuerySpec](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vim.PerformanceManager.QuerySpec.html) |
+| Sorgu limiti | bağlanırken `config.vpxd.stats.maxQueryMetrics` okunur; `-1` sınırsız → kendi tavan; okunamazsa 256; küme sorguları ≤10 metrik (alt sorgular limite sayılıyor) | Telegraf [client.go](https://github.com/influxdata/telegraf/blob/master/plugins/inputs/vsphere/client.go) |
+| Limit hatası | istemci metni aynen: *"Request processing is restricted by administrator"* — **"the" yok**; vpxd logu: *"The query size of ### metrics exceeded the vpxd.stats.maxQueryMetrics limit…"* | [KB 301449](https://knowledge.broadcom.com/external/article?articleNumber=301449) |
+| 300 sn'lik sayaçlar | ayrı 300 sn'lik takvim; bir aralık geçmediyse tur atlanır; 3 aralık geriye bakılır (README 6.7/7.0'da 30 dk'yı aşan gecikme bildiriyor) | Telegraf [README](https://github.com/influxdata/telegraf/blob/master/plugins/inputs/vsphere/README.md) |
+| Silinmiş varlık | `ManagedObjectNotFound` → nesneyi batch'ten çıkar, batch'i yeniden dene; başka fault → o batch için varlık başına tek sorgu; kısmi olarak raporla | OTel [client.go](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/vcenterreceiver/client.go) |
+| Oturum | kullanmadan önce `CurrentTime` ile yokla, **tek kilit** altında bir kez yeniden gir, kapanışta `sync.Once` ile `Logout`; vCenter `maxSessionCount` 500, 8.0+'da ~%70 ve ~%90 doygunlukta zaman aşımları kısalıyor | Telegraf client.go, [KB 336100](https://knowledge.broadcom.com/external/article/336100/vcenter-http-sessions-expiring-sooner-th.html) |
+| Çok biçimli özellik | `configurationEx` **bütün** çekilir, istemcide `ClusterConfigInfoEx`'e indirilir; `InvalidProperty` çağrının tamamını düşürür | govmomi [cluster_compute_resource.go](https://github.com/vmware/govmomi/blob/main/object/cluster_compute_resource.go), [PropertyCollector](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vmodl.query.PropertyCollector.html) |
+| Eşzamanlılık | `collect_concurrency` varsayılan 1; README kuralı **VM / 1500, asla 8'den fazla**; çağrı başına 60 sn | Telegraf README |
+| Envanter | dördü de belirli aralıkla baştan okuyor (Telegraf 300 sn); **hiçbiri `WaitForUpdatesEx` kullanmıyor** | Telegraf endpoint.go, OTel client.go |
+
+Bizim 21–22 Eylül ölçümlerimizle örtüşenler: `configurationEx` (#58), oturum
+(#53 + T0.5), varlık yalıtımı (T1.4). **Denetimdeki bir şüphe yanlış çıktı:**
+limit hatası metnindeki eşleşmemiz doğruydu.
+
+**Reddedilen:** Telegraf'ın `MaxSample=10` sabiti (200 sn'den uzun boşluğu
+doldurmuyor; host bir saat tutuyor) ve işaretin yalnızca bellekte tutulması
+(yeniden başlatmada kaybolur — bizde işaret deponun o serideki en yeni zaman
+damgasıdır); OTel'in `MaxSample=1`'i; vmware_exporter'ın 5000'lik spec boyutu,
+sayfalamasız özellik okuması ve örnek değerlerini toplaması; her kazımada tam
+envanter.
+
+**Hiçbirinin çözmediği — ölçüm gerçekten gerekli:** `maxQueryMetrics`'in tam
+olarak neyi saydığı (Telegraf'ın kendi kod yorumu anlamadığını söylüyor) ve
+fault tip adı; zaman aralığı verildiğinde `MaxSample`'ın hangi uçtan kestiği ve
+tek sorguda güvenli örnek sayısı; 2000+ VM'de işçi sayısı (yalnızca başparmak
+kuralı var); `WaitForUpdatesEx` ölçekte.
+
+**Sonuç:** ADR-0005'in "ikinci dilim" `WaitForUpdatesEx` sözü, yıllardır büyük
+ortamlarda çalışan dört toplayıcının hiçbirinin ihtiyaç duymadığı bir şey.
+Yalnızca ölçüm gerektirirse yapılır.
+
+### 10.4 Sağlık eşikleri — hangi sayının kaynağı var
+
+**Kaynak kaybı:** Iwan Rahabok'un "VMware Operations Guide"ı erişilemiyor
+(alan adı çözülmüyor, GitHub aynası yok; arama sonuçları Broadcom'un kaldırılmasını
+istediğini söylüyor). KPI renk bantları **bulunamadı.**
+
+| KPI | Resmî kaynak | Satıcı varsayılanı |
+|---|---|---|
+| CPU ready | *"should remain under 5%"* ([KB 304594](https://knowledge.broadcom.com/external/article/304594/troubleshooting-esxesxi-virtual-machine.html)); tek başına gösterge **değil** ([KB 387750](https://knowledge.broadcom.com/external/article/387750/understanding-the-cpu-ready-values-in-th.html)) | Veeam ONE %10 uyarı / %20 hata, 15 dk ortalama |
+| Host CPU kullanımı | %80 "makul tavan", %90 uyarı ([Performance Best Practices 8.0 U3](https://www.vmware.com/docs/vsphere-esxi-vcenter-server-80U3-performance-best-practices)) | Veeam %75 / %95, 15 dk |
+| Depolama gecikmesi | *"should not exceed 10 ms for sustained periods"* ([KB 344099](https://knowledge.broadcom.com/external/article/344099/using-esxtop-to-identify-storage-perform.html)); PBP: depolamaya bağlı | Veeam VM 50 / 75 ms; datastore 100 / 250 ms |
+| Balon / swap | sıfırdan büyük swap ve sıkıştırma *"more significant memory pressure"*; *"some ballooning is quite normal"* (PBP) | Veeam balon %10 / %50; swap 64 / 128 MB |
+| Komut iptali, bus reset | — | Veeam >2 / >4, 15 dk |
+| Datastore boş alanı | — | Veeam %10 / %5; Zabbix %20 / %10; vCheck %15 |
+| Snapshot | ≤72 saat, zincirde 2–3, en çok 32 ([KB 318825](https://knowledge.broadcom.com/external/article/318825/best-practices-for-using-vmware-snapshot.html)) | Veeam yaş ≥48 sa; sayı ≥3 / ≥5 |
+
+Veeam'in tamamı: [vSphere alarms](https://helpcenter.veeam.com/docs/one/monitor/vsphere_alarms_events.html?ver=120).
+vCheck varsayılanları kaynak kodda. Zabbix'in VMware şablonları **performans
+tetikleyicisi göndermiyor**.
+
+**Her yerde tekrarlanan ama birincil kaynağı olmayan — benimsenmeyecek:**
+KAVG > 2 ms ve DAVG/GAVG > 20–25 ms ([2010 tarihli bir blog tablosu](https://www.yellow-bricks.com/2010/01/05/esxtop-valuesthresholds/));
+ready için ≤5 / 5–10 / ≥10 bantları (yalnızca bloglar); Aria'nın %2,5 ready,
+%1 bellek çekişmesi, 10 ms disk eşikleri (bir uygulayıcı blogu ürünün içinden
+okumuş; Broadcom belgesinde yok); Dynatrace'in sayıları (API sayfasındaki
+**örnek** değerler); Round Robin IOPS=1 (KB 323117 ve PBP s.42 dizi üreticisine
+yönlendiriyor); "en yeni donanım sürümü" zorunluluğu.
+
+**Tekrar eden ilkeler — benimsenen:** çekişme belirleyicidir, kullanım değil;
+ready tek başına yargılanmaz; balon öncü, swap belirti; sürdürme pencereleri;
+belirtiye alarm, sebebe pano (Broadcom 8.18'de hazır alarmların çoğunu "DEP"
+önekiyle kullanımdan kaldırdı —
+[KB 375068](https://knowledge.broadcom.com/external/article/375068/notification-many-outofthebox-alerts-hav.html)).
+**Henüz uygulamadığımız iki ilke:** 5 dakikalık ortalama değil **en kötü 20
+saniyelik örnek** (Aria 15 örnekten en yükseğini tutuyor —
+[KB 444403](https://knowledge.broadcom.com/external/article/444403/understanding-peak-or-worst-performance.html);
+T0.4'ten beri veri ve kovalardaki `max` hazır), ve **dört hizmette aşım sayısı**
+(VM başına 0–4, kümeye "hizmet alan VM yüzdesi" olarak toplanır).
+
+**Ürün kararı olarak öneri:** her eşik ekranda **kaynağıyla** gösterilir —
+"Broadcom KB 344099", "Veeam ONE varsayılanı" ya da "bu bizim seçimimiz".
+Sektördeki eşiklerin çoğu söylenti; bunu söyleyen ürün yok.
+
+### 10.5 Best-practice kontrol kataloğu — önce aktar, sonra hesapla
+
+vCheck (eklenti kaynak kodu), RVTools vHealth (ikincil kaynaktan; resmî PDF'e
+ulaşılamadı), DISA STIG, Broadcom HA/DRS/snapshot belgeleri ve vim25 API
+referansı üzerinden **en az iki bağımsız katalogun uzlaştığı ~49 kontrol**
+çıkarıldı. Yollar API referansında görüldüyse *doğrulandı*, değilse
+*doğrulanmadı* diye işaretli; tam tablo araştırma çıktısında, iş paketine
+girerken "önce ölç" kapısından geçer.
+
+**Önce aktar** — vCenter'ın zaten hesapladığı, salt-okunur rolün okuyabildiği
+hükümler: `configIssue`, `configStatus`, `overallStatus`, `triggeredAlarmState`
+(`System.Read`); `runtime.healthSystemRuntime` donanım sensörleri;
+`runtime.consolidationNeeded`; `runtime.connectionState`;
+`ProfileComplianceManager.QueryComplianceStatus` (`System.View`, *"a new
+ComplianceCheck will not be triggered"*); `Datastore.summary.maintenanceMode`.
+Kaynaklar: [ManagedEntity](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vim.ManagedEntity.html),
+[HealthSystemRuntime](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vim.host.HealthStatusSystem.Runtime.html),
+[ComplianceManager](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vim.profile.ComplianceManager.html).
+
+**Salt-okunur rolün okuyamadıkları:** vLCM uyumluluğu
+(`VcIntegrity.lifecycleSoftwareSpecification.Read` ister); appliance sağlık,
+yedek ve güncelleme REST uçları (bir topluluk başlığına göre fiilen yönetici —
+API referansından doğrulanmadı). **M8.9 (VCSA yedek durumu) bu yüzden yeniden
+değerlendirilmeli.**
+
+**Reddedilen:** vCheck'in rapor ve geçici olay eklentileri (pivot tablolar, VI
+Events, DRS Migrations, oluşturulan/silinen VM'ler); thin/thick disk biçimi,
+SIOC kapalı, her VM'e PVSCSI — çoğu estate'te ateşler, birincil kaynağı yok;
+yaş eşiği olmadan "aktif snapshot var"; zombie VMDK (vCheck kendi sürümünü
+`.disabled` gönderiyor); internetsiz estate'te kalıcı kırmızı olan Skyline
+çevrimiçi sağlık bağlantısı.
+
+**Bulunamadı:** VMware Health Analyzer'ın kamuya açık kontrol listesi; Skyline
+Health'in test listesi ve vSAN olmayan kümelerde API'den okunup okunamadığı;
+RVTools eşik varsayılanları; CIS toplam kontrol sayısı ve SCG'ye göre farkı;
+Runecast.
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:

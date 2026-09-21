@@ -805,6 +805,12 @@ public sealed record ComplianceReportFindingRow
 
     public required string EntityName { get; init; }
 
+    /// <summary>What on the entity the finding is about; empty for the entity itself.</summary>
+    public string Subject { get; init; } = string.Empty;
+
+    /// <summary>How the subject is shown; display only.</summary>
+    public string? SubjectLabel { get; init; }
+
     public required FindingState State { get; init; }
 
     /// <summary>Why nothing was concluded; set only when <see cref="State"/> is NotEvaluated.</summary>
@@ -856,6 +862,18 @@ public sealed record ComplianceReportTransitionRow
     /// where a name is shown.
     /// </summary>
     public required string EntityId { get; init; }
+
+    /// <summary>The finding's subject; empty for one about the entity itself.</summary>
+    public string Subject { get; init; } = string.Empty;
+
+    /// <summary>How the subject was shown at the time; display only.</summary>
+    public string? SubjectLabel { get; init; }
+
+    /// <summary>Who had accepted the finding; set only when it left the evaluation at this change.</summary>
+    public string? AcceptedBy { get; init; }
+
+    /// <summary>Why it had been accepted; set with <see cref="AcceptedBy"/>.</summary>
+    public string? AcceptedReason { get; init; }
 
     /// <summary>Null when the finding was new at this change.</summary>
     public ComplianceVerdict? From { get; init; }
