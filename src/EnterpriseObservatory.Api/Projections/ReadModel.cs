@@ -428,7 +428,7 @@ public sealed class ReadModel(
         /// the day it ships -- it is a rule id like any other, not a type
         /// this file knows about.
         /// </summary>
-        public const string NPlusOne = "n-plus-one";
+        public const string NPlusOne = "cluster-n-plus-one";
     }
 
     /// <summary>
@@ -656,6 +656,7 @@ public sealed class ReadModel(
             Alerts = entityAlerts,
             TimeToFull = entity.Kind == EntityKind.Datastore ? TimeToFull(entityId) : null,
             HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity, entityAlerts) : null,
+            ClusterFailover = entity.Kind == EntityKind.Cluster ? ClusterFailover(entity, graph) : null,
         };
     }
 
@@ -756,6 +757,100 @@ public sealed class ReadModel(
                 Summary = summary,
             },
             _ => throw new InvalidOperationException("An estimate is a forecast or a refusal."),
+        };
+    }
+
+    /// <summary>
+    /// The same N+1 verdict the rule reaches, computed on request from the
+    /// series store's latest samples and history rather than remembered from
+    /// the last cycle -- the same split <see cref="TimeToFull(EntityId)"/>
+    /// makes for a datastore. Null when this cluster has fewer than two live
+    /// hosts, the case <see cref="ClusterNPlusOne.HostsByLiveCluster"/> leaves
+    /// out entirely.
+    /// </summary>
+    private ClusterFailoverView? ClusterFailover(Entity cluster, EntityGraph graph)
+    {
+        var now = _clock.UtcNow;
+        var retention = _options.Retention;
+        var policy = _options.ClusterNPlusOne;
+
+        var state = ClusterNPlusOne
+            .CurrentReadings(_observations, graph, now, policy, retention)
+            .SingleOrDefault(s => s.Cluster == cluster.Id);
+
+        if (state is null)
+        {
+            return null;
+        }
+
+        var available = ClusterNPlusOne.AvailableAfterFailoverHosts(state.HostCount, policy);
+
+        return new ClusterFailoverView
+        {
+            HostCount = state.HostCount,
+            Cpu = ClusterFailoverResource(
+                state, ClusterCapacityResource.Cpu, state.CpuDemandHosts, policy.CpuUsageCounter,
+                available, now, policy, retention),
+            Memory = ClusterFailoverResource(
+                state, ClusterCapacityResource.Memory, state.MemoryDemandHosts, policy.MemoryUsageCounter,
+                available, now, policy, retention),
+        };
+    }
+
+    private ClusterFailoverResourceView ClusterFailoverResource(
+        ClusterFailoverState state,
+        ClusterCapacityResource resource,
+        double? demandHosts,
+        string counter,
+        double availableAfterFailoverHosts,
+        DateTimeOffset now,
+        ClusterNPlusOnePolicy policy,
+        SeriesRetentionPolicy retention)
+    {
+        if (demandHosts is not { } demand)
+        {
+            return new ClusterFailoverResourceView { AvailableAfterFailoverHosts = availableAfterFailoverHosts };
+        }
+
+        var estimate = ClusterNPlusOne.ReadDate(
+            _observations, state.Cluster, state.Hosts, counter, availableAfterFailoverHosts,
+            resource, now, policy, retention);
+
+        var summary = ClusterNPlusOne.Explain(estimate, resource);
+        summary = char.ToUpperInvariant(summary[0]) + summary[1..] + (summary.EndsWith('.') ? "" : ".");
+
+        var date = estimate switch
+        {
+            TimeToFullResult.Forecast f => new TimeToFullView
+            {
+                IsForecast = true,
+                FullAtUtc = f.FullAtUtc,
+                Days = f.Days,
+                GrowthBytesPerDay = f.SlopePerDay,
+                WindowFromUtc = f.Window.FromUtc,
+                WindowToUtc = f.Window.ToUtc,
+                PointsUsed = f.PointsUsed,
+                Summary = summary,
+            },
+            TimeToFullResult.Refusal r => new TimeToFullView
+            {
+                IsForecast = false,
+                GrowthBytesPerDay = r.SlopePerDay,
+                WindowFromUtc = r.Window?.FromUtc,
+                WindowToUtc = r.Window?.ToUtc,
+                PointsUsed = r.PointsUsed,
+                Reason = r.Reason.ToString(),
+                Summary = summary,
+            },
+            _ => throw new InvalidOperationException("An estimate is a forecast or a refusal."),
+        };
+
+        return new ClusterFailoverResourceView
+        {
+            HoldsNow = demand <= availableAfterFailoverHosts + 1e-9,
+            DemandHosts = demand,
+            AvailableAfterFailoverHosts = availableAfterFailoverHosts,
+            Date = date,
         };
     }
 
