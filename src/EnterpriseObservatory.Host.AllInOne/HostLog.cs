@@ -145,7 +145,19 @@ internal static partial class HostLog
         Level = LogLevel.Warning,
         Message = "Events from {Source} were not recorded: {Detail}. The next cycle asks for the " +
                   "same window again.")]
-    public static partial void EventsNotRead(ILogger logger, string source, string detail);
+    private static partial void EventsNotReadCore(ILogger logger, string source, string detail);
+
+    /// <summary>
+    /// <see cref="EventsNotReadCore"/>, with the fault text vCenter wrote made
+    /// unable to break the line; see <see cref="LogText"/>.
+    /// </summary>
+    public static void EventsNotRead(ILogger logger, string source, string detail)
+    {
+        if (logger.IsEnabled(LogLevel.Warning))
+        {
+            EventsNotReadCore(logger, LogText.Escape(source), LogText.Escape(detail));
+        }
+    }
 
     [LoggerMessage(
         EventId = 1019,
@@ -157,13 +169,35 @@ internal static partial class HostLog
     [LoggerMessage(
         EventId = 1020,
         Message = "[{Kind}] {Severity} {Title}: {Description}")]
-    public static partial void AlertNotification(
+    private static partial void AlertNotificationCore(
         ILogger logger,
         LogLevel level,
         Domain.Alerts.AlertNotificationKind kind,
         Domain.Alerts.AlertSeverity severity,
         string title,
         string description);
+
+    /// <summary>
+    /// <see cref="AlertNotificationCore"/>, with the title and description
+    /// escaped: both embed VM names, event messages and user names that vCenter
+    /// controls. Only the log line is escaped, never the stored alert.
+    /// </summary>
+    public static void AlertNotification(
+        ILogger logger,
+        LogLevel level,
+        Domain.Alerts.AlertNotificationKind kind,
+        Domain.Alerts.AlertSeverity severity,
+        string title,
+        string description)
+    {
+        // Escaped only once the line is known to be written.
+        if (logger.IsEnabled(level))
+        {
+            var safeTitle = LogText.Escape(title);
+            var safeDescription = LogText.Escape(description);
+            AlertNotificationCore(logger, level, kind, severity, safeTitle, safeDescription);
+        }
+    }
 
     /// <summary>A connection exists but is not being read, and why.</summary>
     /// <remarks>
