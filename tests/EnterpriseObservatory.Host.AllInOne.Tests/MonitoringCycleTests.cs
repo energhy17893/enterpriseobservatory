@@ -1195,6 +1195,45 @@ public class MonitoringCycleTests : IDisposable
         Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
     }
 
+    [Fact]
+    public async Task The_coverage_rule_is_reached_by_the_inventory_cycle()
+    {
+        // The rule that reports on the product rather than the estate, and
+        // the one whose absence is hardest to notice: every other rule is
+        // entitled to be silent, so dropping this call site leaves an estate
+        // that cannot be read looking exactly like an estate with nothing
+        // wrong. Its own unit tests would stay green throughout.
+        var cycle = Cycle();
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow) with
+            {
+                Coverage =
+                [
+                    new PropertyCoverage
+                    {
+                        ObjectType = "HostSystem",
+                        Property = "config.option",
+                        Asked = 10,
+                        Answered = 0,
+                    },
+                ],
+            },
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+
+        var result = await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Contains(
+            result.Visible,
+            a => a.Title == "A property this product reasons about could not be read");
+
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
+
     /// <summary>A host that answered about its log target, and said nothing.</summary>
     private Entity HostWithoutSyslog() => new()
     {

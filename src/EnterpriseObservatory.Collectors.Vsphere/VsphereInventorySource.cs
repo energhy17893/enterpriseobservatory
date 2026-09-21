@@ -68,6 +68,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             Relationships = relationships,
             Alerts = alerts,
             Failures = [.. payload.Failures.Select(ToFailure)],
+            Coverage = payload.Coverage,
         };
     }
 

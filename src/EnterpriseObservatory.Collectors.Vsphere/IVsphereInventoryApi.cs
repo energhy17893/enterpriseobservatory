@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Collection;
 namespace EnterpriseObservatory.Collectors.Vsphere;
 
 /// <summary>
@@ -36,6 +37,9 @@ public sealed record VsphereInventoryPayload
 
     /// <summary>Alarms vCenter itself currently has raised.</summary>
     public IReadOnlyList<VsphereTriggeredAlarm> TriggeredAlarms { get; init; } = [];
+
+    /// <summary>How much of what was asked for actually came back.</summary>
+    public IReadOnlyList<PropertyCoverage> Coverage { get; init; } = [];
 
     /// <summary>Parts of the inventory that could not be read.</summary>
     public IReadOnlyList<VsphereReadFailure> Failures { get; init; } = [];
