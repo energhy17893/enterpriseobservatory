@@ -71,7 +71,7 @@ public class ReportingStoreTests : IDisposable
     }
 
     [SkippableFact]
-    public void An_empty_password_on_a_save_keeps_the_stored_one()
+    public void An_empty_password_on_a_save_keeps_the_stored_one_for_the_same_relay()
     {
         RequireDatabase();
 
@@ -81,25 +81,75 @@ public class ReportingStoreTests : IDisposable
         store.Save(new SmtpSettings
         {
             Host = "smtp.example.com",
+            Port = 587,
+            TlsMode = SmtpTlsMode.StartTls,
             FromAddress = "observatory@example.com",
+            Username = "observatory",
             Password = Secret.From("hunter2"),
         });
 
         // The edit form cannot show the stored password back, so saving it
         // unchanged arrives here with an empty one -- taking that at face
-        // value would silently break scheduled reports.
+        // value would silently break scheduled reports. Every field that
+        // decides who receives the password (host, port, username, TLS
+        // mode) is unchanged here, so the reuse is safe.
         store.Save(new SmtpSettings
         {
-            Host = "smtp2.example.com",
-            FromAddress = "observatory@example.com",
+            Host = "smtp.example.com",
+            Port = 587,
+            TlsMode = SmtpTlsMode.StartTls,
+            FromAddress = "observatory-team@example.com",
+            Username = "observatory",
         });
 
         _live.Restart();
 
         var recovered = new PostgresSmtpSettingsStore(_live.Database, protector).Current;
 
-        Assert.Equal("smtp2.example.com", recovered.Host);
+        Assert.Equal("observatory-team@example.com", recovered.FromAddress);
         Assert.Equal(Secret.From("hunter2"), recovered.Password);
+    }
+
+    [SkippableFact]
+    public void An_empty_password_on_a_save_to_a_different_host_does_not_carry_the_stored_password_over()
+    {
+        RequireDatabase();
+
+        // The store-level half of the fix for a stored SMTP password being
+        // reused against a different relay: EmailApi rejects this case with
+        // a 400 before Save is ever called, but the store applies the same
+        // guard so a caller that reaches it directly cannot walk away with
+        // the credential by pointing Host somewhere else and leaving the
+        // password blank.
+        var protector = new ReversingProtector();
+        var store = new PostgresSmtpSettingsStore(_live.Database, protector);
+
+        store.Save(new SmtpSettings
+        {
+            Host = "smtp.example.com",
+            Port = 587,
+            TlsMode = SmtpTlsMode.StartTls,
+            FromAddress = "observatory@example.com",
+            Username = "observatory",
+            Password = Secret.From("hunter2"),
+        });
+
+        store.Save(new SmtpSettings
+        {
+            Host = "attacker.example.com",
+            Port = 587,
+            TlsMode = SmtpTlsMode.None,
+            FromAddress = "observatory@example.com",
+            Username = "observatory",
+            AllowUnencrypted = true,
+        });
+
+        _live.Restart();
+
+        var recovered = new PostgresSmtpSettingsStore(_live.Database, protector).Current;
+
+        Assert.Equal("attacker.example.com", recovered.Host);
+        Assert.True(recovered.Password.IsEmpty);
     }
 
     [SkippableFact]
