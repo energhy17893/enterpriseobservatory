@@ -135,7 +135,22 @@ public sealed class ReportDispatchService(
             Attachments = content.Attachments,
         };
 
-        var result = await _sender.SendAsync(settings, mail, cancellationToken).ConfigureAwait(false);
+        MailSendResult result;
+
+        try
+        {
+            result = await _sender.SendAsync(settings, mail, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Belt and suspenders alongside MailKitMailSender's own
+            // catch-all: IMailSender's contract says expected failures come
+            // back as a MailSendResult, never thrown, but this is the one
+            // place that failure would otherwise slip past MarkDispatched
+            // (already recorded above) with no MarkFailed to follow it --
+            // the subscription would read as sent with no error anywhere.
+            return $"The message could not be sent: {ex.Message}";
+        }
 
         return result.Succeeded ? null : result.Detail;
     }

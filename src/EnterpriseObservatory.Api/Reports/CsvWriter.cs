@@ -10,10 +10,14 @@ namespace EnterpriseObservatory.Api.Reports;
 /// <para>
 /// A report is a table an operator opens in Excel, not a document this
 /// product renders itself — see the roadmap's decision against a PDF library.
-/// So the whole job is: quote correctly, guard against a cell vCenter or an
-/// attacker supplied being read as a spreadsheet formula, and hand back UTF-8
-/// with the byte-order mark Excel needs to show a Turkish host name without
-/// mangling it.
+/// So the whole job is: quote every field unconditionally, guard against a
+/// cell vCenter or an attacker supplied being read as a spreadsheet formula,
+/// and hand back UTF-8 with the byte-order mark Excel needs to show a
+/// Turkish host name without mangling it. Every field is quoted — not only
+/// ones containing a comma, quote mark or newline — because a
+/// semicolon-locale Excel (Turkish, among others) splits an unquoted cell on
+/// ';' when it opens the file directly, which can turn the tail of a cell
+/// into a leading '=' the formula guard never sees.
 /// </para>
 /// <para>
 /// Stateless and generic on purpose. A report builds its own column list and
@@ -35,8 +39,6 @@ public static class CsvWriter
     /// leading <c>=</c>.
     /// </remarks>
     private static readonly char[] FormulaTriggers = ['=', '+', '-', '@', '\t', '\r'];
-
-    private static readonly char[] QuotingTriggers = [',', '"', '\n', '\r'];
 
     /// <summary>Writes a header row followed by every data row, each terminated by CRLF.</summary>
     public static string Write(
@@ -83,19 +85,23 @@ public static class CsvWriter
     {
         var text = value ?? string.Empty;
 
-        // The guard runs before quoting decides anything, so a formula that
-        // also contains a comma still gets both: an escaped leading quote
-        // mark and the quoting that comma requires.
+        // The guard runs before quoting, so a formula that also needs
+        // quoting still gets both: an escaped leading quote mark and the
+        // quoting every cell now receives regardless of its content.
         if (text.Length > 0 && FormulaTriggers.Contains(text[0]))
         {
             text = "'" + text;
         }
 
-        if (text.IndexOfAny(QuotingTriggers) < 0)
-        {
-            return text;
-        }
-
+        // Every field is quoted, not just ones containing a comma, quote or
+        // newline. RFC 4180 allows quoting any field, and a semicolon-locale
+        // Excel (Turkish, among others) treats ';' as the list separator when
+        // it opens a CSV file directly rather than through the import
+        // wizard. An unquoted cell like "x;=1+1" would then be split on the
+        // ';' into two cells, and the second — "=1+1" — starts with a
+        // formula trigger the leading-char guard never saw because it only
+        // looked at the original field's first character. Quoting the whole
+        // field keeps the embedded ';' inside one cell, where it belongs.
         return "\"" + text.Replace("\"", "\"\"") + "\"";
     }
 

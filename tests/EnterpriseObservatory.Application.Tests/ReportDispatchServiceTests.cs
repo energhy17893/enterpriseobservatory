@@ -83,6 +83,19 @@ public class ReportDispatchServiceTests
         }
     }
 
+    /// <summary>
+    /// Stands in for a sender that violates IMailSender's contract by
+    /// throwing instead of returning a failed MailSendResult -- the shape a
+    /// MailKit exception this product does not explicitly catch would take
+    /// before MailKitMailSender's own catch-all covers it too.
+    /// </summary>
+    private sealed class ThrowingSender : IMailSender
+    {
+        public Task<MailSendResult> SendAsync(
+            SmtpSettings settings, OutgoingMail mail, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected MailKit failure");
+    }
+
     private static readonly SmtpSettings Configured = new()
     {
         Host = "smtp.example.com",
@@ -176,6 +189,30 @@ public class ReportDispatchServiceTests
 
         Assert.Equal(0, sender.Calls);
         Assert.Single(outcome.Failures);
+    }
+
+    [Fact]
+    public async Task A_sender_that_throws_is_recorded_as_a_failure_rather_than_escaping()
+    {
+        // If a mail-library exception this product does not explicitly catch
+        // reaches ReportDispatchService, it must still come back as a
+        // recorded failure -- not propagate past MarkDispatched (already
+        // called above SendOneAsync) with no MarkFailed to follow, which
+        // would leave the subscription reading as sent with no error.
+        var subscriptions = new FakeSubscriptionStore();
+        subscriptions.Add(Subscription());
+
+        var service = new ReportDispatchService(
+            subscriptions, new FakeSmtpStore(Configured), new FakeRenderer(), new ThrowingSender(), new FixedClock(Now));
+
+        var outcome = await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(0, outcome.Sent);
+        Assert.Single(outcome.Failures);
+
+        var stored = subscriptions.Find("sub-1")!;
+        Assert.NotNull(stored.LastSentUtc); // the claim from before the attempt stands
+        Assert.NotNull(stored.LastError);
     }
 
     [Fact]
