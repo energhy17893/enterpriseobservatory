@@ -79,10 +79,21 @@ public sealed record ComplianceCatalogue
     /// </remarks>
     public string? Problem { get; init; }
 
-    public static ComplianceCatalogue Unavailable(string problem) => new()
+    /// <summary>
+    /// The full account of why it could not be loaded, for the service log only.
+    /// </summary>
+    /// <remarks>
+    /// Kept apart from <see cref="Problem"/>, which every signed-in viewer
+    /// reads. Paths on the server and the operating system's error text help
+    /// whoever administers the host and tell anybody else how it is laid out.
+    /// </remarks>
+    public string? Diagnostic { get; init; }
+
+    public static ComplianceCatalogue Unavailable(string problem, string? diagnostic = null) => new()
     {
         Release = string.Empty,
         Name = string.Empty,
         Problem = problem,
+        Diagnostic = diagnostic ?? problem,
     };
 }

@@ -48,16 +48,27 @@ public static class ComplianceCatalogueSource
     }
 
     /// <summary>Loads one edition from its directory.</summary>
+    /// <remarks>
+    /// Each refusal carries two accounts. <see cref="ComplianceCatalogue.Problem"/>
+    /// names the edition and says what kind of thing is wrong, because every
+    /// signed-in viewer reads it on the compliance screen;
+    /// <see cref="ComplianceCatalogue.Diagnostic"/> has the path on the server
+    /// and the operating system's error, and goes to the service log for
+    /// whoever administers the host.
+    /// </remarks>
     public static ComplianceCatalogue LoadDirectory(string directory, string name)
     {
+        var edition = string.IsNullOrWhiteSpace(name) ? "(unnamed)" : name;
+
         try
         {
             if (!Directory.Exists(directory))
             {
                 return ComplianceCatalogue.Unavailable(
-                    $"The compliance catalogue directory '{directory}' does not exist. Set " +
-                    "Compliance:Catalogue to a shipped edition (vsphere-8.0, vcf-9.1) or to a " +
-                    "directory holding the guide's controls CSV and its VERSION file.");
+                    $"The compliance catalogue '{edition}' was not found. Set Compliance:Catalogue to " +
+                    "a shipped edition (vsphere-8.0, vcf-9.1) or to a directory holding the guide's " +
+                    "controls CSV and its VERSION file; the service log says where it looked.",
+                    $"The compliance catalogue directory '{directory}' does not exist.");
             }
 
             var files = Directory.GetFiles(directory, "*.csv");
@@ -65,8 +76,10 @@ public static class ComplianceCatalogueSource
             if (files.Length != 1)
             {
                 return ComplianceCatalogue.Unavailable(
-                    $"'{directory}' holds {files.Length} CSV files; exactly one controls file is " +
-                    "expected, so there is no guessing which edition is meant.");
+                    $"The compliance catalogue '{edition}' holds {files.Length} CSV files; exactly one " +
+                    "controls file is expected, so there is no guessing which edition is meant.",
+                    $"'{directory}' holds {files.Length} CSV files: " +
+                    string.Join(", ", files.Select(Path.GetFileName)) + ".");
             }
 
             var version = Path.Combine(directory, "VERSION");
@@ -77,8 +90,9 @@ public static class ComplianceCatalogueSource
                 // release it was judged against, and one invented here would
                 // be a date on an audit record that nobody published.
                 return ComplianceCatalogue.Unavailable(
-                    $"'{directory}' has no VERSION file, so findings could not say which release " +
-                    "of the guide they were judged against.");
+                    $"The compliance catalogue '{edition}' has no VERSION file, so findings could not " +
+                    "say which release of the guide they were judged against.",
+                    $"'{directory}' has no VERSION file.");
             }
 
             return ScgCatalogueParser.Parse(
@@ -87,7 +101,10 @@ public static class ComplianceCatalogueSource
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
         {
             return ComplianceCatalogue.Unavailable(
-                $"The compliance catalogue in '{directory}' could not be read: {ex.Message}");
+                $"The compliance catalogue '{edition}' could not be read. The service log has the " +
+                "details.",
+                $"The compliance catalogue in '{directory}' could not be read: " +
+                $"{ex.GetType().Name}: {ex.Message}");
         }
     }
 }
