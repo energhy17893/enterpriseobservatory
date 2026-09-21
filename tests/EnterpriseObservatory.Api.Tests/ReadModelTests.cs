@@ -1186,12 +1186,12 @@ public class ReadModelTests
         // with no type of its own to reference.
         var clusterId = new EntityId("vc-1:domain-c1");
         GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(RuleAlert("n-plus-one", AlertSeverity.Warning, clusterId));
+        GivenAlerts(RuleAlert("cluster-n-plus-one", AlertSeverity.Warning, clusterId));
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
         Assert.Equal(1, row.NPlusOneWarningCount);
-        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule["n-plus-one"]);
+        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule["cluster-n-plus-one"]);
     }
 
     [Fact]

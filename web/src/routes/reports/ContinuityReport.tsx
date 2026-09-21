@@ -90,7 +90,7 @@ function ReportBody({ data }: { data: ContinuityReportView }) {
             (summary.byRule['storage-path-redundancy'] ?? 0)
           }
         />
-        <Metric label="N+1 findings" value={summary.byRule['n-plus-one'] ?? 0} />
+        <Metric label="N+1 findings" value={summary.byRule['cluster-n-plus-one'] ?? 0} />
         <Metric
           label="Clusters with a critical finding"
           value={summary.clustersWithCriticalCount}

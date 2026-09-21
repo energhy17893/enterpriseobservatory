@@ -428,7 +428,7 @@ public sealed class ReadModel(
         /// the day it ships -- it is a rule id like any other, not a type
         /// this file knows about.
         /// </summary>
-        public const string NPlusOne = "n-plus-one";
+        public const string NPlusOne = "cluster-n-plus-one";
     }
 
     /// <summary>
