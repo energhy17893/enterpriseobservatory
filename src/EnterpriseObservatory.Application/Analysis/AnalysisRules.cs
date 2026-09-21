@@ -34,6 +34,7 @@ public static class AnalysisRules
         new StorageNoisyNeighbourRule(),
 
         new StoragePathRedundancyRule(),
+        new MultipathSinglePointOfFailureRule(),
         new RemoteLoggingRule(),
         new EventAlertsRule(),
         new DatastoreTimeToFullRule(),
@@ -234,6 +235,28 @@ public sealed class StoragePathRedundancyRule : IAnalysisRule
 
         return StoragePathRedundancy.Evaluate(
             [.. context.Graph.Active], context.Options.StoragePathRedundancy);
+    }
+}
+
+/// <summary>Adapts <see cref="MultipathSinglePointOfFailure"/>.</summary>
+/// <remarks>
+/// Same rhythm and scope as <see cref="StoragePathRedundancyRule"/> and for
+/// the same reason: both read the path table the inventory cycle just merged,
+/// and running either on the metric rhythm would have it re-deciding a fact
+/// nothing had re-read.
+/// </remarks>
+public sealed class MultipathSinglePointOfFailureRule : IAnalysisRule
+{
+    public string RuleId => MultipathSinglePointOfFailure.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return MultipathSinglePointOfFailure.Evaluate(
+            [.. context.Graph.Active], context.Options.MultipathSinglePointOfFailure);
     }
 }
 
