@@ -150,6 +150,19 @@ public class MultipathSinglePointOfFailureTests
     }
 
     [Fact]
+    public void Iscsi_paths_through_one_software_adapter_are_not_called_single_hba()
+    {
+        // Port binding: two NICs beneath one software vmhba64 — redundant by design.
+        const string iscsi = "HostInternetScsiTargetTransport";
+
+        Assert.Empty(Evaluate(
+            HostWith(
+                Path("active", name: "vmhba64:C0:T0:L1", adapter: "vmhba64") with { Transport = iscsi },
+                Path("active", name: "vmhba64:C1:T0:L1", adapter: "vmhba64") with { Transport = iscsi }),
+            VmfsDatastore()));
+    }
+
+    [Fact]
     public void A_dead_second_path_on_a_different_adapter_suppresses_the_single_hba_verdict()
     {
         // StoragePathRedundancy already reports the lost path on vmhba1 as

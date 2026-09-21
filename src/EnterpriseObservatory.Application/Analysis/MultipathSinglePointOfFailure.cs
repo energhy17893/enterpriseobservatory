@@ -69,23 +69,14 @@ public sealed record MultipathSinglePointOfFailurePolicy
 /// judging, rather than counting as "the same port".
 /// </para>
 /// <para>
-/// <strong>The software-iSCSI-with-port-binding case this rule does not
-/// distinguish.</strong> A host reaching a device over software iSCSI with
-/// port binding legitimately runs every path through the one <c>vmhba</c>
-/// the software adapter presents -- multiple physical NICs are bound
-/// underneath it, but vim25 reports them all under a single iSCSI HBA name,
-/// so the "single HBA" finding this rule raises would be a false positive
-/// for that configuration. Telling it apart from a genuine single-HBA
-/// misconfiguration needs the path's transport/adapter type (Fibre Channel
-/// vs. software iSCSI vs. FCoE), which is exactly the <c>path.transport</c>
-/// field the class remarks above already say this collector does not parse.
-/// <see cref="StoragePath"/> carries only the adapter's <em>name</em>
-/// (<c>vmhba0</c>), not its <em>kind</em>, and a name alone cannot say
-/// whether that <c>vmhba</c> is a physical HBA or a software iSCSI initiator.
-/// Left undetected rather than guessed at from the name (<c>vmhba3x</c>-style
-/// numbering conventions for software iSCSI are a convention, not a
-/// guarantee); the same collector gap as the target-port case above, closed
-/// only once <c>path.transport</c> is read.
+/// <strong>iSCSI is not judged for "single HBA".</strong> Software iSCSI with
+/// port binding legitimately runs every path through the one software
+/// <c>vmhba</c>; the redundancy is the bound NICs beneath it, which vim25
+/// does not show here. <see cref="Domain.StoragePath.Transport"/> says a
+/// path is iSCSI but not whether the initiator is software or a hardware
+/// HBA, so a device whose paths are all iSCSI is left unjudged for this case
+/// rather than raise a permanent false alarm. Not validated live: this
+/// estate has no iSCSI.
 /// </para>
 /// <para>
 /// <strong>Citations.</strong> Broadcom's official multipathing guidance
@@ -109,6 +100,9 @@ public static class MultipathSinglePointOfFailure
 
     private const string SinglePathTitle = "Storage device has only one path";
     private const string SingleHbaTitle = "All working paths share one HBA";
+
+    /// <summary>vim25's transport type for iSCSI paths, software or hardware alike.</summary>
+    private const string IscsiTransport = "HostInternetScsiTargetTransport";
 
     private const string Platform = "platform";
 
@@ -278,6 +272,16 @@ public static class MultipathSinglePointOfFailure
         // there genuinely is HBA-level redundancy. Only exactly one adapter,
         // named, is this rule's business.
         if (workingAdapters.Count != 1)
+        {
+            return null;
+        }
+
+        // Software iSCSI with port binding runs every path through the one
+        // software vmhba by design; the redundancy is the bound NICs beneath
+        // it, which vim25 does not show here. The transport cannot tell a
+        // software initiator from a hardware iSCSI HBA, so all-iSCSI devices
+        // are left unjudged rather than risk a permanent false alarm.
+        if (paths.All(p => string.Equals(p.Transport, IscsiTransport, StringComparison.Ordinal)))
         {
             return null;
         }
