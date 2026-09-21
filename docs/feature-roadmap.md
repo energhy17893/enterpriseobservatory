@@ -73,6 +73,47 @@ Pazar araştırmasında alıcının ilk baktığı şey.
 | M5.3 | Kapasite raporu | indirilebilir |
 | M5.4 | Zamanlanmış e-posta raporu | posta kutusunda |
 
+## ▶ T — Toplayıcı temeli *(sürüyor)*
+
+Feature değil, zemin. 21 Eylül 2026 denetimi (üç kol: taşıma/oturum, kaynaklar,
+orkestrasyon) çalıştırıcı katmanını sağlam, altındaki vSphere adaptörünü ve
+üstündeki durum saklamayı açık buldu. Ortak desen: doğru kurulmuş bir koruma
+**yan yoldan atlanıyor**. Her adım **önce hatayı gösteren test**, sonra düzeltme.
+T-P0 hemen; T-P1 M8'den önce; **T-P2, M6'nın giriş şartı.**
+
+### T-P0 — sessizce yanlış veri ya da üretime zarar
+
+| Adım | Açık | Bitti = |
+|---|---|---|
+| T0.1 | **Bozuk/kesik envanter yanıtı başarı sayılıyor** — `ParsePage` ayrıştırılamayan XML'de boş sayfa dönüyor, varlıklar ilk kaçırmada "kayboldu" | bozuk yanıt okuma hatası; hiçbir varlık kaybolmaz |
+| T0.2 | **Veritabanı kesintisinde devre kesici donuyor** — sağlık belleği ancak yazım başarılıysa güncelleniyor; kilit yazım boyunca tutuluyor | DB kapalıyken kesici ilerler; kilit DB'yi kapsamaz |
+| T0.3 | **Olay okuması devre kesicinin dışında** — yanlış parolada her turda reddedilmiş Login | olaylar aynı kesiciden geçer |
+| T0.4 | **Yalnızca son örnek saklanıyor** — toplam/arıza sayaçlarında olay kaçıyor, geri doldurma yok, damga yerel saatten | dönen tüm örnekler vCenter `sampleInfo` damgasıyla yazılır; saat farkı ölçülür |
+| T0.5 | **vCenter'da bırakılan nesneler** — `Logout` çağrılmıyor, zaman aşımında ContainerView sızıyor, sayfalama token'ı iptal edilmiyor | her yolda temizlik; test sayar |
+
+### T-P1 — ölçek ve dayanıklılık
+
+| Adım | Açık | Bitti = |
+|---|---|---|
+| T1.1 | Okuma ya hep ya hiç; zaman aşımı tek ve sabit (envanter de 25 sn) | kısmi ilerleme korunur; zaman aşımı aralıktan türetilir; **2000 VM probe ile ölçülür** |
+| T1.2 | Öğrenilen batch boyutu saklanmıyor (ADR-0005 §2) | boyut oturum boyunca hatırlanır |
+| T1.3 | Limit hatası metni *(şüpheli)* — `RestrictedByAdministrator` fault tipi | canlıda doğrulanır; tip üzerinden eşleşir |
+| T1.4 | Tek varlığın hatası tüm tipi düşürüyor; probe `moRefs[0]`'ı süzmüyor | hata varlıkla sınırlı |
+| T1.5 | Sayaç kataloğu geçersizleşmiyor; boş katalog önbellekte | yeniden girişte tazelenir; boş katalog saklanmaz |
+| T1.6 | Sınıflandırma: `PasswordExpiredFault`, sessiz boş perf XML'i | ilki yeniden denenmez; ikincisi hata kaydı bırakır |
+| T1.7 | Gözlem kapsamında susan kaynağın alarmları *(doğrulanacak)* | `AlertReconciler` okunur; gerekirse ileri taşıma |
+| T1.8 | **Ürün kendi sağlığını ölçmüyor** | `/health` tazeliği yansıtır; döngü süresi, yazılan/düşen örnek, döngü bekçisi; depolama hatası alarm |
+
+### T-P2 — ikinci toplayıcıdan önce tutarlılık *(M6 giriş şartı)*
+
+| Adım | Açık | Bitti = |
+|---|---|---|
+| T2.1 | **Toplayıcı sözleşme test takımı** — kısmi okuma, boş yanıt, iptal, kimlik reddi, çakışan okuma | vSphere geçer; Redfish geçmeden birleşmez |
+| T2.2 | Ortak parçalar vSphere derlemesinden çıkar — batch boyutlandırma, hedef seçimi, kapsam, normalleştirme kuralı, kayıt defteri | Redfish kopyalamadan kullanır |
+| T2.3 | Eşzamanlılık kapısı ADR-0005 §5'e uyar — aile başına, pipeline'lar arası ortak | tek vCenter'a istek tavanı |
+| T2.4 | Yapılandırma ve başlangıç — `CollectionPolicy` ayarlanabilir, aralık alt sınırı, TLS thumbprint, açılışta DB yeniden denemesi | doğrulanmış ayarlar |
+| T2.5 | `WaitForUpdatesEx` (`ChangeFeedInventorySource`) — ADR-0005 "ikinci dilim" | adaptör değişimi, Application değişmez |
+
 ## M8 — Süreklilik duruşu
 
 **Numara kimliktir, sıra değil:** M8, M5'in hemen arkasında ve M6'nın önünde
