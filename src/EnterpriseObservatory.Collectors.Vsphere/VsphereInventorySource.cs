@@ -168,6 +168,10 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // vmhba0:C0:T0:L1, which carries no LUN identity — can be
                 // turned into the NAA a datastore is marked with.
                 StoragePaths = [.. host.StoragePaths.Select(ToStoragePath)],
+                // Carried, not judged -- same contract as the path table
+                // above. Which settings arrive is decided in
+                // AdvancedSettings; what they mean is a rule's business.
+                Settings = host.AdvancedSettings,
             });
 
             relationships.Add(Edge(id(host.MoRef), vCenterId, RelationshipKind.ManagedBy, now));

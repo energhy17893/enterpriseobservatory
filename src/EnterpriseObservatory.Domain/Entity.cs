@@ -243,6 +243,34 @@ public sealed record Entity
     /// all rather than being derivable from the counters.
     /// </remarks>
     public IReadOnlyList<StoragePath> StoragePaths { get; init; } = [];
+
+    /// <summary>
+    /// Configuration settings read from the entity, by their vendor name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// State rather than measurement, and that is what makes it belong here
+    /// instead of in a series. "What is this set to" has one answer that stays
+    /// true until somebody changes it; writing it every twenty seconds would
+    /// record thousands of times a day that nothing happened.
+    /// </para>
+    /// <para>
+    /// **A missing key is not an empty value.** A setting nobody configured
+    /// arrives as an empty string; a setting the product could not read is
+    /// simply absent. Only the first is a finding, and a rule that treats them
+    /// alike accuses a host it never managed to look at. This is the same
+    /// distinction <see cref="EntitySizing.VirtualCpuCount"/> makes with null,
+    /// and it is made the same way for the same reason.
+    /// </para>
+    /// <para>
+    /// Names are the vendor's own, not translated. A translation layer here
+    /// would need a second vendor to be designed against, and inventing one
+    /// from a single example is how a mapping ends up shaped like vSphere
+    /// wearing a neutral label.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> Settings { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
