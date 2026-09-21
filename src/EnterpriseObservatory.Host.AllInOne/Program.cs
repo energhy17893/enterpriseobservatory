@@ -94,6 +94,12 @@ builder.Services.AddSingleton<ICollectorHealthStore, PostgresCollectorHealthStor
 builder.Services.AddSingleton<ICoverageStore, PostgresCoverageStore>();
 builder.Services.AddSingleton<IObservationStore, PostgresObservationStore>();
 builder.Services.AddSingleton<IEventStore, PostgresEventStore>();
+
+// The same store, read-only, for naming who took a stale snapshot (M2.4).
+// Resolved through IEventStore rather than registered twice, so there is one
+// instance and one cursor cache; a store that cannot answer history questions
+// fails here at resolution rather than quietly reporting every creator unknown.
+builder.Services.AddSingleton(sp => (IEventHistory)sp.GetRequiredService<IEventStore>());
 builder.Services.AddSingleton<EventCollectionPipeline>();
 builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();

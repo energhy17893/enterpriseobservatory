@@ -145,12 +145,27 @@ public static class VsphereEventParser
     /// both are missing does the class stand in, and then it is at least
     /// honestly the class rather than a guess.
     /// </para>
+    /// <para>
+    /// A <c>TaskEvent</c> has the same problem in another shape: every task
+    /// vCenter runs arrives as that one class, and what the task was is its
+    /// <c>info.descriptionId</c> — <c>VirtualMachine.createSnapshot</c>,
+    /// <c>VirtualMachine.powerOff</c>. That id is language-independent, which
+    /// the rendered message ("Task: Create virtual machine snapshot") is not.
+    /// Roadmap M2.4 reads it to name who took a snapshot.
+    /// </para>
     /// </remarks>
     private static string TypeIdOf(XElement element, string eventClass)
     {
         if (Text(element, "eventTypeId") is { Length: > 0 } typeId)
         {
             return typeId;
+        }
+
+        if (string.Equals(eventClass, "TaskEvent", StringComparison.Ordinal) &&
+            Child(element, "info") is { } info &&
+            Text(info, "descriptionId") is { Length: > 0 } task)
+        {
+            return task;
         }
 
         if (Text(element, "fullFormat") is { Length: > 0 } format &&

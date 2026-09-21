@@ -197,6 +197,13 @@ public sealed record InventorySnapshot
     /// its own coverage, and empty is not a claim that coverage was complete.
     /// </remarks>
     public IReadOnlyList<PropertyCoverage> Coverage { get; init; } = [];
+
+    /// <summary>
+    /// The snapshots behind each "snapshot left behind" alert in
+    /// <see cref="Alerts"/>, so the pipeline can name who took them.
+    /// </summary>
+    /// <remarks>See <see cref="SnapshotCreators"/>.</remarks>
+    public IReadOnlyList<SnapshotFinding> SnapshotFindings { get; init; } = [];
 }
 
 /// <summary>Metric samples from one source for one cycle.</summary>

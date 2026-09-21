@@ -512,7 +512,7 @@ internal sealed class InMemoryCoverageStore : ICoverageStore
 /// successful read and to the batch's highest key, and a failure leaves the
 /// mark alone.
 /// </remarks>
-internal sealed class InMemoryEventStore : IEventStore
+internal sealed class InMemoryEventStore : IEventStore, IEventHistory
 {
     private readonly Lock _gate = new();
     private readonly Dictionary<(string, long, DateTimeOffset), SourceEvent> _events = [];
@@ -595,6 +595,44 @@ internal sealed class InMemoryEventStore : IEventStore
             }
 
             return old.Count;
+        }
+    }
+
+    public IReadOnlyList<SourceEvent> Find(
+        string sourceInstanceId,
+        IReadOnlyCollection<string> typeIds,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc)
+    {
+        lock (_gate)
+        {
+            return
+            [
+                .. _events.Values.Where(e =>
+                    e.SourceInstanceId == sourceInstanceId &&
+                    typeIds.Contains(e.TypeId) &&
+                    e.CreatedAtUtc >= fromUtc &&
+                    e.CreatedAtUtc <= toUtc),
+            ];
+        }
+    }
+
+    public DateTimeOffset? EarliestHeld(string sourceInstanceId)
+    {
+        lock (_gate)
+        {
+            return _events.Values
+                .Where(e => e.SourceInstanceId == sourceInstanceId)
+                .Select(e => (DateTimeOffset?)e.CreatedAtUtc)
+                .Min();
+        }
+    }
+
+    public EventCursor? Cursor(string sourceInstanceId)
+    {
+        lock (_gate)
+        {
+            return _cursors.GetValueOrDefault(sourceInstanceId);
         }
     }
 }
