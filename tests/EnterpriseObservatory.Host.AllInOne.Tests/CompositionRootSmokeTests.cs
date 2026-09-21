@@ -187,6 +187,32 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_viewer_can_read_the_alert_report_as_csv()
+    {
+        // Reads are for any signed-in user, same as the alert list this
+        // report is a slice of -- printing or exporting it is not a more
+        // sensitive act than reading the inbox.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/reports/alerts.csv");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_the_alert_report_csv_with_401()
+    {
+        // The report endpoints are covered by the sweep above too, but this
+        // one is named: it is the export an operator prints to PDF from, and
+        // it carries the estate's alert history, not only its inventory.
+        var response = await Client().GetAsync("/api/reports/alerts.csv");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task A_viewer_who_tries_to_change_something_is_refused_with_403()
     {
         Account("viewer", Role.Viewer);

@@ -511,6 +511,44 @@ export interface ComplianceFindingView {
   exceptionId: string | null
 }
 
+// --- reports --------------------------------------------------------------
+//
+// M5.1's shape: JSON for the SPA's own printable page, CSV (built server
+// side, fetched as a plain download) for a spreadsheet. M5.2 and M5.3 are
+// expected to add a sibling *ReportRow/*ReportView pair here.
+
+export interface AlertReportRow {
+  severity: AlertSeverity
+  title: string
+  entityName: string | null
+  entityKind: EntityKind | null
+  category: string
+  source: string
+  state: AlertLifecycleState
+  firstSeenUtc: string
+  lastSeenUtc: string
+  acknowledgedBy: string | null
+  acknowledgedAtUtc: string | null
+  /** Only set for an operator's own clear, not a condition going away on its own. */
+  clearedBy: string | null
+  clearedAtUtc: string | null
+  isDerived: boolean
+}
+
+export interface AlertReportSummary {
+  bySeverity: Record<string, number>
+  byState: Record<string, number>
+  total: number
+}
+
+export interface AlertReportView {
+  generatedAtUtc: string
+  fromUtc: string
+  toUtc: string
+  summary: AlertReportSummary
+  rows: AlertReportRow[]
+}
+
 export interface AddExceptionCommand {
   controlId: string
   /** Null for every entity the control applies to. */

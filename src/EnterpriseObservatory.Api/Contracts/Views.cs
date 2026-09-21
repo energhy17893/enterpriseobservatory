@@ -588,3 +588,79 @@ public sealed record CoveragePropertyView
     /// </remarks>
     public bool IsBlind => Asked > 0 && Answered == 0;
 }
+
+// --- reports ------------------------------------------------------------
+//
+// M5.1's shape: every report is a filtered slice of one existing model, with
+// a summary on top, and gets exported two ways — JSON for the SPA's own
+// printable page, CSV for a spreadsheet. M5.2 and M5.3 are expected to add a
+// sibling *ReportRow/*ReportView pair here and reuse Reports/CsvWriter.cs
+// rather than inventing their own shape.
+
+/// <summary>
+/// One alert on the alert/finding report: everything M5.1 asks for, already
+/// resolved to names rather than ids so neither the SPA nor the CSV has to
+/// join anything.
+/// </summary>
+public sealed record AlertReportRow
+{
+    public required AlertSeverity Severity { get; init; }
+
+    public required string Title { get; init; }
+
+    /// <summary>The entity this is about, when it resolves to one.</summary>
+    public string? EntityName { get; init; }
+
+    public EntityKind? EntityKind { get; init; }
+
+    public required string Category { get; init; }
+
+    public required string Source { get; init; }
+
+    public required AlertLifecycleState State { get; init; }
+
+    public required DateTimeOffset FirstSeenUtc { get; init; }
+
+    public required DateTimeOffset LastSeenUtc { get; init; }
+
+    /// <summary>Who acknowledged it and when, from the transition history. Null if nobody has.</summary>
+    public string? AcknowledgedBy { get; init; }
+
+    public DateTimeOffset? AcknowledgedAtUtc { get; init; }
+
+    /// <summary>Who cleared it and when. Only set for an operator's own clear, not a condition going away.</summary>
+    public string? ClearedBy { get; init; }
+
+    public DateTimeOffset? ClearedAtUtc { get; init; }
+
+    /// <summary>Whether the platform inferred this rather than observing it.</summary>
+    public required bool IsDerived { get; init; }
+}
+
+/// <summary>Counts by severity and by state, for the summary at the top of the report.</summary>
+public sealed record AlertReportSummary
+{
+    public required IReadOnlyDictionary<string, int> BySeverity { get; init; }
+
+    public required IReadOnlyDictionary<string, int> ByState { get; init; }
+
+    public required int Total { get; init; }
+}
+
+/// <summary>
+/// The alert/finding report: open alerts plus whatever resolved within the
+/// chosen window, for the printable page and the CSV export.
+/// </summary>
+public sealed record AlertReportView
+{
+    public required DateTimeOffset GeneratedAtUtc { get; init; }
+
+    public required DateTimeOffset FromUtc { get; init; }
+
+    public required DateTimeOffset ToUtc { get; init; }
+
+    public required AlertReportSummary Summary { get; init; }
+
+    /// <summary>Worst first, then most recent — the same order the inbox uses.</summary>
+    public required IReadOnlyList<AlertReportRow> Rows { get; init; }
+}
