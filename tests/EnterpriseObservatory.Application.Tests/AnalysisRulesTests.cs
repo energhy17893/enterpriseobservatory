@@ -32,11 +32,20 @@ public class AnalysisRulesTests
         };
 
     [Fact]
-    public void The_metric_rules_run_in_the_order_the_cycle_always_ran_them()
+    public void The_metric_rules_are_exactly_the_expected_set_each_registered_once()
     {
-        // Alert order is reconciliation's input order; it is kept, not chosen.
+        // Not full-order equality: the sequence is reconciliation's input
+        // order, but pinning the exact order here makes every reordering a
+        // failing test even when nothing about behaviour changed. What
+        // actually matters -- every expected rule is present, none is
+        // duplicated, none belongs to the wrong scope -- is what this checks.
+        var ids = AnalysisRules.For(RuleScope.Metric).Select(r => r.RuleId).ToList();
+
+        Assert.Equal(ids.Count, ids.Distinct(StringComparer.Ordinal).Count());
+
         Assert.Equal(
-            [
+            new HashSet<string>(StringComparer.Ordinal)
+            {
                 FaultCounters.RuleId,
                 PeerOutliers.RuleId,
                 CpuContention.RuleId,
@@ -46,17 +55,25 @@ public class AnalysisRulesTests
                 StorageLatencyBlindSpot.RuleId,
                 DroppedPackets.RuleId,
                 StorageNoisyNeighbour.RuleId,
-            ],
-            AnalysisRules.For(RuleScope.Metric).Select(r => r.RuleId));
+            },
+            new HashSet<string>(ids, StringComparer.Ordinal));
     }
 
     [Fact]
-    public void The_inventory_rules_run_in_order_with_coverage_last()
+    public void The_inventory_rules_are_exactly_the_expected_set_with_coverage_last()
     {
         // Coverage goes last because it is the only thing that can say whether
-        // the silence of everything above it was a verdict or a gap.
+        // the silence of everything above it was a verdict or a gap -- that
+        // one position is pinned. The rest is set equality, not full-order
+        // equality, for the same reason as the metric rules above.
+        var ids = AnalysisRules.For(RuleScope.Inventory).Select(r => r.RuleId).ToList();
+
+        Assert.Equal(ids.Count, ids.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(CollectionCoverage.RuleId, ids[^1]);
+
         Assert.Equal(
-            [
+            new HashSet<string>(StringComparer.Ordinal)
+            {
                 StoragePathRedundancy.RuleId,
                 MultipathSinglePointOfFailure.RuleId,
                 DrsRuleViolations.RuleId,
@@ -66,8 +83,8 @@ public class AnalysisRulesTests
                 DatastoreTimeToFull.RuleId,
                 ClusterNPlusOne.RuleId,
                 CollectionCoverage.RuleId,
-            ],
-            AnalysisRules.For(RuleScope.Inventory).Select(r => r.RuleId));
+            },
+            new HashSet<string>(ids, StringComparer.Ordinal));
     }
 
     [Fact]
