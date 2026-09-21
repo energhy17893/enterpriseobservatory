@@ -424,6 +424,60 @@ public static class VsphereCounters
         (counterKey.StartsWith("disk.", StringComparison.OrdinalIgnoreCase) ||
          counterKey.StartsWith("storagePath.", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// A virtual machine's read and write requests per second, per virtual disk.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Storage load is the one kind of noisy-neighbour load vSphere attributes
+    /// to a machine: a host reports its CPU saturation and each guest its
+    /// waiting, and nothing says whose demand caused whose wait, but every
+    /// machine reports the requests it sends. The storage noisy-neighbour rule
+    /// reads these beside <c>VM BackedBy Datastore</c>. Both are level 1 and
+    /// both are in the vSphere 8 catalogue fixture, unit <c>number</c>.
+    /// </para>
+    /// <para>
+    /// Instanced per virtual disk (<c>scsi0:0</c>, <c>scsi0:1</c> …), and
+    /// summed per machine rather than kept per disk — see
+    /// <see cref="IsAdditiveAcrossDevices"/>. Nothing this product collects maps
+    /// a virtual disk to the datastore its backing file is on, so per-disk
+    /// series could not be attributed to a volume anyway; the rule attributes
+    /// the machine's total only to a machine stored on exactly one volume.
+    /// </para>
+    /// <para>
+    /// Declared above <see cref="VirtualMachine"/> because it is spliced into
+    /// it, for the source-order reason <see cref="PerDatastore"/> gives.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> VirtualDiskOperations { get; } =
+    [
+        "virtualDisk.numberReadAveraged.average",
+        "virtualDisk.numberWriteAveraged.average",
+    ];
+
+    /// <summary>
+    /// Whether a counter's devices are summed rather than reduced to the worst one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The parser's default for an average with no vCenter aggregate is the
+    /// maximum across devices, which is right for latency — the worst disk is
+    /// the one to know about. For a rate of requests it is wrong: a machine
+    /// sending 300 operations a second to each of three disks is sending 900,
+    /// not 300, and taking the maximum would understate exactly the machines
+    /// with the most disks. A rate of operations is additive across devices
+    /// the way a summation is, so it is combined the way a summation is.
+    /// </para>
+    /// <para>
+    /// A named list rather than a test on the unit, like <see cref="IsFaultCounter"/>:
+    /// <c>number</c> averages include things that are not rates of requests,
+    /// and summing one of those would be a new fabrication.
+    /// </para>
+    /// </remarks>
+    public static bool IsAdditiveAcrossDevices(string? counterKey) =>
+        counterKey is not null &&
+        VirtualDiskOperations.Contains(counterKey, StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Counters for a virtual machine.</summary>
     /// <remarks>
     /// <c>cpu.ready.summation</c> is the only reliable indicator of CPU
@@ -521,6 +575,9 @@ public static class VsphereCounters
         "mem.swapoutRate.average",
         "mem.compressionRate.average",
         "mem.decompressionRate.average",
+        // Each machine's requests per second, so that a slow shared volume
+        // can be traced to the machines loading it. See VirtualDiskOperations.
+        .. VirtualDiskOperations,
     ];
 
     /// <summary>

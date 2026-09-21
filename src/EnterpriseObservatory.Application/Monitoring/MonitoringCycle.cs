@@ -1,4 +1,4 @@
-﻿using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -301,6 +301,19 @@ public sealed class MonitoringCycle(
                 Analysis.DroppedPackets.RuleId,
                 () => Analysis.DroppedPackets.Evaluate(
                     cycle.Observations, options.DroppedPackets)),
+
+            // Given the graph for VM BackedBy Datastore, and the sample store
+            // for the one question a single cycle cannot answer: whether the
+            // volume's load rose. The store is read only for a volume that has
+            // already passed every other gate.
+            .. Analysis.GuardedRule.Run(
+                Analysis.StorageNoisyNeighbour.RuleId,
+                () => Analysis.StorageNoisyNeighbour.Evaluate(
+                    cycle.Observations,
+                    _graphStore.Current,
+                    Analysis.StorageNoisyNeighbour.TypicalRateFrom(
+                        _observationStore, now, options.StorageNoisyNeighbour),
+                    options.StorageNoisyNeighbour with { Peers = options.PeerOutliers })),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
