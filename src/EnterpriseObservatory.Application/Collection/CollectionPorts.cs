@@ -184,6 +184,19 @@ public sealed record InventorySnapshot
 
     /// <summary>Problems the source itself reported, before any rule engine runs.</summary>
     public IReadOnlyList<AlertDefinition> Alerts { get; init; } = [];
+
+    /// <summary>
+    /// What this source managed to read, property by property.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="Failures"/>, and the difference is the whole
+    /// point. A failure is something that went wrong loudly enough to be
+    /// named; coverage is the quiet half — a property that simply was not in
+    /// the reply, which no error reports and which every rule reading it
+    /// answers by staying silent. Empty for a source that does not measure
+    /// its own coverage, and empty is not a claim that coverage was complete.
+    /// </remarks>
+    public IReadOnlyList<PropertyCoverage> Coverage { get; init; } = [];
 }
 
 /// <summary>Metric samples from one source for one cycle.</summary>

@@ -176,6 +176,18 @@ public sealed class MonitoringCycle(
                 Analysis.RemoteLogging.RuleId,
                 () => Analysis.RemoteLogging.Evaluate(
                     [.. graph.Active], options.RemoteLogging)),
+
+            // Not a rule about the estate but a rule about this product: what
+            // it managed to read. It goes last because everything above it is
+            // entitled to be silent, and this is the only thing that can tell
+            // an operator whether a silence was a verdict or a gap.
+            .. Analysis.GuardedRule.Run(
+                Analysis.CollectionCoverage.RuleId,
+                () => Analysis.CollectionCoverage.Evaluate(
+                    cycle.Snapshots.ToDictionary(
+                        s => s.SourceInstanceId,
+                        s => s.Coverage,
+                        StringComparer.Ordinal))),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Inventory, observed, options, now);

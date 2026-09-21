@@ -302,6 +302,127 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
     /// that is handled properly.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// The requested properties whose absence is always a collection problem.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A deliberately short subset of <see cref="InventoryProperties"/>,
+    /// because most requested properties are legitimately absent on a healthy
+    /// object: a virtual machine with no snapshots reports no
+    /// <c>snapshot</c>, and an object with nothing wrong reports no
+    /// <c>triggeredAlarmState</c>. Counting those as missing coverage would
+    /// report an estate as unreadable for being healthy.
+    /// </para>
+    /// <para>
+    /// What is listed is what every object of that type carries in every
+    /// working installation. The bar for adding a row is that its absence can
+    /// only mean the product failed to read it — and the list is conservative
+    /// on purpose, because a false "I cannot see this" is worse than an
+    /// incomplete list. One is a gap; the other is the product being
+    /// confidently wrong about its own sight, which is the failure the first
+    /// principle exists to prevent.
+    /// </para>
+    /// <para>
+    /// Left out despite being requested, and worth recording so nobody adds
+    /// them without an argument: <c>config.fileSystemVolume.mountInfo</c>,
+    /// <c>config.storageDevice.multipathInfo</c> and <c>scsiLun</c>, because a
+    /// host's storage configuration is an estate decision rather than a
+    /// guarantee; <c>summary.uncommitted</c>, which the vSphere API documents
+    /// as optional; and every <c>triggeredAlarmState</c>, <c>snapshot</c> and
+    /// <c>layoutEx</c> path, whose absence is the good outcome.
+    /// </para>
+    /// </remarks>
+    private static readonly Dictionary<string, IReadOnlyList<string>> AlwaysExpected = new(StringComparer.Ordinal)
+    {
+        ["HostSystem"] =
+        [
+            "name",
+            "summary.overallStatus",
+            "runtime.connectionState",
+            "runtime.inMaintenanceMode",
+            "hardware.systemInfo.uuid",
+            "config.option",
+        ],
+        ["VirtualMachine"] =
+        [
+            "name",
+            "summary.overallStatus",
+            "runtime.powerState",
+            "config.instanceUuid",
+            "config.hardware.numCPU",
+            "config.hardware.memoryMB",
+        ],
+        ["ClusterComputeResource"] =
+        [
+            "name",
+            "configuration.dasConfig.enabled",
+            "configuration.drsConfig.enabled",
+        ],
+        ["Datastore"] =
+        [
+            "name",
+            "summary.capacity",
+            "summary.freeSpace",
+            "summary.accessible",
+        ],
+    };
+
+    /// <summary>
+    /// What this collector asks for about one object type.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so the expected list can be held to the requested one. An
+    /// expected property nobody asks for is blind in every estate forever,
+    /// and the finding would name a path the product never sent — the
+    /// product being confidently wrong about its own sight, which is the
+    /// failure this whole surface exists to prevent.
+    /// </remarks>
+    public static IReadOnlyList<string> RequestedProperties(string objectType) =>
+        InventoryProperties.TryGetValue(objectType, out var paths) ? paths : [];
+
+    /// <summary>
+    /// Counts, per object type and property, how many objects answered.
+    /// </summary>
+    /// <remarks>
+    /// Computed here because this is the only place that knows both halves:
+    /// what was asked for and what came back. By the time a payload has been
+    /// mapped into entities the question is unanswerable — an absent property
+    /// and a property that mapped to a default look identical.
+    /// </remarks>
+    public static IReadOnlyList<PropertyCoverage> MeasureCoverage(
+        IReadOnlyList<PropertyObject> objects)
+    {
+        ArgumentNullException.ThrowIfNull(objects);
+
+        var coverage = new List<PropertyCoverage>();
+
+        foreach (var (type, expected) in AlwaysExpected)
+        {
+            var ofType = objects.Where(o => string.Equals(o.Type, type, StringComparison.Ordinal))
+                .ToList();
+
+            if (ofType.Count == 0)
+            {
+                // Nothing of this type in the estate. No row, because "no
+                // hosts" is not "hosts we could not read", and a zero here
+                // would read as blindness to anyone scanning the list.
+                continue;
+            }
+
+            coverage.AddRange(expected.Select(path => new PropertyCoverage
+            {
+                ObjectType = type,
+                Property = path,
+                Asked = ofType.Count,
+                Answered = ofType.Count(o => o.Values.ContainsKey(path) ||
+                                             o.Structures.ContainsKey(path)),
+            }));
+        }
+
+        return coverage;
+    }
+
     private static readonly Dictionary<string, IReadOnlyList<string>> InventoryProperties = new(StringComparer.Ordinal)
     {
         ["HostSystem"] =
@@ -441,6 +562,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IDisposab
                 ],
                 TriggeredAlarms = alarms,
                 Failures = failures,
+                Coverage = MeasureCoverage(objects),
                 PagesRetrieved = pages,
             };
         }
