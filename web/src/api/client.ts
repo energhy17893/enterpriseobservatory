@@ -26,6 +26,7 @@ import type {
   AddExceptionCommand,
   ComplianceExceptionView,
   ComplianceFindingView,
+  ComplianceReportView,
   ComplianceView,
   FindingState,
 } from './types'
@@ -168,6 +169,13 @@ export interface AlertReportQuery extends Query {
   to?: string
 }
 
+export interface ComplianceReportQuery extends Query {
+  control?: string
+  entity?: string
+  from?: string
+  to?: string
+}
+
 export interface SeriesQuery extends Query {
   instance?: string
   from?: string
@@ -267,6 +275,26 @@ export const api = {
       if (value !== null && value !== undefined && value !== '') {
         url.searchParams.set(key, String(value))
       }
+    }
+    return url.toString()
+  },
+
+  complianceReport: (query: ComplianceReportQuery = {}) =>
+    get<ComplianceReportView>('/api/reports/compliance', query),
+
+  // Same shape as alertsReportCsvUrl: a URL the browser downloads itself, not
+  // a fetch this client parses. `section` picks the findings detail (the
+  // default) or the change-history rows -- see ComplianceApi.cs for why that
+  // is a query param rather than a second endpoint.
+  complianceReportCsvUrl: (query: ComplianceReportQuery = {}, section?: 'findings' | 'history') => {
+    const url = new URL('/api/reports/compliance.csv', window.location.origin)
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== null && value !== undefined && value !== '') {
+        url.searchParams.set(key, String(value))
+      }
+    }
+    if (section) {
+      url.searchParams.set('section', section)
     }
     return url.toString()
   },

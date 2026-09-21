@@ -1,5 +1,6 @@
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
+using EnterpriseObservatory.Domain.Compliance;
 
 namespace EnterpriseObservatory.Api.Contracts;
 
@@ -663,4 +664,152 @@ public sealed record AlertReportView
 
     /// <summary>Worst first, then most recent — the same order the inbox uses.</summary>
     public required IReadOnlyList<AlertReportRow> Rows { get; init; }
+}
+
+// --- compliance report (M5.2) --------------------------------------------
+//
+// The auditor-facing sibling of the alert report: a header that states its
+// own freshness, a summary per control, a detail per finding (including the
+// exception or acceptance that covers it), removed exceptions as their own
+// section, verdict history over a period, and the controls this product did
+// not evaluate at all. Nothing here recomputes a verdict -- everything is
+// read from ComplianceService and IComplianceStore, the same engine the
+// compliance screen and its accept/except endpoints use, so the report can
+// never disagree with the screen an operator worked from.
+
+/// <summary>One finding on the compliance report, with the decision that covers it spelled out in full.</summary>
+/// <remarks>
+/// <see cref="ComplianceFindingView"/> (the compliance screen's row) carries
+/// only the covering exception's id, because the screen looks it up in the
+/// list it already has. A report stands alone -- printed, or opened a year
+/// later -- so it carries the exception's owner, reason, expiry and who
+/// recorded it, not a key into a table that may not be there anymore.
+/// </remarks>
+public sealed record ComplianceReportFindingRow
+{
+    public required string ControlId { get; init; }
+
+    public required string ControlTitle { get; init; }
+
+    public required string Priority { get; init; }
+
+    public required string EntityId { get; init; }
+
+    public required string EntityName { get; init; }
+
+    public required FindingState State { get; init; }
+
+    /// <summary>Why nothing was concluded; set only when <see cref="State"/> is NotEvaluated.</summary>
+    public string? NotEvaluatedReason { get; init; }
+
+    public string? Observed { get; init; }
+
+    public required string Expected { get; init; }
+
+    public required DateTimeOffset FirstSeenUtc { get; init; }
+
+    public required DateTimeOffset LastEvaluatedUtc { get; init; }
+
+    /// <summary>
+    /// The host's source did not report in the cycle behind this verdict --
+    /// called out per row, never silently rolled into a passing count.
+    /// </summary>
+    public required bool Stale { get; init; }
+
+    public string? AcceptedBy { get; init; }
+
+    public DateTimeOffset? AcceptedAtUtc { get; init; }
+
+    public string? AcceptedReason { get; init; }
+
+    public string? ExceptionId { get; init; }
+
+    public string? ExceptionOwner { get; init; }
+
+    public string? ExceptionReason { get; init; }
+
+    public string? ExceptionCreatedBy { get; init; }
+
+    public DateTimeOffset? ExceptionCreatedAtUtc { get; init; }
+
+    public DateTimeOffset? ExceptionExpiresUtc { get; init; }
+}
+
+/// <summary>One verdict change from <c>compliance_transition</c>, as the report's change-history section shows it.</summary>
+public sealed record ComplianceReportTransitionRow
+{
+    public required string ControlId { get; init; }
+
+    /// <summary>
+    /// The raw entity id the transition was recorded against. The finding it
+    /// belonged to may since have left the evaluation -- its host retired, its
+    /// control dropped from a new catalogue release -- so a name is not always
+    /// resolvable; the detail section above, for entities still present, is
+    /// where a name is shown.
+    /// </summary>
+    public required string EntityId { get; init; }
+
+    /// <summary>Null when the finding was new at this change.</summary>
+    public ComplianceVerdict? From { get; init; }
+
+    /// <summary>Null when the finding left the evaluation at this change.</summary>
+    public ComplianceVerdict? To { get; init; }
+
+    public string? Observed { get; init; }
+
+    public required DateTimeOffset AtUtc { get; init; }
+}
+
+/// <summary>
+/// The compliance report: header, per-control summary, per-finding detail,
+/// removed exceptions, verdict history over a period, and the controls not
+/// evaluated at all.
+/// </summary>
+public sealed record ComplianceReportView
+{
+    public required DateTimeOffset GeneratedAtUtc { get; init; }
+
+    public required string CatalogueName { get; init; }
+
+    public required string CatalogueRelease { get; init; }
+
+    /// <summary>"All hosts", or what the caller scoped the report to.</summary>
+    public required string Scope { get; init; }
+
+    /// <summary>
+    /// When the most recent evaluation behind this report ran; null when
+    /// nothing has been evaluated yet. The single freshness date a printed
+    /// page can show for the report as a whole.
+    /// </summary>
+    public DateTimeOffset? LastEvaluatedUtc { get; init; }
+
+    /// <summary>How many findings in scope rest on a host whose source did not report in the last cycle.</summary>
+    public required int StaleCount { get; init; }
+
+    /// <summary>The hosts behind <see cref="StaleCount"/>, by name -- an auditor asks which ones, not only how many.</summary>
+    public required IReadOnlyList<string> StaleEntityNames { get; init; }
+
+    /// <summary>Every control the catalogue names, evaluated or not, with its counts.</summary>
+    public required IReadOnlyList<ComplianceControlView> Controls { get; init; }
+
+    public required FindingCountsView Totals { get; init; }
+
+    public required IReadOnlyList<ComplianceReportFindingRow> Findings { get; init; }
+
+    /// <summary>The exceptions standing now, in scope.</summary>
+    public required IReadOnlyList<ComplianceExceptionView> Exceptions { get; init; }
+
+    /// <summary>
+    /// Exceptions somebody withdrew -- audit evidence in their own right, kept
+    /// apart from the standing ones so a reader does not mistake one for the
+    /// other.
+    /// </summary>
+    public required IReadOnlyList<ComplianceExceptionView> RemovedExceptions { get; init; }
+
+    public required DateTimeOffset HistoryFromUtc { get; init; }
+
+    public required DateTimeOffset HistoryToUtc { get; init; }
+
+    /// <summary>Verdict changes in [<see cref="HistoryFromUtc"/>, <see cref="HistoryToUtc"/>], oldest first.</summary>
+    public required IReadOnlyList<ComplianceReportTransitionRow> History { get; init; }
 }

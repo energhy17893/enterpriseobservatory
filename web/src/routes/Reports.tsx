@@ -28,10 +28,14 @@ export function Reports() {
           </Card>
         </Link>
 
-        <Card className="h-full p-4 text-muted-foreground">
-          <div className="font-medium">Compliance report</div>
-          <div className="mt-1 text-sm">Auditor format. Coming soon.</div>
-        </Card>
+        <Link to="/reports/compliance">
+          <Card className="h-full p-4 hover:border-primary">
+            <div className="font-medium">Compliance report</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              Findings, exceptions and change history, in the format an auditor asks for. CSV and printable.
+            </div>
+          </Card>
+        </Link>
 
         <Card className="h-full p-4 text-muted-foreground">
           <div className="font-medium">Capacity report</div>
