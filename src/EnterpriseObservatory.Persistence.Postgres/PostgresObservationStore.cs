@@ -186,14 +186,92 @@ public sealed class PostgresObservationStore : IObservationStore
                 writer.Complete();
             }
 
-            using var merge = connection.CreateCommand();
-            merge.CommandText = """
-                INSERT INTO sample (series_id, at_utc, value)
-                SELECT series_id, at_utc, value FROM incoming
-                ON CONFLICT (series_id, at_utc) DO NOTHING;
-                """;
-            merge.ExecuteNonQuery();
+            // The earliest sample this append actually added, not the earliest
+            // it carried. Consecutive cycles re-send the same twenty-minute
+            // datastore window, and a duplicate that DO NOTHING discarded
+            // changes no bucket — counting it would drag every pass twenty
+            // minutes back for nothing.
+            long? earliest;
+
+            using (var merge = connection.CreateCommand())
+            {
+                merge.CommandText = """
+                    WITH added AS (
+                        INSERT INTO sample (series_id, at_utc, value)
+                        SELECT series_id, at_utc, value FROM incoming
+                        ON CONFLICT (series_id, at_utc) DO NOTHING
+                        RETURNING at_utc
+                    )
+                    SELECT MIN(at_utc) FROM added;
+                    """;
+                earliest = merge.ExecuteScalar() as long?;
+            }
+
+            if (earliest is { } seconds)
+            {
+                NoteLateSamples(connection, DateTimeOffset.FromUnixTimeSeconds(seconds));
+            }
         });
+    }
+
+    /// <summary>
+    /// Records that samples landed in a bucket the first tier has already folded.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Folding used to be forward-only: build every complete bucket above the
+    /// watermark, move the watermark, never look back. That was sound while a
+    /// sample's timestamp was the moment it was collected. Since samples carry
+    /// vCenter's own sample time it is not — datastores are read as historical
+    /// 300-second data over a twenty-minute window, backfill writes the samples
+    /// a gap missed, and a vCenter clock a few minutes out does the same — so a
+    /// sample routinely lands in a bucket that was summarised without it. It
+    /// then lived two days in raw and was never in the tiers kept for a month
+    /// and a quarter: history quietly thinner than what was collected.
+    /// </para>
+    /// <para>
+    /// Two designs close it. Re-folding a fixed lookback below the watermark on
+    /// every pass costs the lookback every pass whether anything arrived late or
+    /// not, and still loses whatever is later than the lookback — which the
+    /// hours-long backfill after an outage will be. Recording where the late
+    /// data starts costs nothing when nothing is late, re-folds exactly as far
+    /// back as needed, and survives a restart because it is a column written in
+    /// the same transaction as the samples it describes. This is the second.
+    /// </para>
+    /// <para>
+    /// The row lock is what makes it correct rather than nearly correct. A fold
+    /// holds this row for its whole transaction; taking it here, after the
+    /// samples are written and just before commit, means either this append
+    /// commits before the fold reads (and the fold sees the samples), or it
+    /// waits for the fold to commit and then compares against the watermark the
+    /// fold actually wrote. Without it, a sample could slip between a fold's
+    /// read and its watermark update — a race the two-minute grace used to make
+    /// merely unlikely. <c>FOR NO KEY UPDATE</c> rather than a shared lock so two
+    /// concurrent appends cannot deadlock upgrading it; they queue on it only
+    /// for the moment before commit.
+    /// </para>
+    /// <para>
+    /// Only the tier folded from raw is marked. The hourly tier's source is the
+    /// five-minute buckets, and it is the five-minute fold that knows when those
+    /// changed below the hourly watermark; see <see cref="Fold"/>. No row yet
+    /// means no fold has ever run, and the first one starts from the earliest
+    /// sample there is.
+    /// </para>
+    /// </remarks>
+    private static void NoteLateSamples(NpgsqlConnection connection, DateTimeOffset earliestAdded)
+    {
+        const SeriesResolution firstTier = SeriesResolution.FiveMinutes;
+
+        if (LockWatermark(connection, firstTier) is not { } mark)
+        {
+            return;
+        }
+
+        if (RefoldWindow.DirtyAfter(mark.CompletedTo, mark.DirtyFrom, earliestAdded, firstTier)
+            is { } dirty)
+        {
+            SetDirty(connection, firstTier, dirty);
+        }
     }
 
     /// <summary>
@@ -459,7 +537,8 @@ public sealed class PostgresObservationStore : IObservationStore
     }
 
     /// <summary>
-    /// Builds every complete bucket of one resolution that has not been built.
+    /// Builds every complete bucket of one resolution that has not been built,
+    /// and rebuilds those whose source has changed since they were.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -470,7 +549,30 @@ public sealed class PostgresObservationStore : IObservationStore
     /// </para>
     /// <para>
     /// Idempotent regardless: a bucket is computed from its sources rather than
-    /// accumulated into, so running twice writes the same numbers.
+    /// accumulated into, so running twice writes the same numbers. That is also
+    /// what makes re-folding safe: a bucket rebuilt because a late sample
+    /// arrived is replaced whole — min, max, sum, count and last recomputed
+    /// from everything its source now holds — never added to.
+    /// </para>
+    /// <para>
+    /// Not forward-only. A tier whose source changed below its watermark is
+    /// re-folded from the earliest changed bucket (<c>dirty_from_utc</c>, set
+    /// by <see cref="NoteLateSamples"/> for the five-minute tier and by the
+    /// five-minute fold for the hourly one), but never from further back than
+    /// its source is still fully retained: see <see cref="RefoldWindow.Floor"/>
+    /// for why going further would destroy data rather than recover it.
+    /// </para>
+    /// <para>
+    /// What that costs, on the measured estate (about 9,000 series, 26,600
+    /// samples a minute, a pass every five minutes). Nothing late: nothing
+    /// extra. Datastores' historical samples a few minutes behind: the
+    /// five-minute re-fold reaches one or two buckets further back, so a pass
+    /// reads 10-15 minutes of raw — roughly 270,000-400,000 rows instead of
+    /// 133,000 — and the hourly tier re-folds one hour of five-minute buckets
+    /// (about 108,000 rows) once, on the first pass after the hour turns. The
+    /// ceiling is the raw retention itself: a backfill reaching two days back
+    /// re-folds two days once, about 76 million samples, then the marker is
+    /// cleared.
     /// </para>
     /// </remarks>
     private int Fold(DateTimeOffset nowUtc, SeriesRetentionPolicy policy, SeriesResolution target)
@@ -484,8 +586,13 @@ public sealed class PostgresObservationStore : IObservationStore
 
         return _database.Write(connection =>
         {
-            var from = Watermark(connection, target)
-                ?? EarliestSource(connection, source, target);
+            // Locked for the whole pass, so an append noting a late sample
+            // either lands before this reads or waits and sees the watermark
+            // this writes. See NoteLateSamples.
+            var from = LockWatermark(connection, target) is { } mark
+                ? RefoldWindow.Start(
+                    mark.CompletedTo, mark.DirtyFrom, RefoldWindow.Floor(nowUtc, policy, target))
+                : EarliestSource(connection, source, target);
 
             if (from is not { } start || start >= completeTo)
             {
@@ -496,10 +603,42 @@ public sealed class PostgresObservationStore : IObservationStore
                 ? FoldFromSamples(connection, target, start, completeTo)
                 : FoldFromBuckets(connection, target, source, start, completeTo);
 
+            // The buckets just written are the next tier's source. If any lie
+            // below what that tier has already folded, it has to fold them
+            // again — this is how a late raw sample reaches the hourly tier.
+            // Nothing written means nothing changed, so nothing to mark.
+            if (written > 0)
+            {
+                foreach (var coarser in CoarserThan(target))
+                {
+                    MarkSourceChanged(connection, coarser, start);
+                }
+            }
+
             SetWatermark(connection, target, completeTo);
 
             return written;
         });
+    }
+
+    /// <summary>The tiers folded from this one.</summary>
+    private static IEnumerable<SeriesResolution> CoarserThan(SeriesResolution resolution) =>
+        new[] { SeriesResolution.FiveMinutes, SeriesResolution.OneHour }
+            .Where(r => SeriesResolutions.Source(r) == resolution);
+
+    /// <summary>Marks a tier dirty because its source changed from this point on.</summary>
+    private static void MarkSourceChanged(
+        NpgsqlConnection connection, SeriesResolution target, DateTimeOffset changedFrom)
+    {
+        if (LockWatermark(connection, target) is not { } mark)
+        {
+            return;
+        }
+
+        if (RefoldWindow.DirtyAfter(mark.CompletedTo, mark.DirtyFrom, changedFrom, target) is { } dirty)
+        {
+            SetDirty(connection, target, dirty);
+        }
     }
 
     private static int FoldFromSamples(
@@ -600,29 +739,71 @@ public sealed class PostgresObservationStore : IObservationStore
         return command.ExecuteNonQuery();
     }
 
-    private static DateTimeOffset? Watermark(NpgsqlConnection connection, SeriesResolution resolution)
+    /// <summary>
+    /// A tier's watermark and late-data marker, locked until the transaction ends.
+    /// </summary>
+    /// <remarks>
+    /// <c>FOR NO KEY UPDATE</c>: every caller may go on to update the row, and
+    /// it conflicts with itself, which is what serialises a fold against an
+    /// append noting a late sample. Under READ COMMITTED a caller that waited
+    /// is handed the version the other transaction committed, not the one it
+    /// would have seen before waiting.
+    /// </remarks>
+    private static (DateTimeOffset CompletedTo, DateTimeOffset? DirtyFrom)? LockWatermark(
+        NpgsqlConnection connection, SeriesResolution resolution)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT completed_to_utc FROM compaction WHERE resolution = @resolution;";
+        command.CommandText = """
+            SELECT completed_to_utc, dirty_from_utc FROM compaction
+            WHERE resolution = @resolution
+            FOR NO KEY UPDATE;
+            """;
         command.Parameters.AddWithValue("resolution", resolution.ToString());
 
-        return command.ExecuteScalar() is long seconds
-            ? DateTimeOffset.FromUnixTimeSeconds(seconds)
-            : null;
+        using var reader = command.ExecuteReader();
+
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return (
+            DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(0)),
+            reader.IsDBNull(1) ? null : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(1)));
     }
 
+    /// <summary>Moves the watermark and clears the late-data marker it has just dealt with.</summary>
+    /// <remarks>
+    /// Clearing is safe only because the row has been locked since the fold
+    /// read the marker: nothing can have lowered it in between.
+    /// </remarks>
     private static void SetWatermark(
         NpgsqlConnection connection, SeriesResolution resolution, DateTimeOffset completedTo)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO compaction (resolution, completed_to_utc)
-            VALUES (@resolution, @to)
-            ON CONFLICT (resolution) DO UPDATE SET completed_to_utc = EXCLUDED.completed_to_utc;
+            INSERT INTO compaction (resolution, completed_to_utc, dirty_from_utc)
+            VALUES (@resolution, @to, NULL)
+            ON CONFLICT (resolution) DO UPDATE SET
+                completed_to_utc = EXCLUDED.completed_to_utc,
+                dirty_from_utc = NULL;
             """;
 
         command.Parameters.AddWithValue("resolution", resolution.ToString());
         command.Parameters.AddWithValue("to", Seconds(completedTo));
+        command.ExecuteNonQuery();
+    }
+
+    private static void SetDirty(
+        NpgsqlConnection connection, SeriesResolution resolution, DateTimeOffset dirtyFrom)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE compaction SET dirty_from_utc = @dirty WHERE resolution = @resolution;
+            """;
+
+        command.Parameters.AddWithValue("resolution", resolution.ToString());
+        command.Parameters.AddWithValue("dirty", Seconds(dirtyFrom));
         command.ExecuteNonQuery();
     }
 
@@ -951,6 +1132,112 @@ public static class SeriesBinding
         }
 
         return needed;
+    }
+}
+
+/// <summary>
+/// Where a fold has to start once late data has arrived, separated from the SQL.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Its own type for the reason <see cref="CompactionSequence"/> and
+/// <see cref="SeriesBinding"/> are: this is the part that can be silently wrong
+/// in both directions — too shallow and a late sample never reaches the long
+/// tiers, too deep and a good bucket is overwritten with a worse one — and
+/// inside the store it could only be checked against a live server.
+/// </para>
+/// <para>
+/// Every timestamp is in the tier's own bucket grid. A marker is the start of
+/// the earliest bucket known to have changed, so a re-fold always begins on a
+/// boundary and rebuilds whole buckets.
+/// </para>
+/// </remarks>
+public static class RefoldWindow
+{
+    /// <summary>
+    /// The earliest bucket of <paramref name="target"/> that may be rebuilt.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The first bucket that starts inside the source tier's retention. It is
+    /// not a cost limit first; it is a correctness one. A re-fold replaces a
+    /// bucket with what its source holds NOW. Once retention has started
+    /// deleting a bucket's source rows, that is part of what it held when the
+    /// bucket was built — so re-folding it because one late sample arrived
+    /// would swap a summary of three hundred seconds of samples for a summary
+    /// of one. Every earlier sweep deleted only what was older than its own
+    /// "now minus retention", which is never later than this one's, so a
+    /// bucket starting at or after this one's cutoff still has every source
+    /// row it ever had.
+    /// </para>
+    /// <para>
+    /// So a sample older than raw retention when it arrives is not folded: the
+    /// bucket it belongs to was folded without it, and it is deleted with the
+    /// rest of raw's aged samples by the same sweep. Recovering it would need a
+    /// merge into the existing bucket rather than a rebuild, and a merge is not
+    /// idempotent — a repeated pass would count it twice. Backfill after an
+    /// outage longer than raw retention is out of this mechanism's reach for
+    /// the same reason, and would need its own design.
+    /// </para>
+    /// <para>
+    /// It is also the ceiling on cost: however far back a marker points, a
+    /// pass re-folds at most the retained source window once.
+    /// </para>
+    /// </remarks>
+    public static DateTimeOffset Floor(
+        DateTimeOffset nowUtc, SeriesRetentionPolicy policy, SeriesResolution target)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        var source = SeriesResolutions.Source(target)
+            ?? throw new ArgumentOutOfRangeException(nameof(target), target, "Raw is not folded.");
+
+        var oldestKept = nowUtc - policy.For(source);
+        var start = SeriesResolutions.BucketStart(oldestKept, target);
+
+        return start < oldestKept ? start + SeriesResolutions.Width(target) : start;
+    }
+
+    /// <summary>Where a pass starts, given the watermark and any late-data marker.</summary>
+    /// <param name="completedTo">How far the tier has been folded.</param>
+    /// <param name="dirtyFrom">The earliest bucket whose source has changed since, if any.</param>
+    /// <param name="floor">See <see cref="Floor"/>.</param>
+    public static DateTimeOffset Start(
+        DateTimeOffset completedTo, DateTimeOffset? dirtyFrom, DateTimeOffset floor)
+    {
+        if (dirtyFrom is not { } dirty || dirty >= completedTo)
+        {
+            return completedTo;
+        }
+
+        var from = dirty < floor ? floor : dirty;
+
+        return from < completedTo ? from : completedTo;
+    }
+
+    /// <summary>
+    /// The marker to store after source data from <paramref name="changedFrom"/>
+    /// on has been written, or <see langword="null"/> when it does not move.
+    /// </summary>
+    /// <remarks>
+    /// Null for anything at or above the watermark — the next pass reaches it
+    /// anyway — and when an earlier marker already covers it, which is the
+    /// steady state and the reason this writes nothing in the common case.
+    /// </remarks>
+    public static DateTimeOffset? DirtyAfter(
+        DateTimeOffset completedTo,
+        DateTimeOffset? dirtyFrom,
+        DateTimeOffset changedFrom,
+        SeriesResolution target)
+    {
+        var bucket = SeriesResolutions.BucketStart(changedFrom, target);
+
+        if (bucket >= completedTo)
+        {
+            return null;
+        }
+
+        return dirtyFrom is { } existing && existing <= bucket ? null : bucket;
     }
 }
 
