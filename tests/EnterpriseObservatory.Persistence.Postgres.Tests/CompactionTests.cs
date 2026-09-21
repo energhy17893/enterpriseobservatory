@@ -323,6 +323,212 @@ public class CompactionTests : IDisposable
     }
 
     [SkippableFact]
+    public void A_sample_arriving_after_its_bucket_was_folded_reaches_both_tiers()
+    {
+        RequireDatabase();
+
+        // Normal operation since samples carry vCenter's own time: datastores
+        // arrive as historical 300 s data up to twenty minutes old, and
+        // backfill writes what a gap missed. Folding used to be forward-only,
+        // so such a sample stayed in raw for two days and never reached the
+        // tiers kept for a month and a quarter.
+        var store = Store();
+        var entity = Subject("late");
+
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0, 10, 20, 30);
+        store.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+
+        // Both tiers have folded T0's buckets. Now the late one, a peak.
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0.AddMinutes(3), 500);
+
+        // Across a restart: the marker is on disk, not in this instance.
+        _live.Restart();
+        var restarted = new PostgresObservationStore(_live.Database);
+
+        var report = restarted.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+        Assert.True(report.BucketsWritten > 0);
+
+        var five = Assert.Single(
+            Read(restarted, entity, T0, T0.AddMinutes(5), SeriesResolution.FiveMinutes).Points);
+        var hour = Assert.Single(
+            Read(restarted, entity, T0, T0.AddHours(1), SeriesResolution.OneHour).Points);
+
+        // Rebuilt whole, not added to: every one of the five numbers reflects
+        // all four samples exactly once.
+        foreach (var bucket in new[] { five, hour })
+        {
+            Assert.Equal(500, bucket.Max);
+            Assert.Equal(10, bucket.Min);
+            Assert.Equal(560, bucket.Sum);
+            Assert.Equal(4, bucket.Count);
+            Assert.Equal(500, bucket.Last);
+        }
+    }
+
+    [SkippableFact]
+    public void Re_folding_after_a_late_sample_is_idempotent()
+    {
+        RequireDatabase();
+
+        var store = Store();
+        var entity = Subject("late-twice");
+
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0, 4, 8, 6);
+        store.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0.AddMinutes(2), 7);
+
+        store.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+        var firstFive = Read(store, entity, T0, T0.AddMinutes(5), SeriesResolution.FiveMinutes).Points;
+        var firstHour = Read(store, entity, T0, T0.AddHours(1), SeriesResolution.OneHour).Points;
+
+        // The marker is cleared by the pass that dealt with it, so a second
+        // pass has nothing to do and the numbers are the same.
+        var second = store.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+
+        Assert.Equal(0, second.BucketsWritten);
+        Assert.Equal(firstFive, Read(store, entity, T0, T0.AddMinutes(5), SeriesResolution.FiveMinutes).Points);
+        Assert.Equal(firstHour, Read(store, entity, T0, T0.AddHours(1), SeriesResolution.OneHour).Points);
+        Assert.Equal(4, Assert.Single(firstHour).Count);
+    }
+
+    [SkippableFact]
+    public void A_sample_sent_again_does_not_trigger_a_re_fold()
+    {
+        RequireDatabase();
+
+        // Consecutive cycles re-send the same twenty-minute datastore window.
+        // A duplicate changes no bucket, so it must not drag the next pass
+        // twenty minutes back — only samples actually added count.
+        var store = Store();
+        var entity = Subject("resent");
+
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0, 1, 2, 3);
+        store.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0, 1, 2, 3);
+
+        Assert.Equal(0, store.Compact(T0.AddHours(2), new SeriesRetentionPolicy()).BucketsWritten);
+    }
+
+    [SkippableFact]
+    public void A_sample_older_than_raw_retention_does_not_replace_its_bucket()
+    {
+        RequireDatabase();
+
+        // Documented, not accidental: by the time it arrives, retention has
+        // deleted the raw samples its bucket was built from, so rebuilding the
+        // bucket would replace a summary of three samples with a summary of
+        // one. It is left out of the tiers and aged out of raw by the same
+        // sweep. See RefoldWindow.Floor.
+        var store = Store();
+        var entity = Subject("too-late");
+
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0, 10, 20, 30);
+        store.Compact(T0.AddDays(3), new SeriesRetentionPolicy());
+
+        AppendEvery(store, entity, TimeSpan.FromSeconds(30), T0.AddMinutes(3), 500);
+        store.Compact(T0.AddDays(3), new SeriesRetentionPolicy());
+
+        var five = Assert.Single(
+            Read(store, entity, T0, T0.AddMinutes(5), SeriesResolution.FiveMinutes).Points);
+        var hour = Assert.Single(
+            Read(store, entity, T0, T0.AddHours(1), SeriesResolution.OneHour).Points);
+
+        Assert.Equal((30d, 3), (five.Max, five.Count));
+        Assert.Equal((30d, 3), (hour.Max, hour.Count));
+        Assert.Empty(Read(store, entity, T0, T0.AddMinutes(5), SeriesResolution.Raw).Points);
+    }
+
+    [SkippableFact]
+    public void A_large_dirty_range_is_rebuilt_in_bounded_slices_with_exact_aggregates()
+    {
+        RequireDatabase();
+
+        // A backfill after downtime dirties hours at once. Rebuilt in one
+        // transaction it would hold the watermark lock — which an append takes
+        // before commit — for as long as the whole range takes, and a cycle
+        // that waits past its thirty-second timeout is dropped. So the range
+        // is rebuilt a bounded number of buckets at a time.
+        var slices = new List<FoldSlice>();
+        var store = new PostgresObservationStore(_live.Database)
+        {
+            BucketsPerSlice = 2,
+            SliceCommitted = slices.Add,
+        };
+        var entity = Subject("sliced");
+
+        // Three hours, one sample every five minutes, all folded.
+        AppendEvery(store, entity, TimeSpan.FromMinutes(5), T0, [.. Enumerable.Repeat(1d, 36)]);
+        store.Compact(T0.AddHours(4), new SeriesRetentionPolicy());
+
+        // Then a second sample into every one of those buckets, late.
+        AppendEvery(store, entity, TimeSpan.FromMinutes(5), T0.AddMinutes(1), [.. Enumerable.Repeat(3d, 36)]);
+        slices.Clear();
+        store.Compact(T0.AddHours(4), new SeriesRetentionPolicy());
+
+        var fives = slices.Where(s => s.Resolution == SeriesResolution.FiveMinutes).ToList();
+
+        Assert.True(fives.Count >= 18, $"Only {fives.Count} five-minute slices.");
+        // A slice that found nothing to fold may skip the empty stretch after
+        // it in one step; every slice that rebuilt something stays bounded.
+        Assert.All(slices.Where(s => s.BucketsWritten > 0), s => Assert.True(
+            s.ToUtc - s.FromUtc <= SeriesResolutions.Width(s.Resolution) * 2,
+            $"A {s.Resolution} slice spanned {s.FromUtc:O} to {s.ToUtc:O}."));
+
+        var buckets = Read(store, entity, T0, T0.AddHours(3), SeriesResolution.FiveMinutes).Points;
+
+        Assert.Equal(36, buckets.Count);
+        Assert.All(buckets, b => Assert.Equal((2, 4d, 3d), (b.Count, b.Sum, b.Last)));
+
+        var hours = Read(store, entity, T0, T0.AddHours(3), SeriesResolution.OneHour).Points;
+
+        Assert.Equal(3, hours.Count);
+        Assert.All(hours, h => Assert.Equal((24, 48d, 1d, 3d), (h.Count, h.Sum, h.Min, h.Max)));
+    }
+
+    [SkippableFact]
+    public void An_append_between_slices_is_not_blocked_and_is_folded_by_the_same_pass()
+    {
+        RequireDatabase();
+
+        // The lock is released between slices, so a cycle arriving mid-fold
+        // commits at once instead of waiting for the whole range. This append
+        // runs from the slice callback on the same thread: were the lock still
+        // held it could never finish. Its sample lands behind where the fold
+        // has got to, lowers the marker again, and the same pass goes back
+        // for it.
+        var entity = Subject("between");
+        var appended = false;
+        PostgresObservationStore? store = null;
+
+        store = new PostgresObservationStore(_live.Database)
+        {
+            BucketsPerSlice = 1,
+            SliceCommitted = slice =>
+            {
+                if (!appended && slice.Resolution == SeriesResolution.FiveMinutes
+                    && slice.FromUtc >= T0.AddMinutes(30))
+                {
+                    appended = true;
+                    AppendEvery(store!, entity, TimeSpan.FromSeconds(30), T0.AddMinutes(2), 900);
+                }
+            },
+        };
+
+        AppendEvery(store, entity, TimeSpan.FromMinutes(5), T0, [.. Enumerable.Repeat(1d, 12)]);
+        store.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+
+        Assert.True(appended);
+
+        var first = Read(store, entity, T0, T0.AddMinutes(5), SeriesResolution.FiveMinutes).Points;
+        Assert.Equal((2, 900d), (Assert.Single(first).Count, first[0].Max));
+
+        var hour = Assert.Single(Read(store, entity, T0, T0.AddHours(1), SeriesResolution.OneHour).Points);
+        Assert.Equal((13, 900d), (hour.Count, hour.Max));
+    }
+
+    [SkippableFact]
     public void A_watermark_stops_the_second_pass_redoing_the_first()
     {
         RequireDatabase();
