@@ -79,7 +79,7 @@ public class ComplianceEvaluationTests
     public void A_control_that_is_not_a_single_setting_is_carried_with_its_reason()
     {
         var bound = Assert.Single(ComplianceEvaluation.Bind(Catalogue(
-            Control("esx-9.lockdown-mode", "N/A", "lockdownDisabled", "lockdownNormal"))));
+            Control("esx-9.updates", "N/A", "Downlevel", "Current"))));
 
         Assert.False(bound.IsEvaluated);
         Assert.Contains("not a single setting", bound.NotEvaluatedReason, StringComparison.Ordinal);
