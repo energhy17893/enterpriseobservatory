@@ -143,6 +143,25 @@ public class ReportRendererTests
             () => renderer.RenderAsync((ReportKind)999, ReportFrequency.Daily, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task The_capacity_report_attaches_the_same_csv_the_download_endpoint_builds()
+    {
+        var content = await Renderer().RenderAsync(
+            ReportKind.Capacity, ReportFrequency.Weekly, CancellationToken.None);
+
+        Assert.Equal($"Enterprise Observatory — capacity report {Now:yyyy-MM-dd}", content.Subject);
+        var attachment = Assert.Single(content.Attachments);
+        Assert.StartsWith("capacity-", attachment.FileName, StringComparison.Ordinal);
+        Assert.Equal("text/csv", attachment.ContentType);
+    }
+
+    [Fact]
+    public async Task A_compliance_subscription_without_the_compliance_engine_fails_visibly()
+    {
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => Renderer().RenderAsync(ReportKind.Compliance, ReportFrequency.Daily, CancellationToken.None));
+    }
+
     // --- fixtures -----------------------------------------------------------
 
     private void GivenAlerts(params AlertInstance[] alerts) => _alerts.Set(alerts);

@@ -208,6 +208,19 @@ function Editor({
 
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="block text-sm">
+            <span className="font-medium">Report</span>
+            <select
+              value={command.kind}
+              onChange={(e) => set('kind', e.target.value as ReportSubscriptionCommand['kind'])}
+              className="w-full rounded-md border border-border bg-page px-2 py-1"
+            >
+              <option value="Alerts">Alerts</option>
+              <option value="Compliance">Compliance</option>
+              <option value="Capacity">Capacity</option>
+            </select>
+          </label>
+
+          <label className="block text-sm">
             <span className="font-medium">Frequency</span>
             <select
               value={command.frequency}
