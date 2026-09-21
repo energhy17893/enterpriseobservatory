@@ -259,6 +259,13 @@ public sealed record MonitoringOptions
     public Analysis.RemoteLoggingPolicy RemoteLogging { get; init; } =
         Analysis.RemoteLoggingPolicy.Default;
 
+    /// <summary>
+    /// How far back a datastore's growth is read, and how near a fill date is
+    /// an alert. See roadmap M4.3.
+    /// </summary>
+    public Analysis.DatastoreTimeToFullPolicy DatastoreTimeToFull { get; init; } =
+        Analysis.DatastoreTimeToFullPolicy.Default;
+
     public FlapPolicy Flap { get; init; } = FlapPolicy.Default;
 
     public EntityRetentionPolicy EntityRetention { get; init; } = EntityRetentionPolicy.Default;

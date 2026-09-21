@@ -1,4 +1,5 @@
 using EnterpriseObservatory.Api.Contracts;
+using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
@@ -205,6 +206,68 @@ public sealed class ReadModel(
                     .OrderByDescending(a => a.Severity)
                     .Select(a => ToView(a, graph)),
             ],
+            TimeToFull = entity.Kind == EntityKind.Datastore ? TimeToFull(entityId) : null,
+        };
+    }
+
+    /// <summary>
+    /// The same estimate the fill-date rule makes, from the same history.
+    /// </summary>
+    /// <remarks>
+    /// Computed on request from the stored series rather than remembered from
+    /// the last cycle: the rule keeps nothing, and a copy of its answer would
+    /// be a second model. The capacity is the latest one recorded, where the
+    /// rule has the reading of the cycle it runs in; the two agree whenever
+    /// the capacity has not just changed.
+    /// </remarks>
+    private TimeToFullView TimeToFull(EntityId datastore)
+    {
+        var now = _clock.UtcNow;
+        var retention = _options.Retention;
+
+        if (DatastoreTimeToFull.LatestCapacity(_observations, datastore, now, retention) is not { } capacity)
+        {
+            return new TimeToFullView
+            {
+                IsForecast = false,
+                PointsUsed = 0,
+                Reason = "NoCapacity",
+                Summary =
+                    $"Cannot estimate a fill date: no capacity reading was recorded in the last " +
+                    $"{retention.Raw.TotalDays:0} days.",
+            };
+        }
+
+        var estimate = DatastoreTimeToFull.Read(
+            _observations, datastore, capacity, now, _options.DatastoreTimeToFull, retention);
+
+        var summary = DatastoreTimeToFull.Explain(estimate);
+        summary = char.ToUpperInvariant(summary[0]) + summary[1..] + (summary.EndsWith('.') ? "" : ".");
+
+        return estimate switch
+        {
+            TimeToFullResult.Forecast f => new TimeToFullView
+            {
+                IsForecast = true,
+                FullAtUtc = f.FullAtUtc,
+                Days = f.Days,
+                GrowthBytesPerDay = f.SlopePerDay,
+                WindowFromUtc = f.Window.FromUtc,
+                WindowToUtc = f.Window.ToUtc,
+                PointsUsed = f.PointsUsed,
+                Summary = summary,
+            },
+            TimeToFullResult.Refusal r => new TimeToFullView
+            {
+                IsForecast = false,
+                GrowthBytesPerDay = r.SlopePerDay,
+                WindowFromUtc = r.Window?.FromUtc,
+                WindowToUtc = r.Window?.ToUtc,
+                PointsUsed = r.PointsUsed,
+                Reason = r.Reason.ToString(),
+                Summary = summary,
+            },
+            _ => throw new InvalidOperationException("An estimate is a forecast or a refusal."),
         };
     }
 

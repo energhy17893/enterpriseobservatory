@@ -5,7 +5,7 @@ import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/co
 import { SeriesChart } from '@/components/SeriesChart'
 import { AlertActions } from '@/components/AlertActions'
 import { ago, healthStatus, severityStatus } from '@/lib/ui'
-import type { RelationshipKind, RelationshipView } from '@/api/types'
+import type { RelationshipKind, RelationshipView, TimeToFullView } from '@/api/types'
 
 /**
  * How an edge reads in a sentence, in each direction.
@@ -57,7 +57,7 @@ export function EntityDetail() {
 
   if (isPending) return <Loading what="the entity" />
 
-  const { entity, marks, relationships, alerts } = data
+  const { entity, marks, relationships, alerts, timeToFull } = data
 
   return (
     <div className="space-y-6">
@@ -124,6 +124,13 @@ export function EntityDetail() {
         )}
       </section>
 
+      {timeToFull && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-medium">Time to full</h2>
+          <TimeToFull estimate={timeToFull} />
+        </section>
+      )}
+
       <section className="space-y-2">
         <h2 className="text-sm font-medium">Measurements</h2>
         <SeriesChart entityId={entity.id} />
@@ -174,6 +181,66 @@ export function EntityDetail() {
       )}
     </div>
   )
+}
+
+/**
+ * When a datastore fills at its current growth, or why that cannot be said.
+ *
+ * A refusal is shown as an answer, never hidden: "not filling" and "not
+ * computed" must not look the same. And a date is never shown without the
+ * window it was measured over — a days-to-full without its window is not a
+ * number.
+ */
+function TimeToFull({ estimate }: { estimate: TimeToFullView }) {
+  if (!estimate.isForecast) {
+    return (
+      <Card className="p-3 text-sm">
+        <span className="font-medium">Cannot estimate:</span>{' '}
+        <span className="text-muted-foreground">{refusal(estimate.summary)}</span>
+        {estimate.reason && (
+          <div className="mt-1">
+            <Identifier>{estimate.reason}</Identifier>
+          </div>
+        )}
+      </Card>
+    )
+  }
+
+  const days = estimate.days ?? 0
+  const date = estimate.fullAtUtc ? estimate.fullAtUtc.slice(0, 10) : '—'
+
+  return (
+    <Card className="p-3 text-sm">
+      <div>
+        <span className="font-medium">
+          Fills in {days.toFixed(days < 10 ? 1 : 0)} days (on {date})
+        </span>
+        , based on {windowText(estimate)}
+      </div>
+      {estimate.growthBytesPerDay !== null && (
+        <div className="mt-1 text-muted-foreground">
+          Growing {(estimate.growthBytesPerDay / 1024 ** 3).toFixed(2)} GB a day at the current
+          trend.
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function windowText(estimate: TimeToFullView): string {
+  if (!estimate.windowFromUtc || !estimate.windowToUtc) return 'no history'
+
+  const from = new Date(estimate.windowFromUtc)
+  const to = new Date(estimate.windowToUtc)
+  const spanDays = (to.getTime() - from.getTime()) / 86_400_000
+
+  return `${spanDays.toFixed(1)} days of history (${estimate.windowFromUtc.slice(0, 10)} to ${estimate.windowToUtc.slice(0, 10)}, ${estimate.pointsUsed} points)`
+}
+
+/** The server's sentence without its "Cannot estimate a fill date:" lead-in. */
+function refusal(summary: string): string {
+  const lead = 'Cannot estimate a fill date: '
+  return summary.startsWith(lead) ? summary.slice(lead.length) : summary
 }
 
 function Connection({ relationship }: { relationship: RelationshipView }) {

@@ -104,6 +104,22 @@ export interface EntityDetailView {
   marks: IdentityMarkView[]
   relationships: RelationshipView[]
   alerts: AlertView[]
+  /** Datastores only: a fill date with its window, or why there is none. */
+  timeToFull?: TimeToFullView | null
+}
+
+export interface TimeToFullView {
+  isForecast: boolean
+  fullAtUtc: string | null
+  days: number | null
+  growthBytesPerDay: number | null
+  windowFromUtc: string | null
+  windowToUtc: string | null
+  pointsUsed: number
+  /** Machine-readable refusal reason, e.g. TooFewPoints; null on a forecast. */
+  reason: string | null
+  /** The sentence the server says, forecast or refusal. */
+  summary: string
 }
 
 export interface CollectorView {

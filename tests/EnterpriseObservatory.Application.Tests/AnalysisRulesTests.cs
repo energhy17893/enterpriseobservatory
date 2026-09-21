@@ -60,6 +60,7 @@ public class AnalysisRulesTests
                 StoragePathRedundancy.RuleId,
                 RemoteLogging.RuleId,
                 EventAlerts.RuleId,
+                DatastoreTimeToFull.RuleId,
                 CollectionCoverage.RuleId,
             ],
             AnalysisRules.For(RuleScope.Inventory).Select(r => r.RuleId));

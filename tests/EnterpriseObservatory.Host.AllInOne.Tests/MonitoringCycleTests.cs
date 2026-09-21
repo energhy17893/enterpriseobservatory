@@ -1273,6 +1273,59 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
+    public async Task The_fill_date_rule_is_reached_by_the_inventory_cycle_and_reads_the_history()
+    {
+        // Roadmap M4.3. Dropping the registration would leave every test in
+        // DatastoreTimeToFullTests green and the product silent about a volume
+        // that fills on Friday. The history is recorded the way the cycle
+        // records it -- as capacity readings -- and the cycle's own reading
+        // supplies the capacity, so this passes only if the rule is reached,
+        // is given this cycle's readings and reads the store.
+        const double gb = 1024d * 1024 * 1024;
+        var datastore = new EntityId("vc-1:datastore-41");
+
+        _observations.Append(
+        [
+            .. Enumerable.Range(0, 20).Select(i => CapacityCounters.Reading(
+                datastore, CapacityCounters.DatastoreUsed, (10 + 2 * i) * gb, T0.AddDays(i - 20), "vc-1")),
+        ]);
+
+        var cycle = Cycle();
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot(
+                "vc-1",
+                _clock.UtcNow,
+                entities: [Node(datastore.Value, EntityKind.Datastore, "vmfs01")]) with
+            {
+                Observations =
+                [
+                    CapacityCounters.Reading(
+                        datastore, CapacityCounters.DatastoreCapacity, 60 * gb, _clock.UtcNow, "vc-1"),
+                    CapacityCounters.Reading(
+                        datastore, CapacityCounters.DatastoreFree, 10 * gb, _clock.UtcNow, "vc-1"),
+                    CapacityCounters.Reading(
+                        datastore, CapacityCounters.DatastoreUsed, 50 * gb, _clock.UtcNow, "vc-1"),
+                ],
+            },
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+
+        var result = await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        // 2 GB a day, 10 GB left: five days, inside the critical week.
+        var alert = Assert.Single(result.Visible, a => a.Title == DatastoreTimeToFull.FillingTitle);
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+        Assert.Equal(datastore, alert.Entity);
+        Assert.Contains("days of history", alert.Description, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
+    }
+
+    [Fact]
     public async Task The_coverage_rule_is_reached_by_the_inventory_cycle()
     {
         // The rule that reports on the product rather than the estate, and
