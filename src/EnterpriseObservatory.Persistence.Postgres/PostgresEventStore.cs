@@ -172,28 +172,75 @@ public sealed class PostgresEventStore : IEventStore
 
             while (reader.Read())
             {
-                events.Add(new SourceEvent
-                {
-                    SourceInstanceId = reader.GetString(0),
-                    Key = reader.GetInt64(1),
-                    CreatedAtUtc = PgValues.ReadTime(reader, 2),
-                    ChainId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
-                    EventClass = reader.GetString(4),
-                    TypeId = reader.GetString(5),
-                    Severity = PgValues.ReadTextOrNull(reader, 6),
-                    Message = reader.GetString(7),
-                    UserName = PgValues.ReadTextOrNull(reader, 8),
-                    DatacenterName = PgValues.ReadTextOrNull(reader, 9),
-                    ComputeResource = Ref(reader, 10),
-                    Host = Ref(reader, 12),
-                    VirtualMachine = Ref(reader, 14),
-                    Datastore = Ref(reader, 16),
-                });
+                events.Add(Row(reader));
             }
 
             return events;
         });
     }
+
+    public IReadOnlyList<SourceEvent> OfTypes(IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc)
+    {
+        ArgumentNullException.ThrowIfNull(typeIds);
+
+        if (typeIds.Count == 0)
+        {
+            return [];
+        }
+
+        // Case-folded on both sides because vCenter's own catalogue is not
+        // consistent about case (com.vmware.vc.HA.* beside com.vmware.vc.ha.*).
+        // The time bound is what uses ix_source_event_created; the type test
+        // then runs over one window's rows, not thirty days of them.
+        var folded = typeIds.Select(t => t.ToUpperInvariant()).Distinct(StringComparer.Ordinal).ToArray();
+
+        return _database.Read(connection =>
+        {
+            using var command = PgValues.Command(connection, """
+                SELECT source_instance_id, event_key, created_at_utc, chain_id,
+                       event_class, type_id, severity, message, user_name, datacenter_name,
+                       compute_resource_ref, compute_resource_name, host_ref, host_name,
+                       vm_ref, vm_name, datastore_ref, datastore_name
+                FROM source_event
+                WHERE created_at_utc >= @since AND upper(type_id) = ANY(@types)
+                ORDER BY created_at_utc DESC, event_key DESC
+                LIMIT @limit;
+                """);
+
+            command.BindTime("since", createdSinceUtc);
+            command.Bind("types", folded);
+            command.Bind("limit", EventCollectionPipeline.MaxMatching);
+
+            using var reader = command.ExecuteReader();
+            var events = new List<SourceEvent>();
+
+            while (reader.Read())
+            {
+                events.Add(Row(reader));
+            }
+
+            return events;
+        });
+    }
+
+    /// <summary>One row, in the column order both reads select.</summary>
+    private static SourceEvent Row(NpgsqlDataReader reader) => new()
+    {
+        SourceInstanceId = reader.GetString(0),
+        Key = reader.GetInt64(1),
+        CreatedAtUtc = PgValues.ReadTime(reader, 2),
+        ChainId = reader.IsDBNull(3) ? null : reader.GetInt64(3),
+        EventClass = reader.GetString(4),
+        TypeId = reader.GetString(5),
+        Severity = PgValues.ReadTextOrNull(reader, 6),
+        Message = reader.GetString(7),
+        UserName = PgValues.ReadTextOrNull(reader, 8),
+        DatacenterName = PgValues.ReadTextOrNull(reader, 9),
+        ComputeResource = Ref(reader, 10),
+        Host = Ref(reader, 12),
+        VirtualMachine = Ref(reader, 14),
+        Datastore = Ref(reader, 16),
+    };
 
     public int Prune(DateTimeOffset createdBeforeUtc) =>
         _database.Write(connection =>

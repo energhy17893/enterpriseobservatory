@@ -67,8 +67,19 @@ public sealed class MonitoringCycle(
     IAlertNotifier notifier,
     IObservationStore observations,
     IMaintenanceWindowStore maintenance,
-    IClock clock)
+    IClock clock,
+    IEventStore? events = null)
 {
+    /// <summary>
+    /// Where collected vCenter events are read from, for the event rule.
+    /// </summary>
+    /// <remarks>
+    /// Optional, and last, so that a cycle composed without events — the
+    /// tests that predate M2.2 — is unchanged. The host registers one; a cycle
+    /// composed without it simply has no event rule.
+    /// </remarks>
+    private readonly IEventStore? _events = events;
+
     private readonly InventoryCollectionPipeline _inventory =
         inventoryPipeline ?? throw new ArgumentNullException(nameof(inventoryPipeline));
 
@@ -195,6 +206,23 @@ public sealed class MonitoringCycle(
                 Analysis.RemoteLogging.RuleId,
                 () => Analysis.RemoteLogging.Evaluate(
                     [.. graph.Active], options.RemoteLogging)),
+
+            // vCenter's own announcements — HA, storage connectivity, uplinks.
+            // On this rhythm because events are collected on it, and in this
+            // scope because the rule re-derives every open condition from the
+            // stored events each time: reconciliation then holds one alert per
+            // fingerprint instead of one per cycle. The worker collects events
+            // after this cycle, so what is read here is the previous read's —
+            // one inventory interval of latency, until the worker reads events
+            // before inventory rather than after it.
+            .. Analysis.GuardedRule.Run(
+                Analysis.EventAlerts.RuleId,
+                () => _events is null
+                    ? []
+                    : Analysis.EventAlerts.Evaluate(
+                        Analysis.EventAlerts.Read(_events, now, options.EventAlerts),
+                        now,
+                        options.EventAlerts)),
 
             // Not a rule about the estate but a rule about this product: what
             // it managed to read. It goes last because everything above it is

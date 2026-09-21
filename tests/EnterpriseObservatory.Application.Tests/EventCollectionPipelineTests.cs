@@ -75,6 +75,8 @@ public class EventCollectionPipelineTests
             PrunedBefore = createdBeforeUtc;
             return 0;
         }
+
+        public IReadOnlyList<SourceEvent> OfTypes(IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 
     [Fact]

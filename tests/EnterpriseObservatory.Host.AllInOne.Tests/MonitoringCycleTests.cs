@@ -1668,6 +1668,73 @@ public class MonitoringCycleTests : IDisposable
         // could be satisfied by the guard rather than the wire without this.
         Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
     }
+
+    [Fact]
+    public async Task A_stored_vcenter_event_opens_an_alert_once_and_its_clear_resolves_it()
+    {
+        // The event rule reads the event store, not the snapshot. Wired
+        // without the store it compiles, runs and finds nothing forever; wired
+        // to read only new events it would raise once and be resolved on the
+        // very next cycle. So: two cycles on the same stored event must keep
+        // one alert and notify once, and the restoration must close it.
+        var events = new InMemoryEventStore();
+        var cycle = new MonitoringCycle(
+            new InventoryCollectionPipeline(_clock),
+            new ObservationCollectionPipeline(_clock),
+            _graphs,
+            _alerts,
+            _health,
+            _coverage,
+            _notifier,
+            _observations,
+            _maintenance,
+            _clock,
+            events);
+
+        SourceEvent Storage(long key, string type, string message) => new()
+        {
+            Key = key,
+            CreatedAtUtc = _clock.UtcNow.AddMinutes(-1),
+            EventClass = "EventEx",
+            TypeId = type,
+            Severity = "error",
+            Message = message,
+            Host = new EventObjectRef { MoRef = "host-1", Name = "esx01" },
+        };
+
+        events.Record(
+            "vc-1",
+            [Storage(1, "esx.problem.storage.connectivity.lost",
+                "Lost connectivity to storage device naa.600a0b80. Path vmhba64:C4:T0:L0 is down.")],
+            complete: true,
+            _clock.UtcNow);
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow),
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        var second = await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        var alert = Assert.Single(second.Visible, a => a.Title == "Storage device connectivity lost");
+        Assert.Equal(new EntityId("vc-1:host-1"), alert.Entity);
+        Assert.Single(_notifier.Dispatched, a => a.Title == "Storage device connectivity lost");
+        Assert.DoesNotContain(second.Visible, a => a.Title == "Analysis rule failed");
+
+        events.Record(
+            "vc-1",
+            [Storage(2, "esx.clear.storage.connectivity.restored",
+                "Connectivity to storage device naa.600a0b80 (Datastores: 'ds1') restored. Path vmhba64:C4:T0:L0 is active again.")],
+            complete: true,
+            _clock.UtcNow);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+
+        var third = await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.DoesNotContain(third.Visible, a => a.Title == "Storage device connectivity lost");
+    }
 }
 
 /// <summary>
