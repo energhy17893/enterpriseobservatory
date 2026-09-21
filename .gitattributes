@@ -17,6 +17,10 @@
 *.js      text
 *.md      text
 
+# Satıcıdan olduğu gibi alınan kataloglar — bayt bayt korunur, satır sonu
+# normalize edilmez; yoksa yayımlanan dosyayla karşılaştırılamaz
+catalogues/**  -text
+
 # İkili dosyalar — diff/merge denenmesin
 *.png     binary
 *.jpg     binary
