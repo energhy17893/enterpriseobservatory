@@ -504,6 +504,23 @@ public static class VsphereCounters
         // the same pair on Host.
         "net.packetsRx.summation",
         "net.packetsTx.summation",
+
+        // The same four memory rates the host collects, asked of each guest,
+        // and for a reason the host list cannot answer: ESXi only ever swaps
+        // and compresses virtual machines' memory, so a host's rate is the
+        // sum of its guests'. One machine held under its own memory limit
+        // swaps on a host with memory to spare and the host counter reads
+        // exactly as it would for a host that is short. Without these the
+        // memory pressure rule could only blame the host, and would be wrong
+        // in precisely the case the CPU rule already learned to separate.
+        //
+        // Not verified against a live vCenter (see the counter map §5g); the
+        // rule treats a missing reading as "not measured", never as zero.
+        // About 145 VMs x 4 = 580 series, roughly 1.3 GB at steady state.
+        "mem.swapinRate.average",
+        "mem.swapoutRate.average",
+        "mem.compressionRate.average",
+        "mem.decompressionRate.average",
     ];
 
     /// <summary>
