@@ -305,6 +305,77 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
+    public async Task Capacity_read_with_the_inventory_is_kept_as_a_series()
+    {
+        // Roadmap M4.1. Capacity was read every inventory cycle, used for one
+        // alert and dropped, so the product could say "95% full" and never
+        // "and 80% a month ago". The inventory cycle now keeps it, in the same
+        // store and under the same series identity as any metric.
+        var datastore = new EntityId("vc-1:ds-1");
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow) with
+            {
+                Observations =
+                [
+                    // A source the collector forgot to name: the pipeline
+                    // stamps provenance, the same as it does for entities.
+                    CapacityCounters.Reading(
+                        datastore, CapacityCounters.DatastoreUsed, 80e9, _clock.UtcNow, string.Empty),
+                ],
+            },
+        };
+
+        var result = await Cycle().RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        var series = _observations.Query(new SeriesQuery
+        {
+            Key = new SeriesKey(datastore, CapacityCounters.DatastoreUsed, string.Empty),
+            FromUtc = T0.AddMinutes(-1),
+            ToUtc = T0.AddMinutes(1),
+            Resolution = SeriesResolution.Raw,
+        });
+
+        Assert.True(series.Exists);
+        Assert.Equal(80e9, Assert.Single(series.Points).Last);
+        Assert.Equal(RollupType.Latest, series.Rollup);
+        Assert.Equal("bytes", series.Unit);
+        Assert.Equal("vc-1", Assert.Single(result.Observations).Source);
+    }
+
+    [Fact]
+    public async Task A_capacity_write_that_fails_is_an_inventory_alert_not_a_lost_cycle()
+    {
+        // The inventory cycle's other writes are guarded so that one store
+        // failing cannot cost the cycle its collection alerts, and this one
+        // is too. It must not borrow the metric cycle's StorageFailure: that
+        // describes the metric cycle's own samples.
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow, alerts: [HardwareFault("vc-1")]) with
+            {
+                Observations =
+                [
+                    CapacityCounters.Reading(
+                        new EntityId("vc-1:ds-1"), CapacityCounters.DatastoreFree, 1e9, _clock.UtcNow, "vc-1"),
+                ],
+            },
+        };
+
+        var result = await Cycle(observations: new FailingObservationStore())
+            .RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Contains(result.Visible, a => a.Title == "Power supply failed");
+
+        // Recorded, in the scope that can resolve it. A warning waits for
+        // confirmation before it is shown, so it is looked for in the store.
+        Assert.Contains(_alerts.All, a =>
+            a.Title == "State could not be saved" && a.Scope == AlertScopes.Inventory);
+        Assert.Null(result.StorageFailure);
+    }
+
+    [Fact]
     public async Task A_storage_failure_does_not_stop_the_cycle()
     {
         // Losing a sample costs one point on one chart and the next cycle

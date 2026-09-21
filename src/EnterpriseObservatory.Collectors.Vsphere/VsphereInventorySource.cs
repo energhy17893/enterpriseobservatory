@@ -39,6 +39,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         var relationships = new List<Relationship>();
         var alerts = new List<AlertDefinition>();
         var snapshotFindings = new List<SnapshotFinding>();
+        var observations = new List<Observation>();
 
         // Managed-object references are unique within a vCenter but not between
         // them, so they are qualified before becoming entity ids.
@@ -57,7 +58,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
 
         AddClusters(payload, Id, now, entities, relationships, alerts);
         AddHosts(payload, Id, now, vCenter.Id, entities, relationships, alerts);
-        AddDatastores(payload, Id, now, entities, relationships, alerts);
+        AddDatastores(payload, Id, now, entities, relationships, alerts, observations);
         AddVirtualMachines(payload, Id, now, entities, relationships, alerts, snapshotFindings);
         AddTriggeredAlarms(payload, Id, entities, alerts);
 
@@ -71,6 +72,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             Failures = [.. payload.Failures.Select(ToFailure)],
             Coverage = payload.Coverage,
             SnapshotFindings = snapshotFindings,
+            Observations = observations,
         };
     }
 
@@ -219,7 +221,8 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         DateTimeOffset now,
         List<Entity> entities,
         List<Relationship> relationships,
-        List<AlertDefinition> alerts)
+        List<AlertDefinition> alerts,
+        List<Observation> observations)
     {
         foreach (var datastore in payload.Datastores)
         {
@@ -278,7 +281,64 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             }
 
             AddOvercommitAlert(datastore, id(datastore.MoRef), InstanceId, alerts);
+
+            observations.AddRange(CapacityReadings(datastore, id(datastore.MoRef), now, InstanceId));
         }
+    }
+
+    /// <summary>
+    /// Keeps the capacity figures this read already has, as series.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// No extra call to vCenter. The three properties are the ones the
+    /// fullness and over-commit alerts above are computed from; until now they
+    /// were used for those and dropped, so the product could say a volume was
+    /// 95% full and not how fast it got there. The <c>disk.*.latest</c>
+    /// performance counters would carry the same numbers at the cost of a
+    /// query per datastore and the risk of a counter that is defined and
+    /// returns nothing; these are known to arrive.
+    /// </para>
+    /// <para>
+    /// Each figure is written only when what it is made from was actually
+    /// read. A gap is how the product says it was not looking, and a zero
+    /// written for an unread capacity would read as a volume that emptied —
+    /// the first thing a forecast would fit a line to. An inaccessible
+    /// datastore is skipped entirely: vCenter reports its size as whatever it
+    /// last knew, or as zero, and neither is a measurement.
+    /// </para>
+    /// </remarks>
+    private static IEnumerable<Observation> CapacityReadings(
+        VsphereDatastore datastore, EntityId entity, DateTimeOffset now, string source)
+    {
+        if (datastore.Accessible == false || datastore.CapacityBytes is not (> 0 and { } capacity))
+        {
+            yield break;
+        }
+
+        Observation Reading(string counter, long bytes) =>
+            CapacityCounters.Reading(entity, counter, bytes, now, source);
+
+        yield return Reading(CapacityCounters.DatastoreCapacity, capacity);
+
+        // Free space larger than the volume is not a reading, whatever sent it.
+        if (datastore.FreeSpaceBytes is not (>= 0 and { } free) || free > capacity)
+        {
+            yield break;
+        }
+
+        yield return Reading(CapacityCounters.DatastoreFree, free);
+        yield return Reading(CapacityCounters.DatastoreUsed, capacity - free);
+
+        // Absent both when unreadable and on a volume with no thin disks, and
+        // the two cannot be told apart — so neither is written as zero.
+        if (datastore.UncommittedBytes is not (>= 0 and { } uncommitted))
+        {
+            yield break;
+        }
+
+        yield return Reading(CapacityCounters.DatastoreUncommitted, uncommitted);
+        yield return Reading(CapacityCounters.DatastoreProvisioned, capacity - free + uncommitted);
     }
 
     /// <summary>

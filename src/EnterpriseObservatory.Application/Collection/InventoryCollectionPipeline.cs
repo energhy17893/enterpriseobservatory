@@ -119,5 +119,11 @@ public sealed class InventoryCollectionPipeline
             .. snapshot.Entities.Select(e => e with { SourceInstanceId = snapshot.SourceInstanceId }),
         ],
         Alerts = [.. snapshot.Alerts.Select(a => a with { Scope = AlertScopes.Inventory })],
+        // Provenance again, for the same reason: a sample's source is what an
+        // operator reads to learn which vCenter said so.
+        Observations =
+        [
+            .. snapshot.Observations.Select(o => o with { Source = snapshot.SourceInstanceId }),
+        ],
     };
 }

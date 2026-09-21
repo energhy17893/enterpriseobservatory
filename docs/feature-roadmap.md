@@ -55,7 +55,7 @@ Broadcom SCG CSV'si **veri olarak** yutulur; kod içine kontrol gömülmez.
 
 | Adım | Feature | Bitti = |
 |---|---|---|
-| M4.1 | Datastore kapasitesi zaman serisi (`disk.capacity/used/provisioned.latest`) | grafik |
+| ✅ M4.1 | Datastore kapasitesi zaman serisi *(perf sayacı değil, envanterde zaten okunan `summary.*`: `datastore.{capacity,free,used,uncommitted,provisioned}.bytes`, Latest; 205 seri ≈ 394 MB — bkz. counter map §4; canlıda doğrulama bekliyor)* | grafik |
 | M4.2 | Seri okuma portu (kurallar geçmişi okuyabilsin) | — |
 | M4.3 | **Dolma tarihi** — ya "N gün" ya "söyleyemem, sebebi şu" | datastore'da tahmin |
 | M4.4 | Aşırı taahhüt bulgusuna tarih | bulguda "X tarihinde dolar" |

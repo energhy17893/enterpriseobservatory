@@ -323,6 +323,100 @@ public class VsphereInventorySourceTests
         Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore nearly full");
     }
 
+    // --- capacity as a series (M4.1) -------------------------------------
+
+    private static Dictionary<string, double> Readings(InventorySnapshot snapshot, string datastore) =>
+        snapshot.Observations
+            .Where(o => o.Entity == EntityId.For("vc-1", "ds-" + datastore))
+            .ToDictionary(o => o.Value.CounterName, o => o.Value.Raw);
+
+    [Fact]
+    public async Task Capacity_is_kept_as_five_series_on_the_datastore()
+    {
+        // The same three properties the fullness and over-commit alerts are
+        // computed from, plus the two figures derived from them. No extra
+        // call to vCenter: before this they were used once and dropped.
+        var snapshot = await Read(Payload(datastores:
+        [
+            Store("vmfs01", capacity: 100 * Gb, free: 30 * Gb) with { UncommittedBytes = 50 * Gb },
+        ]));
+
+        var readings = Readings(snapshot, "vmfs01");
+
+        Assert.Equal(100d * Gb, readings[CapacityCounters.DatastoreCapacity]);
+        Assert.Equal(30d * Gb, readings[CapacityCounters.DatastoreFree]);
+        Assert.Equal(70d * Gb, readings[CapacityCounters.DatastoreUsed]);
+        Assert.Equal(50d * Gb, readings[CapacityCounters.DatastoreUncommitted]);
+        Assert.Equal(120d * Gb, readings[CapacityCounters.DatastoreProvisioned]);
+
+        Assert.All(snapshot.Observations, o =>
+        {
+            Assert.Equal(RollupType.Latest, o.Value.Rollup);
+            Assert.Equal("bytes", o.Value.Unit);
+            Assert.True(o.Value.IsAggregateInstance);
+            Assert.Equal(T0, o.SampledAtUtc);
+            Assert.Equal("vc-1", o.Source);
+        });
+    }
+
+    [Fact]
+    public async Task Capacity_series_names_are_not_vsphere_counter_names()
+    {
+        // Every vSphere counter ends in its rollup. These come from inventory
+        // properties rather than the performance manager, and a name that
+        // looked like disk.used.latest would send somebody to vCenter's
+        // statistics level to explain a gap it had nothing to do with.
+        var snapshot = await Read(Payload(datastores:
+        [
+            Store("vmfs01", capacity: 100 * Gb, free: 30 * Gb) with { UncommittedBytes = 0 },
+        ]));
+
+        Assert.Equal(5, snapshot.Observations.Count);
+        Assert.All(snapshot.Observations, o =>
+            Assert.EndsWith(".bytes", o.Value.CounterName, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task An_unread_figure_is_a_gap_not_a_zero()
+    {
+        // A zero written for an unread capacity reads as a volume that emptied,
+        // and that is the first thing a forecast would fit a line to.
+        var snapshot = await Read(Payload(datastores:
+        [
+            Store("nocapacity", capacity: null, free: 10 * Gb),
+            Store("zerocapacity", capacity: 0, free: 0),
+            Store("nofree", capacity: 100 * Gb, free: null),
+            Store("nothin", capacity: 100 * Gb, free: 40 * Gb),
+            Store("nonsense", capacity: 100 * Gb, free: 200 * Gb),
+        ]));
+
+        Assert.Empty(Readings(snapshot, "nocapacity"));
+        Assert.Empty(Readings(snapshot, "zerocapacity"));
+
+        Assert.Equal(new[] { CapacityCounters.DatastoreCapacity }, Readings(snapshot, "nofree").Keys);
+        Assert.Equal(new[] { CapacityCounters.DatastoreCapacity }, Readings(snapshot, "nonsense").Keys);
+
+        // Uncommitted is absent both when unreadable and on a volume with no
+        // thin disks, and the two cannot be told apart.
+        Assert.Equal(
+            new[] { CapacityCounters.DatastoreCapacity, CapacityCounters.DatastoreFree, CapacityCounters.DatastoreUsed }
+                .Order(),
+            Readings(snapshot, "nothin").Keys.Order());
+    }
+
+    [Fact]
+    public async Task An_inaccessible_datastore_reports_no_capacity()
+    {
+        // vCenter reports its size as whatever it last knew, or as zero.
+        // Neither is a measurement.
+        var snapshot = await Read(Payload(datastores:
+        [
+            Store("vmfs01", capacity: 100 * Gb, free: 0, accessible: false),
+        ]));
+
+        Assert.Empty(snapshot.Observations);
+    }
+
     [Fact]
     public async Task An_inaccessible_datastore_raises_an_alert_not_only_a_health_state()
     {

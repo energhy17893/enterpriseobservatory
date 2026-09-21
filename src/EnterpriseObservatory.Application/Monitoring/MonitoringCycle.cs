@@ -170,6 +170,23 @@ public sealed class MonitoringCycle(
         var graphFailure = Guarded(
             "entity-graph", "the topology", () => _graphStore.Replace(graph));
 
+        // Capacity readings the inventory carried. Written before the rules
+        // run, so a rule reading a datastore's history sees this cycle's point.
+        // Guarded rather than routed through StoreObservations: that one
+        // reports on the metric cycle's result, and letting this cycle clear
+        // or overwrite it would make the metric cycle's storage message say
+        // something about a write it did not make. A failure here becomes an
+        // inventory-scoped alert instead, which resolves by itself on the
+        // first cycle whose write lands.
+        IReadOnlyList<Observation> samples = [.. cycle.Snapshots.SelectMany(s => s.Observations)];
+
+        IReadOnlyList<AlertDefinition> sampleFailure = samples.Count == 0
+            ? []
+            : Guarded(
+                "observations:inventory",
+                "the capacity readings taken with the inventory",
+                () => _observationStore.Append(samples));
+
         IReadOnlyList<AlertDefinition> observed =
         [
             .. coverageFailures,
@@ -177,6 +194,7 @@ public sealed class MonitoringCycle(
             .. cycle.CollectionAlerts,
             .. healthFailure,
             .. graphFailure,
+            .. sampleFailure,
 
             // Guarded like every other rule: a bug in counting paths must cost
             // the path count and not this cycle's "Collector unreachable".
@@ -204,6 +222,7 @@ public sealed class MonitoringCycle(
             AtUtc = now,
             Visible = VisibleInbox(),
             ToNotify = reconciliation.ToNotify,
+            Observations = samples,
             ActiveEntities = graph.Active.Count(),
             VanishedEntities = graph.Vanished.Count(),
             SilentSources = silent,
