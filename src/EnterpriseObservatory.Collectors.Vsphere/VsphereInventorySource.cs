@@ -28,6 +28,17 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
     private readonly IVsphereInventoryApi _api = api ?? throw new ArgumentNullException(nameof(api));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
+    /// <summary>
+    /// The <c>Entity.Settings</c> key a virtual machine's power state is
+    /// carried under. A plain constant rather than a policy property: unlike
+    /// <c>ClusterHighAvailabilityPolicy</c>'s setting names, nothing about
+    /// this key is a judgement call a deployment might want to override.
+    /// <c>DrsRuleViolations</c> in the application layer reads the same
+    /// literal from its own copy of this name, since it cannot reference a
+    /// collector constant across the layer boundary.
+    /// </summary>
+    private const string PowerStateSetting = "powerState";
+
     public string InstanceId => _api.InstanceId;
 
     public async Task<InventorySnapshot> ReadAsync(CancellationToken cancellationToken)
@@ -710,6 +721,19 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // has to be divided by, and it is evidence of nothing at all
                 // about which machine this is.
                 Sizing = SizingOf(vm),
+                // Carried so a rule that judges live placement (DrsRuleViolations)
+                // can tell a powered-off VM from one this cycle actually placed
+                // somewhere, without leaning on Health -- which is also Unknown
+                // for a powered-on VM whose overall status simply was not green,
+                // yellow or red. Empty when the platform did not report a power
+                // state at all, the same "absent is not a value" contract every
+                // other Settings key follows.
+                Settings = string.IsNullOrWhiteSpace(vm.PowerState)
+                    ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        [PowerStateSetting] = vm.PowerState,
+                    },
             });
 
             AddSnapshotAlert(vm, datastores, id(vm.MoRef), now, alerts, snapshotFindings);
