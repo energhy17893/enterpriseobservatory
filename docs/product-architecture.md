@@ -318,8 +318,10 @@ günlüğe, günlükten aylığa indirgemek bu beş istatistiği bozmaz. Ama:
 
 ## 9. Bugün ne var, ne yok
 
-*20 Eylül 2026 akşamı güncellendi. Önceki hâli kural yazma turundan önce
-alınmıştı ve birkaç satırı artık yanlıştı.*
+*21 Eylül 2026 güncellendi. Bu tablo her tur eskiyor, ve eskimesi bedava
+değil: önceki hâli birleştirilmeden beklerken bir ajan §10'da adım 1d'yi
+arayıp bulamadı ve olmadığını varsaydı. Birleşmemiş bir belge, olmayan bir
+belgedir.*
 
 | Yetenek | Durum |
 |---|---|
@@ -330,10 +332,10 @@ alınmıştı ve birkaç satırı artık yanlıştı.*
 | vSphere performans toplama | var — cihaz başına seri dahil |
 | Datastore gecikmesi | **var** — host'tan toplanıp Datastore varlığına taşınıyor (§5b) |
 | Datastore doluluk | var; **aşırı taahhüt de var** (`summary.uncommitted`) |
-| Teşhis merdiveni | **kısmen** — dört basamak: akran aykırılığı, dizi, katman ayrımı, CPU çekişmesi |
+| Teşhis merdiveni | **kısmen** — beş basamak: akran aykırılığı, dizi, katman ayrımı, CPU çekişmesi, yol yedekliliği |
 | Eşik motoru | **kural başına politika var**, merkezî motor yok |
 | Yapılandırma toplama | **kısmen** — snapshot, VM boyutlandırma, CPU/bellek limitleri, multipath, HA/DRS |
-| Uygunluk motoru | yok |
+| Uygunluk motoru | yok — ham maddesi hazır: Broadcom kontrol listesini sürümlü CSV olarak yayımlıyor |
 | Olay toplama | yok |
 | Eğilim çıkarımı | yok |
 | İkinci satıcı (iLO/iDRAC/SAN/storage) | yok |
@@ -403,6 +405,19 @@ bir yeteneğin **sessizce** yanlış çalışmasına izin veriyor.
   "sıfır = olmadı" vaadini tersine çevirir.
 - **Anahtar halkası koruması log, alarm değil** (ADR-0020, Alternatif D).
 
+**Kapanan bir borç, ve nasıl bulunduğu borcun kendisinden öğretici.**
+`CpuContention` ready süresini vCPU sayısına **bölmüyordu**. `Entity.cs` bunu
+alanı eklendiğinden beri yazıyordu — *"an eight-way machine at a genuinely
+healthy 2% reads as 16%"* — ve kural `VirtualCpuCount`'tan hiç söz etmiyordu.
+Asıl kusur eşiklerde değil kardeş karşılaştırmasındaydı: karışık genişlikli bir
+host'ta `ready > çarpan × medyan`, çekişme kostümü giymiş bir **vCPU sayısı
+karşılaştırması**, ve en geniş makine şekli yüzünden suçlanıyordu.
+
+Bunu bulan ne bir test ne bir alarm oldu — **dışarıdan bir inceleme** oldu.
+Ders şu: bir uyarıyı yazmak, ona uyulduğunu göstermiyor. Mevcut 44 testin
+24'ü hiç genişlik kurmuyordu, yani kural bugüne kadar **normalize edilmemiş
+sayılarla** sınanmıştı ve takım bundan memnundu.
+
 ### 1. Teşhis merdivenini tamamla — ürünün imzası
 
 Referans araştırması bir **pazar boşluğu** buldu: vROps, Dynatrace ve Datadog'un
@@ -426,9 +441,15 @@ atıyor. Zor yarısı — instance→varlık eşlemesi ve gözlem-noktası model
   yüksek yanlış-pozitifli, swap geç ve neredeyse hatasız — Datadog ile
   Dynatrace'in açıkça ayrıştığı yer burası ve ayrışma cevabın kendisi. Sayaçlar
   toplandı, `mem.active` de balonun yanlış pozitifini kapatmak için orada.
-- **1d. Yol yedekliliği.** `multipathInfo` ve `scsiLun` toplanıyor, kural yok.
-  vROps bunu Health/Immediate sayıyor: kaybolan bir yol **ikincisi ölene kadar
-  tamamen sessiz**, sonra datastore düşüyor.
+- **1d. Yol yedekliliği** — ✅ *21 Eylül 2026.* `StoragePathRedundancy`. Üç
+  kova, iki değil: `active`/`standby` çalışıyor, `dead` arızalı, ve
+  `disabled`/`unknown`/boş **hiçbiri değil** — "çalışıyor"u "ölü değil" diye
+  yazmak vCenter her cevap vermediğinde kesinti raporlardı. Tek yollu LUN
+  sessiz kalıyor ve bunun için bir kapı gerekmedi: "yedeklilik kayboldu" bir
+  ölü **ve** bir çalışan yol istiyor, bir yol ikisi birden olamaz. *"Bu LUN'un
+  iki yolu olmalı"* ise alarm değil **bulgu** — yeri adım 4.
+  **Canlıda henüz ateşlemedi ve tel şekli hiç dökülmedi**; tanınmayan bir durum
+  iki listenin de dışında, yani kural yanlışsa sessiz kalıyor.
 - **1e. Düşen paketler.** Sayaçlar toplandı ve bilerek **arıza değil seviye**
   olarak işaretlendi: meşgul bir uplink çerçeve düşürür, SCSI dizi meşgul diye
   bus reset atmaz. Yani eşik ve oran gerekiyor, `FaultCounters` yolu değil.
