@@ -26,7 +26,7 @@ namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
 /// </remarks>
 internal sealed class SimulatedVcenter : IVsphereApi, IDisposable
 {
-    private readonly CancellationTokenSource _budget = new();
+    private CancellationTokenSource _budget = new();
 
     public string InstanceId => "vc-sim";
 
@@ -70,6 +70,13 @@ internal sealed class SimulatedVcenter : IVsphereApi, IDisposable
         PerfQueries = 0;
         Refusals = 0;
         BatchSizes.Clear();
+
+        // A spent budget belongs to the cycle that spent it.
+        if (_budget.IsCancellationRequested)
+        {
+            _budget.Dispose();
+            _budget = new CancellationTokenSource();
+        }
     }
 
     public static List<VsphereCounter> Catalog() =>

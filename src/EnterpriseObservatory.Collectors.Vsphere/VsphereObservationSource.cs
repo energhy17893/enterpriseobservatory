@@ -92,6 +92,9 @@ public sealed class VsphereObservationSource(
     /// </remarks>
     private readonly ProbeMemory _probe = new();
 
+    /// <summary>Batch sizes this session has learnt the server accepts (T1.2).</summary>
+    private readonly LearnedBatchSizes _learned = new();
+
     /// <summary>
     /// The probe's reputation, per entity type, guarded.
     /// </summary>
@@ -187,8 +190,10 @@ public sealed class VsphereObservationSource(
 
         var maxQueryMetrics = await _api.GetMaxQueryMetricsAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (var (entityType, moRefs) in _targets.Current.ByType())
+        var types = _targets.Current.ByType().ToList();
+        for (var i = 0; i < types.Count; i++)
         {
+            var (entityType, moRefs) = types[i];
             try
             {
                 await ReadTypeAsync(
@@ -199,6 +204,17 @@ public sealed class VsphereObservationSource(
             {
                 // One type, not the vCenter. See CouldNotRead.
                 failures.Add(CouldNotRead(entityType, ex));
+            }
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested && observations.Count > 0)
+            {
+                // The budget ran out with something in hand. See OutOfTime.
+                foreach (var (untouched, untouchedMoRefs) in types.Skip(i + 1))
+                {
+                    failures.Add(OutOfTime(untouched, read: 0, untouchedMoRefs.Count));
+                }
+
+                break;
             }
         }
 
@@ -396,6 +412,120 @@ public sealed class VsphereObservationSource(
         "datastore.numberWriteAveraged.average",
     ];
 
+    /// <summary>How far one read has got through one entity type.</summary>
+    private sealed class TypeProgress
+    {
+        /// <summary>Entities whose query came back.</summary>
+        public int Read { get; set; }
+
+        /// <summary>Entities vCenter says no longer exist.</summary>
+        public List<string> Gone { get; } = [];
+
+        /// <summary>The first entity not yet read, where the next cycle should start.</summary>
+        public string? ResumeFrom { get; set; }
+    }
+
+    /// <summary>
+    /// Where each type's read stopped when the budget ran out, so the next
+    /// cycle starts there (T1.1).
+    /// </summary>
+    /// <remarks>
+    /// Without it, a read cut off by the budget kept the same first entities
+    /// every cycle: the synthetic 2000-VM read kept VMs 1–996 every time and
+    /// the other 1004 never had a sample. Rotating the start spreads the gap
+    /// across the estate, so every entity is sampled every few cycles instead
+    /// of half of them never. Locked for the same reason as
+    /// <see cref="ProbeMemory"/>.
+    /// </remarks>
+    private sealed class ReadCursor
+    {
+        private readonly Lock _padlock = new();
+        private readonly Dictionary<VsphereEntityType, string> _resumeFrom = [];
+
+        public string? For(VsphereEntityType entityType)
+        {
+            lock (_padlock)
+            {
+                return _resumeFrom.GetValueOrDefault(entityType);
+            }
+        }
+
+        public void Set(VsphereEntityType entityType, string? moRef)
+        {
+            lock (_padlock)
+            {
+                if (moRef is null)
+                {
+                    _resumeFrom.Remove(entityType);
+                }
+                else
+                {
+                    _resumeFrom[entityType] = moRef;
+                }
+            }
+        }
+    }
+
+    private readonly ReadCursor _cursor = new();
+
+    /// <summary>The targets in reading order: from the cursor, wrapping round.</summary>
+    private static List<string> StartingAt(IReadOnlyList<string> moRefs, string? resumeFrom)
+    {
+        var start = 0;
+        if (resumeFrom is not null)
+        {
+            for (var i = 0; i < moRefs.Count; i++)
+            {
+                if (string.Equals(moRefs[i], resumeFrom, StringComparison.Ordinal))
+                {
+                    start = i;
+                    break;
+                }
+            }
+        }
+
+        return [.. moRefs.Skip(start), .. moRefs.Take(start)];
+    }
+
+    /// <summary>
+    /// Says how much of a type the read budget covered, and that the rest was not read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// T1.1. A read was all or nothing: the runner abandoned it at the
+    /// timeout, and everything it had already collected went with it. The
+    /// synthetic 2000-VM measurement (docs/measurements/read-budget-2000vm.md)
+    /// needs 42 s at 250 ms a query against a 25 s budget, which made that
+    /// "nothing", every cycle, for the whole estate.
+    /// </para>
+    /// <para>
+    /// Now the runner cancels the token a little before it gives up, the
+    /// query in flight is lost, and what was read before it is returned. The
+    /// rest is named here rather than left as a gap for someone to notice —
+    /// the operator is told the estate is larger than one cycle can read, and
+    /// by how much. Timeout is the kind because that is what happened, and it
+    /// stays worth retrying. The next cycle starts where this one stopped; see
+    /// <see cref="ReadCursor"/>.
+    /// </para>
+    /// </remarks>
+    private static CollectionFailure OutOfTime(VsphereEntityType entityType, int read, int total) => new()
+    {
+        Kind = CollectionFailureKind.Timeout,
+        Target = entityType.ToString(),
+        Detail = $"The read budget ran out with {read} of {total} {entityType} entities read; the other " +
+            $"{total - read} were not read this cycle and have no sample for it. What was read is kept. " +
+            "An estate this size does not fit one collection interval at this vCenter's query speed.",
+    };
+
+    /// <summary>How many entities the probe tries before calling the target list stale.</summary>
+    /// <remarks>
+    /// One deleted entity at the head of the list is ordinary churn between
+    /// inventory reads. Five in a row is a list that no longer describes the
+    /// vCenter, and asking every entity in turn would be a query storm aimed at
+    /// finding that out.
+    /// </remarks>
+    private const int MaxProbeAttempts = 5;
+
     private async Task ReadTypeAsync(
         VsphereEntityType entityType,
         IReadOnlyList<string> moRefs,
@@ -405,6 +535,64 @@ public sealed class VsphereObservationSource(
         List<Observation> observations,
         List<Observation> backfill,
         List<CollectionFailure> failures,
+        CancellationToken cancellationToken)
+    {
+        var progress = new TypeProgress();
+        try
+        {
+            await ReadTypeCoreAsync(
+                entityType, StartingAt(moRefs, _cursor.For(entityType)), catalog, maxQueryMetrics, now,
+                observations, backfill, failures, progress, cancellationToken).ConfigureAwait(false);
+
+            // Read to the end: the next cycle starts from the top.
+            _cursor.Set(entityType, null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _cursor.Set(entityType, progress.ResumeFrom);
+            failures.Add(OutOfTime(entityType, progress.Read, moRefs.Count - progress.Gone.Count));
+            throw;
+        }
+        finally
+        {
+            if (progress.Gone.Count > 0)
+            {
+                failures.Add(NoLongerExist(entityType, progress.Gone));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Says which entities were skipped because vCenter no longer has them.
+    /// </summary>
+    /// <remarks>
+    /// T1.4. The target list comes from the last inventory read, minutes old,
+    /// and a VM deleted since then is ordinary. vim25 answers a query naming
+    /// one with <c>ManagedObjectNotFound</c> for the whole query, and that used
+    /// to end the type: when it was <c>moRefs[0]</c> the probe failed and all
+    /// 2000 virtual machines went unread; mid-list, everything after its batch
+    /// did. The entity is now isolated and skipped, and named here so the gap
+    /// is explained. It leaves the list at the next inventory read.
+    /// </remarks>
+    private static CollectionFailure NoLongerExist(VsphereEntityType entityType, List<string> gone) => new()
+    {
+        Kind = CollectionFailureKind.ProtocolError,
+        Target = $"{entityType} no longer on vCenter",
+        Detail = $"{gone.Count} {entityType} entities listed by the last inventory read no longer exist on this " +
+            $"vCenter ({string.Join(", ", gone.Take(5))}{(gone.Count > 5 ? ", …" : string.Empty)}), so they " +
+            "were skipped; the rest of the type was read. They drop out at the next inventory read.",
+    };
+
+    private async Task ReadTypeCoreAsync(
+        VsphereEntityType entityType,
+        List<string> moRefs,
+        IReadOnlyDictionary<string, VsphereCounter> catalog,
+        int? maxQueryMetrics,
+        DateTimeOffset now,
+        List<Observation> observations,
+        List<Observation> backfill,
+        List<CollectionFailure> failures,
+        TypeProgress progress,
         CancellationToken cancellationToken)
     {
         var wanted = VsphereCounters.For(entityType);
@@ -417,9 +605,39 @@ public sealed class VsphereObservationSource(
         // availability is a property of the platform's statistics level, not of
         // the individual object, so one probe answers for the type — and one
         // probe per cycle is affordable where one per entity would not be.
-        var available = await _api
-            .GetAvailableCounterKeysAsync(moRefs[0], entityType, now, cancellationToken)
-            .ConfigureAwait(false);
+        //
+        // Not always moRefs[0]: an entity deleted since the inventory read
+        // answers ManagedObjectNotFound, and that used to fail the whole type.
+        // It is skipped — here and in the queries below — and the next one is
+        // asked. See NoLongerExist and MaxProbeAttempts.
+        IReadOnlyList<string>? available = null;
+        foreach (var candidate in moRefs.Take(MaxProbeAttempts))
+        {
+            try
+            {
+                available = await _api
+                    .GetAvailableCounterKeysAsync(candidate, entityType, now, cancellationToken)
+                    .ConfigureAwait(false);
+                break;
+            }
+            catch (VsphereApiException ex) when (ex.Kind == VsphereFaultKind.ManagedObjectNotFound)
+            {
+                progress.Gone.Add(candidate);
+            }
+        }
+
+        if (available is null)
+        {
+            failures.Add(new CollectionFailure
+            {
+                Kind = CollectionFailureKind.ProtocolError,
+                Target = entityType.ToString(),
+                Detail = $"The first {progress.Gone.Count} {entityType} entities in the target list no longer exist " +
+                    "on this vCenter, so the list is stale and the type was not read this cycle. It is " +
+                    "rebuilt at the next inventory read.",
+            });
+            return;
+        }
 
         var availableSet = new HashSet<string>(available, StringComparer.OrdinalIgnoreCase);
 
@@ -526,19 +744,39 @@ public sealed class VsphereObservationSource(
             return;
         }
 
-        var sizer = new AdaptiveBatchSizer(maxQueryMetrics, usable.Count);
+        // Started from what this session already learnt, if anything (T1.2).
+        var sizer = new AdaptiveBatchSizer(
+            maxQueryMetrics, usable.Count, _learned.For(entityType, usable.Count));
         var fallbackInterval = TimeSpan.FromSeconds(VsphereIntervals.IntervalSecondsFor(entityType));
 
-        var remaining = new Queue<string>(moRefs);
-        while (remaining.Count > 0)
+        var remaining = new Queue<string>(moRefs.Except(progress.Gone, StringComparer.Ordinal));
+
+        // Halves of a batch that named an entity vCenter no longer has, asked
+        // before anything new. See the ManagedObjectNotFound catch below.
+        var isolating = new Stack<List<string>>();
+
+        while (remaining.Count > 0 || isolating.Count > 0)
         {
-            var batch = Dequeue(remaining, sizer.Current);
+            var batch = isolating.Count > 0 ? isolating.Pop() : Dequeue(remaining, sizer.Current);
+
+            // If the budget runs out during this query it is lost, so the
+            // next cycle starts with it.
+            progress.ResumeFrom = batch[0];
 
             try
             {
                 var samples = await _api
                     .QueryPerfAsync(batch, entityType, usable, now, cancellationToken)
                     .ConfigureAwait(false);
+
+                progress.Read += batch.Count;
+
+                // The size the server just accepted, kept for the session so
+                // the next cycle does not walk down to it again (ADR-0005 §2).
+                if (sizer.WasReduced)
+                {
+                    _learned.Remember(entityType, usable.Count, sizer.Current);
+                }
 
                 var read = ToObservations(samples, fallbackInterval, now).ToList();
 
@@ -573,17 +811,42 @@ public sealed class VsphereObservationSource(
                 // what it will accept; believing it is cheaper than guessing.
                 Requeue(remaining, batch);
             }
+            catch (VsphereApiException ex) when (ex.Kind == VsphereFaultKind.ManagedObjectNotFound)
+            {
+                // One entity in the batch is gone and vim25 refused the whole
+                // query for it (T1.4). Halve until it is alone and skip it:
+                // a few extra queries per deleted entity, where giving up cost
+                // the rest of the type. Bisected rather than read out of the
+                // fault message, because the message is the server's wording
+                // and the halving works whatever it says.
+                //
+                // Only this fault. A permission fault or a runtime fault is not
+                // known to be about one entity, and bisecting 2000 VMs down to
+                // singles against a fault that applies to all of them would be
+                // thousands of queries to learn nothing.
+                if (batch.Count == 1)
+                {
+                    progress.Gone.Add(batch[0]);
+                    continue;
+                }
+
+                var half = batch.Count / 2;
+                isolating.Push(batch.GetRange(half, batch.Count - half));
+                isolating.Push(batch.GetRange(0, half));
+            }
         }
 
-        if (sizer.WasReduced)
+        if (sizer.IsBelowPlan)
         {
             failures.Add(new CollectionFailure
             {
                 Kind = CollectionFailureKind.ProtocolError,
                 Target = $"{entityType} performance query",
-                Detail =
-                    $"The server refused the initial query size; reduced to {sizer.Current} entities " +
-                    "per query. Samples were collected, but more slowly than planned.",
+                Detail = $"The server refused queries of {sizer.Planned} entities, the size its stated limit " +
+                    $"allows; reduced to {sizer.Current} entities per query, a size this session " +
+                    "remembers. Samples were collected, but more slowly than planned. Raising " +
+                    "config.vpxd.stats.maxQueryMetrics on the vCenter, or making it readable to this " +
+                    "account, restores the planned size.",
             });
         }
     }

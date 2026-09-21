@@ -615,9 +615,12 @@ public class VsphereObservationSourceTests
         var batch = await Source(api, HostAndVirtualMachine()).ReadAsync(CancellationToken.None);
 
         Assert.Contains(batch.Observations, o => o.Entity == new EntityId("host-1"));
-        Assert.Equal(
-            CollectionFailureKind.ProtocolError,
-            Assert.Single(batch.Failures, f => f.Target == "VirtualMachine").Kind);
+
+        // Narrower since T1.4: the fault is about one object, so the report
+        // names that object rather than the whole type.
+        var gone = Assert.Single(batch.Failures, f => f.Target.StartsWith("VirtualMachine", StringComparison.Ordinal));
+        Assert.Equal(CollectionFailureKind.ProtocolError, gone.Kind);
+        Assert.Contains("vm-1", gone.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
