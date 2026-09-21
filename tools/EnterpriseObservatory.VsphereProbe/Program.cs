@@ -177,6 +177,22 @@ try
         return 0;
     }
 
+    // Which keys this vCenter returns and in what form, names only. Settles
+    // the readers that were written from the schema rather than from a server.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --shapes
+    if (args.Contains("--shapes", StringComparer.OrdinalIgnoreCase))
+    {
+        Section("Inventory shape (names and counts only)");
+
+        foreach (var line in await client.DescribeInventoryShapeAsync(cancellation.Token))
+        {
+            Console.WriteLine("  " + line);
+        }
+
+        return 0;
+    }
+
     Section("Connection");
     Console.WriteLine($"  endpoint                 {Show(baseAddress.Host, mask)}");
     Console.WriteLine($"  certificate validation   {(insecure ? "RELAXED (self-signed accepted)" : "enforced")}");

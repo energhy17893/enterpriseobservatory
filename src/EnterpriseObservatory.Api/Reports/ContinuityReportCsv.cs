@@ -7,10 +7,11 @@ namespace EnterpriseObservatory.Api.Reports;
 /// <remarks>
 /// The only continuity-specific code in the CSV path -- everything else is
 /// <see cref="CsvWriter"/>. One row per cluster, critical and warning counts
-/// side by side for each of the four rule groups plus the N+1 placeholder,
-/// so a reader can tell "zero because it is fine" from "zero because it was
-/// never checked" without opening the printable page -- the HA-collected
-/// column carries that distinction per row.
+/// side by side for each of the five rule groups (HA, DRS, storage-path
+/// redundancy, multipathing and N+1), so a reader can tell "zero because it
+/// is fine" from "zero because it was never checked" without opening the
+/// printable page -- the HA-collected column carries that distinction per
+/// row.
 /// </remarks>
 public static class ContinuityReportCsv
 {

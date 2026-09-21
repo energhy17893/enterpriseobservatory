@@ -14,37 +14,36 @@ namespace EnterpriseObservatory.Collectors.Vsphere;
 /// <c>ClusterDasVmSettings</c>, <c>ClusterVmComponentProtectionSettings</c>.
 /// </para>
 /// <para>
-/// <strong>Verified against the published vSphere Web Services API reference</strong>
-/// (developer.broadcom.com/xapis/vsphere-web-services-api and
-/// vdc-repo.vmware.com), not against a live vCenter: <c>ClusterConfigInfoEx</c>
-/// carries a <c>dasConfig</c> field of type <c>ClusterDasConfigInfo</c>, whose
-/// own fields are <c>enabled</c>, <c>vmMonitoring</c>, <c>hostMonitoring</c>,
-/// <c>vmComponentProtecting</c>, <c>admissionControlPolicy</c>,
-/// <c>admissionControlEnabled</c>, <c>defaultVmSettings</c>, <c>option</c>,
-/// <c>heartbeatDatastore</c> and <c>hBDatastoreCandidatePolicy</c>, exactly as
-/// read below; and <c>ClusterVmComponentProtectionSettings</c> carries
-/// <c>vmStorageProtectionForAPD</c> and <c>vmStorageProtectionForPDL</c> with
-/// the enum values this parser passes through untranslated. These tests prove
-/// the reader against XML in that documented shape, not the shape itself
-/// against a server.
+/// <strong>Measured against a live vCenter</strong> (probe <c>--shapes</c>, 3
+/// of 3 clusters): <c>configurationEx.dasConfig</c> cannot be requested — the
+/// property is declared as the base <c>ComputeResourceConfigInfo</c>, vCenter
+/// refuses the sub-path as InvalidProperty, and that one fault fails the whole
+/// retrieval. So <c>configurationEx</c> is requested whole and arrives as one
+/// structure; <c>dasConfig</c> is a single untyped child of it, beside
+/// <c>drsConfig</c> and the repeated <c>rule</c> and <c>group</c> elements.
+/// The children observed under <c>dasConfig</c> were <c>enabled</c>,
+/// <c>vmMonitoring</c>, <c>hostMonitoring</c>, <c>vmComponentProtecting</c>,
+/// <c>failoverLevel</c>, <c>admissionControlPolicy</c>,
+/// <c>admissionControlEnabled</c>, <c>defaultVmSettings</c>, <c>option</c> and
+/// <c>hBDatastoreCandidatePolicy</c>. <c>heartbeatDatastore</c> did not occur
+/// on that estate, and its shape follows the published schema.
 /// </para>
 /// <para>
-/// <strong>Known fragility, inherited from
-/// <see cref="PropertyCollectorParser"/>:</strong> whether <c>dasConfig</c>
-/// lands in <c>Values</c> (flattened, unreadable by this parser) or
-/// <c>Structures</c> depends on <c>IsStructureArray</c> finding at least one
-/// nested structure among its direct children. Every field this parser reads
-/// off a real cluster satisfies that -- <c>admissionControlPolicy</c> alone
-/// guarantees it, since it is itself always a structure -- but a
-/// <c>dasConfig</c> reply built to carry only flat leaves would flatten and
-/// come back unreadable rather than partially read. This has not been seen
-/// from a live vCenter and none of the vim25 documentation suggests
-/// <c>admissionControlPolicy</c> can be entirely absent.
+/// The <c>IsStructureArray</c> fragility this parser used to carry — a
+/// <c>dasConfig</c> of only flat leaves flattening into <c>Values</c> — is
+/// gone with the whole-structure request: <c>dasConfig</c> is now itself the
+/// nested child that makes <c>configurationEx</c> a structure. It would only
+/// return if every field of <c>ClusterConfigInfoEx</c> arrived as a bare leaf,
+/// which the schema does not allow for <c>dasConfig</c> or <c>drsConfig</c>.
 /// </para>
 /// </remarks>
 public static class ClusterConfigurationParser
 {
-    public const string DasConfigPath = "configurationEx.dasConfig";
+    /// <summary>The property requested: <c>configurationEx</c>, whole.</summary>
+    public const string ConfigurationExPath = "configurationEx";
+
+    /// <summary><c>dasConfig</c>'s element name inside it.</summary>
+    public const string DasConfigElement = "dasConfig";
 
     /// <summary>
     /// The advanced HA option this product keeps out of <c>option</c>.
@@ -54,7 +53,7 @@ public static class ClusterConfigurationParser
     /// <summary>
     /// The cluster's HA configuration, filed under
     /// <see cref="ClusterHaSettings"/>'s keys, or null when
-    /// <c>configurationEx.dasConfig</c> was not reported at all.
+    /// <c>configurationEx</c> was not reported or held no <c>dasConfig</c>.
     /// </summary>
     /// <remarks>
     /// Every key is written only when the corresponding field was present in
@@ -66,7 +65,7 @@ public static class ClusterConfigurationParser
     {
         ArgumentNullException.ThrowIfNull(cluster);
 
-        var nodes = Nodes(cluster, DasConfigPath);
+        var nodes = DasConfigNodes(cluster);
         if (nodes is null)
         {
             return null;
@@ -126,19 +125,14 @@ public static class ClusterConfigurationParser
     }
 
     /// <summary>
-    /// The top-level nodes of <c>dasConfig</c>, or null when it was not
-    /// reported in a readable shape. See <c>HostConfigurationParser.Nodes</c>,
-    /// whose contract this mirrors.
+    /// The top-level nodes of <c>dasConfig</c>, or null when
+    /// <c>configurationEx</c> was not read or carried no <c>dasConfig</c>.
     /// </summary>
-    private static IReadOnlyList<PropertyNode>? Nodes(PropertyObject cluster, string path)
-    {
-        if (cluster.Structures.TryGetValue(path, out var nodes))
-        {
-            return nodes;
-        }
-
-        return cluster.Values.TryGetValue(path, out var flat) && flat.Length == 0 ? [] : null;
-    }
+    private static IReadOnlyList<PropertyNode>? DasConfigNodes(PropertyObject cluster) =>
+        cluster.Structures.TryGetValue(ConfigurationExPath, out var fields) &&
+        fields.FirstOrDefault(n => Is(n, DasConfigElement)) is { } dasConfig
+            ? dasConfig.Children
+            : null;
 
     private static PropertyNode? NodeAmong(IReadOnlyList<PropertyNode> nodes, string name) =>
         nodes.FirstOrDefault(n => Is(n, name));

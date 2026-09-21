@@ -73,6 +73,74 @@ Pazar araştırmasında alıcının ilk baktığı şey.
 | ✅ M5.3 | Kapasite raporu | indirilebilir |
 | ✅ M5.4 | Zamanlanmış e-posta raporu (alarm, uygunluk, kapasite; SMTP ayarı yönetici ekranında) | posta kutusunda |
 
+## Yürütme sırası *(22 Eylül 2026)*
+
+Adımlar **ne**yi, bu bölüm **hangi sırayla ve neden**i söyler. Sıra üç şeye
+göre kuruldu: yanlış veri yazan şey önce; aynı dosyaya dokunanlar art arda,
+dokunmayanlar paralel; ve geçmişe ihtiyaç duyan iş, o geçmiş temiz birikmeye
+başladıktan sonra.
+
+### Kapı: önce ölç, sonra iste
+
+22 Eylül'de canlı vCenter'a karşı ölçüldü: **geçersiz tek bir özellik yolu
+(`InvalidProperty`) bütün envanter okumasını düşürüyor** — bir özelliği değil.
+`configurationEx.dasConfig` şemaya göre makuldü ve canlıya çıksaydı her
+envanter turunu bitirirdi. Bu yüzden:
+
+> Envanter özellik listesine giren her yeni yol ve her yeni vim25 çağrısı,
+> birleşmeden önce `probe --from-store --shapes` ile canlıda görülür. PR gövdesi
+> çıktıyı (yalnızca ad ve sayı) taşır. Görülmemiş yol birleşmez.
+
+Aynı sebepten yeni yollar **dalga başına tek toplama PR'ında** toplanır: o
+liste tek bir dizi, beş PR'ın aynı anda eklediği beş satır beş çakışmadır.
+Kurallar ise ayrı dosyalardır ve toplama PR'ından sonra paralel yürür.
+
+### Dalgalar
+
+| Dalga | İçerik | Başlama şartı | Neden burada |
+|---|---|---|---|
+| **0 — sürüyor** | Kontrol #3 düzeltmeleri; `Fold`'un geç gelen örnekleri yeniden katlaması; `configurationEx` + `path.transport` kablolaması (M8.1, M8.3'ü **sessizlikten çıkarır**, M8.6'yı tamamlar); T0.4b (saat farkı + boşluk sonrası geri doldurma); tek yayım | — | Üçü yanlış ya da eksik veri yazıyor; ikisi main'de duran ama çalışmayan feature. |
+| **1** | Paket **A** (okuma bütçesi), **C** (yokluk), **G** (yapılandırma) paralel. Yanında **toplama PR'ı 1**: M8.4 ve M8.7'nin yolları. Ardından kurallar paralel: **M8.4** bakım modu engelleri, **M8.7** bitiş tarihi radarı | Dalga 0 yayımı | A, C, G dosya paylaşmıyor. M8.4 tamamen eldeki envanter; M8.7 iki çağrı uzakta ve alıcının ilk sorduğu şeylerden. |
+| **2** | Paket **D** (öz-izleme), **B** (katalog + sınıflandırma). **M9.1** build tablosu → **M9.3** destek bitişi → **M9.2** maruziyet (aşağıdaki tanımla). **M10.4** geri kazanım, **M10.5** sağ boyutlandırma | C main'de (D için); dalga 1 yayımı | D bekletilmemeli: servis 21–22 Eylül'de iki kez saatlerce durdu ve ürün bunu söyleyemedi. M9 üçlüsü tek katalog üzerine kurulu, sırayla. M10.4/M10.5 boşluğa duyarsız: eşik ve pencere sayıyorlar, eğim değil. |
+| **3** | Paket **E** (sözleşme takımı) → **F** (ortak parçalar). **M8.5** uplink SPOF, **M8.8** yedek tazeliği, **M8.9** VCSA yedeği | A ve B main'de | E, A ile B davranışı değiştirirken yazılırsa iki kez yazılır. M8.5 host başına bir **çağrı** (özellik değil) — maliyeti A'nın ölçümünden sonra bilinir. M8.9 toplayıcıya ikinci bir protokol (REST) sokuyor; F'den önce sokmak F'yi zorlaştırır. |
+| **4** | **M10.1** değişim noktası, **M10.2** eşiğe-kalan-süre, **M10.3** temkinli/agresif, **M10.6** what-if | T0.4b yayımından sonra **en az 14 gün kesintisiz** seri | Eğim, boşluklu seride yanlış tarih üretir. 21–22 Eylül'de seride iki büyük boşluk var (5 dk ve ~2,5 saat); ikincisi vCenter'ın 1 saatlik gerçek zamanlı penceresini aştığı için geri doldurulamaz. 14 gün: M4'ün kendi alt sınırının iki katı, haftalık deseni iki kez görmek için. *Benim seçimim; alıntı değil.* |
+| **5** | Paket **H** (değişim akışı) → **M6** | E, F main'de | T-P2'nin tamamı M6'nın giriş şartı. A'nın ölçümü "envanter zaman aşımına sığmıyor" derse H dalga 2'ye çekilir. |
+| sonra | M10.7 (ADR ister), M9.4–M9.7, M7 | — | — |
+
+**Kritik yol:** dalga 0 → A → E → F → M6. M8, M9 ve M10 bu yolun **yanında**
+yürür, üstünde değil: hiçbiri M6'yı bekletmez, M6 da onları.
+
+### M9.2'nin yeniden tanımı
+
+Yol haritası "build → güvenlik açığı maruziyeti"ni VMSA beslemesinden kurmayı
+öngörüyordu ve bir açık soru bırakmıştı: besleme düzeltilmiş build'i taşıyor mu.
+**Taşımıyor** — API yalnızca duyuru listesini veriyor, etkilenen ve düzeltilen
+sürümler duyurunun web sayfasında
+([William Lam](https://williamlam.com/2024/09/quick-tip-api-for-broadcom-security-advisories.html):
+*"the details are only in URL, which isn't part of API"*). "Bu build şu CVE'ye
+açık" demek ya sayfa kazımayı ya da elle bakılan bir eşleme kataloğunu
+gerektirir; ikincisi §11'de reddettiğimiz içerik ekibi yüküdür.
+
+Eşleme gerektirmeyen ve **uydurmayan** bir iddia var:
+
+> Bir düzeltme ilk kez D tarihinde yayımlandıysa, D'den **önce** çıkmış hiçbir
+> build o düzeltmeyi içeremez.
+
+Bu mantıksal olarak kesin. Tersi kesin değil — D'den sonra çıkmış bir build
+düzeltmeyi içerebilir de içermeyebilir de (başka bir sürüm hattı olabilir) — ve
+ürün o yönde **bir şey söylemez**. Bulgu build başınadır:
+
+> *"Bu build 14 Mart'ta çıktı. O tarihten sonra bu ürün için N güvenlik duyurusu
+> yayımlandı; M tanesi CISA'nın istismar edildiği bilinen açıklar listesinde."*
+
+Gereken: M9.1'in build → çıkış tarihi tablosu, VMSA listesi (tarih, önem, CVE),
+CISA KEV (CVE üzerinden). Kazıma yok, eşleme bakımı yok. **Bilinen sınır:**
+duyuru o ürünün o sürüm hattını hiç etkilemiyor olabilir; bulgu bu yüzden
+"açıksınız" demez, "gözden geçirin" der ve duyuruların bağlantısını verir.
+**Doğrulanacak (dalga 2'nin ilk işi):** VMSA listesinin alan adları — CVE
+kimliklerini ve ürün ayrımını taşıyor mu. Taşımıyorsa KEV ile birleşim ürün adı
+ve tarih üzerinden kurulur ve M sayısı üst sınır olarak sunulur.
+
 ## ▶ T — Toplayıcı temeli *(sürüyor)*
 
 Feature değil, zemin. 21 Eylül 2026 denetimi (üç kol: taşıma/oturum, kaynaklar,
@@ -190,7 +258,7 @@ M3'ün yolu: besleme **veri olarak** yutulur, sürümlü, `catalogues/` altında
 | Adım | Feature | Bitti = |
 |---|---|---|
 | M9.1 | **Build → sürüm tablosu** — kendi derlediğimiz sürümlü dosya (resmî kaynak yalnızca HTML) | host'ta sürüm + çıkış tarihi |
-| M9.2 | **Güvenlik açığı maruziyeti** — VMSA JSON + CISA KEV, CVE üzerinden; bulgu **build başına**, host başına değil *(açık soru: VMSA yanıtı düzeltilmiş build'i taşıyor mu)* | "bu build istismar edilen açığa açık" |
+| M9.2 | **Güvenlik açığı maruziyeti** — bu build'in çıkışından **sonra** yayımlanan duyurular + CISA KEV; bulgu **build başına** *(yeniden tanımlandı: VMSA beslemesi düzeltilmiş build'i taşımıyor — bkz. "Yürütme sırası")* | "bu build'den sonra N duyuru, M'si istismar ediliyor" |
 | M9.3 | **Genel destek bitişi** — ESXi/vCenter | geri sayım + bulgu |
 | M9.4 | **Küme içi sapma** — build, NTP, gelişmiş ayarlar host'lar arasında; §3 "tutarlılık" sütunu | bulgu |
 | M9.5 | **Performans best-practice** — host güç politikası (küme başına tek bulgu), NUMA düğümünden geniş VM, limit altında balon, eski adaptörler (E1000/LSI — sayısıyla **tek** bulgu), hot-add yalnızca donanım sürümü < 20 ve geniş VM | bulgu |

@@ -894,6 +894,25 @@ public class ReadModelTests
     }
 
     [Fact]
+    public void An_unrelated_configuration_alert_does_not_appear_on_the_ha_scorecard()
+    {
+        // RemoteLogging's alerts share the HA scorecard's "Configuration"
+        // category. Filtering the scorecard by Category alone -- rather than
+        // by which rule actually produced the alert -- used to let a remote
+        // logging finding show up as an HA finding.
+        GivenEntities(Cluster("vc-1:domain-c1", (HaRules.EnabledSetting, "false")));
+        GivenAlerts(Alert(RemoteLogging.RuleId, AlertSeverity.Warning) with
+        {
+            Category = "Configuration",
+            Entity = new EntityId("vc-1:domain-c1"),
+        });
+
+        var card = Model().Entity("vc-1:domain-c1")!.HaScorecard!;
+
+        Assert.Empty(card.Findings);
+    }
+
+    [Fact]
     public void Only_a_cluster_carries_an_ha_scorecard()
     {
         GivenEntities(Host("h1", HealthState.Healthy));
@@ -1179,19 +1198,129 @@ public class ReadModelTests
     }
 
     [Fact]
-    public void The_n_plus_one_placeholder_reads_generically_by_rule_id()
+    public void The_n_plus_one_rule_reads_generically_by_rule_id()
     {
-        // n-plus-one is being built in a parallel change; this only proves
-        // the report picks it up the same way it picks up every other rule,
-        // with no type of its own to reference.
+        // Proves the report picks up N+1 the same generic way it picks up
+        // every other rule, from ClusterNPlusOne.RuleId, with no type of its
+        // own to reference.
         var clusterId = new EntityId("vc-1:domain-c1");
         GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(RuleAlert("cluster-n-plus-one", AlertSeverity.Warning, clusterId));
+        GivenAlerts(RuleAlert(ClusterNPlusOne.RuleId, AlertSeverity.Warning, clusterId));
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
         Assert.Equal(1, row.NPlusOneWarningCount);
-        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule["cluster-n-plus-one"]);
+        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule[ClusterNPlusOne.RuleId]);
+    }
+
+    [Fact]
+    public void The_n_plus_one_history_unreadable_alert_counts_as_an_n_plus_one_finding()
+    {
+        // ClusterNPlusOne files its "history unreadable" alert with a
+        // check-id of "cluster-n-plus-one-history-unreadable" -- the rule's
+        // own id plus a suffix, not the bare id GuardedRule's own failure
+        // alert would use. This is the one real-world case the "starts with
+        // ruleId + '-'" branch of the match exists for.
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1"));
+        GivenAlerts(new AlertInstance
+        {
+            Fingerprint = AlertFingerprint.Create(
+                "platform", "Cluster N+1 history unreadable", "Configuration",
+                ClusterNPlusOne.RuleId, "cluster-n-plus-one-history-unreadable"),
+            Severity = AlertSeverity.Warning,
+            State = AlertLifecycleState.Open,
+            Title = "Cluster N+1 history unreadable",
+            Category = "Configuration",
+            Source = "platform",
+            Entity = clusterId,
+            Scope = AlertScopes.Inventory,
+            ConsecutiveHits = 1,
+            IsConfirmed = true,
+            ClearedByOperator = false,
+            PendingNotification = AlertNotificationKind.None,
+            FirstSeenUtc = T0,
+            LastSeenUtc = T0,
+            IsDerived = true,
+        });
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.NPlusOneWarningCount);
+    }
+
+    [Fact]
+    public void A_rules_own_failure_alert_does_not_count_as_that_rules_finding()
+    {
+        // GuardedRule.Failed's fingerprint carries the failed rule's id as
+        // its object-name segment, not its check-id segment (which is always
+        // the constant "analysis-rule-failed"). A plain substring match over
+        // the whole fingerprint used to count this as an HA finding -- an
+        // analysis outage misreported as "the cluster is fine, zero
+        // findings" would have been the opposite bug, but either way the
+        // rule that broke and the rule whose alert it produced must not be
+        // conflated.
+        GivenEntities(Cluster("vc-1:domain-c1"));
+
+        var failure = Assert.Single(
+            GuardedRule.Run(ClusterHighAvailability.RuleId, () => throw new InvalidOperationException("boom")));
+
+        GivenAlerts(new AlertInstance
+        {
+            Fingerprint = failure.Fingerprint,
+            Severity = failure.Severity,
+            State = AlertLifecycleState.Open,
+            Title = failure.Title,
+            Description = failure.Description,
+            Category = failure.Category,
+            Source = failure.Source,
+            Scope = AlertScopes.Inventory,
+            ConsecutiveHits = 1,
+            IsConfirmed = true,
+            ClearedByOperator = false,
+            PendingNotification = AlertNotificationKind.None,
+            FirstSeenUtc = T0,
+            LastSeenUtc = T0,
+            IsDerived = true,
+        });
+
+        Assert.Equal(0, Model().ContinuityReport().Summary.ByRule[ClusterHighAvailability.RuleId]);
+    }
+
+    [Fact]
+    public void Another_rules_id_appearing_inside_a_title_or_object_name_does_not_cross_match()
+    {
+        // A user is free to name a DRS rule "cluster-n-plus-one" in vCenter.
+        // That text landing in the fingerprint's title or object-name segment
+        // must not make this alert look like an N+1 finding -- only the
+        // check-id segment names which rule produced it.
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1"));
+        GivenAlerts(new AlertInstance
+        {
+            Fingerprint = AlertFingerprint.Create(
+                "vc-1", "DRS rule 'cluster-n-plus-one' violated", "Configuration",
+                $"{clusterId.Value}/cluster-n-plus-one", DrsRuleViolations.RuleId),
+            Severity = AlertSeverity.Warning,
+            State = AlertLifecycleState.Open,
+            Title = "DRS rule 'cluster-n-plus-one' violated",
+            Category = "Configuration",
+            Source = "vc-1",
+            Entity = clusterId,
+            Scope = AlertScopes.Inventory,
+            ConsecutiveHits = 1,
+            IsConfirmed = true,
+            ClearedByOperator = false,
+            PendingNotification = AlertNotificationKind.None,
+            FirstSeenUtc = T0,
+            LastSeenUtc = T0,
+            IsDerived = true,
+        });
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.DrsWarningCount);
+        Assert.Equal(0, row.NPlusOneWarningCount);
     }
 
     [Fact]

@@ -49,10 +49,17 @@ public sealed class PostgresSmtpSettingsStore : ISmtpSettingsStore
             // PostgresSourceConnectionStore.Update follows and for the same
             // reason: nothing can read the stored password back out, so an
             // edit form that shows a blank field must not erase a working
-            // credential by being saved unchanged.
-            var merged = settings.Password.IsEmpty
+            // credential by being saved unchanged. But that reuse is only
+            // safe when the relay being saved is, in every field that
+            // decides who receives the password, the one already stored --
+            // see SmtpSettings.HasSameConnectionDetails. EmailApi rejects a
+            // mismatched blank-password save before this is ever called;
+            // this is the same guard applied again here, so a caller that
+            // reaches the store directly cannot hand the stored password to
+            // a different relay just by leaving the field blank.
+            var merged = settings.Password.IsEmpty && settings.HasSameConnectionDetails(_settings)
                 ? settings with { Password = _settings.Password, PasswordSetUtc = _settings.PasswordSetUtc }
-                : settings with { PasswordSetUtc = DateTimeOffset.UtcNow };
+                : settings with { PasswordSetUtc = settings.Password.IsEmpty ? null : DateTimeOffset.UtcNow };
 
             _database.Write(connection =>
             {

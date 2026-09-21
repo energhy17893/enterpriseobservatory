@@ -58,6 +58,28 @@ public sealed record SmtpSettings
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Host) && !string.IsNullOrWhiteSpace(FromAddress);
 
+    /// <summary>
+    /// Whether <paramref name="other"/> would talk to the same relay as the
+    /// same account this settings row already does.
+    /// </summary>
+    /// <remarks>
+    /// The check a blank password in a save or a test is allowed to skip: an
+    /// edit form that cannot show the stored password back must still be able
+    /// to save or try an <em>unchanged</em> relay without re-entering it. The
+    /// moment host, port, username or TLS mode differ, reusing the stored
+    /// password would hand it to whatever is now listening there — an
+    /// Administrator could point <see cref="Host"/> at their own listener
+    /// with <see cref="SmtpTlsMode.None"/> and read the decrypted credential
+    /// off the wire. So every field that decides who receives the password
+    /// has to match, not just the host.
+    /// </remarks>
+    public bool HasSameConnectionDetails(SmtpSettings other) =>
+        other is not null &&
+        string.Equals(Host, other.Host, StringComparison.Ordinal) &&
+        Port == other.Port &&
+        string.Equals(Username, other.Username, StringComparison.Ordinal) &&
+        TlsMode == other.TlsMode;
+
     /// <summary>Every problem with these settings, not just the first. See <see cref="Collection.SourceConnection.Validate"/> for why.</summary>
     public IReadOnlyList<string> Validate()
     {
@@ -148,17 +170,57 @@ public sealed record OutgoingMail
     public IReadOnlyList<MailAttachment> Attachments { get; init; } = [];
 }
 
+/// <summary>
+/// The broad shape of a failed send, without the specifics — what
+/// <c>/api/email/test</c> is allowed to tell the caller.
+/// </summary>
+/// <remarks>
+/// <see cref="MailSendResult.Detail"/> can carry the relay's own words
+/// ("550 relaying denied", a socket error naming the host it tried) --
+/// useful in a server log, but handed back to an HTTP caller it turns the
+/// test endpoint into a port-scan oracle: try a host and port, read the
+/// failure shape back, learn whether something is listening there and what.
+/// This is the coarser fact the API is allowed to return instead.
+/// </remarks>
+public enum MailFailureKind
+{
+    /// <summary>The send did not fail.</summary>
+    None,
+
+    /// <summary>Could not reach the host at all -- refused, unreachable, or the connection dropped.</summary>
+    ConnectionFailed,
+
+    /// <summary>The TLS handshake did not complete.</summary>
+    TlsFailed,
+
+    /// <summary>Neither side answered in time.</summary>
+    TimedOut,
+
+    /// <summary>The relay rejected the username or password.</summary>
+    AuthenticationFailed,
+
+    /// <summary>Anything else -- a malformed message, a relay-level rejection, an unexpected exception.</summary>
+    Other,
+}
+
 /// <summary>What one send attempt found.</summary>
 /// <param name="Succeeded">Whether the relay accepted the mail.</param>
 /// <param name="Detail">
 /// What happened, for the operator. Never the password, never a stack trace —
-/// the SMTP relay's own rejection reason when there is one.
+/// the SMTP relay's own rejection reason when there is one. Safe for a server
+/// log; not safe to hand back through <c>/api/email/test</c> as-is -- see
+/// <see cref="MailFailureKind"/>.
 /// </param>
-public readonly record struct MailSendResult(bool Succeeded, string Detail)
+/// <param name="FailureKind">
+/// The coarse category an HTTP caller is allowed to see. <see cref="MailFailureKind.None"/>
+/// when <paramref name="Succeeded"/> is true.
+/// </param>
+public readonly record struct MailSendResult(bool Succeeded, string Detail, MailFailureKind FailureKind = MailFailureKind.None)
 {
     public static MailSendResult Ok(string detail) => new(true, detail);
 
-    public static MailSendResult Failed(string detail) => new(false, detail);
+    public static MailSendResult Failed(string detail, MailFailureKind kind = MailFailureKind.Other) =>
+        new(false, detail, kind);
 }
 
 /// <summary>
