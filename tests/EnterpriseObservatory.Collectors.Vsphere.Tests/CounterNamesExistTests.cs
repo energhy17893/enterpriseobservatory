@@ -562,6 +562,12 @@ public class CounterNamesExistTests
                 "mem.vmmemctl.average",
                 "net.droppedRx.summation",
                 "net.droppedTx.summation",
+
+                // Added with the dropped-packet rule as its denominator. Named
+                // from vendor documentation, not put to a live server; a wrong
+                // name here does not fail loudly, it silences that rule.
+                "net.packetsRx.summation",
+                "net.packetsTx.summation",
             ],
             unverifiable);
     }

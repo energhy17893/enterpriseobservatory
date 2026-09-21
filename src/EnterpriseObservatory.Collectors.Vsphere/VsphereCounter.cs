@@ -318,6 +318,15 @@ public static class VsphereCounters
         // to it, which is what makes them attributable to a datastore. See
         // PerDeviceScsiFaults.
         .. PerDeviceScsiFaults,
+
+        // The denominator for the dropped-packet counters above. A drop count
+        // alone cannot tell a busy uplink losing the odd frame from a broken
+        // one; a share of traffic can. Summations like the drop counters, same
+        // interval, same aggregate — and not kept per NIC, for the same reason.
+        // Appended rather than placed beside the drop counters so that the
+        // order of everything already collected is unchanged.
+        "net.packetsRx.summation",
+        "net.packetsTx.summation",
     ];
 
     /// <summary>
@@ -490,6 +499,11 @@ public static class VsphereCounters
         // they arrive without anyone changing a statistics level.
         "virtualDisk.totalReadLatency.average",
         "virtualDisk.totalWriteLatency.average",
+
+        // The guest's traffic, as the denominator for its drop counters. See
+        // the same pair on Host.
+        "net.packetsRx.summation",
+        "net.packetsTx.summation",
     ];
 
     /// <summary>

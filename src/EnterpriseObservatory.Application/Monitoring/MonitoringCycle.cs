@@ -293,6 +293,10 @@ public sealed class MonitoringCycle(
                 Analysis.StorageLatencyBlindSpot.RuleId,
                 () => Analysis.StorageLatencyBlindSpot.Evaluate(
                     cycle.Observations, options.StorageLatencyBlindSpot)),
+            .. Analysis.GuardedRule.Run(
+                Analysis.DroppedPackets.RuleId,
+                () => Analysis.DroppedPackets.Evaluate(
+                    cycle.Observations, options.DroppedPackets)),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);

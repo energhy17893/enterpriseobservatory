@@ -226,6 +226,10 @@ public sealed record MonitoringOptions
     public Analysis.StorageLatencyBlindSpotPolicy StorageLatencyBlindSpot { get; init; } =
         Analysis.StorageLatencyBlindSpotPolicy.Default;
 
+    /// <summary>What share of real traffic may be dropped before it is said.</summary>
+    public Analysis.DroppedPacketsPolicy DroppedPackets { get; init; } =
+        Analysis.DroppedPacketsPolicy.Default;
+
     /// <summary>
     /// Which of a storage path's reported states mean it is gone.
     /// </summary>
