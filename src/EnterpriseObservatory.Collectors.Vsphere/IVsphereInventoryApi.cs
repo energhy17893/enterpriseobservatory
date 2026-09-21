@@ -353,6 +353,104 @@ public sealed record VsphereCluster
 
     /// <summary>Whether DRS is enabled, or null when unreadable. See <see cref="HighAvailabilityEnabled"/>.</summary>
     public bool? DrsEnabled { get; init; }
+
+    /// <summary>
+    /// The VM and host groups <c>configurationEx.group</c> reports, named
+    /// groups a DRS VM-host rule refers to by name.
+    /// </summary>
+    /// <remarks>
+    /// Empty when the property could not be read, same contract as
+    /// everywhere else in this record.
+    /// </remarks>
+    public IReadOnlyList<VsphereClusterGroup> Groups { get; init; } = [];
+
+    /// <summary>
+    /// The affinity, anti-affinity and VM-host rules <c>configurationEx.rule</c>
+    /// reports.
+    /// </summary>
+    public IReadOnlyList<VsphereDrsRule> DrsRules { get; init; } = [];
+}
+
+/// <summary>
+/// A named group of VMs or hosts, as vim25's <c>ClusterVmGroup</c> or
+/// <c>ClusterHostGroup</c> reports it, one element of
+/// <c>configurationEx.group</c>.
+/// </summary>
+/// <remarks>
+/// The two vim25 types share nothing but the group name
+/// (<c>ClusterGroupInfo.name</c>) and are told apart here by
+/// <see cref="Kind"/> rather than by two separate wire types, because a DRS
+/// VM-host rule names a VM group and a host group by name and a reader
+/// resolving those references wants one lookup table, not two.
+/// </remarks>
+public sealed record VsphereClusterGroup
+{
+    public required string Name { get; init; }
+
+    public required VsphereClusterGroupKind Kind { get; init; }
+
+    /// <summary>
+    /// The group's members: VM morefs for <see cref="VsphereClusterGroupKind.VirtualMachine"/>
+    /// (vim25 <c>ClusterVmGroup.vm</c>), host morefs for
+    /// <see cref="VsphereClusterGroupKind.Host"/> (vim25 <c>ClusterHostGroup.host</c>).
+    /// </summary>
+    public IReadOnlyList<string> MemberMoRefs { get; init; } = [];
+}
+
+/// <summary>Which vim25 group type a <see cref="VsphereClusterGroup"/> came from.</summary>
+public enum VsphereClusterGroupKind
+{
+    VirtualMachine,
+    Host,
+}
+
+/// <summary>
+/// A DRS rule, as vim25's <c>ClusterAffinityRuleSpec</c>,
+/// <c>ClusterAntiAffinityRuleSpec</c> or <c>ClusterVmHostRuleInfo</c> reports
+/// it, one element of <c>configurationEx.rule</c>, close to the wire.
+/// </summary>
+/// <remarks>
+/// Group references are carried as the names vCenter used
+/// (<c>vmGroupName</c>, <c>affineHostGroupName</c>, <c>antiAffineHostGroupName</c>)
+/// rather than resolved here: resolving a name against
+/// <see cref="VsphereCluster.Groups"/> and turning a moref into an
+/// <see cref="Domain.EntityId"/> is the source's job, the same split
+/// <see cref="VsphereStoragePath"/> and the domain's <c>StoragePath</c> make.
+/// </remarks>
+public sealed record VsphereDrsRule
+{
+    public required string Name { get; init; }
+
+    public required Domain.DrsRuleKind Kind { get; init; }
+
+    /// <summary>vim25 <c>enabled</c>.</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>vim25 <c>mandatory</c>.</summary>
+    public bool Mandatory { get; init; }
+
+    /// <summary>vim25 <c>inCompliance</c>, or null when not reported.</summary>
+    public bool? InCompliance { get; init; }
+
+    /// <summary>
+    /// VM morefs, directly from vim25 <c>vm</c>. Only set for
+    /// <see cref="Domain.DrsRuleKind.Affinity"/> and
+    /// <see cref="Domain.DrsRuleKind.AntiAffinity"/>.
+    /// </summary>
+    public IReadOnlyList<string> VirtualMachineMoRefs { get; init; } = [];
+
+    /// <summary>
+    /// vim25 <c>ClusterVmHostRuleInfo.vmGroupName</c>. Only set for the
+    /// VM-host rule kinds.
+    /// </summary>
+    public string? VmGroupName { get; init; }
+
+    /// <summary>
+    /// vim25 <c>ClusterVmHostRuleInfo.affineHostGroupName</c> or
+    /// <c>antiAffineHostGroupName</c>, whichever <see cref="Kind"/> selects.
+    /// Only set for the VM-host rule kinds.
+    /// </summary>
+    public string? HostGroupName { get; init; }
 }
 
 /// <summary>A datastore as vCenter sees it.</summary>

@@ -34,6 +34,7 @@ public static class AnalysisRules
         new StorageNoisyNeighbourRule(),
 
         new StoragePathRedundancyRule(),
+        new DrsRuleViolationsRule(),
         new RemoteLoggingRule(),
         new EventAlertsRule(),
         new DatastoreTimeToFullRule(),
@@ -234,6 +235,28 @@ public sealed class StoragePathRedundancyRule : IAnalysisRule
 
         return StoragePathRedundancy.Evaluate(
             [.. context.Graph.Active], context.Options.StoragePathRedundancy);
+    }
+}
+
+/// <summary>Adapts <see cref="DrsRuleViolations"/>.</summary>
+/// <remarks>
+/// On the inventory rhythm beside <see cref="StoragePathRedundancyRule"/> and
+/// for the same reason: DRS rules and the placement they are judged against
+/// are both read on the inventory rhythm and change on it, and the graph
+/// handed here is the one this cycle just merged rather than the store's
+/// stale copy.
+/// </remarks>
+public sealed class DrsRuleViolationsRule : IAnalysisRule
+{
+    public string RuleId => DrsRuleViolations.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return DrsRuleViolations.Evaluate(context.Graph);
     }
 }
 
