@@ -150,17 +150,16 @@ public class MultipathSinglePointOfFailureTests
     }
 
     [Fact]
-    public void A_dead_second_path_on_a_different_adapter_still_counts_as_single_hba()
+    public void A_dead_second_path_on_a_different_adapter_suppresses_the_single_hba_verdict()
     {
-        // Only the paths still carrying I/O decide the verdict. A dead path on
-        // vmhba1 is not protection right now, whatever adapter it names.
-        var alert = Assert.Single(Evaluate(
+        // StoragePathRedundancy already reports the lost path on vmhba1 as
+        // its own, more urgent fact. Naming "single HBA" here on top of it
+        // would be the same underlying loss under a second title.
+        Assert.Empty(Evaluate(
             HostWith(
                 Path("active", name: "vmhba0:C0:T0:L1"),
                 Path("dead", name: "vmhba1:C0:T0:L1", adapter: "vmhba1")),
             VmfsDatastore()));
-
-        Assert.Equal(SingleHbaTitle, alert.Title);
     }
 
     // --- the healthy case: dual fabric --------------------------------------
