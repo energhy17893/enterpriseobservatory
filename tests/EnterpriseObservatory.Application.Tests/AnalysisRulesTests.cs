@@ -59,6 +59,7 @@ public class AnalysisRulesTests
             [
                 StoragePathRedundancy.RuleId,
                 RemoteLogging.RuleId,
+                ClusterHighAvailability.RuleId,
                 EventAlerts.RuleId,
                 DatastoreTimeToFull.RuleId,
                 CollectionCoverage.RuleId,
