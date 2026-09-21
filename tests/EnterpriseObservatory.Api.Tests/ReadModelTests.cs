@@ -901,6 +901,91 @@ public class ReadModelTests
         Assert.Null(Model().Entity("h1")!.HaScorecard);
     }
 
+    // --- cluster N+1 (M8.2) --------------------------------------------------
+
+    private void GivenTwoHostCluster(double cpuUsagePercent, double memUsagePercent)
+    {
+        GivenEntities(
+            Cluster("vc-1:domain-c1"), Host("h1", HealthState.Healthy), Host("h2", HealthState.Healthy));
+
+        GivenRelationships(
+            new Relationship
+            {
+                From = new EntityId("h1"),
+                To = new EntityId("vc-1:domain-c1"),
+                Kind = RelationshipKind.PartOf,
+                ObservedAtUtc = T0,
+            },
+            new Relationship
+            {
+                From = new EntityId("h2"),
+                To = new EntityId("vc-1:domain-c1"),
+                Kind = RelationshipKind.PartOf,
+                ObservedAtUtc = T0,
+            });
+
+        // The stub keys recorded points by counter only, so both hosts read
+        // the same value -- enough to check the arithmetic, not to tell the
+        // hosts apart.
+        _observations.Recorded["cpu.usage.average"] = [Bucket(T0, cpuUsagePercent)];
+        _observations.Recorded["mem.usage.average"] = [Bucket(T0, memUsagePercent)];
+    }
+
+    [Fact]
+    public void A_cluster_page_shows_n_plus_one_for_cpu_and_memory_separately()
+    {
+        // 2 hosts: available after losing one = 1 * 90% = 0.9 host-equivalents.
+        // CPU: 2 * 30% = 0.6, holds. Memory: 2 * 90% = 1.8, already fails.
+        GivenTwoHostCluster(cpuUsagePercent: 30, memUsagePercent: 90);
+
+        var failover = Model().Entity("vc-1:domain-c1")!.ClusterFailover!;
+
+        Assert.Equal(2, failover.HostCount);
+
+        Assert.Equal(0.6, failover.Cpu.DemandHosts!.Value, 6);
+        Assert.Equal(0.9, failover.Cpu.AvailableAfterFailoverHosts, 6);
+        Assert.True(failover.Cpu.HoldsNow);
+
+        Assert.Equal(1.8, failover.Memory.DemandHosts!.Value, 6);
+        Assert.False(failover.Memory.HoldsNow);
+    }
+
+    [Fact]
+    public void The_date_is_shown_as_a_forecast_or_a_refusal_never_a_missing_answer()
+    {
+        GivenTwoHostCluster(cpuUsagePercent: 30, memUsagePercent: 30);
+
+        var cpu = Model().Entity("vc-1:domain-c1")!.ClusterFailover!.Cpu;
+
+        Assert.NotNull(cpu.Date);
+        Assert.False(string.IsNullOrWhiteSpace(cpu.Date!.Summary));
+    }
+
+    [Fact]
+    public void A_single_host_cluster_has_no_n_plus_one_answer()
+    {
+        // N+1 asks what survives losing one host, which cannot be asked of a
+        // cluster with only one.
+        GivenEntities(Cluster("vc-1:domain-c1"), Host("h1", HealthState.Healthy));
+        GivenRelationships(new Relationship
+        {
+            From = new EntityId("h1"),
+            To = new EntityId("vc-1:domain-c1"),
+            Kind = RelationshipKind.PartOf,
+            ObservedAtUtc = T0,
+        });
+
+        Assert.Null(Model().Entity("vc-1:domain-c1")!.ClusterFailover);
+    }
+
+    [Fact]
+    public void Only_a_cluster_carries_an_n_plus_one_answer()
+    {
+        GivenEntities(Host("h1", HealthState.Healthy));
+
+        Assert.Null(Model().Entity("h1")!.ClusterFailover);
+    }
+
     // --- capacity report (M5.3) --------------------------------------------
 
     private void GivenFree(double bytes) =>

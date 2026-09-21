@@ -309,4 +309,11 @@ public sealed record MonitoringOptions
 
     /// <summary>Which vCenter events become alerts, and how long each is held open.</summary>
     public Analysis.EventAlertPolicy EventAlerts { get; init; } = Analysis.EventAlertPolicy.Default;
+
+    /// <summary>
+    /// If the largest host fails, do the survivors still hold the running
+    /// VMs' demand, and until when. See roadmap M8.2.
+    /// </summary>
+    public Analysis.ClusterNPlusOnePolicy ClusterNPlusOne { get; init; } =
+        Analysis.ClusterNPlusOnePolicy.Default;
 }

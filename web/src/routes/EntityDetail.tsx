@@ -5,7 +5,14 @@ import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/co
 import { SeriesChart } from '@/components/SeriesChart'
 import { AlertActions } from '@/components/AlertActions'
 import { ago, healthStatus, ramp, severityStatus } from '@/lib/ui'
-import type { HaScorecardView, RelationshipKind, RelationshipView, TimeToFullView } from '@/api/types'
+import type {
+  ClusterFailoverResourceView,
+  ClusterFailoverView,
+  HaScorecardView,
+  RelationshipKind,
+  RelationshipView,
+  TimeToFullView,
+} from '@/api/types'
 
 /**
  * How an edge reads in a sentence, in each direction.
@@ -57,7 +64,7 @@ export function EntityDetail() {
 
   if (isPending) return <Loading what="the entity" />
 
-  const { entity, marks, relationships, alerts, timeToFull, haScorecard } = data
+  const { entity, marks, relationships, alerts, timeToFull, haScorecard, clusterFailover } = data
 
   return (
     <div className="space-y-6">
@@ -135,6 +142,13 @@ export function EntityDetail() {
         <section className="space-y-2">
           <h2 className="text-sm font-medium">HA scorecard</h2>
           <HaScorecard card={haScorecard} />
+        </section>
+      )}
+
+      {clusterFailover && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-medium">N+1: if the largest host fails</h2>
+          <ClusterFailover failover={clusterFailover} />
         </section>
       )}
 
@@ -312,6 +326,72 @@ function HaScorecard({ card }: { card: HaScorecardView }) {
         </ul>
       )}
     </div>
+  )
+}
+
+/**
+ * If the largest host in this cluster failed right now, would the survivors
+ * still hold every running VM's demand -- and if not today, until when.
+ *
+ * The unit is host-equivalents (a share of one host's own capacity), not MHz
+ * or GB: no collector this product runs reads a host's CPU or memory capacity
+ * in absolute units, so "largest host" is approximated as any one host, one
+ * host-equivalent of capacity. That approximation is exact on a cluster built
+ * from identical hosts and is named on the card rather than hidden.
+ */
+function ClusterFailover({ failover }: { failover: ClusterFailoverView }) {
+  return (
+    <div className="space-y-2">
+      <Card className="p-3 text-sm text-muted-foreground">
+        {failover.hostCount} live hosts. Losing the largest one leaves{' '}
+        {failover.cpu.availableAfterFailoverHosts.toFixed(2)} host-equivalents of headroom for CPU
+        and the same for memory, after keeping the survivors under this product&apos;s 90%
+        utilisation ceiling. &quot;Largest host&quot; is approximated as any one host -- see below.
+      </Card>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <ClusterFailoverResource label="CPU" resource={failover.cpu} />
+        <ClusterFailoverResource label="Memory" resource={failover.memory} />
+      </div>
+    </div>
+  )
+}
+
+function ClusterFailoverResource({
+  label,
+  resource,
+}: {
+  label: string
+  resource: ClusterFailoverResourceView
+}) {
+  if (resource.holdsNow === null || resource.demandHosts === null) {
+    return (
+      <Card className="p-3 text-sm">
+        <div className="font-medium">{label}</div>
+        <div className="mt-1 text-muted-foreground">
+          Unknown: at least one host&apos;s current usage could not be read this cycle.
+        </div>
+      </Card>
+    )
+  }
+
+  return (
+    <Card className="p-3 text-sm">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-medium">{label}</span>
+        <span className={`font-medium ${resource.holdsNow ? '' : ramp('Critical').text}`}>
+          {resource.holdsNow ? 'Holds now' : 'Fails now'}
+        </span>
+      </div>
+      <div className="mt-1 text-muted-foreground">
+        {resource.demandHosts.toFixed(2)} of {resource.availableAfterFailoverHosts.toFixed(2)}{' '}
+        host-equivalents of demand.
+      </div>
+      {resource.date && (
+        <div className={`mt-1 ${resource.date.isForecast && (resource.date.days ?? 0) <= 30 ? ramp('Warning').text : 'text-muted-foreground'}`}>
+          {resource.date.summary}
+        </div>
+      )}
+    </Card>
   )
 }
 
