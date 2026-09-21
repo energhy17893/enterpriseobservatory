@@ -275,4 +275,16 @@ internal static partial class HostLog
         Message = "A scheduled-report dispatch pass threw; the next pass, one minute from now, " +
                   "will try again.")]
     public static partial void ReportDispatchPassFailed(ILogger logger, Exception exception);
+
+    /// <summary>
+    /// PostgreSQL refused a startup connection and the service is retrying
+    /// rather than crashing. See <c>DatabaseStartupRetry</c>.
+    /// </summary>
+    [LoggerMessage(
+        EventId = 1033,
+        Level = LogLevel.Warning,
+        Message = "PostgreSQL was not reachable on startup attempt {Attempt} " +
+                  "({ElapsedSeconds:0}s since the first try); retrying.")]
+    public static partial void DatabaseNotReachableRetrying(
+        ILogger logger, Exception exception, int attempt, double elapsedSeconds);
 }
