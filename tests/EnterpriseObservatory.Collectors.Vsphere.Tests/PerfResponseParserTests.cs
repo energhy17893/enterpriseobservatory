@@ -716,4 +716,62 @@ public class PerfResponseParserTests
         Assert.Equal(0d, Assert.Single(Assert.Single(
             PerfResponseParser.ParseSamples(xml, Catalog(), TimeSpan.FromSeconds(20))).Values).Raw);
     }
+
+    [Fact]
+    public void A_machines_requests_are_summed_across_its_disks_rather_than_taking_the_busiest()
+    {
+        // The storage noisy-neighbour rule compares machines by how much they
+        // ask of a volume. A machine sending 300 operations a second to each
+        // of three disks is sending 900; the latency default, the worst
+        // device, would report 300 and understate exactly the machines with
+        // the most disks. Where vCenter supplies no aggregate -- whether it does
+        // for virtualDisk has not been checked live -- the parser adds them up.
+        var catalog = new Dictionary<int, VsphereCounter>
+        {
+            [901] = new()
+            {
+                Id = 901,
+                Group = "virtualDisk",
+                Name = "numberReadAveraged",
+                Rollup = RollupType.Average,
+                Unit = "number",
+            },
+            [902] = new()
+            {
+                Id = 902,
+                Group = "virtualDisk",
+                Name = "totalReadLatency",
+                Rollup = RollupType.Average,
+                Unit = "millisecond",
+            },
+        };
+
+        const string xml = """
+            <QueryPerfResponse xmlns="urn:vim25">
+              <returnval>
+                <entity type="VirtualMachine">vm-1</entity>
+                <sampleInfo><interval>20</interval></sampleInfo>
+                <value><id><counterId>901</counterId><instance>scsi0:0</instance></id><value>300</value></value>
+                <value><id><counterId>901</counterId><instance>scsi0:1</instance></id><value>300</value></value>
+                <value><id><counterId>901</counterId><instance>scsi1:0</instance></id><value>300</value></value>
+                <value><id><counterId>902</counterId><instance>scsi0:0</instance></id><value>2</value></value>
+                <value><id><counterId>902</counterId><instance>scsi0:1</instance></id><value>9</value></value>
+              </returnval>
+            </QueryPerfResponse>
+            """;
+
+        var values = Assert.Single(
+            PerfResponseParser.ParseSamples(xml, catalog, TimeSpan.FromSeconds(20))).Values;
+
+        var requests = Assert.Single(
+            values, v => v.CounterName == "virtualDisk.numberReadAveraged.average");
+
+        Assert.Equal(900d, requests.Raw);
+        Assert.True(requests.IsAggregateInstance);
+
+        // And latency keeps the worst disk. Summing it would be a new lie.
+        Assert.Equal(
+            9d,
+            Assert.Single(values, v => v.CounterName == "virtualDisk.totalReadLatency.average").Raw);
+    }
 }

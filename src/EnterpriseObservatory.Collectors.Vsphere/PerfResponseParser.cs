@@ -213,7 +213,10 @@ public static class PerfResponseParser
             }
 
             var first = group.First();
-            var combined = first.Rollup == RollupType.Summation
+            // A rate of requests adds up across disks the way a total does.
+            // See VsphereCounters.IsAdditiveAcrossDevices.
+            var combined = first.Rollup == RollupType.Summation ||
+                           VsphereCounters.IsAdditiveAcrossDevices(group.Key)
                 ? group.Sum(v => v.Raw)
                 : group.Max(v => v.Raw);
 

@@ -227,6 +227,16 @@ public sealed record MonitoringOptions
         Analysis.StorageLatencyBlindSpotPolicy.Default;
 
     /// <summary>
+    /// When a slow volume has a virtual machine on it carrying far more than its neighbours.
+    /// </summary>
+    /// <remarks>
+    /// Its <c>Peers</c> is replaced by <see cref="PeerOutliers"/> in the cycle,
+    /// so "slow" means one number across every storage rule.
+    /// </remarks>
+    public Analysis.StorageNoisyNeighbourPolicy StorageNoisyNeighbour { get; init; } =
+        Analysis.StorageNoisyNeighbourPolicy.Default;
+
+    /// <summary>
     /// Which of a storage path's reported states mean it is gone.
     /// </summary>
     /// <remarks>

@@ -293,6 +293,19 @@ public sealed class MonitoringCycle(
                 Analysis.StorageLatencyBlindSpot.RuleId,
                 () => Analysis.StorageLatencyBlindSpot.Evaluate(
                     cycle.Observations, options.StorageLatencyBlindSpot)),
+
+            // Given the graph for VM BackedBy Datastore, and the sample store
+            // for the one question a single cycle cannot answer: whether the
+            // volume's load rose. The store is read only for a volume that has
+            // already passed every other gate.
+            .. Analysis.GuardedRule.Run(
+                Analysis.StorageNoisyNeighbour.RuleId,
+                () => Analysis.StorageNoisyNeighbour.Evaluate(
+                    cycle.Observations,
+                    _graphStore.Current,
+                    Analysis.StorageNoisyNeighbour.TypicalRateFrom(
+                        _observationStore, now, options.StorageNoisyNeighbour),
+                    options.StorageNoisyNeighbour with { Peers = options.PeerOutliers })),
         ];
 
         var reconciliation = Reconcile(AlertScopes.Observation, observed, options, now);
