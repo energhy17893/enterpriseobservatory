@@ -1,5 +1,6 @@
 using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
@@ -190,6 +191,164 @@ public class ReadModelTests
         GivenAlerts(Alert("a", AlertSeverity.Warning));
 
         Assert.Equal(ReadModel.MaxLimit, Model().Alerts(limit: 100_000).Limit);
+    }
+
+    // --- alert report (M5.1) -----------------------------------------------
+
+    [Fact]
+    public void The_report_includes_open_alerts_regardless_of_the_range()
+    {
+        GivenAlerts(Alert("a", AlertSeverity.Critical) with { FirstSeenUtc = T0.AddDays(-90) });
+
+        var report = Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0);
+
+        Assert.Single(report.Rows);
+    }
+
+    [Fact]
+    public void The_report_includes_an_alert_resolved_inside_the_range()
+    {
+        var resolvedAt = T0.AddHours(-2);
+        GivenAlerts(Resolved("a", AlertSeverity.Warning, resolvedAt));
+
+        var report = Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0);
+
+        Assert.Single(report.Rows);
+    }
+
+    [Fact]
+    public void The_report_excludes_an_alert_resolved_outside_the_range()
+    {
+        var resolvedAt = T0.AddDays(-30);
+        GivenAlerts(Resolved("a", AlertSeverity.Warning, resolvedAt));
+
+        var report = Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0);
+
+        Assert.Empty(report.Rows);
+    }
+
+    [Fact]
+    public void An_unconfirmed_alert_never_reaches_the_report()
+    {
+        GivenAlerts(Alert("a", AlertSeverity.Critical) with { IsConfirmed = false });
+
+        Assert.Empty(Model().AlertsReport().Rows);
+    }
+
+    [Fact]
+    public void The_report_defaults_to_the_last_seven_days_when_no_range_is_given()
+    {
+        GivenAlerts(Resolved("recent", AlertSeverity.Warning, T0.AddDays(-1)));
+        GivenAlerts(Resolved("old", AlertSeverity.Warning, T0.AddDays(-10)));
+
+        var report = Model().AlertsReport();
+
+        Assert.Equal(T0.AddDays(-7), report.FromUtc);
+        Assert.Equal(T0, report.ToUtc);
+    }
+
+    [Fact]
+    public void The_report_carries_the_entity_name_and_kind()
+    {
+        GivenEntities(Host("h1", HealthState.Critical));
+        GivenAlerts(Alert("a", AlertSeverity.Critical) with { Entity = new EntityId("h1") });
+
+        var row = Assert.Single(Model().AlertsReport().Rows);
+
+        Assert.Equal("h1.corp.local", row.EntityName);
+        Assert.Equal(EntityKind.EsxiHost, row.EntityKind);
+    }
+
+    [Fact]
+    public void The_report_names_who_acknowledged_and_who_cleared_it_and_when()
+    {
+        var alert = Alert("a", AlertSeverity.Critical) with
+        {
+            State = AlertLifecycleState.Resolved,
+            History =
+            [
+                new AlertTransition
+                {
+                    From = AlertLifecycleState.Open,
+                    To = AlertLifecycleState.Acknowledged,
+                    Reason = AlertTransitionReason.OperatorAcknowledged,
+                    AtUtc = T0.AddHours(-3),
+                    Actor = "alice",
+                },
+                new AlertTransition
+                {
+                    From = AlertLifecycleState.Acknowledged,
+                    To = AlertLifecycleState.Resolved,
+                    Reason = AlertTransitionReason.OperatorCleared,
+                    AtUtc = T0.AddHours(-1),
+                    Actor = "bob",
+                },
+            ],
+        };
+        GivenAlerts(alert);
+
+        var row = Assert.Single(Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0).Rows);
+
+        Assert.Equal("alice", row.AcknowledgedBy);
+        Assert.Equal(T0.AddHours(-3), row.AcknowledgedAtUtc);
+        Assert.Equal("bob", row.ClearedBy);
+        Assert.Equal(T0.AddHours(-1), row.ClearedAtUtc);
+    }
+
+    [Fact]
+    public void A_condition_that_cleared_itself_names_nobody()
+    {
+        // Only an operator's own clear is attributed. The condition simply
+        // going away is not something a person did.
+        var alert = Alert("a", AlertSeverity.Warning) with
+        {
+            State = AlertLifecycleState.Resolved,
+            History =
+            [
+                new AlertTransition
+                {
+                    From = AlertLifecycleState.Open,
+                    To = AlertLifecycleState.Resolved,
+                    Reason = AlertTransitionReason.ConditionCleared,
+                    AtUtc = T0.AddHours(-1),
+                },
+            ],
+        };
+        GivenAlerts(alert);
+
+        var row = Assert.Single(Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0).Rows);
+
+        Assert.Null(row.ClearedBy);
+    }
+
+    [Fact]
+    public void The_report_summarizes_counts_by_severity_and_state()
+    {
+        GivenAlerts(
+            Alert("a", AlertSeverity.Critical),
+            Alert("b", AlertSeverity.Warning),
+            Alert("c", AlertSeverity.Warning) with { State = AlertLifecycleState.Acknowledged });
+
+        var summary = Model().AlertsReport().Summary;
+
+        Assert.Equal(3, summary.Total);
+        Assert.Equal(1, summary.BySeverity[nameof(AlertSeverity.Critical)]);
+        Assert.Equal(2, summary.BySeverity[nameof(AlertSeverity.Warning)]);
+        Assert.Equal(0, summary.BySeverity[nameof(AlertSeverity.Info)]);
+        Assert.Equal(2, summary.ByState[nameof(AlertLifecycleState.Open)]);
+        Assert.Equal(1, summary.ByState[nameof(AlertLifecycleState.Acknowledged)]);
+        Assert.Equal(0, summary.ByState[nameof(AlertLifecycleState.Resolved)]);
+    }
+
+    [Fact]
+    public void The_report_honours_the_same_filters_as_the_alert_list()
+    {
+        GivenAlerts(
+            Alert("a", AlertSeverity.Critical) with { Category = "Hardware", Source = "ilo-1" },
+            Alert("b", AlertSeverity.Critical) with { Category = "Configuration", Source = "vc-1" });
+
+        Assert.Single(Model().AlertsReport(category: "Hardware").Rows);
+        Assert.Single(Model().AlertsReport(source: "vc-1").Rows);
     }
 
     // --- the explorer -----------------------------------------------------
@@ -460,6 +619,23 @@ public class ReadModelTests
         LastSeenUtc = T0,
     };
 
+    /// <summary>A resolved instance, with the transition that resolved it -- what the report windows by.</summary>
+    private static AlertInstance Resolved(string id, AlertSeverity severity, DateTimeOffset resolvedAtUtc) =>
+        Alert(id, severity) with
+        {
+            State = AlertLifecycleState.Resolved,
+            History =
+            [
+                new AlertTransition
+                {
+                    From = AlertLifecycleState.Open,
+                    To = AlertLifecycleState.Resolved,
+                    Reason = AlertTransitionReason.ConditionCleared,
+                    AtUtc = resolvedAtUtc,
+                },
+            ],
+        };
+
     private static CollectorHealth Health(string id, CollectorRole role, DateTimeOffset lastSuccess) => new()
     {
         InstanceId = id,
@@ -642,6 +818,419 @@ public class ReadModelTests
 
         Assert.Null(Model().Entity("h1")!.TimeToFull);
         Assert.Empty(_observations.Queries);
+    }
+
+    // --- HA scorecard (M8.1) ------------------------------------------------
+
+    private static readonly ClusterHighAvailabilityPolicy HaRules = ClusterHighAvailabilityPolicy.Default;
+
+    private static Entity Cluster(string id, params (string Key, string Value)[] settings) => new()
+    {
+        Id = new EntityId(id),
+        Kind = EntityKind.Cluster,
+        DisplayName = "Prod-Cluster",
+        SourceInstanceId = "vc-1",
+        Health = HealthState.Unknown,
+        LastSeenUtc = T0,
+        Settings = settings.ToDictionary(s => s.Key, s => s.Value, StringComparer.OrdinalIgnoreCase),
+    };
+
+    [Fact]
+    public void A_cluster_page_shows_its_ha_configuration()
+    {
+        GivenEntities(Cluster(
+            "vc-1:domain-c1",
+            (HaRules.EnabledSetting, "true"),
+            (HaRules.AdmissionControlEnabledSetting, "true"),
+            ("dasConfig.admissionControlPolicy.type", "ClusterFailoverResourceAdmissionControlPolicy"),
+            (HaRules.HostMonitoringSetting, "enabled"),
+            ("dasConfig.vmMonitoring", "vmAndAppMonitoring"),
+            (HaRules.ApdResponseSetting, "restartConservative"),
+            (HaRules.PdlResponseSetting, "restartAggressive"),
+            (HaRules.HeartbeatDatastoreCountSetting, "2"),
+            ("dasConfig.hBDatastoreCandidatePolicy", "allFeasibleDsWithUserPreference"),
+            (HaRules.IgnoreRedundantNetworkWarningSetting, "false")));
+
+        var card = Model().Entity("vc-1:domain-c1")!.HaScorecard!;
+
+        Assert.True(card.Enabled);
+        Assert.True(card.AdmissionControlEnabled);
+        Assert.Equal("ClusterFailoverResourceAdmissionControlPolicy", card.AdmissionControlPolicyType);
+        Assert.Equal("enabled", card.HostMonitoring);
+        Assert.Equal("vmAndAppMonitoring", card.VmMonitoring);
+        Assert.Equal("restartConservative", card.ApdResponse);
+        Assert.Equal("restartAggressive", card.PdlResponse);
+        Assert.Equal(2, card.HeartbeatDatastoreCount);
+        Assert.Equal("allFeasibleDsWithUserPreference", card.HeartbeatDatastoreCandidatePolicy);
+        Assert.False(card.RedundantNetworkWarningSilenced);
+        Assert.Empty(card.Findings);
+    }
+
+    [Fact]
+    public void A_cluster_with_no_ha_configuration_read_shows_an_all_null_card()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1"));
+
+        var card = Model().Entity("vc-1:domain-c1")!.HaScorecard!;
+
+        Assert.Null(card.Enabled);
+        Assert.Null(card.HeartbeatDatastoreCount);
+        Assert.Empty(card.Findings);
+    }
+
+    [Fact]
+    public void The_scorecard_carries_the_clusters_own_open_findings()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1", (HaRules.EnabledSetting, "false")));
+        GivenAlerts(Alert("cluster-ha-scorecard-ha-disabled", AlertSeverity.Critical) with
+        {
+            Category = "Configuration",
+            Entity = new EntityId("vc-1:domain-c1"),
+        });
+
+        var card = Model().Entity("vc-1:domain-c1")!.HaScorecard!;
+
+        Assert.Single(card.Findings);
+    }
+
+    [Fact]
+    public void Only_a_cluster_carries_an_ha_scorecard()
+    {
+        GivenEntities(Host("h1", HealthState.Healthy));
+
+        Assert.Null(Model().Entity("h1")!.HaScorecard);
+    }
+
+    // --- cluster N+1 (M8.2) --------------------------------------------------
+
+    private void GivenTwoHostCluster(double cpuUsagePercent, double memUsagePercent)
+    {
+        GivenEntities(
+            Cluster("vc-1:domain-c1"), Host("h1", HealthState.Healthy), Host("h2", HealthState.Healthy));
+
+        GivenRelationships(
+            new Relationship
+            {
+                From = new EntityId("h1"),
+                To = new EntityId("vc-1:domain-c1"),
+                Kind = RelationshipKind.PartOf,
+                ObservedAtUtc = T0,
+            },
+            new Relationship
+            {
+                From = new EntityId("h2"),
+                To = new EntityId("vc-1:domain-c1"),
+                Kind = RelationshipKind.PartOf,
+                ObservedAtUtc = T0,
+            });
+
+        // The stub keys recorded points by counter only, so both hosts read
+        // the same value -- enough to check the arithmetic, not to tell the
+        // hosts apart.
+        _observations.Recorded["cpu.usage.average"] = [Bucket(T0, cpuUsagePercent)];
+        _observations.Recorded["mem.usage.average"] = [Bucket(T0, memUsagePercent)];
+    }
+
+    [Fact]
+    public void A_cluster_page_shows_n_plus_one_for_cpu_and_memory_separately()
+    {
+        // 2 hosts: available after losing one = 1 * 90% = 0.9 host-equivalents.
+        // CPU: 2 * 30% = 0.6, holds. Memory: 2 * 90% = 1.8, already fails.
+        GivenTwoHostCluster(cpuUsagePercent: 30, memUsagePercent: 90);
+
+        var failover = Model().Entity("vc-1:domain-c1")!.ClusterFailover!;
+
+        Assert.Equal(2, failover.HostCount);
+
+        Assert.Equal(0.6, failover.Cpu.DemandHosts!.Value, 6);
+        Assert.Equal(0.9, failover.Cpu.AvailableAfterFailoverHosts, 6);
+        Assert.True(failover.Cpu.HoldsNow);
+
+        Assert.Equal(1.8, failover.Memory.DemandHosts!.Value, 6);
+        Assert.False(failover.Memory.HoldsNow);
+    }
+
+    [Fact]
+    public void The_date_is_shown_as_a_forecast_or_a_refusal_never_a_missing_answer()
+    {
+        GivenTwoHostCluster(cpuUsagePercent: 30, memUsagePercent: 30);
+
+        var cpu = Model().Entity("vc-1:domain-c1")!.ClusterFailover!.Cpu;
+
+        Assert.NotNull(cpu.Date);
+        Assert.False(string.IsNullOrWhiteSpace(cpu.Date!.Summary));
+    }
+
+    [Fact]
+    public void A_single_host_cluster_has_no_n_plus_one_answer()
+    {
+        // N+1 asks what survives losing one host, which cannot be asked of a
+        // cluster with only one.
+        GivenEntities(Cluster("vc-1:domain-c1"), Host("h1", HealthState.Healthy));
+        GivenRelationships(new Relationship
+        {
+            From = new EntityId("h1"),
+            To = new EntityId("vc-1:domain-c1"),
+            Kind = RelationshipKind.PartOf,
+            ObservedAtUtc = T0,
+        });
+
+        Assert.Null(Model().Entity("vc-1:domain-c1")!.ClusterFailover);
+    }
+
+    [Fact]
+    public void Only_a_cluster_carries_an_n_plus_one_answer()
+    {
+        GivenEntities(Host("h1", HealthState.Healthy));
+
+        Assert.Null(Model().Entity("h1")!.ClusterFailover);
+    }
+
+    // --- capacity report (M5.3) --------------------------------------------
+
+    private void GivenFree(double bytes) =>
+        _observations.Recorded[CapacityCounters.DatastoreFree] = [Bucket(T0.AddMinutes(-5), bytes)];
+
+    private void GivenProvisioned(double bytes) =>
+        _observations.Recorded[CapacityCounters.DatastoreProvisioned] = [Bucket(T0.AddMinutes(-5), bytes)];
+
+    [Fact]
+    public void A_datastore_with_no_capacity_reading_is_a_refusal_row_not_a_blank_one()
+    {
+        GivenEntities(Datastore("vc-1:ds-1"));
+
+        var row = Assert.Single(Model().CapacityReport().Rows);
+
+        Assert.False(row.TimeToFull.IsForecast);
+        Assert.Equal("NoCapacity", row.TimeToFull.Reason);
+        Assert.StartsWith("Cannot estimate", row.TimeToFull.Summary, StringComparison.Ordinal);
+        Assert.Null(row.CapacityBytes);
+        Assert.Equal(1, Model().CapacityReport().Summary.NoEstimateCount);
+        Assert.Equal(1, Model().CapacityReport().Summary.NoEstimateByReason["NoCapacity"]);
+    }
+
+    [Fact]
+    public void The_capacity_report_computes_used_percent_and_overcommit_ratio()
+    {
+        GivenEntities(Datastore("vc-1:ds-1"));
+        GivenCapacity(100 * Gb);
+        GivenFree(20 * Gb);
+        GivenProvisioned(120 * Gb);
+
+        var row = Assert.Single(Model().CapacityReport().Rows);
+
+        Assert.Equal(80 * Gb, row.UsedBytes);
+        Assert.Equal(80d, row.PercentUsed);
+        Assert.Equal(1.2d, row.OvercommitRatio);
+        Assert.Equal(1, Model().CapacityReport().Summary.OvercommittedCount);
+    }
+
+    [Fact]
+    public void The_capacity_report_counts_datastores_filling_soon()
+    {
+        // 1 GB a day for twenty days, ninety of a hundred now: ten days left --
+        // inside the 30-day warning window, outside the 7-day critical one.
+        GivenEntities(Datastore("vc-1:ds-1"));
+        GivenCapacity(100 * Gb);
+        _observations.Recorded[CapacityCounters.DatastoreUsed] =
+        [
+            .. Enumerable.Range(0, 21).Select(i => Bucket(T0.AddDays(i - 21), (70 + i) * Gb)),
+        ];
+
+        var summary = Model().CapacityReport().Summary;
+
+        Assert.Equal(1, summary.FillingWithin30Days);
+        Assert.Equal(0, summary.FillingWithin7Days);
+    }
+
+    [Fact]
+    public void A_vanished_datastore_is_not_on_the_capacity_report()
+    {
+        GivenEntities(Datastore("vc-1:ds-1") with { ObservationState = ObservationState.Vanished });
+        GivenCapacity(100 * Gb);
+
+        Assert.Empty(Model().CapacityReport().Rows);
+    }
+
+    // --- continuity report (M8.10) ------------------------------------------
+
+    /// <summary>
+    /// An alert whose fingerprint carries a rule id the way every rule file
+    /// does -- see <c>ReadModel.HasRule</c>'s remarks. <paramref name="ruleId"/>
+    /// goes in as the fingerprint's check-id, the same slot every analysis
+    /// rule passes its own <c>RuleId</c> constant into.
+    /// </summary>
+    private static AlertInstance RuleAlert(
+        string ruleId, AlertSeverity severity, EntityId entity, string discriminator = "finding") =>
+        new()
+        {
+            Fingerprint = AlertFingerprint.Create("platform", ruleId, "Configuration", entity.Value, ruleId + "-" + discriminator),
+            Severity = severity,
+            State = AlertLifecycleState.Open,
+            Title = ruleId,
+            Description = $"{ruleId} on {entity.Value}.",
+            Category = "Configuration",
+            Source = "platform",
+            Entity = entity,
+            Scope = AlertScopes.Inventory,
+            ConsecutiveHits = 1,
+            IsConfirmed = true,
+            ClearedByOperator = false,
+            PendingNotification = AlertNotificationKind.None,
+            FirstSeenUtc = T0,
+            LastSeenUtc = T0,
+            IsDerived = true,
+        };
+
+    [Fact]
+    public void A_cluster_with_no_findings_and_no_ha_settings_reports_not_collected()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1"));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.False(row.HaSettingsCollected);
+        Assert.Equal(0, row.HaCriticalCount);
+        Assert.False(Model().ContinuityReport().Summary.HaInputsCollected);
+        Assert.NotNull(Model().ContinuityReport().Summary.Note);
+    }
+
+    [Fact]
+    public void A_cluster_with_ha_settings_read_is_not_flagged_as_uncollected()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")));
+
+        var summary = Model().ContinuityReport().Summary;
+
+        Assert.True(summary.HaInputsCollected);
+        Assert.Null(summary.Note);
+        Assert.True(Model().ContinuityReport().Rows[0].HaSettingsCollected);
+    }
+
+    [Fact]
+    public void The_ha_scorecard_rules_own_findings_are_counted_on_its_row()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "false")));
+        GivenAlerts(RuleAlert(ClusterHighAvailability.RuleId, AlertSeverity.Critical, clusterId, "ha-disabled"));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.HaCriticalCount);
+        Assert.Equal(0, row.DrsCriticalCount);
+        Assert.True(row.HasCritical);
+    }
+
+    [Fact]
+    public void Drs_rule_violations_are_counted_separately_from_ha()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1"));
+        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Warning, clusterId));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(0, row.HaCriticalCount);
+        Assert.Equal(1, row.DrsWarningCount);
+        Assert.False(row.HasCritical);
+    }
+
+    [Fact]
+    public void Storage_path_findings_on_a_hosts_alert_roll_up_to_its_cluster()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        var hostId = new EntityId("vc-1:host-1");
+
+        GivenEntities(
+            Cluster("vc-1:domain-c1"),
+            Host("vc-1:host-1", HealthState.Warning));
+        GivenRelationships(new Relationship
+        {
+            From = hostId,
+            To = clusterId,
+            Kind = RelationshipKind.PartOf,
+            ObservedAtUtc = T0,
+        });
+        GivenAlerts(
+            RuleAlert(StoragePathRedundancy.RuleId, AlertSeverity.Critical, hostId),
+            RuleAlert(MultipathSinglePointOfFailure.RuleId, AlertSeverity.Warning, hostId));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.StoragePathCriticalCount);
+        Assert.Equal(1, row.StoragePathWarningCount);
+        Assert.Contains("vc-1:host-1.corp.local", row.StoragePathAffectedHosts);
+        Assert.True(row.HasCritical);
+    }
+
+    [Fact]
+    public void A_storage_path_finding_on_a_host_outside_the_cluster_does_not_roll_up()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        var otherHostId = new EntityId("vc-1:host-2");
+
+        GivenEntities(Cluster("vc-1:domain-c1"), Host("vc-1:host-2", HealthState.Warning));
+        GivenAlerts(RuleAlert(StoragePathRedundancy.RuleId, AlertSeverity.Critical, otherHostId));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(0, row.StoragePathCriticalCount);
+        Assert.Empty(row.StoragePathAffectedHosts);
+    }
+
+    [Fact]
+    public void The_n_plus_one_placeholder_reads_generically_by_rule_id()
+    {
+        // n-plus-one is being built in a parallel change; this only proves
+        // the report picks it up the same way it picks up every other rule,
+        // with no type of its own to reference.
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1"));
+        GivenAlerts(RuleAlert("cluster-n-plus-one", AlertSeverity.Warning, clusterId));
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.NPlusOneWarningCount);
+        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule["cluster-n-plus-one"]);
+    }
+
+    [Fact]
+    public void The_summary_counts_clusters_with_any_critical_finding()
+    {
+        var quiet = new EntityId("vc-1:domain-c1");
+        var loud = new EntityId("vc-1:domain-c2");
+
+        GivenEntities(
+            Cluster("vc-1:domain-c1") with { DisplayName = "Quiet" },
+            Cluster("vc-1:domain-c2") with { DisplayName = "Loud" });
+        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Critical, loud));
+
+        var summary = Model().ContinuityReport().Summary;
+
+        Assert.Equal(1, summary.ClustersWithCriticalCount);
+        Assert.Contains("Loud", summary.ClustersWithCriticalNames);
+        Assert.DoesNotContain("Quiet", summary.ClustersWithCriticalNames);
+    }
+
+    [Fact]
+    public void A_vanished_cluster_is_not_on_the_continuity_report()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1") with { ObservationState = ObservationState.Vanished });
+
+        Assert.Empty(Model().ContinuityReport().Rows);
+    }
+
+    [Fact]
+    public void An_unconfirmed_continuity_alert_does_not_count()
+    {
+        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1"));
+        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Critical, clusterId) with
+        {
+            IsConfirmed = false,
+        });
+
+        Assert.Equal(0, Assert.Single(Model().ContinuityReport().Rows).DrsCriticalCount);
     }
 
     /// <summary>

@@ -478,6 +478,51 @@ internal static class PostgresSchema
         ALTER TABLE compliance_exception ADD COLUMN removed_by     text        NULL;
         ALTER TABLE compliance_exception ADD COLUMN removed_at_utc timestamptz NULL;
         """,
+
+        // --- 8: scheduled email reports (roadmap M5.4) ------------------------
+        //
+        // One row, not a table keyed by name: an estate has several vCenters
+        // but this product sends through one relay, the same way the previous
+        // product's SQLite database held one set of SMTP settings. The boolean
+        // primary key with its check constraint is the same device
+        // schema_version uses above, for the same reason -- it makes a second
+        // row a constraint violation rather than a query nobody thought to
+        // write.
+        //
+        // password_protected holds ciphertext from the same ISecretProtector
+        // that protects source_connection's passwords, under its own purpose
+        // string so the two cannot be swapped. See ADR-0015.
+        """
+        CREATE TABLE smtp_settings (
+            id                 boolean     PRIMARY KEY DEFAULT true CHECK (id),
+            host               text        NOT NULL,
+            port               integer     NOT NULL,
+            tls_mode           text        NOT NULL,
+            from_address       text        NOT NULL,
+            username           text        NOT NULL,
+            password_protected text        NOT NULL,
+            allow_unencrypted  boolean     NOT NULL,
+            password_set_utc   timestamptz NULL
+        );
+
+        -- Recipients as text[] rather than a child table: a subscription's
+        -- list is short, read as a whole every time and never queried by one
+        -- address, so a join would buy nothing an array does not already give.
+        CREATE TABLE report_subscription (
+            id             text        NOT NULL PRIMARY KEY,
+            recipients     text[]      NOT NULL,
+            frequency      text        NOT NULL,
+            day_of_week    integer     NOT NULL,
+            hour_local     integer     NOT NULL,
+            time_zone_id   text        NOT NULL,
+            kind           text        NOT NULL,
+            is_enabled     boolean     NOT NULL,
+            last_sent_utc  timestamptz NULL,
+            last_error     text        NULL,
+            created_by     text        NOT NULL,
+            created_utc    timestamptz NOT NULL
+        );
+        """,
     ];
 
     public static int Current => Migrations.Length;

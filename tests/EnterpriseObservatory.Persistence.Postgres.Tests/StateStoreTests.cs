@@ -221,6 +221,37 @@ public class StateStoreTests : IDisposable
     };
 
     [SkippableFact]
+    public void A_database_that_is_down_does_not_freeze_what_the_breaker_decides_with()
+    {
+        RequireDatabase();
+
+        // The runner reads Current on every cycle to decide whether to ask a
+        // source again. If a failed write left Current as it was, then for as
+        // long as the database stayed down the failure count would never move
+        // and the one-strike rule would never see the rejected password — so
+        // two faults at once would have the product guessing a credential
+        // every thirty seconds, which is how the account gets locked out.
+        var store = new PostgresCollectorHealthStore(_live.Database);
+
+        _live.Database.Dispose();
+
+        var rejected = Health(failures: 1) with
+        {
+            LastAttemptUtc = T0,
+            LastFailureKind = CollectionFailureKind.AuthenticationRejected,
+        };
+
+        // Still reported: the cycle turns this into "state could not be saved".
+        Assert.ThrowsAny<Exception>(() => store.Merge([rejected]));
+
+        var held = Assert.Single(store.Current);
+
+        Assert.Equal(1, held.ConsecutiveFailures);
+        Assert.Equal(T0, held.LastAttemptUtc);
+        Assert.Equal(CollectionFailureKind.AuthenticationRejected, held.LastFailureKind);
+    }
+
+    [SkippableFact]
     public void What_the_breaker_decides_with_survives_a_restart()
     {
         RequireDatabase();

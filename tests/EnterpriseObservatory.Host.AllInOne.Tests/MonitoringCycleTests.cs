@@ -305,6 +305,36 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
+    public async Task Earlier_samples_are_kept_by_the_store_and_not_handed_to_the_rules()
+    {
+        // vCenter samples every twenty seconds and is asked every thirty, so a
+        // read carries the sample before the current one. It belongs in the
+        // history; it does not belong in front of a rule, which is handed one
+        // value per series and means the current one.
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Reading("cpu.usage.average", 42.5, _clock.UtcNow)],
+                Backfill = [Reading("cpu.usage.average", 17.0, _clock.UtcNow.AddSeconds(-20))],
+            },
+        };
+
+        var result = await Cycle().RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        var series = _observations.Query(new SeriesQuery
+        {
+            Key = new SeriesKey(new EntityId("vc-1:host-1"), "cpu.usage.average", string.Empty),
+            FromUtc = T0.AddMinutes(-1),
+            ToUtc = T0.AddMinutes(1),
+            Resolution = SeriesResolution.Raw,
+        });
+
+        Assert.Equal([17.0, 42.5], series.Points.Select(p => p.Last));
+        Assert.Equal(42.5, Assert.Single(result.Observations).Value.Raw);
+    }
+
+    [Fact]
     public async Task Capacity_read_with_the_inventory_is_kept_as_a_series()
     {
         // Roadmap M4.1. Capacity was read every inventory cycle, used for one

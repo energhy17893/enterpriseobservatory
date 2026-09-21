@@ -34,9 +34,13 @@ public static class AnalysisRules
         new StorageNoisyNeighbourRule(),
 
         new StoragePathRedundancyRule(),
+        new MultipathSinglePointOfFailureRule(),
+        new DrsRuleViolationsRule(),
         new RemoteLoggingRule(),
+        new ClusterHighAvailabilityRule(),
         new EventAlertsRule(),
         new DatastoreTimeToFullRule(),
+        new ClusterNPlusOneRule(),
         new CollectionCoverageRule(),
     ];
 
@@ -237,6 +241,50 @@ public sealed class StoragePathRedundancyRule : IAnalysisRule
     }
 }
 
+/// <summary>Adapts <see cref="MultipathSinglePointOfFailure"/>.</summary>
+/// <remarks>
+/// Same rhythm and scope as <see cref="StoragePathRedundancyRule"/> and for
+/// the same reason: both read the path table the inventory cycle just merged,
+/// and running either on the metric rhythm would have it re-deciding a fact
+/// nothing had re-read.
+/// </remarks>
+public sealed class MultipathSinglePointOfFailureRule : IAnalysisRule
+{
+    public string RuleId => MultipathSinglePointOfFailure.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return MultipathSinglePointOfFailure.Evaluate(
+            [.. context.Graph.Active], context.Options.MultipathSinglePointOfFailure);
+    }
+}
+
+/// <summary>Adapts <see cref="DrsRuleViolations"/>.</summary>
+/// <remarks>
+/// On the inventory rhythm beside <see cref="StoragePathRedundancyRule"/> and
+/// for the same reason: DRS rules and the placement they are judged against
+/// are both read on the inventory rhythm and change on it, and the graph
+/// handed here is the one this cycle just merged rather than the store's
+/// stale copy.
+/// </remarks>
+public sealed class DrsRuleViolationsRule : IAnalysisRule
+{
+    public string RuleId => DrsRuleViolations.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return DrsRuleViolations.Evaluate(context.Graph);
+    }
+}
+
 /// <summary>Adapts <see cref="RemoteLogging"/>.</summary>
 /// <remarks>
 /// <para>
@@ -264,6 +312,27 @@ public sealed class RemoteLoggingRule : IAnalysisRule
         ArgumentNullException.ThrowIfNull(context);
 
         return RemoteLogging.Evaluate([.. context.Graph.Active], context.Options.RemoteLogging);
+    }
+}
+
+/// <summary>Adapts <see cref="ClusterHighAvailability"/>.</summary>
+/// <remarks>
+/// On the inventory rhythm because HA configuration is read on it and changes
+/// on it, same as <see cref="RemoteLoggingRule"/> above -- a setting nobody
+/// changes has nothing new to say every twenty seconds.
+/// </remarks>
+public sealed class ClusterHighAvailabilityRule : IAnalysisRule
+{
+    public string RuleId => ClusterHighAvailability.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return ClusterHighAvailability.Evaluate(
+            [.. context.Graph.Active], context.Options.ClusterHighAvailability);
     }
 }
 
@@ -338,6 +407,46 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
                 context.Options.Retention),
             context.Unevaluated,
             policy);
+    }
+}
+
+/// <summary>Adapts <see cref="ClusterNPlusOne"/>.</summary>
+/// <remarks>
+/// <para>
+/// On the inventory rhythm beside <see cref="DatastoreTimeToFullRule"/>, for
+/// the parallel reason: cluster membership (<c>PartOf</c>) is read on it, and
+/// the question this rule answers is a capacity-planning one rather than a
+/// thirty-second one. Unlike <see cref="DatastoreTimeToFullRule"/> it does not
+/// read <see cref="RuleContext.Observations"/> for current demand -- the
+/// inventory rhythm carries none -- and instead reads each host's latest
+/// sample from the series store, the way
+/// <see cref="DatastoreTimeToFull.LatestCapacity"/> reads a datastore's
+/// capacity from outside a cycle.
+/// </para>
+/// <para>
+/// Guarded per cluster the same way <see cref="DatastoreTimeToFullRule"/> is:
+/// a cluster whose history cannot be read keeps its alerts
+/// (<see cref="RuleContext.Unevaluated"/>) rather than having them silently
+/// resolved.
+/// </para>
+/// </remarks>
+public sealed class ClusterNPlusOneRule : IAnalysisRule
+{
+    public string RuleId => ClusterNPlusOne.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        var policy = context.Options.ClusterNPlusOne;
+
+        var states = ClusterNPlusOne.CurrentReadings(
+            context.Series, context.Graph, context.NowUtc, policy, context.Options.Retention);
+
+        return ClusterNPlusOne.EvaluateEach(
+            states, context.Series, context.NowUtc, policy, context.Options.Retention, context.Unevaluated);
     }
 }
 

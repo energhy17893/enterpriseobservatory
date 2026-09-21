@@ -15,6 +15,13 @@ import { Accounts } from '@/routes/Accounts'
 import { Connections } from '@/routes/Connections'
 import { Maintenance } from '@/routes/Maintenance'
 import { Compliance } from '@/routes/Compliance'
+import { Reports } from '@/routes/Reports'
+import { AlertsReport } from '@/routes/reports/AlertsReport'
+import { Email } from '@/routes/Email'
+import { ScheduledReports } from '@/routes/ScheduledReports'
+import { ComplianceReport } from '@/routes/reports/ComplianceReport'
+import { CapacityReport } from '@/routes/reports/CapacityReport'
+import { ContinuityReport } from '@/routes/reports/ContinuityReport'
 import './styles/index.css'
 
 const queryClient = new QueryClient({
@@ -72,8 +79,15 @@ function Application() {
           <Route path="entities/:id" element={<EntityDetail />} />
           <Route path="collectors" element={<Collectors />} />
           <Route path="compliance" element={<Compliance identity={data} />} />
+          <Route path="reports" element={<Reports />} />
+          <Route path="reports/alerts" element={<AlertsReport />} />
+          <Route path="reports/compliance" element={<ComplianceReport />} />
+          <Route path="reports/capacity" element={<CapacityReport />} />
+          <Route path="reports/continuity" element={<ContinuityReport />} />
           <Route path="maintenance" element={<Maintenance identity={data} />} />
           <Route path="connections" element={<Connections identity={data} />} />
+          <Route path="reports/scheduled" element={<ScheduledReports />} />
+          <Route path="email" element={<Email identity={data} />} />
           <Route path="accounts" element={<Accounts identity={data} />} />
         </Route>
       </Routes>

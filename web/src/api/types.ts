@@ -106,6 +106,57 @@ export interface EntityDetailView {
   alerts: AlertView[]
   /** Datastores only: a fill date with its window, or why there is none. */
   timeToFull?: TimeToFullView | null
+  /** Clusters only: the vSphere HA configuration, or null when unread. */
+  haScorecard?: HaScorecardView | null
+  /**
+   * Clusters only: if the largest host fails, do the survivors still hold the
+   * running VMs' demand, and until when. Null for a cluster with fewer than
+   * two live hosts, which N+1 cannot be asked of.
+   */
+  clusterFailover?: ClusterFailoverView | null
+}
+
+/**
+ * A cluster's HA configuration, in the platform's own words. Every field is
+ * null when that one setting was not reported — see roadmap M8.1.
+ */
+export interface HaScorecardView {
+  enabled: boolean | null
+  admissionControlEnabled: boolean | null
+  admissionControlPolicyType: string | null
+  hostMonitoring: string | null
+  vmMonitoring: string | null
+  apdResponse: string | null
+  pdlResponse: string | null
+  heartbeatDatastoreCount: number | null
+  heartbeatDatastoreCandidatePolicy: string | null
+  /** True when vCenter's own network-redundancy warning has been silenced. */
+  redundantNetworkWarningSilenced: boolean | null
+  /** The scorecard rule's open findings for this cluster. */
+  findings: AlertView[]
+}
+
+/**
+ * A cluster's N+1 answer for CPU and for memory, each in host-equivalents --
+ * a share of one host's own capacity, because no collector this product runs
+ * reads a host's CPU or memory capacity in MHz or bytes. "Largest host" is
+ * approximated as any one host, one host-equivalent of capacity, which is
+ * exact on a cluster built from identical hosts (VMware's own recommendation
+ * for a predictable HA cluster) and an approximation otherwise.
+ */
+export interface ClusterFailoverView {
+  hostCount: number
+  cpu: ClusterFailoverResourceView
+  memory: ClusterFailoverResourceView
+}
+
+export interface ClusterFailoverResourceView {
+  /** Null when this cluster's current demand could not be read from at least one host -- unknown, not "yes". */
+  holdsNow: boolean | null
+  demandHosts: number | null
+  availableAfterFailoverHosts: number
+  /** The date the guarantee is lost, or why there is none. Null only alongside a null holdsNow. */
+  date: TimeToFullView | null
 }
 
 export interface TimeToFullView {
@@ -511,6 +562,193 @@ export interface ComplianceFindingView {
   exceptionId: string | null
 }
 
+// --- reports --------------------------------------------------------------
+//
+// M5.1's shape: JSON for the SPA's own printable page, CSV (built server
+// side, fetched as a plain download) for a spreadsheet. M5.2 and M5.3 are
+// expected to add a sibling *ReportRow/*ReportView pair here.
+
+export interface AlertReportRow {
+  severity: AlertSeverity
+  title: string
+  entityName: string | null
+  entityKind: EntityKind | null
+  category: string
+  source: string
+  state: AlertLifecycleState
+  firstSeenUtc: string
+  lastSeenUtc: string
+  acknowledgedBy: string | null
+  acknowledgedAtUtc: string | null
+  /** Only set for an operator's own clear, not a condition going away on its own. */
+  clearedBy: string | null
+  clearedAtUtc: string | null
+  isDerived: boolean
+}
+
+export interface AlertReportSummary {
+  bySeverity: Record<string, number>
+  byState: Record<string, number>
+  total: number
+}
+
+export interface AlertReportView {
+  generatedAtUtc: string
+  fromUtc: string
+  toUtc: string
+  summary: AlertReportSummary
+  rows: AlertReportRow[]
+}
+
+// --- compliance report (M5.2) ----------------------------------------------
+//
+// The auditor-facing sibling of the alert report. Every finding carries the
+// exception or acceptance that covers it in full -- a report stands alone,
+// printed or read a year later, so a bare id into a list it does not carry
+// would not do.
+
+export interface ComplianceReportFindingRow {
+  controlId: string
+  controlTitle: string
+  priority: string
+  entityId: string
+  entityName: string
+  state: FindingState
+  /** Set only when state is NotEvaluated. */
+  notEvaluatedReason: string | null
+  observed: string | null
+  expected: string
+  firstSeenUtc: string
+  lastEvaluatedUtc: string
+  stale: boolean
+  acceptedBy: string | null
+  acceptedAtUtc: string | null
+  acceptedReason: string | null
+  exceptionId: string | null
+  exceptionOwner: string | null
+  exceptionReason: string | null
+  exceptionCreatedBy: string | null
+  exceptionCreatedAtUtc: string | null
+  exceptionExpiresUtc: string | null
+}
+
+export interface ComplianceReportTransitionRow {
+  controlId: string
+  /** The finding may since have left the evaluation, so this is not always resolvable to a name. */
+  entityId: string
+  /** Null when the finding was new at this change. */
+  from: 'Failing' | 'Passing' | 'NotEvaluated' | null
+  /** Null when the finding left the evaluation at this change. */
+  to: 'Failing' | 'Passing' | 'NotEvaluated' | null
+  observed: string | null
+  atUtc: string
+}
+
+export interface ComplianceReportView {
+  generatedAtUtc: string
+  catalogueName: string
+  catalogueRelease: string
+  /** "All hosts", or what the caller scoped the report to. */
+  scope: string
+  lastEvaluatedUtc: string | null
+  staleCount: number
+  /** The hosts behind staleCount, by name. */
+  staleEntityNames: string[]
+  /** Every control the catalogue names, evaluated or not -- filter by !evaluated for the "not evaluated" section. */
+  controls: ComplianceControlView[]
+  totals: FindingCountsView
+  findings: ComplianceReportFindingRow[]
+  /** The exceptions standing now, in scope. */
+  exceptions: ComplianceExceptionView[]
+  /** Withdrawn exceptions -- audit evidence in their own right. */
+  removedExceptions: ComplianceExceptionView[]
+  historyFromUtc: string
+  historyToUtc: string
+  history: ComplianceReportTransitionRow[]
+}
+
+/** One datastore on the capacity report (M5.3): its latest reading and the same fill-date answer its own page shows. */
+export interface CapacityReportRow {
+  name: string
+  /** VMFS, NFS, vsan and so on. Null when not read. */
+  datastoreType: string | null
+  source: string
+  /** The latest reading of each, or null when never recorded -- never a zero standing in for "not looked". */
+  capacityBytes: number | null
+  usedBytes: number | null
+  freeBytes: number | null
+  percentUsed: number | null
+  /** Used plus what has been promised to thin disks. Null when uncommitted space was never read. */
+  provisionedBytes: number | null
+  /** provisionedBytes over capacityBytes. Above 1 is over-committed. */
+  overcommitRatio: number | null
+  timeToFull: TimeToFullView
+}
+
+export interface CapacityReportSummary {
+  totalDatastores: number
+  totalCapacityBytes: number
+  totalUsedBytes: number
+  totalFreeBytes: number
+  /** Filling inside 30 days, the product's warning threshold. */
+  fillingWithin30Days: number
+  /** Filling inside 7 days, the product's critical threshold. */
+  fillingWithin7Days: number
+  overcommittedCount: number
+  /** No fill-date estimate yet -- a refusal is counted here, never left out. */
+  noEstimateCount: number
+  /** Why, keyed by the machine-readable reason, e.g. WindowTooShort. */
+  noEstimateByReason: Record<string, number>
+}
+
+export interface CapacityReportView {
+  generatedAtUtc: string
+  summary: CapacityReportSummary
+  rows: CapacityReportRow[]
+}
+
+// --- continuity report (M8.10) -------------------------------------------
+
+/** One cluster's continuity posture: HA, DRS, storage-path redundancy for its hosts, and the N+1 placeholder. */
+export interface ContinuityReportRow {
+  clusterId: string
+  clusterName: string
+  source: string
+  /** Whether this cluster's own inventory carried a dasConfig.* setting -- whether HA was actually read. */
+  haSettingsCollected: boolean
+  haCriticalCount: number
+  haWarningCount: number
+  drsCriticalCount: number
+  drsWarningCount: number
+  storagePathCriticalCount: number
+  storagePathWarningCount: number
+  /** Hosts under this cluster with a multipath or path-redundancy finding, by name. */
+  storagePathAffectedHosts: string[]
+  /** N+1 capacity rule: a placeholder until that rule ships. Zero until then. */
+  nPlusOneCriticalCount: number
+  nPlusOneWarningCount: number
+  hasCritical: boolean
+}
+
+export interface ContinuityReportSummary {
+  totalClusters: number
+  /** Alert count per rule id -- cluster-ha-scorecard, drs-rule-violation, multipath-single-point-of-failure, storage-path-redundancy, n-plus-one. */
+  byRule: Record<string, number>
+  bySeverity: Record<string, number>
+  clustersWithCriticalCount: number
+  clustersWithCriticalNames: string[]
+  /** False means the HA/DRS collector wiring has not run against this estate yet. */
+  haInputsCollected: boolean
+  /** Set only when haInputsCollected is false. */
+  note: string | null
+}
+
+export interface ContinuityReportView {
+  generatedAtUtc: string
+  summary: ContinuityReportSummary
+  rows: ContinuityReportRow[]
+}
+
 export interface AddExceptionCommand {
   controlId: string
   /** Null for every entity the control applies to. */
@@ -518,4 +756,75 @@ export interface AddExceptionCommand {
   reason: string
   owner: string
   expiresUtc: string
+}
+
+// --- scheduled email reports (M5.4) --------------------------------------------
+
+export type SmtpTlsMode = 'None' | 'StartTls' | 'Implicit'
+
+/**
+ * The installation's SMTP settings.
+ *
+ * There is no password field here and no endpoint that returns one.
+ * `passwordStatus` is the string 'set' or 'not set' — never the value.
+ */
+export interface SmtpSettingsView {
+  host: string
+  port: number
+  tlsMode: SmtpTlsMode
+  fromAddress: string
+  username: string
+  allowUnencrypted: boolean
+  passwordStatus: 'set' | 'not set'
+  passwordSetUtc: string | null
+  isConfigured: boolean
+}
+
+export interface SmtpSettingsCommand {
+  host: string
+  port: number
+  tlsMode: SmtpTlsMode
+  fromAddress: string
+  username: string
+  /** Empty means "keep the stored password". */
+  password: string
+  allowUnencrypted: boolean
+}
+
+export interface TestEmailCommand extends SmtpSettingsCommand {
+  to: string
+}
+
+export interface MailTestView {
+  succeeded: boolean
+  detail: string
+}
+
+export type ReportFrequency = 'Daily' | 'Weekly'
+
+export type ReportKind = 'Alerts' | 'Compliance' | 'Capacity' | 'Continuity'
+
+export interface ReportSubscriptionView {
+  id: string
+  recipients: string[]
+  frequency: ReportFrequency
+  dayOfWeek: string
+  hourLocal: number
+  timeZoneId: string
+  kind: ReportKind
+  isEnabled: boolean
+  lastSentUtc: string | null
+  lastError: string | null
+  createdBy: string
+  createdUtc: string
+}
+
+export interface ReportSubscriptionCommand {
+  recipients: string[]
+  frequency: ReportFrequency
+  dayOfWeek: string
+  hourLocal: number
+  timeZoneId: string
+  kind: ReportKind
+  isEnabled: boolean
 }

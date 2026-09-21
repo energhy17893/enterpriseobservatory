@@ -143,6 +143,451 @@ public sealed class ReadModel(
         return Paged(matching, offset, limit, a => ToView(a, graph));
     }
 
+    // --- reports ------------------------------------------------------------
+
+    /// <summary>How far back a report looks when no range is given.</summary>
+    private static readonly TimeSpan DefaultReportWindow = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// The alert/finding report: open alerts plus whatever resolved within the
+    /// chosen window. Serves both the printable page and the CSV export, so
+    /// the two can never disagree about what a report contains.
+    /// </summary>
+    /// <remarks>
+    /// Open alerts are included regardless of the range — an alert still
+    /// firing belongs on the report no matter when it started, the same way
+    /// the inbox works. Only the resolved half is windowed, by when it
+    /// actually resolved rather than by <c>LastSeenUtc</c>, which a resolved
+    /// alert does not update again.
+    /// </remarks>
+    public AlertReportView AlertsReport(
+        AlertSeverity? severity = null,
+        AlertLifecycleState? state = null,
+        string? category = null,
+        string? source = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null)
+    {
+        var to = toUtc ?? _clock.UtcNow;
+        var from = fromUtc ?? to - DefaultReportWindow;
+        var graph = _graphs.Current;
+
+        var rows = ReportCandidates(from, to)
+            .Where(a => severity is null || a.Severity == severity)
+            .Where(a => state is null || a.State == state)
+            .Where(a => category is null ||
+                string.Equals(a.Category, category, StringComparison.OrdinalIgnoreCase))
+            .Where(a => source is null ||
+                string.Equals(a.Source, source, StringComparison.OrdinalIgnoreCase))
+            // Worst first, then most recent -- the same order the inbox uses.
+            .OrderByDescending(a => a.Severity)
+            .ThenByDescending(a => a.LastSeenUtc)
+            .Select(a => ToReportRow(a, graph))
+            .ToList();
+
+        return new AlertReportView
+        {
+            GeneratedAtUtc = _clock.UtcNow,
+            FromUtc = from,
+            ToUtc = to,
+            Summary = Summarize(rows),
+            Rows = rows,
+        };
+    }
+
+    /// <summary>Open (in any of its three live states) plus resolved-within-range.</summary>
+    private IReadOnlyList<AlertInstance> ReportCandidates(DateTimeOffset from, DateTimeOffset to) =>
+        [.. _alerts.All.Where(a => a.IsConfirmed && IsInReport(a, from, to))];
+
+    private static bool IsInReport(AlertInstance alert, DateTimeOffset from, DateTimeOffset to) =>
+        alert.State != AlertLifecycleState.Resolved ||
+        (ResolvedAtUtc(alert) is { } resolvedAt && resolvedAt >= from && resolvedAt <= to);
+
+    /// <summary>When an instance last moved into <see cref="AlertLifecycleState.Resolved"/>.</summary>
+    /// <remarks>
+    /// From the transition history rather than <c>LastSeenUtc</c>: a resolved
+    /// alert is not observed again, so its last-seen time is when the
+    /// condition was last true, not when it stopped being one. A resolved
+    /// alert with no such transition (state restored some other way) has no
+    /// answer and is excluded rather than guessed at.
+    /// </remarks>
+    private static DateTimeOffset? ResolvedAtUtc(AlertInstance alert) =>
+        alert.History.LastOrDefault(t => t.To == AlertLifecycleState.Resolved)?.AtUtc;
+
+    private static AlertReportRow ToReportRow(AlertInstance alert, EntityGraph graph)
+    {
+        string? name = null;
+        EntityKind? kind = null;
+
+        if (alert.Entity is { } entityId && graph.Entities.TryGetValue(entityId, out var entity))
+        {
+            name = entity.DisplayName;
+            kind = entity.Kind;
+        }
+
+        var acknowledged = LastActorTransition(alert, AlertTransitionReason.OperatorAcknowledged);
+        var cleared = LastActorTransition(alert, AlertTransitionReason.OperatorCleared);
+
+        return new AlertReportRow
+        {
+            Severity = alert.Severity,
+            Title = alert.Title,
+            EntityName = name,
+            EntityKind = kind,
+            Category = alert.Category,
+            Source = alert.Source,
+            State = alert.State,
+            FirstSeenUtc = alert.FirstSeenUtc,
+            LastSeenUtc = alert.LastSeenUtc,
+            AcknowledgedBy = acknowledged.By,
+            AcknowledgedAtUtc = acknowledged.AtUtc,
+            ClearedBy = cleared.By,
+            ClearedAtUtc = cleared.AtUtc,
+            IsDerived = alert.IsDerived,
+        };
+    }
+
+    /// <summary>
+    /// The last time an operator caused this transition, and who -- <c>null</c>
+    /// when it never happened. Only operator-attributed reasons carry an
+    /// actor; see <see cref="AlertTransition.Actor"/>.
+    /// </summary>
+    private static (string? By, DateTimeOffset? AtUtc) LastActorTransition(
+        AlertInstance alert, AlertTransitionReason reason)
+    {
+        var transition = alert.History.LastOrDefault(t => t.Reason == reason);
+        return transition is null ? (null, null) : (transition.Actor, transition.AtUtc);
+    }
+
+    private static AlertReportSummary Summarize(List<AlertReportRow> rows)
+    {
+        var bySeverity = rows.GroupBy(r => r.Severity.ToString())
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        foreach (var value in Enum.GetValues<AlertSeverity>())
+        {
+            bySeverity.TryAdd(value.ToString(), 0);
+        }
+
+        var byState = rows.GroupBy(r => r.State.ToString())
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        foreach (var value in Enum.GetValues<AlertLifecycleState>())
+        {
+            byState.TryAdd(value.ToString(), 0);
+        }
+
+        return new AlertReportSummary
+        {
+            BySeverity = bySeverity,
+            ByState = byState,
+            Total = rows.Count,
+        };
+    }
+
+    /// <summary>
+    /// The capacity report: every live datastore, its latest reading and the
+    /// same fill-date estimate the datastore's own page shows.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The estimate is the expensive part -- a 720-point trend fit per
+    /// datastore -- and it is read through <see cref="TimeToFull"/>, the same
+    /// method the entity page calls, which goes through
+    /// <c>DatastoreTimeToFull.Read</c>'s process-wide cache. A report of forty
+    /// datastores costs one history query and, at most, one fresh fit each,
+    /// not forty because a page happened to load in between.
+    /// </para>
+    /// <para>
+    /// Vanished datastores are left off, the same choice the explorer makes by
+    /// default: a datastore nobody has seen this cycle has no current reading
+    /// to report.
+    /// </para>
+    /// </remarks>
+    public CapacityReportView CapacityReport()
+    {
+        var now = _clock.UtcNow;
+        var retention = _options.Retention;
+        var graph = _graphs.Current;
+
+        var rows = graph.Entities.Values
+            .Where(e => e.Kind == EntityKind.Datastore && e.ObservationState != ObservationState.Vanished)
+            .Select(e => ToCapacityReportRow(e, now, retention))
+            // Soonest fill date first; a refusal sorts after every forecast.
+            // Among the rest, worst (highest percent used) first.
+            .OrderBy(r => r.TimeToFull.FullAtUtc ?? DateTimeOffset.MaxValue)
+            .ThenByDescending(r => r.PercentUsed ?? -1)
+            .ToList();
+
+        return new CapacityReportView
+        {
+            GeneratedAtUtc = now,
+            Summary = SummarizeCapacity(rows),
+            Rows = rows,
+        };
+    }
+
+    private CapacityReportRow ToCapacityReportRow(
+        Entity datastore, DateTimeOffset now, SeriesRetentionPolicy retention)
+    {
+        var capacity = DatastoreTimeToFull.LatestCapacity(_observations, datastore.Id, now, retention);
+        var free = LatestReading(datastore.Id, CapacityCounters.DatastoreFree, now, retention);
+        var provisioned = LatestReading(datastore.Id, CapacityCounters.DatastoreProvisioned, now, retention);
+
+        var used = capacity is { } c && free is { } f ? c - f : (double?)null;
+        var percentUsed = used is { } u && capacity is > 0 ? u / capacity * 100 : (double?)null;
+        var overcommitRatio = provisioned is { } p && capacity is > 0 ? p / capacity : (double?)null;
+
+        return new CapacityReportRow
+        {
+            Name = datastore.DisplayName,
+            DatastoreType = datastore.Settings.TryGetValue("type", out var type) ? type : null,
+            Source = datastore.SourceInstanceId,
+            CapacityBytes = capacity,
+            UsedBytes = used,
+            FreeBytes = free,
+            PercentUsed = percentUsed,
+            ProvisionedBytes = provisioned,
+            OvercommitRatio = overcommitRatio,
+            TimeToFull = TimeToFull(datastore.Id),
+        };
+    }
+
+    /// <summary>
+    /// The latest reading of one capacity counter, straight from the raw
+    /// tier -- the same query shape as <c>DatastoreTimeToFull.LatestCapacity</c>,
+    /// generalized to the other capacity series it does not cover. A single
+    /// point at <c>MaxPoints = 1</c>, not the 720-point history the trend is
+    /// fitted to, so this costs nothing extra per row.
+    /// </summary>
+    private double? LatestReading(
+        EntityId entity, string counter, DateTimeOffset now, SeriesRetentionPolicy retention)
+    {
+        var result = _observations.Query(new SeriesQuery
+        {
+            Key = new SeriesKey(entity, counter, string.Empty),
+            FromUtc = now - retention.Raw,
+            ToUtc = now + TimeSpan.FromTicks(1),
+            Resolution = SeriesResolution.Raw,
+            MaxPoints = 1,
+        });
+
+        return result.Points.Count > 0 ? result.Points[^1].Last : null;
+    }
+
+    private static CapacityReportSummary SummarizeCapacity(List<CapacityReportRow> rows)
+    {
+        var byReason = new Dictionary<string, int>(StringComparer.Ordinal);
+        var noEstimate = 0;
+
+        foreach (var row in rows)
+        {
+            if (row.TimeToFull.IsForecast || row.TimeToFull.Reason is not { } reason)
+            {
+                continue;
+            }
+
+            noEstimate++;
+            byReason[reason] = byReason.GetValueOrDefault(reason) + 1;
+        }
+
+        return new CapacityReportSummary
+        {
+            TotalDatastores = rows.Count,
+            TotalCapacityBytes = rows.Sum(r => r.CapacityBytes ?? 0),
+            TotalUsedBytes = rows.Sum(r => r.UsedBytes ?? 0),
+            TotalFreeBytes = rows.Sum(r => r.FreeBytes ?? 0),
+            FillingWithin30Days = rows.Count(r =>
+                r.TimeToFull is { IsForecast: true, Days: <= 30 }),
+            FillingWithin7Days = rows.Count(r =>
+                r.TimeToFull is { IsForecast: true, Days: <= 7 }),
+            OvercommittedCount = rows.Count(r => r.OvercommitRatio is > 1),
+            NoEstimateCount = noEstimate,
+            NoEstimateByReason = byReason,
+        };
+    }
+
+    // --- continuity report (M8.10) -----------------------------------------
+
+    /// <summary>
+    /// The four rule ids this report reads, by the same string every rule
+    /// file bakes into its own fingerprints' check-id component. There is no
+    /// separate "which rule produced this" field on an alert -- see
+    /// <see cref="HasRule"/> for why that is enough.
+    /// </summary>
+    private static class ContinuityRuleIds
+    {
+        public const string Ha = "cluster-ha-scorecard";
+        public const string Drs = "drs-rule-violation";
+        public const string Multipath = "multipath-single-point-of-failure";
+        public const string StoragePath = "storage-path-redundancy";
+
+        /// <summary>
+        /// M8's next rule, still being built in a parallel change. Read the
+        /// same generic way as the other four so this report needs no change
+        /// the day it ships -- it is a rule id like any other, not a type
+        /// this file knows about.
+        /// </summary>
+        public const string NPlusOne = "cluster-n-plus-one";
+    }
+
+    /// <summary>
+    /// One row per live cluster: its HA scorecard (M8.1) and DRS compliance
+    /// (M8.3) findings, the storage-path redundancy findings of the hosts
+    /// under it, and the N+1 placeholder.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here recomputes a verdict -- every count is read from the same
+    /// visible alert list the inbox, the entity page's HA scorecard and the
+    /// alert report already agree on. See ADR-0007 §1.
+    /// </remarks>
+    public ContinuityReportView ContinuityReport()
+    {
+        var graph = _graphs.Current;
+        var visible = Visible();
+
+        var clusters = graph.Entities.Values
+            .Where(e => e.Kind == EntityKind.Cluster && e.ObservationState != ObservationState.Vanished)
+            .OrderBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Whether HA configuration has ever actually been read for this
+        // estate, judged across every cluster rather than per-cluster: a
+        // fresh install where the inventory collector has not reached
+        // ClusterComputeResource yet must read as "not collected", not as
+        // "every cluster passed".
+        var haInputsCollected = clusters.Any(HasHaSettings);
+
+        var rows = clusters
+            .Select(c => ToContinuityRow(c, graph, visible))
+            .ToList();
+
+        return new ContinuityReportView
+        {
+            GeneratedAtUtc = _clock.UtcNow,
+            Summary = SummarizeContinuity(rows, visible, haInputsCollected),
+            Rows = rows,
+        };
+    }
+
+    private static bool HasHaSettings(Entity cluster) =>
+        cluster.Settings.Keys.Any(k => k.StartsWith("dasConfig.", StringComparison.Ordinal));
+
+    private static ContinuityReportRow ToContinuityRow(
+        Entity cluster, EntityGraph graph, IReadOnlyList<AlertInstance> visible)
+    {
+        var onCluster = visible.Where(a => a.Entity == cluster.Id).ToList();
+        var ha = onCluster.Where(a => HasRule(a, ContinuityRuleIds.Ha)).ToList();
+        var drs = onCluster.Where(a => HasRule(a, ContinuityRuleIds.Drs)).ToList();
+        var nPlusOne = onCluster.Where(a => HasRule(a, ContinuityRuleIds.NPlusOne)).ToList();
+
+        var hostIds = HostsOf(graph, cluster.Id);
+
+        var storagePath = visible
+            .Where(a => a.Entity is { } id && hostIds.Contains(id))
+            .Where(a => HasRule(a, ContinuityRuleIds.Multipath) || HasRule(a, ContinuityRuleIds.StoragePath))
+            .ToList();
+
+        var affectedHosts = storagePath
+            .Select(a => a.Entity is { } id && graph.Entities.TryGetValue(id, out var host)
+                ? host.DisplayName
+                : null)
+            .OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var hasCritical =
+            ha.Concat(drs).Concat(storagePath).Concat(nPlusOne)
+                .Any(a => a.Severity == AlertSeverity.Critical);
+
+        return new ContinuityReportRow
+        {
+            ClusterId = cluster.Id.Value,
+            ClusterName = cluster.DisplayName,
+            Source = cluster.SourceInstanceId,
+            HaSettingsCollected = HasHaSettings(cluster),
+            HaCriticalCount = ha.Count(a => a.Severity == AlertSeverity.Critical),
+            HaWarningCount = ha.Count(a => a.Severity == AlertSeverity.Warning),
+            DrsCriticalCount = drs.Count(a => a.Severity == AlertSeverity.Critical),
+            DrsWarningCount = drs.Count(a => a.Severity == AlertSeverity.Warning),
+            StoragePathCriticalCount = storagePath.Count(a => a.Severity == AlertSeverity.Critical),
+            StoragePathWarningCount = storagePath.Count(a => a.Severity == AlertSeverity.Warning),
+            StoragePathAffectedHosts = affectedHosts,
+            NPlusOneCriticalCount = nPlusOne.Count(a => a.Severity == AlertSeverity.Critical),
+            NPlusOneWarningCount = nPlusOne.Count(a => a.Severity == AlertSeverity.Warning),
+            HasCritical = hasCritical,
+        };
+    }
+
+    /// <summary>
+    /// Every host <c>PartOf</c> this cluster -- the same edge the inventory
+    /// collector writes; see <c>VsphereInventorySource</c>.
+    /// </summary>
+    private static HashSet<EntityId> HostsOf(EntityGraph graph, EntityId clusterId) =>
+    [
+        .. graph.Relationships
+            .Where(r => r.Kind == RelationshipKind.PartOf && r.To == clusterId)
+            .Select(r => r.From),
+    ];
+
+    /// <summary>
+    /// Whether one rule produced this alert.
+    /// </summary>
+    /// <remarks>
+    /// There is no <c>RuleId</c> field on an alert: <see cref="AlertFingerprint.Create"/>
+    /// folds it into the check-id part of the fingerprint instead, and every
+    /// rule file passes its own <c>RuleId</c> constant there (see
+    /// <c>ClusterHighAvailability</c>, <c>DrsRuleViolations</c>,
+    /// <c>MultipathSinglePointOfFailure</c>, <c>StoragePathRedundancy</c>).
+    /// Reading it back as a substring of the fingerprint's already-normalised
+    /// value is the generic hook this report needs to pick up the N+1 rule
+    /// the day it ships, without this file knowing anything about it.
+    /// </remarks>
+    private static bool HasRule(AlertInstance alert, string ruleId) =>
+        alert.Fingerprint.Value.Contains(ruleId, StringComparison.Ordinal);
+
+    private static ContinuityReportSummary SummarizeContinuity(
+        List<ContinuityReportRow> rows, IReadOnlyList<AlertInstance> visible, bool haInputsCollected)
+    {
+        var byRule = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            [ContinuityRuleIds.Ha] = visible.Count(a => HasRule(a, ContinuityRuleIds.Ha)),
+            [ContinuityRuleIds.Drs] = visible.Count(a => HasRule(a, ContinuityRuleIds.Drs)),
+            [ContinuityRuleIds.Multipath] = visible.Count(a => HasRule(a, ContinuityRuleIds.Multipath)),
+            [ContinuityRuleIds.StoragePath] = visible.Count(a => HasRule(a, ContinuityRuleIds.StoragePath)),
+            [ContinuityRuleIds.NPlusOne] = visible.Count(a => HasRule(a, ContinuityRuleIds.NPlusOne)),
+        };
+
+        var continuityAlerts = visible.Where(a => byRule.Keys.Any(id => HasRule(a, id))).ToList();
+
+        var bySeverity = continuityAlerts.GroupBy(a => a.Severity.ToString())
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        foreach (var value in Enum.GetValues<AlertSeverity>())
+        {
+            bySeverity.TryAdd(value.ToString(), 0);
+        }
+
+        var critical = rows.Where(r => r.HasCritical).ToList();
+
+        return new ContinuityReportSummary
+        {
+            TotalClusters = rows.Count,
+            ByRule = byRule,
+            BySeverity = bySeverity,
+            ClustersWithCriticalCount = critical.Count,
+            ClustersWithCriticalNames = [.. critical.Select(r => r.ClusterName)],
+            HaInputsCollected = haInputsCollected,
+            Note = haInputsCollected
+                ? null
+                : "HA and DRS show zero because no cluster in this estate has reported HA settings " +
+                  "yet (no dasConfig.* key was read). That means the input was never collected, not " +
+                  "that every cluster is protected -- the collector wiring for cluster HA/DRS " +
+                  "configuration is still pending.",
+        };
+    }
+
     // --- entities ---------------------------------------------------------
 
     /// <summary>The entity explorer (tier 1 of ADR-0007).</summary>
@@ -186,6 +631,15 @@ public sealed class ReadModel(
 
         var counts = AlertCountsByEntity();
 
+        var entityAlerts =
+        (IReadOnlyList<AlertView>)
+        [
+            .. Visible()
+                .Where(a => a.Entity == entityId)
+                .OrderByDescending(a => a.Severity)
+                .Select(a => ToView(a, graph)),
+        ];
+
         return new EntityDetailView
         {
             Entity = ToView(entity, counts),
@@ -199,16 +653,51 @@ public sealed class ReadModel(
                 }),
             ],
             Relationships = RelationshipsOf(graph, entityId),
-            Alerts =
-            [
-                .. Visible()
-                    .Where(a => a.Entity == entityId)
-                    .OrderByDescending(a => a.Severity)
-                    .Select(a => ToView(a, graph)),
-            ],
+            Alerts = entityAlerts,
             TimeToFull = entity.Kind == EntityKind.Datastore ? TimeToFull(entityId) : null,
+            HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity, entityAlerts) : null,
+            ClusterFailover = entity.Kind == EntityKind.Cluster ? ClusterFailover(entity, graph) : null,
         };
     }
+
+    /// <summary>
+    /// The HA scorecard, read from the same <c>Entity.Settings</c> the
+    /// collector filed under <c>ClusterHighAvailabilityPolicy</c>'s keys and
+    /// the same alerts the entity's own list already carries.
+    /// </summary>
+    /// <remarks>
+    /// Filtered, never recomputed -- ADR-0007 §1, same as
+    /// <see cref="EntityDetailView.Alerts"/> itself. The setting keys are read
+    /// from the rule's own default policy rather than restated here, so the
+    /// two can never drift apart: see <see cref="ClusterHighAvailabilityPolicy"/>.
+    /// </remarks>
+    private static HaScorecardView HaScorecard(Entity cluster, IReadOnlyList<AlertView> entityAlerts)
+    {
+        var rules = ClusterHighAvailabilityPolicy.Default;
+        var settings = cluster.Settings;
+
+        return new HaScorecardView
+        {
+            Enabled = Bool(settings, rules.EnabledSetting),
+            AdmissionControlEnabled = Bool(settings, rules.AdmissionControlEnabledSetting),
+            AdmissionControlPolicyType = settings.GetValueOrDefault("dasConfig.admissionControlPolicy.type"),
+            HostMonitoring = settings.GetValueOrDefault(rules.HostMonitoringSetting),
+            VmMonitoring = settings.GetValueOrDefault("dasConfig.vmMonitoring"),
+            ApdResponse = settings.GetValueOrDefault(rules.ApdResponseSetting),
+            PdlResponse = settings.GetValueOrDefault(rules.PdlResponseSetting),
+            HeartbeatDatastoreCount =
+                settings.TryGetValue(rules.HeartbeatDatastoreCountSetting, out var count) &&
+                int.TryParse(count, out var parsed)
+                    ? parsed
+                    : null,
+            HeartbeatDatastoreCandidatePolicy = settings.GetValueOrDefault("dasConfig.hBDatastoreCandidatePolicy"),
+            RedundantNetworkWarningSilenced = Bool(settings, rules.IgnoreRedundantNetworkWarningSetting),
+            Findings = [.. entityAlerts.Where(a => string.Equals(a.Category, "Configuration", StringComparison.Ordinal))],
+        };
+    }
+
+    private static bool? Bool(IReadOnlyDictionary<string, string> settings, string key) =>
+        settings.TryGetValue(key, out var raw) && bool.TryParse(raw, out var parsed) ? parsed : null;
 
     /// <summary>
     /// The same estimate the fill-date rule makes, from the same history.
@@ -268,6 +757,100 @@ public sealed class ReadModel(
                 Summary = summary,
             },
             _ => throw new InvalidOperationException("An estimate is a forecast or a refusal."),
+        };
+    }
+
+    /// <summary>
+    /// The same N+1 verdict the rule reaches, computed on request from the
+    /// series store's latest samples and history rather than remembered from
+    /// the last cycle -- the same split <see cref="TimeToFull(EntityId)"/>
+    /// makes for a datastore. Null when this cluster has fewer than two live
+    /// hosts, the case <see cref="ClusterNPlusOne.HostsByLiveCluster"/> leaves
+    /// out entirely.
+    /// </summary>
+    private ClusterFailoverView? ClusterFailover(Entity cluster, EntityGraph graph)
+    {
+        var now = _clock.UtcNow;
+        var retention = _options.Retention;
+        var policy = _options.ClusterNPlusOne;
+
+        var state = ClusterNPlusOne
+            .CurrentReadings(_observations, graph, now, policy, retention)
+            .SingleOrDefault(s => s.Cluster == cluster.Id);
+
+        if (state is null)
+        {
+            return null;
+        }
+
+        var available = ClusterNPlusOne.AvailableAfterFailoverHosts(state.HostCount, policy);
+
+        return new ClusterFailoverView
+        {
+            HostCount = state.HostCount,
+            Cpu = ClusterFailoverResource(
+                state, ClusterCapacityResource.Cpu, state.CpuDemandHosts, policy.CpuUsageCounter,
+                available, now, policy, retention),
+            Memory = ClusterFailoverResource(
+                state, ClusterCapacityResource.Memory, state.MemoryDemandHosts, policy.MemoryUsageCounter,
+                available, now, policy, retention),
+        };
+    }
+
+    private ClusterFailoverResourceView ClusterFailoverResource(
+        ClusterFailoverState state,
+        ClusterCapacityResource resource,
+        double? demandHosts,
+        string counter,
+        double availableAfterFailoverHosts,
+        DateTimeOffset now,
+        ClusterNPlusOnePolicy policy,
+        SeriesRetentionPolicy retention)
+    {
+        if (demandHosts is not { } demand)
+        {
+            return new ClusterFailoverResourceView { AvailableAfterFailoverHosts = availableAfterFailoverHosts };
+        }
+
+        var estimate = ClusterNPlusOne.ReadDate(
+            _observations, state.Cluster, state.Hosts, counter, availableAfterFailoverHosts,
+            resource, now, policy, retention);
+
+        var summary = ClusterNPlusOne.Explain(estimate, resource);
+        summary = char.ToUpperInvariant(summary[0]) + summary[1..] + (summary.EndsWith('.') ? "" : ".");
+
+        var date = estimate switch
+        {
+            TimeToFullResult.Forecast f => new TimeToFullView
+            {
+                IsForecast = true,
+                FullAtUtc = f.FullAtUtc,
+                Days = f.Days,
+                GrowthBytesPerDay = f.SlopePerDay,
+                WindowFromUtc = f.Window.FromUtc,
+                WindowToUtc = f.Window.ToUtc,
+                PointsUsed = f.PointsUsed,
+                Summary = summary,
+            },
+            TimeToFullResult.Refusal r => new TimeToFullView
+            {
+                IsForecast = false,
+                GrowthBytesPerDay = r.SlopePerDay,
+                WindowFromUtc = r.Window?.FromUtc,
+                WindowToUtc = r.Window?.ToUtc,
+                PointsUsed = r.PointsUsed,
+                Reason = r.Reason.ToString(),
+                Summary = summary,
+            },
+            _ => throw new InvalidOperationException("An estimate is a forecast or a refusal."),
+        };
+
+        return new ClusterFailoverResourceView
+        {
+            HoldsNow = demand <= availableAfterFailoverHosts + 1e-9,
+            DemandHosts = demand,
+            AvailableAfterFailoverHosts = availableAfterFailoverHosts,
+            Date = date,
         };
     }
 

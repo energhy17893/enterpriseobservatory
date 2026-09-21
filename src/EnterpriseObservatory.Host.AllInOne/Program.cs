@@ -3,6 +3,7 @@ using EnterpriseObservatory.Api;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Api.Projections;
+using EnterpriseObservatory.Api.Reports;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
@@ -10,7 +11,9 @@ using EnterpriseObservatory.Collectors.Vsphere;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Host.AllInOne;
 using EnterpriseObservatory.Host.AllInOne.Collectors;
+using EnterpriseObservatory.Application.Reporting;
 using EnterpriseObservatory.Host.AllInOne.Configuration;
+using EnterpriseObservatory.Host.AllInOne.Mail;
 using EnterpriseObservatory.Host.AllInOne.Notifications;
 using EnterpriseObservatory.Host.AllInOne.Security;
 using EnterpriseObservatory.Host.AllInOne.State;
@@ -262,6 +265,18 @@ else
 }
 
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+
+// Scheduled email reports (roadmap M5.4). IReportRenderer renders each
+// ReportKind by reusing the export that kind already has -- M5.1's CSV for
+// alerts -- so a mailed report never disagrees with what its download link
+// produces. See EnterpriseObservatory.Api.Reports.ReportRenderer.
+builder.Services.AddSingleton<ISmtpSettingsStore, PostgresSmtpSettingsStore>();
+builder.Services.AddSingleton<IReportSubscriptionStore, PostgresReportSubscriptionStore>();
+builder.Services.AddSingleton<IMailSender, MailKitMailSender>();
+builder.Services.AddSingleton<IReportRenderer, ReportRenderer>();
+builder.Services.AddSingleton<ReportDispatchService>();
+builder.Services.AddHostedService<ReportSchedulerWorker>();
+
 builder.Services.AddSingleton<ISourceConnectionStore, PostgresSourceConnectionStore>();
 builder.Services.AddSingleton<VsphereConnectionProbe>();
 builder.Services.AddSingleton<IConnectionProbe>(p => p.GetRequiredService<VsphereConnectionProbe>());
@@ -297,6 +312,8 @@ host.MapAccountsApi();
 host.MapMaintenanceApi();
 host.MapConnections();
 host.MapComplianceApi();
+host.MapEmailApi();
+host.MapReportsApi();
 host.MapObservatoryApi();
 
 // The SPA's build output, when it has been built. Serving the interface from

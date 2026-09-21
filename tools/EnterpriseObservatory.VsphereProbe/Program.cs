@@ -106,6 +106,77 @@ using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(3));
 
 try
 {
+    // Who is signed in as this account, and nothing else. The question it
+    // answers is whether the product leaves sessions behind: run it while the
+    // service is up, stop the service, run it again.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --sessions
+    if (args.Contains("--sessions", StringComparer.OrdinalIgnoreCase))
+    {
+        Section("Sessions");
+
+        var sessions = await client.ReadSessionsAsync(cancellation.Token);
+        var mine = sessions.Current;
+
+        Console.WriteLine($"  signed in as             {Show(mine?.UserName ?? user, mask)}");
+        Console.WriteLine($"  this probe's session     login {mine?.LoginTimeUtc:HH:mm:ss}Z, key ...{Tail(mine?.Key)}");
+
+        // Asked of the server rather than assumed: does Logout end a session
+        // here. It is the same call the service makes when it stops, when a
+        // connection is edited or removed, and after every Test.
+        if (args.Contains("--confirm-logout", StringComparer.OrdinalIgnoreCase))
+        {
+            var ended = await client.LogoutAndConfirmAsync(cancellation.Token);
+
+            Console.WriteLine(ended switch
+            {
+                true => "  logout                   CONFIRMED - vCenter no longer recognises the old session",
+                false => "  logout                   NOT EFFECTIVE - vCenter still answered on the old session",
+                null => "  logout                   nothing to log out of",
+            });
+
+            var again = await client.ReadSessionsAsync(cancellation.Token);
+            Console.WriteLine(
+                $"  signed in again          login {again.Current?.LoginTimeUtc:HH:mm:ss}Z, key ...{Tail(again.Current?.Key)} " +
+                $"({(again.Current?.Key == mine?.Key ? "SAME session" : "a new session")})");
+
+            return ended == true ? 0 : 1;
+        }
+
+        if (sessions.All is not { } all)
+        {
+            // Said plainly: not being allowed to look is not an empty list.
+            Console.WriteLine($"  session list             NOT READABLE by this account ({sessions.Unreadable})");
+            Console.WriteLine("                           Listing sessions needs the Sessions privilege; a read-only");
+            Console.WriteLine("                           account normally lacks it. Check in the vSphere Client instead:");
+            Console.WriteLine("                           Administration > Deployment > Sessions (or Monitor > Sessions).");
+            return 0;
+        }
+
+        var ours = all
+            .Where(s => string.Equals(s.UserName, mine?.UserName ?? user, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(s => s.LoginTimeUtc)
+            .ToList();
+
+        Console.WriteLine($"  sessions on this vCenter {all.Count}");
+        Console.WriteLine($"  of them this account's   {ours.Count}  (one is this probe, and ends when it exits)");
+        Console.WriteLine();
+
+        foreach (var session in ours)
+        {
+            var idle = session.LastActiveUtc is { } active
+                ? string.Create(CultureInfo.InvariantCulture, $"{(DateTimeOffset.UtcNow - active).TotalSeconds,6:0} s idle")
+                : "      ? idle";
+            var who = session.Key == mine?.Key ? "this probe" : session.UserAgent;
+
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"    login {session.LoginTimeUtc:HH:mm:ss}Z   {idle}   {Show(session.IpAddress, mask),-16} {who}"));
+        }
+
+        return 0;
+    }
+
     Section("Connection");
     Console.WriteLine($"  endpoint                 {Show(baseAddress.Host, mask)}");
     Console.WriteLine($"  certificate validation   {(insecure ? "RELAXED (self-signed accepted)" : "enforced")}");
@@ -596,6 +667,16 @@ catch (OperationCanceledException)
     Console.Error.WriteLine("  Timed out after 3 minutes.");
     return 1;
 }
+finally
+{
+    // The probe signs in, so it signs out. It used to leave a session behind
+    // on every run, which is an odd habit for the tool that checks for them.
+    await client.LogoutAsync(CancellationToken.None);
+}
+
+// Enough of a session key to tell two apart, not enough to be one.
+static string Tail(string? key) =>
+    string.IsNullOrEmpty(key) ? "?" : key[^Math.Min(6, key.Length)..];
 
 static void Section(string title)
 {

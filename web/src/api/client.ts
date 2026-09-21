@@ -15,7 +15,10 @@ import type {
   ConnectionView,
   ProbeView,
   AlertActionView,
+  AlertReportView,
   AuthStateView,
+  CapacityReportView,
+  ContinuityReportView,
   BulkActionView,
   DeclareWindowCommand,
   EventBoardView,
@@ -25,8 +28,15 @@ import type {
   AddExceptionCommand,
   ComplianceExceptionView,
   ComplianceFindingView,
+  ComplianceReportView,
   ComplianceView,
   FindingState,
+  SmtpSettingsView,
+  SmtpSettingsCommand,
+  TestEmailCommand,
+  MailTestView,
+  ReportSubscriptionView,
+  ReportSubscriptionCommand,
 } from './types'
 
 /**
@@ -158,6 +168,22 @@ export interface AlertQuery extends Query {
   limit?: number
 }
 
+export interface AlertReportQuery extends Query {
+  severity?: string
+  state?: string
+  category?: string
+  source?: string
+  from?: string
+  to?: string
+}
+
+export interface ComplianceReportQuery extends Query {
+  control?: string
+  entity?: string
+  from?: string
+  to?: string
+}
+
 export interface SeriesQuery extends Query {
   instance?: string
   from?: string
@@ -246,4 +272,55 @@ export const api = {
       `/api/entities/${encodeURIComponent(entityId)}/series/${encodeURIComponent(counter)}`,
       query,
     ),
+  alertsReport: (query: AlertReportQuery = {}) => get<AlertReportView>('/api/reports/alerts', query),
+
+  // A URL, not a fetch: the CSV is a download the browser handles itself, not
+  // JSON this client parses. Built the same way `get` builds its URL so the
+  // two never drift apart on which params they accept.
+  alertsReportCsvUrl: (query: AlertReportQuery = {}) => {
+    const url = new URL('/api/reports/alerts.csv', window.location.origin)
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== null && value !== undefined && value !== '') {
+        url.searchParams.set(key, String(value))
+      }
+    }
+    return url.toString()
+  },
+
+  smtpSettings: () => get<SmtpSettingsView>('/api/email/settings'),
+  updateSmtpSettings: (command: SmtpSettingsCommand) =>
+    send<SmtpSettingsView>('PUT', '/api/email/settings', command),
+  testSmtpSettings: (command: TestEmailCommand) =>
+    post<MailTestView>('/api/email/test', command),
+
+  reportSubscriptions: () => get<ReportSubscriptionView[]>('/api/reports/subscriptions'),
+  addReportSubscription: (command: ReportSubscriptionCommand) =>
+    post<ReportSubscriptionView>('/api/reports/subscriptions', command),
+  updateReportSubscription: (id: string, command: ReportSubscriptionCommand) =>
+    send<ReportSubscriptionView>('PUT', `/api/reports/subscriptions/${encodeURIComponent(id)}`, command),
+  removeReportSubscription: (id: string) =>
+    send<null>('DELETE', `/api/reports/subscriptions/${encodeURIComponent(id)}`),
+  complianceReport: (query: ComplianceReportQuery = {}) =>
+    get<ComplianceReportView>('/api/reports/compliance', query),
+
+  // Same shape as alertsReportCsvUrl: a URL the browser downloads itself, not
+  // a fetch this client parses. `section` picks the findings detail (the
+  // default) or the change-history rows -- see ComplianceApi.cs for why that
+  // is a query param rather than a second endpoint.
+  complianceReportCsvUrl: (query: ComplianceReportQuery = {}, section?: 'findings' | 'history') => {
+    const url = new URL('/api/reports/compliance.csv', window.location.origin)
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== null && value !== undefined && value !== '') {
+        url.searchParams.set(key, String(value))
+      }
+    }
+    if (section) {
+      url.searchParams.set('section', section)
+    }
+    return url.toString()
+  },
+  capacityReport: () => get<CapacityReportView>('/api/reports/capacity'),
+  capacityReportCsvUrl: () => new URL('/api/reports/capacity.csv', window.location.origin).toString(),
+  continuityReport: () => get<ContinuityReportView>('/api/reports/continuity'),
+  continuityReportCsvUrl: () => new URL('/api/reports/continuity.csv', window.location.origin).toString(),
 }

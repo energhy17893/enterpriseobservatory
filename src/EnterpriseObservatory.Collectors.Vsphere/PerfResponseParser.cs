@@ -10,6 +10,46 @@ public sealed record PerfEntitySamples
     /// <summary>The managed object reference, e.g. <c>host-123</c>.</summary>
     public required string EntityMoRef { get; init; }
 
+    /// <summary>The most recent sample.</summary>
+    public IReadOnlyList<CounterValue> Values { get; init; } = [];
+
+    /// <summary>
+    /// When vCenter took <see cref="Values"/>, or null when the reply did not say.
+    /// </summary>
+    /// <remarks>
+    /// vCenter's clock, verbatim, and deliberately not corrected toward ours.
+    /// The same sample comes back in consecutive reads, and the store tells a
+    /// repeat from a new reading by its time: a timestamp that is a function of
+    /// when we happened to ask would file one sample under two moments, and a
+    /// summation counted twice is worse than one counted late.
+    /// </remarks>
+    public DateTimeOffset? SampledAtUtc { get; init; }
+
+    /// <summary>
+    /// The samples before the latest that the same reply carried, oldest first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// These used to be dropped. A thirty-second cycle meeting twenty-second
+    /// samples then never reads about one in three — a thinner chart for a
+    /// rate, and for a summation the event itself: a bus reset that fell in
+    /// the unread slot did not happen as far as the product could tell.
+    /// </para>
+    /// <para>
+    /// Kept apart from <see cref="Values"/> because they are for the store,
+    /// not for the rules: a rule is handed one value per series and means the
+    /// current one. Empty when the reply carried no sample times, since a
+    /// number cannot be kept without saying when it was true.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<PerfSampleSet> Earlier { get; init; } = [];
+}
+
+/// <summary>One entity's values at one sample time.</summary>
+public sealed record PerfSampleSet
+{
+    public required DateTimeOffset SampledAtUtc { get; init; }
+
     public IReadOnlyList<CounterValue> Values { get; init; } = [];
 }
 
@@ -119,21 +159,18 @@ public static class PerfResponseParser
             }
 
             var interval = ReadInterval(returnVal) ?? fallbackInterval;
-            var values = new List<CounterValue>();
-
-            foreach (var series in Elements(returnVal, "value"))
-            {
-                var value = ReadSeries(series, countersById, interval);
-                if (value is not null)
-                {
-                    values.Add(value.Value);
-                }
-            }
+            var times = ReadSampleTimes(returnVal);
+            var allSeries = Elements(returnVal, "value")
+                .Select(series => ReadSeries(series, countersById, interval))
+                .OfType<SeriesPoints>()
+                .ToList();
 
             results.Add(new PerfEntitySamples
             {
                 EntityMoRef = entity.Trim(),
-                Values = Aggregate(values),
+                Values = Aggregate([.. allSeries.Select(s => s.Latest()).OfType<CounterValue>()]),
+                SampledAtUtc = times.Count > 0 ? times[^1] : null,
+                Earlier = ReadEarlier(allSeries, times),
             });
         }
 
@@ -228,7 +265,53 @@ public static class PerfResponseParser
         return result;
     }
 
-    private static CounterValue? ReadSeries(
+    /// <summary>
+    /// Every sample slot before the last, each reduced exactly as the latest is.
+    /// </summary>
+    /// <remarks>
+    /// Only series whose points line up with the sample times take part: slot
+    /// <c>i</c> of a series is sample <c>i</c> of the reply only when there is
+    /// one point per time. A series that came back shorter cannot say which
+    /// slots it skipped, so it contributes its latest value and nothing else.
+    /// </remarks>
+    private static List<PerfSampleSet> ReadEarlier(
+        List<SeriesPoints> allSeries, List<DateTimeOffset> times)
+    {
+        var earlier = new List<PerfSampleSet>();
+
+        for (var slot = 0; slot < times.Count - 1; slot++)
+        {
+            var values = allSeries
+                .Where(s => s.Points.Count == times.Count)
+                .Select(s => s.At(slot))
+                .OfType<CounterValue>()
+                .ToList();
+
+            if (values.Count > 0)
+            {
+                earlier.Add(new PerfSampleSet { SampledAtUtc = times[slot], Values = Aggregate(values) });
+            }
+        }
+
+        return earlier;
+    }
+
+    /// <summary>One series as it arrived: what it measures, and a point per slot.</summary>
+    private sealed record SeriesPoints(CounterValue Shape, string WireUnit, IReadOnlyList<double?> Points)
+    {
+        /// <summary>The most recent point that parsed, as before.</summary>
+        public CounterValue? Latest() => Reading(Points.LastOrDefault(p => p is not null));
+
+        public CounterValue? At(int slot) => Reading(Points[slot]);
+
+        // A reading that cannot exist is not a reading; see ReadSeries.
+        private CounterValue? Reading(double? point) =>
+            point is { } raw && raw >= 0
+                ? Shape with { Raw = VsphereUnitNormalizer.Normalize(raw, WireUnit) }
+                : null;
+    }
+
+    private static SeriesPoints? ReadSeries(
         XElement series,
         IReadOnlyDictionary<int, VsphereCounter> countersById,
         TimeSpan interval)
@@ -251,15 +334,18 @@ public static class PerfResponseParser
         var instance = Child(id, "instance") ?? string.Empty;
 
         // Sample points are <value> in normal format and <long> in csv format.
+        // One entry per slot, unparseable ones kept as null rather than
+        // skipped: a series is only lined up with the sample times when it has
+        // a point for each, and dropping one would shift every later point
+        // onto the wrong moment.
         var points = series.Elements()
             .Where(e => e.Name.LocalName is "value" or "long")
             .Select(e => double.TryParse(e.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out var d)
                 ? (double?)d
                 : null)
-            .OfType<double>()
             .ToList();
 
-        if (points.Count == 0)
+        if (!points.Any(p => p is not null))
         {
             return null;
         }
@@ -279,34 +365,60 @@ public static class PerfResponseParser
         // Dropped rather than clamped to zero, because zero is a measurement
         // and this is the absence of one. The product already models that: a
         // gap stays a gap, never zero-filled, and a gap on a chart is visible
-        // in a way a fabricated zero is not.
+        // in a way a fabricated zero is not. Applied per slot, in
+        // SeriesPoints.Reading, so an earlier sample is held to the same rule
+        // as the latest.
         //
         // Revisit if a collector ever reports something genuinely signed — a
         // temperature from a BMC would be the obvious one — at which point
         // this belongs with the counter's metadata rather than here.
-        if (points[^1] < 0)
+        return new SeriesPoints(
+            new CounterValue
+            {
+                CounterName = counter.Key,
+                // Filled per slot. Normalised because vSphere reports
+                // percentages in hundredths — 26.69% arrives as 2669 — and
+                // some latency counters in microseconds beside others in
+                // milliseconds. The unit travels with the value so the two
+                // stay consistent. See VsphereUnitNormalizer.
+                Raw = 0,
+                Rollup = counter.Rollup,
+                Interval = interval,
+                Unit = VsphereUnitNormalizer.NormalizedUnit(counter.Unit),
+                IsFaultCount = VsphereCounters.IsFaultCounter(counter.Key),
+                Instance = instance.Trim(),
+            },
+            counter.Unit,
+            points);
+    }
+
+    /// <summary>
+    /// When each sample slot was taken, by vCenter's clock, oldest first.
+    /// </summary>
+    /// <remarks>
+    /// All or nothing. A reply in which any slot has no readable time yields
+    /// none, because the slots are matched to the points by position and a
+    /// partial list would match them to the wrong ones.
+    /// </remarks>
+    private static List<DateTimeOffset> ReadSampleTimes(XElement returnVal)
+    {
+        var times = new List<DateTimeOffset>();
+
+        foreach (var sample in Elements(returnVal, "sampleInfo"))
         {
-            return null;
+            if (!DateTimeOffset.TryParse(
+                    Child(sample, "timestamp"),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out var at))
+            {
+                return [];
+            }
+
+            times.Add(at);
         }
 
-        return new CounterValue
-        {
-            CounterName = counter.Key,
-            // The most recent point. Earlier points in the window belong to a
-            // trend store, not to the current-state view this feeds.
-            //
-            // Normalised because vSphere reports percentages in hundredths —
-            // 26.69% arrives as 2669 — and some latency counters in
-            // microseconds beside others in milliseconds. The unit travels
-            // with the value so the two stay consistent. See
-            // VsphereUnitNormalizer.
-            Raw = VsphereUnitNormalizer.Normalize(points[^1], counter.Unit),
-            Rollup = counter.Rollup,
-            Interval = interval,
-            Unit = VsphereUnitNormalizer.NormalizedUnit(counter.Unit),
-            IsFaultCount = VsphereCounters.IsFaultCounter(counter.Key),
-            Instance = instance.Trim(),
-        };
+        return times;
     }
 
     /// <summary>

@@ -133,6 +133,35 @@ public sealed record PropertyPage
 /// <summary>Reads <c>RetrievePropertiesEx</c> responses.</summary>
 public static class PropertyCollectorParser
 {
+    /// <summary>The response elements of the two calls this parser serves.</summary>
+    private static readonly HashSet<string> PropertyCollectorReplies = new(StringComparer.Ordinal)
+    {
+        "RetrievePropertiesExResponse",
+        "ContinueRetrievePropertiesExResponse",
+    };
+
+    /// <summary>Reads one page of a property retrieval.</summary>
+    /// <remarks>
+    /// <para>
+    /// An empty page is a claim — "there is nothing here" — and the graph acts
+    /// on it: every entity this source used to report is marked vanished on
+    /// the first miss and stops being sampled. So a reply that could not be
+    /// read must not be allowed to look like one. This used to return an empty
+    /// page for malformed XML, which made a truncated body or a proxy's error
+    /// page indistinguishable from a vCenter with nothing in it.
+    /// </para>
+    /// <para>
+    /// Two different things are told apart here. A property-collector reply
+    /// with no <c>returnval</c> is vCenter saying the result is empty, and that
+    /// stays a legitimate answer. Anything that is not a property-collector
+    /// reply at all is a failed read, and failing the read is safe: the
+    /// pipeline treats a source that did not answer as silent and keeps what
+    /// it had.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="VsphereApiException">
+    /// The reply is malformed, or is not a property-collector response.
+    /// </exception>
     public static PropertyPage ParsePage(string xml)
     {
         XDocument document;
@@ -140,16 +169,24 @@ public static class PropertyCollectorParser
         {
             document = VsphereXml.Parse(xml);
         }
-        catch (System.Xml.XmlException)
+        catch (System.Xml.XmlException ex)
         {
-            return new PropertyPage();
+            throw new VsphereApiException(
+                "vCenter's inventory reply could not be read, so nothing in it was believed.", ex);
+        }
+
+        if (!document.Descendants().Any(e => PropertyCollectorReplies.Contains(e.Name.LocalName)))
+        {
+            throw new VsphereApiException(
+                "The inventory reply did not come from vCenter's property collector " +
+                $"(it was a <{document.Root?.Name.LocalName}>), so nothing in it was believed.");
         }
 
         var returnVal = document.Descendants().FirstOrDefault(e => e.Name.LocalName == "returnval");
         if (returnVal is null)
         {
-            // No returnval at all means an empty result, which is a legitimate
-            // answer: an inventory with nothing in it.
+            // The property collector answered and had nothing to return, which
+            // is a legitimate answer: an inventory with nothing in it.
             return new PropertyPage();
         }
 
@@ -313,4 +350,210 @@ public static class PropertyCollectorParser
 
     private static string? Child(XElement element, string localName) =>
         Elements(element, localName).FirstOrDefault()?.Value;
+
+    // --- M8.3: DRS affinity / anti-affinity / VM-host rules ---------------
+    //
+    // Kept apart from the rest of this file because it is the one place a
+    // second collector session touching cluster configuration (dasConfig, on
+    // the same configurationEx structure) is expected to work beside this
+    // one: two additive static methods, each reading its own path out of
+    // Structures, cannot conflict with each other or with a sibling method
+    // reading configurationEx.dasConfig.
+    //
+    // configurationEx.group and configurationEx.rule are each requested as a
+    // structure array, the same shape config.storageDevice.multipathInfo
+    // already is (see IsStructureArray): vim25's ClusterConfigInfoEx.group is
+    // ClusterGroupInfo[] and .rule is ClusterRuleInfo[], both polymorphic, so
+    // each element's declared xsi:type is what tells ClusterVmGroup from
+    // ClusterHostGroup and ClusterAffinityRuleSpec from
+    // ClusterAntiAffinityRuleSpec from ClusterVmHostRuleInfo. Confirmed
+    // against developer.broadcom.com's vSphere Web Services API reference
+    // (vim.cluster.ConfigInfoEx, vim.cluster.RuleInfo and its three subtypes,
+    // vim.cluster.VmGroup, vim.cluster.HostGroup) — see M8.3 roadmap notes.
+
+    private const string ClusterVmGroupType = "ClusterVmGroup";
+    private const string ClusterHostGroupType = "ClusterHostGroup";
+    private const string ClusterAffinityRuleSpecType = "ClusterAffinityRuleSpec";
+    private const string ClusterAntiAffinityRuleSpecType = "ClusterAntiAffinityRuleSpec";
+    private const string ClusterVmHostRuleInfoType = "ClusterVmHostRuleInfo";
+
+    /// <summary>Reads <c>configurationEx.group</c>: the named VM and host groups.</summary>
+    public static IReadOnlyList<VsphereClusterGroup> ReadClusterGroups(
+        IReadOnlyDictionary<string, IReadOnlyList<PropertyNode>> structures)
+    {
+        ArgumentNullException.ThrowIfNull(structures);
+
+        if (!structures.TryGetValue("configurationEx.group", out var nodes))
+        {
+            return [];
+        }
+
+        var groups = new List<VsphereClusterGroup>();
+
+        foreach (var node in nodes)
+        {
+            var name = node.TextOf("name");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                // Unnamed groups cannot be referred to by a rule's
+                // vmGroupName/affineHostGroupName, so there is nothing a
+                // consumer could ever join this row to.
+                continue;
+            }
+
+            if (string.Equals(node.Type, ClusterVmGroupType, StringComparison.Ordinal))
+            {
+                groups.Add(new VsphereClusterGroup
+                {
+                    Name = name,
+                    Kind = VsphereClusterGroupKind.VirtualMachine,
+                    MemberMoRefs = MoRefsOf(node, "vm"),
+                });
+            }
+            else if (string.Equals(node.Type, ClusterHostGroupType, StringComparison.Ordinal))
+            {
+                groups.Add(new VsphereClusterGroup
+                {
+                    Name = name,
+                    Kind = VsphereClusterGroupKind.Host,
+                    MemberMoRefs = MoRefsOf(node, "host"),
+                });
+            }
+
+            // A third group type, ClusterVmHostGroup, does not exist in
+            // vim25; anything else here is a future group kind this reader
+            // does not yet know, and it is dropped rather than guessed at.
+        }
+
+        return groups;
+    }
+
+    /// <summary>Reads <c>configurationEx.rule</c>: the DRS affinity rules.</summary>
+    /// <remarks>
+    /// Group names are carried as vCenter gave them, not yet resolved to
+    /// members — see <see cref="VsphereDrsRule"/>. Resolving them against
+    /// <see cref="ReadClusterGroups"/>'s output is the collector's job, done
+    /// once both are in hand.
+    /// </remarks>
+    public static IReadOnlyList<VsphereDrsRule> ReadDrsRules(
+        IReadOnlyDictionary<string, IReadOnlyList<PropertyNode>> structures)
+    {
+        ArgumentNullException.ThrowIfNull(structures);
+
+        if (!structures.TryGetValue("configurationEx.rule", out var nodes))
+        {
+            return [];
+        }
+
+        var rules = new List<VsphereDrsRule>();
+
+        foreach (var node in nodes)
+        {
+            var name = node.TextOf("name");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                // The rule's own name is what a fingerprint and this
+                // product's UI would key it by; an unnamed rule cannot be
+                // reported without inventing an identity for it.
+                continue;
+            }
+
+            var enabled = bool.TryParse(node.TextOf("enabled"), out var e) && e;
+            var mandatory = bool.TryParse(node.TextOf("mandatory"), out var m) && m;
+            var inCompliance = bool.TryParse(node.TextOf("inCompliance"), out var c) ? c : (bool?)null;
+
+            VsphereDrsRule? rule = node.Type switch
+            {
+                ClusterAffinityRuleSpecType => new VsphereDrsRule
+                {
+                    Name = name,
+                    Kind = Domain.DrsRuleKind.Affinity,
+                    Enabled = enabled,
+                    Mandatory = mandatory,
+                    InCompliance = inCompliance,
+                    VirtualMachineMoRefs = MoRefsOf(node, "vm"),
+                },
+                ClusterAntiAffinityRuleSpecType => new VsphereDrsRule
+                {
+                    Name = name,
+                    Kind = Domain.DrsRuleKind.AntiAffinity,
+                    Enabled = enabled,
+                    Mandatory = mandatory,
+                    InCompliance = inCompliance,
+                    VirtualMachineMoRefs = MoRefsOf(node, "vm"),
+                },
+                ClusterVmHostRuleInfoType => VmHostRuleOf(node, name, enabled, mandatory, inCompliance),
+
+                // ClusterDependencyRuleInfo (start-order) is a real vim25
+                // rule kind this product does not yet judge; left out rather
+                // than misread as an affinity rule.
+                _ => null,
+            };
+
+            if (rule is not null)
+            {
+                rules.Add(rule);
+            }
+        }
+
+        return rules;
+    }
+
+    /// <summary>
+    /// A VM-host rule names either an affine or an anti-affine host group,
+    /// never both; whichever vCenter set decides the kind.
+    /// </summary>
+    private static VsphereDrsRule? VmHostRuleOf(
+        PropertyNode node, string name, bool enabled, bool mandatory, bool? inCompliance)
+    {
+        var vmGroupName = node.TextOf("vmGroupName");
+        var affine = node.TextOf("affineHostGroupName");
+        var antiAffine = node.TextOf("antiAffineHostGroupName");
+
+        if (string.IsNullOrWhiteSpace(vmGroupName))
+        {
+            // Both host-group fields are optional in vim25, but a rule
+            // naming no VM group at all has nothing this product can judge
+            // placement against.
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(affine))
+        {
+            return new VsphereDrsRule
+            {
+                Name = name,
+                Kind = Domain.DrsRuleKind.VmHostAffine,
+                Enabled = enabled,
+                Mandatory = mandatory,
+                InCompliance = inCompliance,
+                VmGroupName = vmGroupName,
+                HostGroupName = affine,
+            };
+        }
+
+        if (!string.IsNullOrWhiteSpace(antiAffine))
+        {
+            return new VsphereDrsRule
+            {
+                Name = name,
+                Kind = Domain.DrsRuleKind.VmHostAntiAffine,
+                Enabled = enabled,
+                Mandatory = mandatory,
+                InCompliance = inCompliance,
+                VmGroupName = vmGroupName,
+                HostGroupName = antiAffine,
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Reads a moref array field: repeated child elements each holding one
+    /// managed object reference's text, e.g. repeated <c>vm</c> or <c>host</c>
+    /// elements under a group or rule node.
+    /// </summary>
+    private static IReadOnlyList<string> MoRefsOf(PropertyNode node, string childName) =>
+        [.. node.All(childName).Select(c => c.Text.Trim()).Where(t => t.Length > 0)];
 }

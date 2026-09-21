@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Collectors.Vsphere;
 
 namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
@@ -170,13 +171,51 @@ public class PropertyCollectorParserTests
         Assert.False(page.HasMore);
     }
 
-    [Fact]
-    public void Malformed_xml_yields_nothing_rather_than_throwing()
-    {
-        var page = PropertyCollectorParser.ParsePage("<not-xml");
+    // An empty page is a claim: "this vCenter has nothing in it". The graph
+    // believes it and marks every entity the source used to report as vanished
+    // on the first miss. So a reply that could not be read must never become
+    // one — it has to fail the read, which leaves the estate exactly as it was.
 
-        Assert.Empty(page.Objects);
-        Assert.False(page.HasMore);
+    [Fact]
+    public void Malformed_xml_fails_the_read_rather_than_reporting_an_empty_estate()
+    {
+        var fault = Assert.Throws<VsphereApiException>(
+            () => PropertyCollectorParser.ParsePage("<not-xml"));
+
+        Assert.Equal(
+            CollectionFailureKind.ProtocolError,
+            ((ICollectionFault)fault).Kind);
+    }
+
+    [Fact]
+    public void A_reply_cut_off_mid_page_fails_the_read()
+    {
+        Assert.Throws<VsphereApiException>(() => PropertyCollectorParser.ParsePage("""
+            <RetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval><objects><obj type="HostSystem">host-1</obj>
+            """));
+    }
+
+    [Fact]
+    public void A_well_formed_reply_that_is_not_from_the_property_collector_fails_the_read()
+    {
+        // What a proxy or a captive portal answers with: 200, parses cleanly,
+        // and says nothing about the inventory.
+        Assert.Throws<VsphereApiException>(() => PropertyCollectorParser.ParsePage("""
+            <html><body><h1>Service temporarily unavailable</h1></body></html>
+            """));
+    }
+
+    [Fact]
+    public void A_continuation_page_is_recognised_as_a_property_collector_reply()
+    {
+        var page = PropertyCollectorParser.ParsePage("""
+            <ContinueRetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval><objects><obj type="Datastore">ds-1</obj></objects></returnval>
+            </ContinueRetrievePropertiesExResponse>
+            """);
+
+        Assert.Single(page.Objects);
     }
 
     // --- structures -------------------------------------------------------
@@ -545,5 +584,169 @@ public class VsphereSoapFaultReaderTests
         Assert.Equal(string.Empty, volume.TextOf("ssd"));
         Assert.Null(volume.Child("nowhere"));
         Assert.Empty(volume.All("nowhere"));
+    }
+
+    // --- M8.3: DRS affinity / anti-affinity / VM-host rules ----------------
+
+    /// <summary>
+    /// Built from the vSphere Web Services API reference
+    /// (developer.broadcom.com, <c>vim.cluster.ConfigInfoEx</c>,
+    /// <c>vim.cluster.RuleInfo</c> and its three rule subtypes,
+    /// <c>vim.cluster.VmGroup</c>, <c>vim.cluster.HostGroup</c>), not dumped
+    /// from a live vCenter — the same "schema-shaped, not yet observed"
+    /// status <see cref="VsphereStoragePath"/> already carries for its wire
+    /// shape. <c>configurationEx</c> was not previously requested by this
+    /// collector, so there is nothing yet in docs/collectors to copy from.
+    /// </summary>
+    private const string ClusterConfigurationEx = """
+        <RetrievePropertiesExResponse xmlns="urn:vim25" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+          <returnval>
+            <objects>
+              <obj type="ClusterComputeResource">domain-c7</obj>
+              <propSet>
+                <name>configurationEx.group</name>
+                <val xsi:type="ArrayOfClusterGroupInfo">
+                  <group xsi:type="ClusterVmGroup">
+                    <name>db-vms</name>
+                    <vm type="VirtualMachine">vm-101</vm>
+                    <vm type="VirtualMachine">vm-102</vm>
+                  </group>
+                  <group xsi:type="ClusterHostGroup">
+                    <name>licensed-hosts</name>
+                    <host type="HostSystem">host-11</host>
+                    <host type="HostSystem">host-12</host>
+                  </group>
+                </val>
+              </propSet>
+              <propSet>
+                <name>configurationEx.rule</name>
+                <val xsi:type="ArrayOfClusterRuleInfo">
+                  <rule xsi:type="ClusterAffinityRuleSpec">
+                    <name>keep-app-tier-together</name>
+                    <enabled>true</enabled>
+                    <mandatory>false</mandatory>
+                    <inCompliance>true</inCompliance>
+                    <vm type="VirtualMachine">vm-201</vm>
+                    <vm type="VirtualMachine">vm-202</vm>
+                  </rule>
+                  <rule xsi:type="ClusterAntiAffinityRuleSpec">
+                    <name>separate-db-nodes</name>
+                    <enabled>true</enabled>
+                    <mandatory>true</mandatory>
+                    <inCompliance>false</inCompliance>
+                    <vm type="VirtualMachine">vm-101</vm>
+                    <vm type="VirtualMachine">vm-102</vm>
+                  </rule>
+                  <rule xsi:type="ClusterVmHostRuleInfo">
+                    <name>db-on-licensed-hosts</name>
+                    <enabled>true</enabled>
+                    <mandatory>false</mandatory>
+                    <inCompliance>true</inCompliance>
+                    <vmGroupName>db-vms</vmGroupName>
+                    <affineHostGroupName>licensed-hosts</affineHostGroupName>
+                  </rule>
+                  <rule xsi:type="ClusterVmHostRuleInfo">
+                    <name>keep-test-off-licensed-hosts</name>
+                    <enabled>false</enabled>
+                    <mandatory>false</mandatory>
+                    <vmGroupName>db-vms</vmGroupName>
+                    <antiAffineHostGroupName>licensed-hosts</antiAffineHostGroupName>
+                  </rule>
+                </val>
+              </propSet>
+            </objects>
+          </returnval>
+        </RetrievePropertiesExResponse>
+        """;
+
+    [Fact]
+    public void Cluster_groups_are_read_by_their_xsi_type()
+    {
+        var cluster = Assert.Single(PropertyCollectorParser.ParsePage(ClusterConfigurationEx).Objects);
+
+        var groups = PropertyCollectorParser.ReadClusterGroups(cluster.Structures);
+
+        Assert.Equal(2, groups.Count);
+
+        var vmGroup = Assert.Single(groups, g => g.Kind == VsphereClusterGroupKind.VirtualMachine);
+        Assert.Equal("db-vms", vmGroup.Name);
+        Assert.Equal(["vm-101", "vm-102"], vmGroup.MemberMoRefs);
+
+        var hostGroup = Assert.Single(groups, g => g.Kind == VsphereClusterGroupKind.Host);
+        Assert.Equal("licensed-hosts", hostGroup.Name);
+        Assert.Equal(["host-11", "host-12"], hostGroup.MemberMoRefs);
+    }
+
+    [Fact]
+    public void An_affinity_rule_carries_its_vm_list()
+    {
+        var cluster = Assert.Single(PropertyCollectorParser.ParsePage(ClusterConfigurationEx).Objects);
+
+        var rule = Assert.Single(
+            PropertyCollectorParser.ReadDrsRules(cluster.Structures), r => r.Name == "keep-app-tier-together");
+
+        Assert.Equal(EnterpriseObservatory.Domain.DrsRuleKind.Affinity, rule.Kind);
+        Assert.True(rule.Enabled);
+        Assert.False(rule.Mandatory);
+        Assert.True(rule.InCompliance);
+        Assert.Equal(["vm-201", "vm-202"], rule.VirtualMachineMoRefs);
+    }
+
+    [Fact]
+    public void An_anti_affinity_rule_carries_its_vm_list_and_inCompliance()
+    {
+        var cluster = Assert.Single(PropertyCollectorParser.ParsePage(ClusterConfigurationEx).Objects);
+
+        var rule = Assert.Single(
+            PropertyCollectorParser.ReadDrsRules(cluster.Structures), r => r.Name == "separate-db-nodes");
+
+        Assert.Equal(EnterpriseObservatory.Domain.DrsRuleKind.AntiAffinity, rule.Kind);
+        Assert.True(rule.Mandatory);
+        Assert.False(rule.InCompliance);
+        Assert.Equal(["vm-101", "vm-102"], rule.VirtualMachineMoRefs);
+    }
+
+    [Fact]
+    public void A_vm_host_rule_with_an_affine_group_is_read_as_must_should_run_on()
+    {
+        var cluster = Assert.Single(PropertyCollectorParser.ParsePage(ClusterConfigurationEx).Objects);
+
+        var rule = Assert.Single(
+            PropertyCollectorParser.ReadDrsRules(cluster.Structures), r => r.Name == "db-on-licensed-hosts");
+
+        Assert.Equal(EnterpriseObservatory.Domain.DrsRuleKind.VmHostAffine, rule.Kind);
+        Assert.Equal("db-vms", rule.VmGroupName);
+        Assert.Equal("licensed-hosts", rule.HostGroupName);
+    }
+
+    [Fact]
+    public void A_disabled_vm_host_rule_with_an_anti_affine_group_is_still_read()
+    {
+        // Disabled rules are not enforced by DRS, but they are still read:
+        // the analysis rule, not the parser, decides what a disabled rule
+        // means.
+        var cluster = Assert.Single(PropertyCollectorParser.ParsePage(ClusterConfigurationEx).Objects);
+
+        var rule = Assert.Single(
+            PropertyCollectorParser.ReadDrsRules(cluster.Structures),
+            r => r.Name == "keep-test-off-licensed-hosts");
+
+        Assert.Equal(EnterpriseObservatory.Domain.DrsRuleKind.VmHostAntiAffine, rule.Kind);
+        Assert.False(rule.Enabled);
+        Assert.Null(rule.InCompliance);
+        Assert.Equal("licensed-hosts", rule.HostGroupName);
+    }
+
+    [Fact]
+    public void No_configurationEx_properties_read_as_empty_lists_rather_than_throwing()
+    {
+        var cluster = Assert.Single(PropertyCollectorParser.ParsePage("""
+            <RetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval><objects><obj type="ClusterComputeResource">domain-c1</obj></objects></returnval>
+            </RetrievePropertiesExResponse>
+            """).Objects);
+
+        Assert.Empty(PropertyCollectorParser.ReadClusterGroups(cluster.Structures));
+        Assert.Empty(PropertyCollectorParser.ReadDrsRules(cluster.Structures));
     }
 }

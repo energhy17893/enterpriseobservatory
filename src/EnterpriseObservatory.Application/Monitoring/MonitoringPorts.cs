@@ -255,9 +255,20 @@ public sealed record MonitoringOptions
     public Analysis.StoragePathRedundancyPolicy StoragePathRedundancy { get; init; } =
         Analysis.StoragePathRedundancyPolicy.Default;
 
+    /// <summary>
+    /// Which of a storage path's reported states still carry I/O, for judging
+    /// whether a shared LUN's paths share one HBA. See roadmap M8.6.
+    /// </summary>
+    public Analysis.MultipathSinglePointOfFailurePolicy MultipathSinglePointOfFailure { get; init; } =
+        Analysis.MultipathSinglePointOfFailurePolicy.Default;
+
     /// <summary>Which setting names the host's log target.</summary>
     public Analysis.RemoteLoggingPolicy RemoteLogging { get; init; } =
         Analysis.RemoteLoggingPolicy.Default;
+
+    /// <summary>How many heartbeat datastores an HA cluster should have.</summary>
+    public Analysis.ClusterHighAvailabilityPolicy ClusterHighAvailability { get; init; } =
+        Analysis.ClusterHighAvailabilityPolicy.Default;
 
     /// <summary>
     /// How far back a datastore's growth is read, and how near a fill date is
@@ -298,4 +309,11 @@ public sealed record MonitoringOptions
 
     /// <summary>Which vCenter events become alerts, and how long each is held open.</summary>
     public Analysis.EventAlertPolicy EventAlerts { get; init; } = Analysis.EventAlertPolicy.Default;
+
+    /// <summary>
+    /// If the largest host fails, do the survivors still hold the running
+    /// VMs' demand, and until when. See roadmap M8.2.
+    /// </summary>
+    public Analysis.ClusterNPlusOnePolicy ClusterNPlusOne { get; init; } =
+        Analysis.ClusterNPlusOnePolicy.Default;
 }

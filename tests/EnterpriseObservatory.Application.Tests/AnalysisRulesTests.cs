@@ -58,9 +58,13 @@ public class AnalysisRulesTests
         Assert.Equal(
             [
                 StoragePathRedundancy.RuleId,
+                MultipathSinglePointOfFailure.RuleId,
+                DrsRuleViolations.RuleId,
                 RemoteLogging.RuleId,
+                ClusterHighAvailability.RuleId,
                 EventAlerts.RuleId,
                 DatastoreTimeToFull.RuleId,
+                ClusterNPlusOne.RuleId,
                 CollectionCoverage.RuleId,
             ],
             AnalysisRules.For(RuleScope.Inventory).Select(r => r.RuleId));

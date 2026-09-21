@@ -315,6 +315,122 @@ public sealed record Entity
     /// because it cannot tell normal from strict.
     /// </remarks>
     public string? LockdownMode { get; init; }
+
+    /// <summary>
+    /// The DRS affinity, anti-affinity and VM-host rules configured on this
+    /// cluster, resolved to member entity ids.
+    /// </summary>
+    /// <remarks>
+    /// Empty for everything that is not a cluster, and for a cluster whose
+    /// rule table could not be read. See <see cref="DrsRule"/> for why the
+    /// group references are resolved here rather than left as group names —
+    /// same contract as <see cref="StoragePaths"/>: carried, not judged.
+    /// </remarks>
+    public IReadOnlyList<DrsRule> DrsRules { get; init; } = [];
+}
+
+/// <summary>Which shape of DRS rule this is.</summary>
+/// <remarks>
+/// vim25 models these as four sibling types of <c>ClusterRuleInfo</c>:
+/// <c>ClusterAffinityRuleSpec</c>, <c>ClusterAntiAffinityRuleSpec</c> and
+/// <c>ClusterVmHostRuleInfo</c> (which carries either
+/// <c>affineHostGroupName</c> or <c>antiAffineHostGroupName</c>, never both).
+/// See developer.broadcom.com, vSphere Web Services API reference,
+/// <c>vim.cluster.RuleInfo</c> and its subtypes.
+/// </remarks>
+public enum DrsRuleKind
+{
+    /// <summary>VMs should run on the same host. <c>ClusterAffinityRuleSpec</c>.</summary>
+    Affinity,
+
+    /// <summary>VMs should run on different hosts. <c>ClusterAntiAffinityRuleSpec</c>.</summary>
+    AntiAffinity,
+
+    /// <summary>
+    /// A VM group's members must/should run on a host group's members.
+    /// <c>ClusterVmHostRuleInfo.affineHostGroupName</c>.
+    /// </summary>
+    VmHostAffine,
+
+    /// <summary>
+    /// A VM group's members must/should not run on a host group's members.
+    /// <c>ClusterVmHostRuleInfo.antiAffineHostGroupName</c>.
+    /// </summary>
+    VmHostAntiAffine,
+}
+
+/// <summary>
+/// One DRS rule, as configured on a cluster, with its groups already resolved.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Carried on the cluster entity rather than as a separate entity kind: a
+/// rule has no identity of its own worth resolving across cycles beyond its
+/// name, which vCenter already guarantees unique within one cluster, and it
+/// changes at the same rhythm as the cluster's other configuration.
+/// </para>
+/// <para>
+/// <see cref="VirtualMachineMoRefs"/> and <see cref="HostMoRefs"/> hold
+/// managed object references rather than resolved <see cref="EntityId"/>s,
+/// matching every other wire-shaped reference this collector carries (compare
+/// <see cref="StoragePath.StorageDeviceId"/>): resolving them into entity ids
+/// needs the source's instance id, which is the collector's business, and a
+/// rule evaluated against entities that no longer exist should say so rather
+/// than silently drop the reference.
+/// </para>
+/// </remarks>
+public sealed record DrsRule
+{
+    /// <summary>The rule's name, unique within its cluster. vim25 <c>name</c>.</summary>
+    public required string Name { get; init; }
+
+    public required DrsRuleKind Kind { get; init; }
+
+    /// <summary>vim25 <c>enabled</c>. A disabled rule is not enforced by DRS.</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>
+    /// vim25 <c>mandatory</c>: compliance is required, not merely preferred.
+    /// </summary>
+    public bool Mandatory { get; init; }
+
+    /// <summary>
+    /// vCenter's own verdict, or null when it did not report one.
+    /// </summary>
+    /// <remarks>
+    /// vim25 <c>inCompliance</c>: "Flag to indicate whether or not the
+    /// placement of Virtual Machines is currently in compliance with this
+    /// rule." Carried so a rule evaluated from placement can say when it
+    /// agrees with vCenter's own judgement and when it does not, rather than
+    /// silently overwriting one verdict with the other.
+    /// </remarks>
+    public bool? VCenterInCompliance { get; init; }
+
+    /// <summary>
+    /// The VMs this rule concerns, as the <see cref="EntityId.Value"/> each
+    /// resolves to — already qualified with the reporting source, unlike the
+    /// bare vim25 managed object references a collector reads off the wire.
+    /// </summary>
+    /// <remarks>
+    /// For <see cref="DrsRuleKind.Affinity"/> and
+    /// <see cref="DrsRuleKind.AntiAffinity"/>, vim25 <c>vm</c> directly. For
+    /// the VM-host kinds, the members of the VM group vim25 <c>vmGroupName</c>
+    /// names, resolved from <c>configurationEx.group</c>.
+    /// </remarks>
+    public IReadOnlyList<string> VirtualMachineEntityIds { get; init; } = [];
+
+    /// <summary>
+    /// The hosts this rule concerns, as qualified entity id values — see
+    /// <see cref="VirtualMachineEntityIds"/>. Empty for
+    /// <see cref="DrsRuleKind.Affinity"/> and <see cref="DrsRuleKind.AntiAffinity"/>,
+    /// which name no host group.
+    /// </summary>
+    /// <remarks>
+    /// The members of the host group vim25 names as
+    /// <c>affineHostGroupName</c> or <c>antiAffineHostGroupName</c>, depending
+    /// on <see cref="Kind"/>, resolved from <c>configurationEx.group</c>.
+    /// </remarks>
+    public IReadOnlyList<string> HostEntityIds { get; init; } = [];
 }
 
 /// <summary>

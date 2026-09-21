@@ -15,6 +15,10 @@ public sealed record ObservationCycleResult
     /// <summary>Every sample from every source that answered.</summary>
     public IReadOnlyList<Domain.Observation> Observations =>
         [.. Batches.SelectMany(b => b.Observations)];
+
+    /// <summary>Earlier samples to keep; see <see cref="ObservationBatch.Backfill"/>.</summary>
+    public IReadOnlyList<Domain.Observation> Backfill =>
+        [.. Batches.SelectMany(b => b.Backfill)];
 }
 
 /// <summary>

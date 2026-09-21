@@ -1,5 +1,6 @@
 using EnterpriseObservatory.Api.Contracts;
 using EnterpriseObservatory.Api.Projections;
+using EnterpriseObservatory.Api.Reports;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Security;
@@ -104,6 +105,74 @@ public static class ObservatoryApi
                 int? maxPoints) =>
             model.Series(id, counter, instance, from, to, maxPoints ?? 720))
             .WithName("GetSeries");
+
+        // --- reports ---------------------------------------------------------
+        //
+        // Read for any signed-in user, same as the alert list this is a
+        // filtered slice of: an operator deciding whether to print a report
+        // is not a more sensitive act than reading the inbox it comes from.
+
+        api.MapGet("/reports/alerts", (
+                ReadModel model,
+                AlertSeverity? severity,
+                AlertLifecycleState? state,
+                string? category,
+                string? source,
+                DateTimeOffset? from,
+                DateTimeOffset? to) =>
+            model.AlertsReport(severity, state, category, source, from, to))
+            .WithName("GetAlertsReport");
+
+        api.MapGet("/reports/alerts.csv", (
+                ReadModel model,
+                AlertSeverity? severity,
+                AlertLifecycleState? state,
+                string? category,
+                string? source,
+                DateTimeOffset? from,
+                DateTimeOffset? to) =>
+        {
+            var report = model.AlertsReport(severity, state, category, source, from, to);
+            var csv = AlertsReportCsv.Write(report.Rows);
+            var fileName = $"alerts-{report.GeneratedAtUtc:yyyyMMdd-HHmm}.csv";
+
+            return Results.File(CsvWriter.ToUtf8WithBom(csv), "text/csv", fileName);
+        })
+            .WithName("GetAlertsReportCsv");
+
+        // Same read-for-any-signed-in-user rule. M5.3: every live datastore,
+        // worst fill date first, and the estimate the datastore's own page
+        // already shows -- reused through ReadModel.CapacityReport's cache,
+        // not recomputed here.
+        api.MapGet("/reports/capacity", (ReadModel model) => model.CapacityReport())
+            .WithName("GetCapacityReport");
+
+        api.MapGet("/reports/capacity.csv", (ReadModel model) =>
+        {
+            var report = model.CapacityReport();
+            var csv = CapacityReportCsv.Write(report.Rows);
+            var fileName = $"capacity-{report.GeneratedAtUtc:yyyyMMdd-HHmm}.csv";
+
+            return Results.File(CsvWriter.ToUtf8WithBom(csv), "text/csv", fileName);
+        })
+            .WithName("GetCapacityReportCsv");
+
+        // Same read-for-any-signed-in-user rule. M8.10: one row per cluster,
+        // its HA scorecard (M8.1) and DRS compliance (M8.3) findings beside
+        // the storage-path redundancy of the hosts under it, plus the N+1
+        // placeholder -- see ReadModel.ContinuityReport.
+        api.MapGet("/reports/continuity", (ReadModel model) => model.ContinuityReport())
+            .WithName("GetContinuityReport");
+
+        api.MapGet("/reports/continuity.csv", (ReadModel model) =>
+        {
+            var report = model.ContinuityReport();
+            var csv = ContinuityReportCsv.Write(report.Rows);
+            var fileName = $"continuity-{report.GeneratedAtUtc:yyyyMMdd-HHmm}.csv";
+
+            return Results.File(CsvWriter.ToUtf8WithBom(csv), "text/csv", fileName);
+        })
+            .WithName("GetContinuityReportCsv");
 
         // --- operator commands ---------------------------------------------
         //

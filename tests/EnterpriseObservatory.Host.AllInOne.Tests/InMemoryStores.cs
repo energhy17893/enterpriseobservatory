@@ -2,6 +2,7 @@ using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
+using EnterpriseObservatory.Application.Reporting;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -752,6 +753,129 @@ internal sealed class InMemoryComplianceStore : IComplianceStore
 
             _exceptions[index] = _exceptions[index] with { RemovedBy = removedBy, RemovedAtUtc = removedAtUtc };
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Always empty: unlike <see cref="PostgresComplianceStore"/>, this double
+    /// does not record a transition when <see cref="Evaluate"/> changes a
+    /// verdict, so there is nothing to read back. The smoke tests assert on
+    /// the report's shape, not its history rows.
+    /// </summary>
+    public IReadOnlyList<ComplianceTransition> TransitionsSince(
+        DateTimeOffset sinceUtc, string? catalogueRelease = null) => [];
+}
+
+/// <summary>SMTP settings, held only for the life of the test.</summary>
+internal sealed class InMemorySmtpSettingsStore : ISmtpSettingsStore
+{
+    private readonly Lock _gate = new();
+    private SmtpSettings _settings = new();
+
+    public SmtpSettings Current
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _settings;
+            }
+        }
+    }
+
+    public void Save(SmtpSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        lock (_gate)
+        {
+            // Same "blank means keep it" rule the real store follows -- see
+            // PostgresSmtpSettingsStore.Save.
+            _settings = settings.Password.IsEmpty
+                ? settings with { Password = _settings.Password, PasswordSetUtc = _settings.PasswordSetUtc }
+                : settings with { PasswordSetUtc = DateTimeOffset.UtcNow };
+        }
+    }
+}
+
+/// <summary>Report subscriptions, held only for the life of the test.</summary>
+internal sealed class InMemoryReportSubscriptionStore : IReportSubscriptionStore
+{
+    private readonly Lock _gate = new();
+    private readonly Dictionary<string, ReportSubscription> _subscriptions = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<ReportSubscription> All
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _subscriptions.Values.OrderBy(s => s.CreatedUtc)];
+            }
+        }
+    }
+
+    public ReportSubscription? Find(string id)
+    {
+        lock (_gate)
+        {
+            return _subscriptions.GetValueOrDefault(id);
+        }
+    }
+
+    public bool Add(ReportSubscription subscription)
+    {
+        ArgumentNullException.ThrowIfNull(subscription);
+
+        lock (_gate)
+        {
+            return _subscriptions.TryAdd(subscription.Id, subscription);
+        }
+    }
+
+    public bool Update(ReportSubscription subscription)
+    {
+        ArgumentNullException.ThrowIfNull(subscription);
+
+        lock (_gate)
+        {
+            if (!_subscriptions.ContainsKey(subscription.Id))
+            {
+                return false;
+            }
+
+            _subscriptions[subscription.Id] = subscription;
+            return true;
+        }
+    }
+
+    public bool Remove(string id)
+    {
+        lock (_gate)
+        {
+            return _subscriptions.Remove(id);
+        }
+    }
+
+    public void MarkDispatched(string id, DateTimeOffset atUtc)
+    {
+        lock (_gate)
+        {
+            if (_subscriptions.TryGetValue(id, out var existing))
+            {
+                _subscriptions[id] = existing with { LastSentUtc = atUtc, LastError = null };
+            }
+        }
+    }
+
+    public void MarkFailed(string id, string detail)
+    {
+        lock (_gate)
+        {
+            if (_subscriptions.TryGetValue(id, out var existing))
+            {
+                _subscriptions[id] = existing with { LastError = detail };
+            }
         }
     }
 }
