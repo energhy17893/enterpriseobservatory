@@ -4,14 +4,17 @@ namespace EnterpriseObservatory.Application.Reporting;
 /// What a scheduled report contains.
 /// </summary>
 /// <remarks>
-/// Only <see cref="Alerts"/> exists yet. The roadmap's M5.2 (compliance) and
-/// M5.3 (capacity) add the rest of the vocabulary this enum will need; adding a
-/// member later is additive and does not touch a stored subscription, which
-/// keeps the kind it was created with.
+/// One member per report the product can print (M5.1–M5.3). Stored by name,
+/// so a new member is additive and does not touch a stored subscription,
+/// which keeps the kind it was created with.
 /// </remarks>
 public enum ReportKind
 {
     Alerts,
+
+    Compliance,
+
+    Capacity,
 }
 
 /// <summary>How often a report goes out.</summary>

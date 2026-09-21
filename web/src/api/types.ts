@@ -709,7 +709,7 @@ export interface MailTestView {
 
 export type ReportFrequency = 'Daily' | 'Weekly'
 
-export type ReportKind = 'Alerts'
+export type ReportKind = 'Alerts' | 'Compliance' | 'Capacity'
 
 export interface ReportSubscriptionView {
   id: string
