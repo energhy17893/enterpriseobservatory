@@ -300,6 +300,10 @@ public class EventAlertsTests
             Event(2, "esx.problem.net.vmnic.linkstate.flapping", T0.AddHours(-1), LinkDown("vmnic1"), Esx01)));
 
         Assert.Contains("stays open for 24 hours", alert.Description, StringComparison.Ordinal);
+
+        // The report older than the time to live is not counted either: "the
+        // latest of 2 reports in the last 24 hours" would be a false sentence.
+        Assert.DoesNotContain("latest of", alert.Description, StringComparison.Ordinal);
     }
 
     [Fact]
