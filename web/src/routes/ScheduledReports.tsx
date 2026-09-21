@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { ago } from '@/lib/ui'
-import type { ReportSubscriptionCommand, ReportSubscriptionView } from '@/api/types'
+import type { AuthStateView, ReportSubscriptionCommand, ReportSubscriptionView } from '@/api/types'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -24,8 +24,13 @@ const BLANK: ReportSubscriptionCommand = {
  * weekly alert digest" is closer to declaring a maintenance window than it is
  * to reconfiguring the relay every subscriber sends through, which stays on
  * the Email screen. See ReportsApi's remarks.
+ *
+ * Editing and removal are further narrowed than the screen itself: any
+ * Operator may add a subscription, but only its creator or an Administrator
+ * may change or remove one -- architecture review 3. The buttons here just
+ * reflect that; the server enforces it regardless of what this screen shows.
  */
-export function ScheduledReports() {
+export function ScheduledReports({ identity }: { identity: AuthStateView }) {
   const [editing, setEditing] = useState<ReportSubscriptionCommand | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
 
@@ -85,7 +90,14 @@ export function ScheduledReports() {
         </Empty>
       ) : (
         data.map((subscription) => (
-          <Row key={subscription.id} subscription={subscription} onEdit={() => edit(subscription)} />
+          <Row
+            key={subscription.id}
+            subscription={subscription}
+            canChange={
+              subscription.createdBy === identity.username || identity.role === 'Administrator'
+            }
+            onEdit={() => edit(subscription)}
+          />
         ))
       )}
     </div>
@@ -94,9 +106,11 @@ export function ScheduledReports() {
 
 function Row({
   subscription,
+  canChange,
   onEdit,
 }: {
   subscription: ReportSubscriptionView
+  canChange: boolean
   onEdit: () => void
 }) {
   const queryClient = useQueryClient()
@@ -129,23 +143,38 @@ function Row({
             {subscription.lastSentUtc !== null && ` · last attempt ${ago(subscription.lastSentUtc)}`}
           </Identifier>
 
+          <div className="mt-1 text-xs text-muted-foreground">
+            Created by {subscription.createdBy}
+            {subscription.lastModifiedBy !== null &&
+              subscription.lastModifiedUtc !== null &&
+              ` · last edited by ${subscription.lastModifiedBy} ${ago(subscription.lastModifiedUtc)}`}
+          </div>
+
           {subscription.lastError !== null && (
             <div className="mt-1 text-xs text-critical-on">{subscription.lastError}</div>
           )}
         </div>
 
         <div className="flex shrink-0 gap-2">
-          <button type="button" onClick={onEdit} className="rounded-md border border-border px-2 py-1 text-sm">
-            Edit
-          </button>
-          <button
-            type="button"
-            onClick={() => remove.mutate()}
-            disabled={remove.isPending}
-            className="rounded-md border border-border px-2 py-1 text-sm"
-          >
-            Remove
-          </button>
+          {canChange ? (
+            <>
+              <button type="button" onClick={onEdit} className="rounded-md border border-border px-2 py-1 text-sm">
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => remove.mutate()}
+                disabled={remove.isPending}
+                className="rounded-md border border-border px-2 py-1 text-sm"
+              >
+                Remove
+              </button>
+            </>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Only {subscription.createdBy} or an Administrator can change this.
+            </span>
+          )}
         </div>
       </div>
     </Card>
@@ -204,6 +233,7 @@ function Editor({
             required
             className="w-full rounded-md border border-border bg-page px-2 py-1"
           />
+          <span className="mt-0.5 block text-xs text-muted-foreground">At most 20 recipients.</span>
         </label>
 
         <div className="grid gap-3 sm:grid-cols-3">

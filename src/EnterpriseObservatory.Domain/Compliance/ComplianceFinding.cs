@@ -260,3 +260,41 @@ public sealed record ComplianceTransition
     /// <summary>When the evaluation that saw the change ran.</summary>
     public required DateTimeOffset AtUtc { get; init; }
 }
+
+/// <summary>
+/// A page of <see cref="ComplianceTransition"/> rows, as the compliance
+/// store's history query returns them.
+/// </summary>
+/// <remarks>
+/// The history table has no upper bound in principle -- a report spanning a
+/// wide-enough period, or a control on a large-enough estate, can ask for
+/// more rows than a single response should carry. A cap makes that request
+/// answerable rather than a query the database or the browser rendering the
+/// report chokes on; <see cref="Truncated"/> is what tells the reader the
+/// answer is a prefix, not the whole period, rather than letting a silently
+/// short list read as a quiet period.
+/// </remarks>
+public sealed record ComplianceTransitionsPage
+{
+    /// <summary>The largest number of rows a single query returns.</summary>
+    /// <remarks>
+    /// Fifty thousand: generous for the reference estate's actual volume --
+    /// a few thousand transitions a year across a few hundred hosts -- and
+    /// still small enough that a query, a CSV and a browser tab holding it
+    /// all stay fast. A report that needs more than this in one period is a
+    /// report that should narrow its scope with <c>control</c> or
+    /// <c>entity</c>, not one this cap should quietly grow to fit.
+    /// </remarks>
+    public const int MaxRows = 50_000;
+
+    public required IReadOnlyList<ComplianceTransition> Transitions { get; init; }
+
+    /// <summary>Whether more rows matched than <see cref="MaxRows"/> allowed through.</summary>
+    public required bool Truncated { get; init; }
+
+    public static readonly ComplianceTransitionsPage Empty = new()
+    {
+        Transitions = [],
+        Truncated = false,
+    };
+}

@@ -259,38 +259,69 @@ public sealed class PostgresComplianceStore : IComplianceStore
         });
 
     /// <summary>
-    /// Every verdict change at or after <paramref name="sinceUtc"/>, across
-    /// every finding.
+    /// Every verdict change in [<paramref name="sinceUtc"/>, <paramref name="toUtc"/>],
+    /// across every finding, up to <see cref="ComplianceTransitionsPage.MaxRows"/>.
     /// </summary>
     /// <remarks>
     /// Unlike <see cref="Transitions"/>, this is one finding's history: a
     /// report reads a whole estate's history for a period, and asking for it
     /// one finding at a time would be one round trip per finding. The index
-    /// on <c>at_utc</c> is what makes the scan by date cheap.
+    /// on <c>at_utc</c> is what makes the scan by date cheap. Every filter a
+    /// caller can name -- release, control, entity, and now the end of the
+    /// window and the row cap -- is applied in SQL rather than after the
+    /// read: a report scoped to one control on one entity should cost a
+    /// narrow index lookup, not a full-period scan filtered in memory.
     /// </remarks>
-    public IReadOnlyList<ComplianceTransition> TransitionsSince(
-        DateTimeOffset sinceUtc, string? catalogueRelease = null) =>
+    public ComplianceTransitionsPage TransitionsSince(
+        DateTimeOffset sinceUtc,
+        DateTimeOffset? toUtc = null,
+        string? catalogueRelease = null,
+        string? controlId = null,
+        EntityId? entity = null) =>
         _database.Read(connection =>
         {
-            // Built conditionally rather than with "@release IS NULL OR ..."
-            // -- binding DBNull for an omitted release leaves Npgsql to guess
-            // its type against a text column, and a parameter Postgres cannot
-            // type is a query that never runs rather than one that runs wide.
+            // Built conditionally rather than with "@x IS NULL OR ..." --
+            // binding DBNull for an omitted filter leaves Npgsql to guess its
+            // type against the column, and a parameter Postgres cannot type
+            // is a query that never runs rather than one that runs wide.
             var releaseFilter = catalogueRelease is null ? string.Empty : "AND catalogue_release = @release";
+            var controlFilter = controlId is null ? string.Empty : "AND control_id = @control";
+            var entityFilter = entity is null ? string.Empty : "AND entity_id = @entity";
+            var toFilter = toUtc is null ? string.Empty : "AND at_utc <= @to";
 
+            // One row past the cap, not the cap itself: whether the query
+            // matched more than MaxRows is otherwise a second COUNT(*) query
+            // over the same predicate.
             using var command = Command(connection, $"""
                 SELECT catalogue_release, control_id, entity_id, from_verdict, to_verdict, observed,
                        evidence_utc, at_utc
                 FROM compliance_transition
-                WHERE at_utc >= @since {releaseFilter}
-                ORDER BY at_utc, id;
+                WHERE at_utc >= @since {toFilter} {releaseFilter} {controlFilter} {entityFilter}
+                ORDER BY at_utc, id
+                LIMIT @limit;
                 """);
 
             command.BindTime("@since", sinceUtc);
+            command.Bind("@limit", ComplianceTransitionsPage.MaxRows + 1);
+
+            if (toUtc is not null)
+            {
+                command.BindTime("@to", toUtc.Value);
+            }
 
             if (catalogueRelease is not null)
             {
                 command.Bind("@release", catalogueRelease);
+            }
+
+            if (controlId is not null)
+            {
+                command.Bind("@control", controlId);
+            }
+
+            if (entity is not null)
+            {
+                command.Bind("@entity", entity.Value.Value);
             }
 
             using var reader = command.ExecuteReader();
@@ -311,7 +342,14 @@ public sealed class PostgresComplianceStore : IComplianceStore
                 });
             }
 
-            return transitions;
+            var truncated = transitions.Count > ComplianceTransitionsPage.MaxRows;
+
+            if (truncated)
+            {
+                transitions.RemoveAt(transitions.Count - 1);
+            }
+
+            return new ComplianceTransitionsPage { Transitions = transitions, Truncated = truncated };
         });
 
     private static bool InRelease(ComplianceFinding finding, string release) =>

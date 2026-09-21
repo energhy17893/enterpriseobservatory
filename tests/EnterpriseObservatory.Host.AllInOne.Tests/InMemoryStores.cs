@@ -760,10 +760,16 @@ internal sealed class InMemoryComplianceStore : IComplianceStore
     /// Always empty: unlike <see cref="PostgresComplianceStore"/>, this double
     /// does not record a transition when <see cref="Evaluate"/> changes a
     /// verdict, so there is nothing to read back. The smoke tests assert on
-    /// the report's shape, not its history rows.
+    /// the report's shape, not its history rows. Takes the same filters and
+    /// applies the same cap as the real store even so, so a caller cannot
+    /// tell the two apart by signature.
     /// </summary>
-    public IReadOnlyList<ComplianceTransition> TransitionsSince(
-        DateTimeOffset sinceUtc, string? catalogueRelease = null) => [];
+    public ComplianceTransitionsPage TransitionsSince(
+        DateTimeOffset sinceUtc,
+        DateTimeOffset? toUtc = null,
+        string? catalogueRelease = null,
+        string? controlId = null,
+        EntityId? entity = null) => ComplianceTransitionsPage.Empty;
 }
 
 /// <summary>SMTP settings, held only for the life of the test.</summary>
