@@ -36,6 +36,7 @@ public static class AnalysisRules
         new StoragePathRedundancyRule(),
         new RemoteLoggingRule(),
         new EventAlertsRule(),
+        new DatastoreTimeToFullRule(),
         new CollectionCoverageRule(),
     ];
 
@@ -291,6 +292,47 @@ public sealed class EventAlertsRule : IAnalysisRule
 
         return EventAlerts.Evaluate(
             EventAlerts.Read(context.Events, context.NowUtc, policy), context.NowUtc, policy);
+    }
+}
+
+/// <summary>Adapts <see cref="DatastoreTimeToFull"/>.</summary>
+/// <remarks>
+/// <para>
+/// On the inventory rhythm because capacity is read on it: the cycle has just
+/// written this read's figures, and the fill date cannot move between reads.
+/// The datastores are the ones this cycle carried a capacity reading for, and
+/// the capacity is this read's, not a stored copy.
+/// </para>
+/// <para>
+/// One history query per datastore, and only for those. The series reader
+/// answers one series per call, so there is nothing to batch into.
+/// </para>
+/// </remarks>
+public sealed class DatastoreTimeToFullRule : IAnalysisRule
+{
+    public string RuleId => DatastoreTimeToFull.RuleId;
+
+    public RuleScope Scope => RuleScope.Inventory;
+
+    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        var policy = context.Options.DatastoreTimeToFull;
+        var readings = DatastoreTimeToFull.CurrentReadings(
+            context.Snapshots.SelectMany(s => s.Observations), context.Graph);
+
+        return DatastoreTimeToFull.Evaluate(
+            [
+                .. readings.Select(d => (d, DatastoreTimeToFull.Read(
+                    context.Series,
+                    d.Datastore,
+                    d.CapacityBytes,
+                    context.NowUtc,
+                    policy,
+                    context.Options.Retention))),
+            ],
+            policy);
     }
 }
 

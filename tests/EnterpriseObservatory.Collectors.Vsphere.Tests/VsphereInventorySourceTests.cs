@@ -1042,49 +1042,24 @@ public class VsphereInventorySourceTests
     // --- thin overcommit --------------------------------------------------
 
     [Fact]
-    public async Task A_datastore_that_has_promised_more_than_it_has_left_is_reported()
+    public async Task Over_commit_is_left_to_the_rule_that_can_date_it_and_its_inputs_are_kept()
     {
-        // Counter map §4: the only measure that warns long before a datastore
-        // fills. This volume is 20% full, so the fullness alert says nothing
-        // and will say nothing for months — and it is already certain to fill
-        // if the thin disks merely grow into what they were given.
+        // Roadmap M4.4. The finding needs a fill date, the date needs history,
+        // and a collector may not read history, so the collector no longer
+        // raises it (DatastoreTimeToFull does; its tests hold the semantics
+        // that used to live here). What the collector owes the rule is the
+        // three readings it is decided from.
         var snapshot = await Read(Payload(datastores:
         [
             Store("vmfs01", capacity: 100 * Gb, free: 80 * Gb) with { UncommittedBytes = 300 * Gb },
         ]));
 
-        var alert = Assert.Single(snapshot.Alerts, a => a.Title == "Datastore over-committed");
-        Assert.Equal(AlertSeverity.Warning, alert.Severity);
-        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore nearly full");
-    }
-
-    [Fact]
-    public async Task Promises_within_the_remaining_space_are_not_an_alert()
-    {
-        // Thin provisioning is a technique, not a fault. Alerting on its mere
-        // presence would fire on every correctly run estate in existence, and
-        // the comparison that means something is against what remains rather
-        // than against capacity.
-        var snapshot = await Read(Payload(datastores:
-        [
-            Store("vmfs01", capacity: 100 * Gb, free: 80 * Gb) with { UncommittedBytes = 40 * Gb },
-        ]));
-
         Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore over-committed");
-    }
 
-    [Fact]
-    public async Task A_datastore_whose_uncommitted_space_was_not_read_is_not_called_over_committed()
-    {
-        // Absent on a datastore with no thin provisioning, and absent when the
-        // account could not read it. Neither is a promise we may assert, and
-        // the alert must not fire on the strength of a null.
-        var snapshot = await Read(Payload(datastores:
-        [
-            Store("vmfs01", capacity: 100 * Gb, free: 80 * Gb),
-        ]));
-
-        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "Datastore over-committed");
+        var counters = snapshot.Observations.Select(o => o.Value.CounterName).ToList();
+        Assert.Contains(CapacityCounters.DatastoreCapacity, counters);
+        Assert.Contains(CapacityCounters.DatastoreFree, counters);
+        Assert.Contains(CapacityCounters.DatastoreUncommitted, counters);
     }
 
     // --- snapshots --------------------------------------------------------

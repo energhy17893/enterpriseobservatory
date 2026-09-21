@@ -280,8 +280,10 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 AddFullnessAlert(datastore, fullness, id(datastore.MoRef), InstanceId, alerts);
             }
 
-            AddOvercommitAlert(datastore, id(datastore.MoRef), InstanceId, alerts);
-
+            // The over-commit finding is not raised here any more. It needs a
+            // date, the date needs history, and a collector may not read
+            // history; the rule that estimates the date raises it from the
+            // readings below (DatastoreTimeToFull, roadmap M4.4).
             observations.AddRange(CapacityReadings(datastore, id(datastore.MoRef), now, InstanceId));
         }
     }
@@ -292,7 +294,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
     /// <remarks>
     /// <para>
     /// No extra call to vCenter. The three properties are the ones the
-    /// fullness and over-commit alerts above are computed from; until now they
+    /// fullness alert above is computed from; until now they
     /// were used for those and dropped, so the product could say a volume was
     /// 95% full and not how fast it got there. The <c>disk.*.latest</c>
     /// performance counters would carry the same numbers at the cost of a
@@ -846,61 +848,6 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
     /// it shows the threshold.
     /// </remarks>
     private static readonly TimeSpan StaleSnapshotCritical = TimeSpan.FromDays(14);
-
-    /// <summary>
-    /// Reports a datastore that has promised more than it has left.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Thin provisioning means a disk occupies what it uses rather than what
-    /// it was given, and the difference is a promise. Counter map §4 calls
-    /// <c>summary.uncommitted</c> the only measure that warns long before a
-    /// datastore fills, and the comparison worth making is not against
-    /// capacity but against what remains: once the outstanding promises exceed
-    /// the free space, the volume fills if the machines merely do what they
-    /// were provisioned to do.
-    /// </para>
-    /// <para>
-    /// Warning only, with no critical tier, and that is deliberate. The crisis
-    /// tier already exists — it is
-    /// <see cref="AddFullnessAlert"/> at 95% — and this one's whole purpose is
-    /// to arrive weeks earlier, while somebody can still buy disk or move a
-    /// machine. Two alerts competing to be the emergency would make both of
-    /// them noise.
-    /// </para>
-    /// </remarks>
-    private static void AddOvercommitAlert(
-        VsphereDatastore datastore,
-        EntityId entity,
-        string instanceId,
-        List<AlertDefinition> alerts)
-    {
-        // Both must have been read. An unreadable figure is not a small one,
-        // and a datastore with no thin disks legitimately reports nothing here.
-        if (datastore is not { UncommittedBytes: > 0 and { } promised, FreeSpaceBytes: >= 0 and { } free } ||
-            promised <= free)
-        {
-            return;
-        }
-
-        alerts.Add(new AlertDefinition
-        {
-            Fingerprint = AlertFingerprint.Create(
-                instanceId, "Datastore over-committed", "Capacity",
-                datastore.Name, "datastore-overcommitted"),
-            Severity = AlertSeverity.Warning,
-            Title = "Datastore over-committed",
-            Description = string.Create(
-                CultureInfo.InvariantCulture,
-                $"'{datastore.Name}' has promised {Gigabytes(promised):0.#} GB to thin disks " +
-                $"that have not claimed it yet, and has {Gigabytes(free):0.#} GB free. If those " +
-                $"disks grow into what they were given, the datastore fills — this says so while " +
-                $"there is still time to act, rather than at 95% when there is not."),
-            Category = "Capacity",
-            Source = instanceId,
-            Entity = entity,
-        });
-    }
 
     private List<IdentityMark> MarksFor(VsphereHost host)
     {
