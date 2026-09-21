@@ -61,7 +61,8 @@ public class ReportDispatchServiceTests
 
     private sealed class FakeRenderer : IReportRenderer
     {
-        public Task<ReportContent> RenderAsync(ReportKind kind, CancellationToken cancellationToken) =>
+        public Task<ReportContent> RenderAsync(
+            ReportKind kind, ReportFrequency frequency, CancellationToken cancellationToken) =>
             Task.FromResult(new ReportContent { Subject = "s", BodyText = "b" });
     }
 

@@ -113,7 +113,8 @@ public sealed class ReportDispatchService(
 
         try
         {
-            content = await _renderer.RenderAsync(subscription.Kind, cancellationToken)
+            content = await _renderer
+                .RenderAsync(subscription.Kind, subscription.Schedule.Frequency, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

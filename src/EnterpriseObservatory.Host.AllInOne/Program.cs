@@ -3,6 +3,7 @@ using EnterpriseObservatory.Api;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Api.Projections;
+using EnterpriseObservatory.Api.Reports;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
@@ -265,13 +266,14 @@ else
 
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
 
-// Scheduled email reports (roadmap M5.4). IReportRenderer is a stub here --
-// the placeholder text body -- until M5.1's CSV/PDF export replaces it; the
-// scheduler and delivery pipe around it are otherwise the finished feature.
+// Scheduled email reports (roadmap M5.4). IReportRenderer renders each
+// ReportKind by reusing the export that kind already has -- M5.1's CSV for
+// alerts -- so a mailed report never disagrees with what its download link
+// produces. See EnterpriseObservatory.Api.Reports.ReportRenderer.
 builder.Services.AddSingleton<ISmtpSettingsStore, PostgresSmtpSettingsStore>();
 builder.Services.AddSingleton<IReportSubscriptionStore, PostgresReportSubscriptionStore>();
 builder.Services.AddSingleton<IMailSender, MailKitMailSender>();
-builder.Services.AddSingleton<IReportRenderer, PlaceholderReportRenderer>();
+builder.Services.AddSingleton<IReportRenderer, ReportRenderer>();
 builder.Services.AddSingleton<ReportDispatchService>();
 builder.Services.AddHostedService<ReportSchedulerWorker>();
 
