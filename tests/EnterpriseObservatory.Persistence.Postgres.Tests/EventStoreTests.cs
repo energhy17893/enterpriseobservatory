@@ -209,4 +209,29 @@ public class EventStoreTests : IDisposable
         Assert.Equal([9L], store.Recent(10, "vc-2").Select(e => e.Key));
         Assert.Single(store.Recent(1));
     }
+
+    [SkippableFact]
+    public void Of_types_reads_by_type_and_age_across_sources_ignoring_case()
+    {
+        RequireDatabase();
+
+        var store = new PostgresEventStore(_live.Database);
+
+        store.Record(
+            "vc-1",
+            [
+                Event(1, T0.AddHours(-30)),
+                Event(2, T0.AddMinutes(-5)),
+                Event(3, T0.AddMinutes(-4)) with { TypeId = "VmPoweredOffEvent" },
+            ],
+            complete: true,
+            T0);
+        store.Record("vc-2", [Event(9, T0.AddMinutes(-3))], complete: true, T0);
+
+        var found = store.OfTypes(["ESX.PROBLEM.STORAGE.CONNECTIVITY.LOST"], T0.AddDays(-1));
+
+        Assert.Equal([9L, 2L], found.Select(e => e.Key));
+        Assert.Equal("vc-2", found[0].SourceInstanceId);
+        Assert.Empty(store.OfTypes([], T0.AddDays(-1)));
+    }
 }

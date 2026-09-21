@@ -617,6 +617,23 @@ internal sealed class InMemoryEventStore : IEventStore, IEventHistory
         }
     }
 
+    public IReadOnlyList<SourceEvent> OfTypes(IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc)
+    {
+        var wanted = new HashSet<string>(typeIds, StringComparer.OrdinalIgnoreCase);
+
+        lock (_gate)
+        {
+            return
+            [
+                .. _events.Values
+                    .Where(e => e.CreatedAtUtc >= createdSinceUtc && wanted.Contains(e.TypeId))
+                    .OrderByDescending(e => e.CreatedAtUtc)
+                    .ThenByDescending(e => e.Key)
+                    .Take(EventCollectionPipeline.MaxMatching),
+            ];
+        }
+    }
+
     public DateTimeOffset? EarliestHeld(string sourceInstanceId)
     {
         lock (_gate)

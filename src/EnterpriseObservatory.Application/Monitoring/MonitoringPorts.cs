@@ -274,4 +274,7 @@ public sealed record MonitoringOptions
     public SeriesRetentionPolicy Retention { get; init; } = SeriesRetentionPolicy.Default;
 
     public static MonitoringOptions Default { get; } = new();
+
+    /// <summary>Which vCenter events become alerts, and how long each is held open.</summary>
+    public Analysis.EventAlertPolicy EventAlerts { get; init; } = Analysis.EventAlertPolicy.Default;
 }
