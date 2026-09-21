@@ -152,11 +152,30 @@ public class ClusterHighAvailabilityTests
 
     // --- heartbeat datastores ---------------------------------------------------
 
+    private static readonly (string, string) UserSelected =
+        (Rules.HeartbeatDatastoreCandidatePolicySetting, "userSelectedDs");
+
+    [Theory]
+    [InlineData("allFeasibleDs")]
+    [InlineData("allFeasibleDsWithUserPreference")]
+    public void A_short_preferred_list_is_silent_when_ha_picks_its_own(string policy)
+    {
+        Assert.Empty(ClusterHighAvailability.Evaluate(
+            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "0"), (Rules.HeartbeatDatastoreCandidatePolicySetting, policy)])]));
+    }
+
+    [Fact]
+    public void An_unread_candidate_policy_is_silent()
+    {
+        Assert.Empty(ClusterHighAvailability.Evaluate(
+            [Cluster(settings: (Rules.HeartbeatDatastoreCountSetting, "0"))]));
+    }
+
     [Fact]
     public void One_heartbeat_datastore_is_named()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.HeartbeatDatastoreCountSetting, "1"))]));
+            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "1"), UserSelected])]));
 
         Assert.Equal("Cluster has too few HA heartbeat datastores", alert.Title);
         Assert.Contains("1 heartbeat datastore(s)", alert.Description);
@@ -166,21 +185,21 @@ public class ClusterHighAvailabilityTests
     public void Zero_heartbeat_datastores_is_named()
     {
         Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.HeartbeatDatastoreCountSetting, "0"))]));
+            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "0"), UserSelected])]));
     }
 
     [Fact]
     public void Two_heartbeat_datastores_is_silent()
     {
         Assert.Empty(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.HeartbeatDatastoreCountSetting, "2"))]));
+            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "2"), UserSelected])]));
     }
 
     [Fact]
     public void The_minimum_is_policy_rather_than_compiled_in()
     {
         var alert = Assert.Single(ClusterHighAvailability.Evaluate(
-            [Cluster(settings: (Rules.HeartbeatDatastoreCountSetting, "2"))],
+            [Cluster(settings: [(Rules.HeartbeatDatastoreCountSetting, "2"), UserSelected])],
             new ClusterHighAvailabilityPolicy { MinimumHeartbeatDatastores = 3 }));
 
         Assert.Equal("Cluster has too few HA heartbeat datastores", alert.Title);
@@ -256,6 +275,7 @@ public class ClusterHighAvailabilityTests
             [
                 (Rules.AdmissionControlEnabledSetting, "false"),
                 (Rules.HeartbeatDatastoreCountSetting, "0"),
+                UserSelected,
                 (Rules.IgnoreRedundantNetworkWarningSetting, "true"),
             ]),
         ]);

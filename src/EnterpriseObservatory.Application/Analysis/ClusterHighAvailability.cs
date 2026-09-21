@@ -77,6 +77,18 @@ public sealed record ClusterHighAvailabilityPolicy
     public string HeartbeatDatastoreCountSetting { get; init; } = "dasConfig.heartbeatDatastore.count";
 
     /// <summary>
+    /// How HA chooses heartbeat datastores (<c>hBDatastoreCandidatePolicy</c>).
+    /// </summary>
+    /// <remarks>
+    /// <c>heartbeatDatastore</c> is the <b>user-preferred</b> list, not the set
+    /// HA actually uses. Under <c>allFeasibleDs</c> or
+    /// <c>allFeasibleDsWithUserPreference</c> (the default) HA picks two by
+    /// itself, so an empty or short preferred list is normal. Only under
+    /// <c>userSelectedDs</c> is the preferred list the whole story.
+    /// </remarks>
+    public string HeartbeatDatastoreCandidatePolicySetting { get; init; } = "dasConfig.hBDatastoreCandidatePolicy";
+
+    /// <summary>
     /// The advanced HA option that silences vCenter's own warning about a
     /// non-redundant management network.
     /// </summary>
@@ -236,7 +248,12 @@ public static class ClusterHighAvailability
     private static void TooFewHeartbeatDatastores(
         Entity cluster, ClusterHighAvailabilityPolicy rules, List<AlertDefinition> alerts)
     {
-        if (!cluster.Settings.TryGetValue(rules.HeartbeatDatastoreCountSetting, out var raw) ||
+        // Judged only when the operator chose the datastores by hand; otherwise
+        // HA picks its own and the preferred list says nothing about coverage.
+        // The in-use set (RetrieveDasAdvancedRuntimeInfo) is not read yet.
+        if (!cluster.Settings.TryGetValue(rules.HeartbeatDatastoreCandidatePolicySetting, out var policy) ||
+            !string.Equals(policy, "userSelectedDs", StringComparison.Ordinal) ||
+            !cluster.Settings.TryGetValue(rules.HeartbeatDatastoreCountSetting, out var raw) ||
             !int.TryParse(raw, out var count) ||
             count >= rules.MinimumHeartbeatDatastores)
         {
