@@ -18,3 +18,9 @@ using System.Diagnostics.CodeAnalysis;
     Justification = "Names mirror vim25 operation names exactly; see file header.",
     Scope = "member",
     Target = "~M:EnterpriseObservatory.Collectors.Vsphere.VsphereSoapRequests.ContinueRetrievePropertiesEx(System.String,System.String)~System.String")]
+[assembly: SuppressMessage(
+    "Naming",
+    "CA1711:Identifiers should not have incorrect suffix",
+    Justification = "Names mirror vim25 operation names exactly; see file header.",
+    Scope = "member",
+    Target = "~M:EnterpriseObservatory.Collectors.Vsphere.VsphereSoapRequests.CancelRetrievePropertiesEx(System.String,System.String)~System.String")]

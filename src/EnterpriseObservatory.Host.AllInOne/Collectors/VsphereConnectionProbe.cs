@@ -65,11 +65,31 @@ public sealed class VsphereConnectionProbe : IConnectionProbe, ISourceCapability
             Timeout = Timeout,
         };
 
-        var client = new VsphereClient(http, options);
+        using var client = new VsphereClient(http, options);
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(Timeout);
 
+        try
+        {
+            return await ProbeAsync(client, connection, deadline.Token, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            // A successful test is a session, and it used to be left on the
+            // vCenter: one per press of the button, until the idle timeout.
+            // A probe that never signed in sends nothing here.
+            await client.LogoutAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<ConnectionProbeResult> ProbeAsync(
+        VsphereClient client,
+        SourceConnection connection,
+        CancellationToken deadline,
+        CancellationToken cancellationToken)
+    {
         try
         {
             // Logs in and reads one advanced setting: the cheapest call that
@@ -77,7 +97,7 @@ public sealed class VsphereConnectionProbe : IConnectionProbe, ISourceCapability
             // resolves. Retrieving the counter catalogue would prove more and
             // cost hundreds of rows to say the same thing about the password.
             var maxQueryMetrics = await client
-                .GetMaxQueryMetricsAsync(deadline.Token)
+                .GetMaxQueryMetricsAsync(deadline)
                 .ConfigureAwait(false);
 
             return new ConnectionProbeResult
@@ -183,9 +203,18 @@ public sealed class VsphereConnectionProbe : IConnectionProbe, ISourceCapability
             BaseAddress = options.BaseAddress,
         };
 
-        var catalogue = await new VsphereClient(http, options)
-            .GetCounterCatalogAsync(cancellationToken)
-            .ConfigureAwait(false);
+        using var client = new VsphereClient(http, options);
+
+        IReadOnlyList<VsphereCounter> catalogue;
+        try
+        {
+            catalogue = await client.GetCounterCatalogAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // As above: reading the catalogue signs in, so it signs out.
+            await client.LogoutAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         return
         [

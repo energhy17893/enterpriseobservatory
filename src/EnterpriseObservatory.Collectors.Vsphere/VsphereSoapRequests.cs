@@ -310,6 +310,19 @@ public static class VsphereSoapRequests
             </vim25:ContinueRetrievePropertiesEx>
         """);
 
+    /// <summary>Releases a retrieval that will not be continued.</summary>
+    /// <remarks>
+    /// The server holds the rest of the result against the token until it is
+    /// either continued to the end or cancelled. A read cut off between pages
+    /// does neither unless it says so.
+    /// </remarks>
+    public static string CancelRetrievePropertiesEx(string propertyCollectorMoRef, string token) => Envelope($"""
+            <vim25:CancelRetrievePropertiesEx>
+              <vim25:_this type="PropertyCollector">{Escape(propertyCollectorMoRef)}</vim25:_this>
+              <vim25:token>{Escape(token)}</vim25:token>
+            </vim25:CancelRetrievePropertiesEx>
+        """);
+
     /// <summary>Creates a view over every object of the given types.</summary>
     public static string CreateContainerView(
         string viewManagerMoRef,

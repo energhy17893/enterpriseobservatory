@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Xml.Linq;
@@ -614,22 +614,50 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             : moRef;
     }
 
-    private async Task TryDestroyViewAsync(string viewMoRef, CancellationToken cancellationToken)
+    private Task TryDestroyViewAsync(string viewMoRef, CancellationToken cancellationToken) =>
+        TryCleanUpAsync(VsphereSoapRequests.DestroyView(viewMoRef), cancellationToken);
+
+    /// <summary>
+    /// Gives a server-side object back, including when the read that made it
+    /// was cut off.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not the caller's token alone. A read is cut off by cancelling its token
+    /// — that is how the runner's timeout arrives — and cleanup sent on a
+    /// cancelled token throws before it sends anything. The view was the one
+    /// place that did exactly that, so every inventory read that timed out
+    /// left a view behind, on a session the metric loop keeps alive and so
+    /// never recycles. A short grace is cheaper than the leak.
+    /// </para>
+    /// <para>
+    /// Never throws. The session ending collects whatever this could not, and
+    /// failing a read over a tidy-up would lose what the read did collect.
+    /// </para>
+    /// </remarks>
+    private async Task TryCleanUpAsync(string request, CancellationToken cancellationToken)
     {
         try
         {
-            await SendAsync(VsphereSoapRequests.DestroyView(viewMoRef), cancellationToken)
+            using var grace = new CancellationTokenSource(CleanupGrace);
+
+            await SendAsync(
+                request,
+                cancellationToken.IsCancellationRequested ? grace.Token : cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (VsphereApiException)
         {
-            // Cleanup only. The session ending will collect it anyway, and
-            // failing the whole read over a tidy-up would be worse.
         }
         catch (HttpRequestException)
         {
         }
+        catch (OperationCanceledException)
+        {
+        }
     }
+
+    private static readonly TimeSpan CleanupGrace = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// Walks every page of the property retrieval.
@@ -657,18 +685,37 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         var page = PropertyCollectorParser.ParsePage(response);
         all.AddRange(page.Objects);
 
-        while (page.HasMore)
+        // The token the server is still holding results against. Each page
+        // replaces it, and the last page clears it.
+        var open = page.ContinuationToken;
+
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            while (page.HasMore)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-            response = await SendAsync(
-                VsphereSoapRequests.ContinueRetrievePropertiesEx(
-                    content.PropertyCollector, page.ContinuationToken!),
-                cancellationToken).ConfigureAwait(false);
+                response = await SendAsync(
+                    VsphereSoapRequests.ContinueRetrievePropertiesEx(
+                        content.PropertyCollector, page.ContinuationToken!),
+                    cancellationToken).ConfigureAwait(false);
 
-            page = PropertyCollectorParser.ParsePage(response);
-            all.AddRange(page.Objects);
-            pages++;
+                page = PropertyCollectorParser.ParsePage(response);
+                open = page.ContinuationToken;
+                all.AddRange(page.Objects);
+                pages++;
+            }
+        }
+        finally
+        {
+            // Only reached with a token when the walk stopped early: cut off,
+            // faulted, or handed a page it could not read.
+            if (!string.IsNullOrEmpty(open))
+            {
+                await TryCleanUpAsync(
+                    VsphereSoapRequests.CancelRetrievePropertiesEx(content.PropertyCollector, open),
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
 
         return (all, pages);
@@ -1433,32 +1480,8 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         }
     }
 
-    private async Task TryDestroyCollectorAsync(string collector, CancellationToken cancellationToken)
-    {
-        try
-        {
-            // Not the caller's token alone: a read cancelled at shutdown still
-            // owes the server its collector back, and a short grace is cheaper
-            // than a leaked one.
-            using var grace = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-
-            await SendAsync(
-                VsphereSoapRequests.DestroyCollector(collector),
-                cancellationToken.IsCancellationRequested ? grace.Token : cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (VsphereApiException)
-        {
-            // Cleanup only. The session ending collects it anyway, and failing
-            // a read that succeeded over a tidy-up would lose its events.
-        }
-        catch (HttpRequestException)
-        {
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
+    private Task TryDestroyCollectorAsync(string collector, CancellationToken cancellationToken) =>
+        TryCleanUpAsync(VsphereSoapRequests.DestroyCollector(collector), cancellationToken);
 
     // --- session ----------------------------------------------------------
 
@@ -1704,6 +1727,56 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         }
 
         return handler;
+    }
+
+    /// <summary>
+    /// Ends this client's session on the vCenter, if it has one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Nothing called this. A session is a bounded thing on a vCenter and an
+    /// abandoned one stays until the idle timeout collects it, so every
+    /// restart, every edited or removed connection and every press of Test
+    /// left one behind.
+    /// </para>
+    /// <para>
+    /// Posted directly rather than through <c>SendAsync</c>: that path answers
+    /// an expired session by logging in again, and logging in so as to log out
+    /// is a directory login spent on nothing. A client that never logged in
+    /// sends nothing at all, for the same reason. Never throws — this runs
+    /// while a connection is being taken down, when there is nobody left to
+    /// tell and the idle timeout is still the backstop.
+    /// </para>
+    /// </remarks>
+    public async Task LogoutAsync(CancellationToken cancellationToken)
+    {
+        if (_disposed || !_loggedIn || _serviceContent is not { } content)
+        {
+            return;
+        }
+
+        // Cleared first, so a second caller asks nothing and a call racing
+        // this one logs in afresh rather than using a session being closed.
+        _loggedIn = false;
+
+        try
+        {
+            using var grace = new CancellationTokenSource(CleanupGrace);
+
+            await PostAsync(
+                VsphereSoapRequests.Logout(content.SessionManager),
+                cancellationToken.IsCancellationRequested ? grace.Token : cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (VsphereApiException)
+        {
+        }
+        catch (HttpRequestException)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     public void Dispose()
