@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Xml.Linq;
@@ -140,7 +140,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                 VsphereSoapRequests.QueryMaxQueryMetrics(settingManager), cancellationToken)
                 .ConfigureAwait(false);
 
-            var value = XDocument.Parse(response)
+            var value = VsphereXml.Parse(response)
                 .Descendants()
                 .FirstOrDefault(e => e.Name.LocalName == "value")?.Value;
 
@@ -217,7 +217,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         XDocument document;
         try
         {
-            document = XDocument.Parse(response);
+            document = VsphereXml.Parse(response);
         }
         catch (System.Xml.XmlException)
         {
@@ -581,7 +581,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                 content.ViewManager, content.RootFolder, [.. InventoryProperties.Keys]),
             cancellationToken).ConfigureAwait(false);
 
-        var moRef = XDocument.Parse(response)
+        var moRef = VsphereXml.Parse(response)
             .Descendants()
             .FirstOrDefault(e => e.Name.LocalName == "returnval")?.Value?.Trim();
 
@@ -1512,8 +1512,41 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         // intermediaries that insist on the header being present.
         request.Headers.TryAddWithoutValidation("SOAPAction", "\"urn:vim25/8.0.0.0\"");
 
-        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        // Headers first, body by hand: the default would buffer whatever the
+        // far end sends, up to 2 GB, before this code saw a byte of it.
+        // HttpClient.Timeout then stops at the headers, so it is applied here to
+        // the body as well: a reply that drips forever is as bad as a huge one.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_http.Timeout != Timeout.InfiniteTimeSpan)
+        {
+            deadline.CancelAfter(_http.Timeout);
+        }
+
+        string content;
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token)
+                .ConfigureAwait(false);
+            try
+            {
+                content = await ReadBoundedAsync(response.Content, deadline.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                response.Dispose();
+                throw;
+            }
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The shape HttpClient itself gives a timeout.
+            throw new TaskCanceledException(
+                $"The vCenter call did not complete within {_http.Timeout}.", new TimeoutException(ex.Message, ex));
+        }
+
+        using var owned = response;
 
         // vCenter returns faults as HTTP 500 with a SOAP fault body, so the
         // status code alone cannot tell "your credentials are wrong" from "the
@@ -1531,7 +1564,76 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                 $"vCenter returned {(int)response.StatusCode} {response.ReasonPhrase} with no SOAP fault.");
         }
 
+        // Checked after the status, so that a proxy's HTML error page is still
+        // reported by its status rather than by its <!DOCTYPE html>.
+        if (VsphereXml.DeclaresDocumentType(content))
+        {
+            throw new VsphereApiException(
+                "vCenter's reply declared a DTD. vim25 never sends one, so the reply was refused unread.");
+        }
+
         return content;
+    }
+
+    /// <summary>
+    /// The largest reply body read from vCenter, in bytes.
+    /// </summary>
+    /// <remarks>
+    /// Well above any real page (inventory and metric reads are paged far below
+    /// this) and far below what would exhaust the host if a hostile or
+    /// intercepted endpoint streamed without end.
+    /// </remarks>
+    public const long MaxResponseBytes = 64L * 1024 * 1024;
+
+    private static async Task<string> ReadBoundedAsync(HttpContent content, CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength is > MaxResponseBytes)
+        {
+            throw TooLarge();
+        }
+
+        using var buffer = new MemoryStream();
+        var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
+        {
+            var chunk = new byte[81920];
+            int read;
+            while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                if (buffer.Length + read > MaxResponseBytes)
+                {
+                    throw TooLarge();
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+        }
+
+        buffer.Position = 0;
+        var encoding = EncodingFor(content.Headers.ContentType?.CharSet);
+        using var reader = new StreamReader(
+            buffer, encoding, detectEncodingFromByteOrderMarks: true, bufferSize: -1, leaveOpen: true);
+        return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+
+        static VsphereApiException TooLarge() => new(
+            $"vCenter's reply exceeded {MaxResponseBytes / (1024 * 1024)} MB and was abandoned unread.");
+    }
+
+    private static Encoding EncodingFor(string? charSet)
+    {
+        if (string.IsNullOrWhiteSpace(charSet))
+        {
+            return Encoding.UTF8;
+        }
+
+        try
+        {
+            return Encoding.GetEncoding(charSet.Trim('"'));
+        }
+        catch (ArgumentException)
+        {
+            return Encoding.UTF8;
+        }
     }
 
     private static string Describe(VsphereSoapFault fault) =>
