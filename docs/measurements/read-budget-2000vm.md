@@ -78,6 +78,66 @@ Okunanlar:
   **2000 VM'in tamamı** okunmuyor. Listenin ortasında silinmiş tek VM de o
   batch'ten sonraki **1004 VM'i** düşürüyor.
 
-## Sonra
+## Sonra — paket A (T1.1–T1.4)
 
-*(Adım 2 bitince doldurulacak.)*
+Gözlem bütçesi artık aralıktan türüyor: 30 sn × 0,8 = **24 sn** (en az 10 sn);
+runner kaynağa **21,6 sn**'de (bütçenin onda biri önce) "dur" diyor, 24 sn'de
+beklemeyi bırakıyor. Envanter: 5 dk × 0,8 = **240 sn** (önce 25 sn). Harness aynı;
+kaynağın token'ı sanal saatte 21,6 sn'de iptal ediliyor.
+
+### Özet — sonra
+
+| | Önce | Sonra |
+|---|---|---|
+| 2000 VM, 250 ms, bir döngüde saklanan | **0** (okuma 42,5 sn, 25 sn'de atılıyor) | **996 VM** (83 `QueryPerf`, 21,8 sn) + kalan 1004 için `Timeout` kaydı |
+| 500 ms / 1000 ms | 0 / 0 | 480 / 216 VM |
+| Tüm 2000 VM'in örneklenme sıklığı | hiç | 250 ms'de **her 2 döngüde bir** (60 sn), 500 ms'de ~4 döngüde bir, 1000 ms'de ~9 döngüde bir — sonraki döngü kaldığı yerden devam ediyor |
+| Tam okuma sığıyor mu? | Hayır | **Hâlâ hayır** (42,5 sn > 24 sn). Sığan kadarı saklanıyor, eksik açıkça söyleniyor. |
+| Gizli limit 64, döngü 2 | 2 ret, 12 → 6 → 3 yeniden | **0 ret**, 3'ten başlıyor (oturum boyunca hatırlanıyor) |
+| `vm-1` silinmiş | tip düştü, **0 VM** | 1999 VM (tam okumada); probe +1 çağrı |
+| `vm-1000` silinmiş | 996 VM, sonrası düştü | 1999 VM; yalıtma +6 sorgu (167 → 173) |
+
+`QueryPerf` `maxSample` = 3 (20 sn'lik örnekler → 60 sn geçmiş) ve önceki
+örnekler backfill olarak yazılıyor (T0.4a). 250 ms'de her VM 60 sn'de bir
+okunduğu için **seride boşluk kalmıyor**; 500 ms ve üstünde kalıyor.
+
+### Senaryolar — sonra, 21,6 sn'de durdurulan
+
+| senaryo | gecikme | döngü | çağrı | QueryPerf | ret | sn | örnekli VM | hatalar |
+|---|---|---|---|---|---|---|---|---|
+| limit okunabilir (256) | 250 ms | 1 | 87 | 83 | 0 | 21,8 | 996 | Timeout:VirtualMachine |
+| limit okunabilir (256) | 250 ms | 2 | 87 | 83 | 0 | 21,8 | 996 | Timeout:VirtualMachine |
+| limit okunamıyor, gerçek 64 | 250 ms | 1 | 87 | 83 | 2 | 21,8 | 243 | Timeout, küçültüldü |
+| limit okunamıyor, gerçek 64 | 250 ms | 2 | 87 | 83 | **0** | 21,8 | 249 | Timeout, küçültüldü |
+| vm-1 silinmiş | 250 ms | 1 | 87 | 82 | 0 | 21,8 | 984 | Timeout; 1 VM artık yok |
+| vm-1000 silinmiş | 250 ms | 2 | 87 | 83 | 0 | 21,8 | 923 | Timeout; 1 VM artık yok |
+| limit okunabilir (256) | 500 ms | 1 | 44 | 40 | 0 | 22,0 | 480 | Timeout:VirtualMachine |
+| limit okunamıyor, gerçek 64 | 500 ms | 2 | 44 | 40 | 0 | 22,0 | 120 | Timeout, küçültüldü |
+| limit okunabilir (256) | 1000 ms | 1 | 22 | 18 | 0 | 22,0 | 216 | Timeout:VirtualMachine |
+| limit okunamıyor, gerçek 64 | 1000 ms | 2 | 22 | 18 | 0 | 22,0 | 54 | Timeout, küçültüldü |
+
+("sn" 21,6'yı biraz aşıyor: iptal, uçuştaki çağrının sonunda görülüyor ve o
+çağrı kayboluyor.)
+
+### Sınırsız okuma — sonra (tam okumanın maliyeti)
+
+| senaryo | 250 ms | 500 ms | 1000 ms | QueryPerf | örnekli VM |
+|---|---|---|---|---|---|
+| limit okunabilir (256) | 42,5 sn | 85 sn | 170 sn | 167 | 2000 |
+| limit okunamıyor, gerçek 64 — döngü 1 / 2 | 168 / 167,5 sn | 336 / 335 sn | 672 / 670 sn | 669 / 667 | 2000 |
+| vm-1 silinmiş | 42,8 sn | 85,5 sn | 171 sn | 167 | 1999 |
+| vm-1000 silinmiş | 44 sn | 88 sn | 176 sn | 173 | 1999 |
+
+### Planlayıcı için
+
+- **2000 VM tek oturumda sıralı sorguyla 30 sn'lik aralığa sığmıyor**; ancak
+  çağrı başına ≤ ~130 ms'de sığar (24 sn'lik bütçe). Paket A bunu "hiç veri
+  yok"tan "her VM 1–9 döngüde bir, eksik açıkça söyleniyor"a çevirdi. Tamamını
+  her döngüde okumak ya **paralel `QueryPerf`** (T2.3'ün aile başına tavanı
+  içinde), ya da limit gevşek yorumlanıyorsa **daha büyük batch** ister — ikisi
+  de ölçülmeden karar verilmemeli.
+- **İlk canlı ölçüm**: gerçek `QueryPerf` gidiş-dönüşü. Buradaki tüm saniyeler
+  onun doğrusal katı.
+- Envanter bütçesi 25 → 240 sn oldu; envanter okuması bu harness'ta
+  simüle edilmedi ve kısmi envanter **bilerek** eklenmedi (yarım envanter
+  varlıkların "kaybolması" demek, T0.1'in tersi).
