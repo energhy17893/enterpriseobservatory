@@ -272,7 +272,7 @@ public sealed record ObservationBatch
     public Action? Stored { get; init; }
 }
 
-/// <summary>Which of a source's two jobs a health record describes.</summary>
+/// <summary>Which of a source's jobs a health record describes.</summary>
 /// <remarks>
 /// One vCenter is read by two collectors on two schedules, and they fail
 /// independently: an account may be able to list inventory while the statistics
@@ -285,6 +285,14 @@ public enum CollectorRole
 {
     Inventory,
     Observation,
+
+    /// <summary>
+    /// The event stream (F1). Its own record for the same reason: a vCenter
+    /// whose event manager keeps failing while inventory answers is backed off
+    /// from, without inventory's successes resetting the count. Stored as
+    /// text, so no migration.
+    /// </summary>
+    Events,
 }
 
 /// <summary>How a source is behaving over time.</summary>

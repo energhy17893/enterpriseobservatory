@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Health;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 using EnterpriseObservatory.Domain.Compliance;
@@ -119,11 +120,22 @@ public sealed record EntityView
     /// Health as it should be reported, not as last observed.
     /// </summary>
     /// <remarks>
-    /// An entity we cannot currently see is Unknown whatever colour it was when
-    /// we last saw it. See <see cref="Entity.EffectiveHealth"/> and product
-    /// principle 1.
+    /// Derived from the entity's own alerts (ADR-0018, ADR-0026) by
+    /// <see cref="EntityHealth"/>: the most severe active alert, Unknown when
+    /// its only alerts are Unknown, the collector's value when it has none. An
+    /// entity we cannot currently see is Unknown whatever colour it was when we
+    /// last saw it (product principle 1). Compliance findings never affect it.
     /// </remarks>
     public required HealthState Health { get; init; }
+
+    /// <summary>What <see cref="Health"/> rests on — alerts, Unknown alerts, the collector, or nothing seen.</summary>
+    public HealthBasis HealthBasis { get; init; }
+
+    /// <summary>Whether the alerts setting the colour have all lost fresh evidence; the colour stands.</summary>
+    public bool HealthIsStale { get; init; }
+
+    /// <summary>Since when the colour has not been rechecked; null while fresh.</summary>
+    public DateTimeOffset? HealthStaleSinceUtc { get; init; }
 
     public required ObservationState ObservationState { get; init; }
 
@@ -442,7 +454,11 @@ public sealed record OverviewView
     /// </summary>
     public int UnknownAlerts { get; init; }
 
+    /// <summary>Active entities by their derived health (ADR-0018), every state present.</summary>
     public required IReadOnlyDictionary<string, int> EntitiesByHealth { get; init; }
+
+    /// <summary>Active entities whose colour rests only on stale alerts: counted in their colour, flagged here.</summary>
+    public int EntitiesWithStaleHealth { get; init; }
 
     public required int VanishedEntities { get; init; }
 
