@@ -263,6 +263,50 @@ gerekli). Yayım sonrası kontrol: 20 sn adımı başına `sample` sayısı (bu 
 değişen bir sunucu davranışını kaçırır. Bu davranışı ancak aynı sorguyu
 saniyeler arayla tekrarlayan `--follow` yakaladı.
 
+## 9. Dört saatlik kesinti: boşluk kaydı ve sessiz kaynağın alarmları
+
+**Ölçüldü, 22 Eylül 2026.** Makine kurumsal ağdan düştü; vCenter'ın adı
+(`ebebek-cls-vcenter.ebebek.local`) DNS'te çözülmedi. Toplama **07:58Z → 12:00Z**
+arası durdu (servis ayaktaydı, kaynak cevap vermiyordu). Ad döndükten sonra devre
+kesici 5 dakikalık beklemesini bitirip kendiliğinden toparlandı: envanter
+12:00:59Z Healthy, gözlem 12:03:26Z, ardışık hata 0.
+
+**H3'ün ilk gerçek testi — geçti.** `collection_gap` satır 1:
+
+| Alan | Değer |
+|---|---|
+| `gap_from` → `gap_to` | 07:58:00 → 11:59:24 |
+| `lost_before` | 11:02:24 (= yeniden bağlanma − 57 dk; host'un ~1 sa gerçek zamanlı saklaması) |
+| `filled_to` | 11:59:24 |
+| `state` | `unrecoverable` |
+| açıldı / kapandı | 12:01:24 / 12:02:10 |
+
+57 dakikalık kurtarılabilir pencere **46 saniyede** doldu: 11:02–11:59 arası her
+dakika ~26.484 satır (8.828 seri × 3), eksiksiz. 07:58–11:02 kurtarılamaz ve
+kayıt bunu açıkça söylüyor — sessizce silinmedi.
+
+**#63 tuttu.** Kesinti süresince hiçbir alarm çözülmedi. 29 `ConditionCleared`'ın
+tamamı 12:01–12:02Z'de, vCenter döndükten **sonra** ve hepsi
+`storage-latency-blind-spot`: yeniden bağlanmanın ilk turunda yük düşük, kural
+"ölçüm çalışıyor mu" diyemedi ve bugünkü kod çözdü; birkaçı aynı dakikada geri
+döndü. Z1'in 399 çalkalanmasıyla aynı desen — ADR-0026'nın "sakin tur =
+NotJudgeable = Unknown" kuralı bunu kapatır.
+
+**Bulunan açık:** host.log iki kez `[Raised] Warning Collector unreachable
+(metrics/inventory)` yazdı, ama `alert_instance`'ta böyle bir satır ve
+`alert_transition`'da geçiş **yok** — dört saat boyunca "toplayıcıya ulaşılamıyor"
+alarmı operatörün ekranında görünmedi, yalnızca logda. Düzeltme sırada (K2'den önce).
+
+**#76'nın canlı doğrulaması (aynı gün, yayım 12:05:32Z, ~4 sn kesinti):** yayımdan
+sonraki her `:00` slotu **8.828** örnek (12:06–12:11), dakika başına satır
+**26.663**'e döndü, yeni boşluk satırı açılmadı (kesinti canlı okumanın erişimi
+içinde). İstisnalar: 12:05:20 slotu 8.469 — yeniden başlatma anında eski kodun
+son okuması (hata henüz düzeltilmemişti); 12:07:40 slotu 8.826 (2 eksik).
+
+**Nasıl tekrar edilir:** `collection_gap` satırı ve dakika başına `sample` sayısı
+(bkz. §8'in sorguları); alarmlar için `alert_transition`'da kesinti penceresinde
+`reason` dağılımı.
+
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
 
 ### Gecikme 1 ms altında görünmüyor
