@@ -106,4 +106,46 @@ public abstract class ObservationContractTests<TFixture>
         var failure = Assert.Single(batch.Failures);
         Assert.StartsWith("VirtualMachine", failure.Target, StringComparison.Ordinal);
     }
+
+    // --- case: a value returned before it is filled is written exactly once --
+
+    /// <summary>
+    /// Same family as the T0.4 double-count fix: every sample is written
+    /// once — not zero times because the platform said "later", not twice
+    /// because it was asked again — and a figure combined across devices is
+    /// never written from some of them.
+    /// </summary>
+    [Fact]
+    public async Task A_sample_returned_with_placeholders_is_read_again_and_each_value_written_exactly_once()
+    {
+        var scenario = new TFixture().CreateWithLateValues();
+
+        var batches = new List<ObservationBatch>();
+        for (var cycle = 0; cycle < 3; cycle++)
+        {
+            var batch = await scenario.ReadCycleAsync(cycle);
+            batch.Stored?.Invoke();
+            batches.Add(batch);
+        }
+
+        var written = batches
+            .SelectMany(b => b.Observations.Concat(b.Backfill))
+            .Where(o => o.Value.CounterName != CollectorSelfMetrics.ClockSkewCounter)
+            .Select(o => (Series: $"{o.Value.CounterName}|{o.Value.Instance}", At: o.SampledAtUtc, o.Value.Raw))
+            .ToList();
+
+        // Read again once filled: every series of the late sample is there.
+        Assert.Equal(
+            scenario.SeriesPerSample.Order(StringComparer.Ordinal),
+            written.Where(w => w.At == scenario.LateSampleAt).Select(w => w.Series).Order(StringComparer.Ordinal));
+
+        // Written exactly once, that sample and every other.
+        Assert.All(written.GroupBy(w => (w.Series, w.At)), g => Assert.Single(g));
+
+        // The combined figure is over every device, never over the ones that
+        // happened to be in when first read.
+        Assert.Equal(
+            scenario.Combined.Value,
+            Assert.Single(written, w => w.At == scenario.LateSampleAt && w.Series == scenario.Combined.Series).Raw);
+    }
 }

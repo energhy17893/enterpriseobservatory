@@ -159,6 +159,7 @@ builder.Services.AddSingleton<IAlertStateStore, PostgresAlertStateStore>();
 builder.Services.AddSingleton<ICollectorHealthStore, PostgresCollectorHealthStore>();
 builder.Services.AddSingleton<ICoverageStore, PostgresCoverageStore>();
 builder.Services.AddSingleton<IObservationStore, PostgresObservationStore>();
+builder.Services.AddSingleton<ICollectionGapStore, PostgresCollectionGapStore>();
 builder.Services.AddSingleton<IEventStore, PostgresEventStore>();
 
 // The same store, read-only, for naming who took a stale snapshot (M2.4).
@@ -371,7 +372,8 @@ builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegi
     provider.GetRequiredService<IEntityGraphStore>(),
     provider.GetRequiredService<IClock>(),
     (instance, why) => HostLog.ConnectionNotPolled(
-        provider.GetRequiredService<ILogger<VsphereSourceRegistry>>(), instance, why)));
+        provider.GetRequiredService<ILogger<VsphereSourceRegistry>>(), instance, why),
+    provider.GetRequiredService<ICollectionGapStore>()));
 
 builder.Services.AddHostedService<MonitoringWorker>();
 builder.Services.AddHostedService<CompactionWorker>();

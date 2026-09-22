@@ -62,7 +62,57 @@ public interface IVsphereApi
         IReadOnlyList<VsphereCounter> counters,
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The vCenter's own clock (<c>ServiceInstance.CurrentTime</c>), or null
+    /// when this implementation cannot say.
+    /// </summary>
+    /// <remarks>
+    /// The end of every read window, and the reference the high-water marks
+    /// are compared against: sample times are the server's, so the local clock
+    /// being a few minutes out must not decide what is asked for. Null falls
+    /// back to the local clock — the default, for implementations that are not
+    /// talking to a server at all.
+    /// </remarks>
+    Task<DateTimeOffset?> GetServerTimeAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<DateTimeOffset?>(null);
+
+    /// <summary>Reads samples for a batch of entities, each over its own window.</summary>
+    /// <remarks>
+    /// <para>
+    /// Both ends always given, and no <c>maxSample</c>: with a window, vCenter
+    /// keeps the newest samples and drops the oldest when the two disagree
+    /// (docs/measurements/queryperf-sample-window.md, m1), so the window alone
+    /// decides what comes back. <c>startTime</c> is exclusive and
+    /// <c>endTime</c> inclusive (vim25 <c>PerfQuerySpec</c>), which is what
+    /// lets a high-water mark be the start without reading its own sample again.
+    /// </para>
+    /// <para>
+    /// The default ignores the windows and asks the older question, for
+    /// implementations written before windows existed.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="VsphereQuerySizeRefusedException">
+    /// When the server refuses the query for being too large.
+    /// </exception>
+    Task<IReadOnlyList<PerfEntitySamples>> QueryPerfWindowsAsync(
+        IReadOnlyList<PerfQueryTarget> targets,
+        VsphereEntityType entityType,
+        IReadOnlyList<VsphereCounter> counters,
+        CancellationToken cancellationToken) =>
+        QueryPerfAsync(
+            [.. targets.Select(t => t.MoRef)],
+            entityType,
+            counters,
+            targets.Count == 0 ? DateTimeOffset.UtcNow : targets.Max(t => t.EndInclusiveUtc),
+            cancellationToken);
 }
+
+/// <summary>One entity and the window to read it over.</summary>
+/// <param name="MoRef">The managed object.</param>
+/// <param name="StartExclusiveUtc">vim25 <c>startTime</c>: samples strictly after this.</param>
+/// <param name="EndInclusiveUtc">vim25 <c>endTime</c>: samples up to and including this.</param>
+public sealed record PerfQueryTarget(string MoRef, DateTimeOffset StartExclusiveUtc, DateTimeOffset EndInclusiveUtc);
 
 /// <summary>
 /// The server refused a performance query for asking too much at once.

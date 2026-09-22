@@ -295,4 +295,60 @@ public class VsphereSoapRequestsTests
         Assert.Contains("info.name", paths);
         Assert.DoesNotContain("info.systemName", paths);
     }
+
+    [Fact]
+    public void A_windowed_query_gives_each_entity_its_own_window_and_no_sample_cap()
+    {
+        var from1 = new DateTimeOffset(2026, 9, 22, 11, 58, 0, TimeSpan.Zero);
+        var from2 = new DateTimeOffset(2026, 9, 22, 11, 59, 20, TimeSpan.Zero);
+        var to = new DateTimeOffset(2026, 9, 22, 12, 0, 0, TimeSpan.Zero);
+
+        var soap = Parse(VsphereSoapRequests.QueryPerfWindows(
+            "PerfMgr",
+            [new PerfQueryTarget("vm-1", from1, to), new PerfQueryTarget("vm-2", from2, to)],
+            "VirtualMachine", [CpuReady], 20));
+
+        var specs = Named(soap, "querySpec").ToList();
+        Assert.Equal(2, specs.Count);
+
+        // Both ends always; maxSample never, because with a window it keeps
+        // the newest samples and drops the oldest (m1).
+        Assert.Empty(Named(soap, "maxSample"));
+        Assert.Equal(
+            ["2026-09-22T11:58:00.0000000Z", "2026-09-22T11:59:20.0000000Z"],
+            specs.Select(s => s.Elements().Single(e => e.Name.LocalName == "startTime").Value));
+        Assert.All(specs, s => Assert.Equal(
+            "2026-09-22T12:00:00.0000000Z", s.Elements().Single(e => e.Name.LocalName == "endTime").Value));
+
+        // Schema order: entity, startTime, endTime, metricId*, intervalId, format.
+        Assert.Equal(
+            ["entity", "startTime", "endTime", "metricId", "intervalId", "format"],
+            specs[0].Elements().Select(e => e.Name.LocalName));
+    }
+
+    [Fact]
+    public void The_server_clock_is_asked_of_the_service_instance()
+    {
+        var soap = Parse(VsphereSoapRequests.CurrentTime());
+
+        Assert.Equal("ServiceInstance", Assert.Single(Named(soap, "_this")).Value);
+        Assert.Single(Named(soap, "CurrentTime"));
+    }
+
+    [Fact]
+    public void The_server_clock_reply_is_read_as_utc()
+    {
+        const string reply = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+              <soapenv:Body>
+                <CurrentTimeResponse xmlns="urn:vim25"><returnval>2026-09-22T14:00:05.123+02:00</returnval></CurrentTimeResponse>
+              </soapenv:Body>
+            </soapenv:Envelope>
+            """;
+
+        Assert.Equal(
+            new DateTimeOffset(2026, 9, 22, 12, 0, 5, 123, TimeSpan.Zero),
+            VsphereSoapRequests.ParseCurrentTime(reply));
+    }
 }
