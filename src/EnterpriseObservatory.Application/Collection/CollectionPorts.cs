@@ -258,6 +258,18 @@ public sealed record ObservationBatch
     public IReadOnlyList<Observation> Backfill { get; init; } = [];
 
     public IReadOnlyList<CollectionFailure> Failures { get; init; } = [];
+
+    /// <summary>
+    /// What the source does once this batch's samples are in the store.
+    /// </summary>
+    /// <remarks>
+    /// Called by the cycle after the append succeeds, never otherwise. A
+    /// source that keeps a high-water mark or a gap's fill point must move it
+    /// only past samples that were actually kept: moved on the read, a failed
+    /// append would leave the mark ahead of the history and the hole behind it
+    /// would never be asked for again. Null for a source with nothing to do.
+    /// </remarks>
+    public Action? Stored { get; init; }
 }
 
 /// <summary>Which of a source's two jobs a health record describes.</summary>

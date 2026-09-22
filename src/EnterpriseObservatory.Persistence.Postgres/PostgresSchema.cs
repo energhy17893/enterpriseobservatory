@@ -581,6 +581,58 @@ internal static class PostgresSchema
         ALTER TABLE compliance_transition ADD COLUMN accepted_reason text NULL;
         ALTER TABLE compliance_exception  ADD COLUMN subject text NULL;
         """,
+
+        // --- 12: reserved for K2 -------------------------------------------
+        //
+        // Held for the K2 package, which was designed against 12 and had not
+        // landed when 13 did. A no-op so the numbering is contiguous. K2
+        // replaces this entry in place when it merges -- which is only sound
+        // while no installation has run a build carrying the placeholder; once
+        // one has, K2 must take the next free number instead.
+        """
+        SELECT 1;
+        """,
+
+        // --- 13: the source-level collection gap (T0.4, handover 3) ----------
+        //
+        // A stretch of time a whole source was not read -- the service was
+        // stopped, or could not reach the vCenter -- and how far it has been
+        // read again since. Filled oldest slice first with whatever budget the
+        // live read leaves over; what is past the host's real-time retention
+        // by the time the fill gets there is recorded in lost_before_utc and
+        // the row closed 'unrecoverable', never deleted.
+        //
+        // Source level, NOT entity level: one host disconnected for twenty
+        // minutes leaves no row here. That is covered only as far as the live
+        // read's few samples back reach.
+        //
+        // No unique constraint: a restart during a fill leaves the first gap
+        // open and records a second, and the fill takes the oldest gap_from
+        // first. Times are bigint Unix seconds like the measurement tables they
+        // describe; the audit times are timestamptz like the other state.
+        // gap_from is exclusive (the newest sample already held) and gap_to
+        // inclusive, vim25's own startTime/endTime convention.
+        """
+        CREATE TABLE collection_gap (
+            id                 bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            source_instance_id text        NOT NULL,
+            gap_from_utc       bigint      NOT NULL,
+            gap_to_utc         bigint      NOT NULL,
+            filled_to_utc      bigint      NOT NULL,
+            state              text        NOT NULL CHECK (state IN ('open', 'filled', 'unrecoverable')),
+            lost_before_utc    bigint      NULL,
+            opened_at_utc      timestamptz NOT NULL,
+            closed_at_utc      timestamptz NULL,
+            CHECK (gap_from_utc <= filled_to_utc AND filled_to_utc <= gap_to_utc)
+        );
+
+        CREATE INDEX ix_collection_gap_source ON collection_gap (source_instance_id, gap_from_utc);
+
+        COMMENT ON TABLE collection_gap IS
+            'Source-level collection outages (service stopped or vCenter unreachable) and how far each '
+            'has been read again. Does NOT cover entity-level gaps such as one host disconnected for '
+            '20 minutes; those are covered only within the live read''s few samples back.';
+        """,
     ];
 
     public static int Current => Migrations.Length;
