@@ -108,7 +108,19 @@ public sealed class CompactionWorker(
         var now = _clock.UtcNow;
 
         var outcome = GuardedCompaction.Run(
-            () => _store.Compact(now, _options.Retention),
+            () =>
+            {
+                var report = _store.Compact(now, _options.Retention);
+
+                // The alert history ages out with the hourly tier (ADR-0017,
+                // ADR-0026): an alert that ended more than 90 days ago is as
+                // far back as the measurements that explain it. After the
+                // fold, so a history sweep that fails costs this pass's report
+                // and not the fold; and inside the guard, so it fails loudly.
+                _alerts.PruneHistory(now - _options.Retention.OneHour);
+
+                return report;
+            },
             _state,
             now,
             GuardedCompaction.StallsAfter);
@@ -143,6 +155,12 @@ public sealed class CompactionWorker(
                 // one a new worker cannot file wrongly.
                 Scope = GuardedCompaction.Scope,
                 Observed = outcome.Alerts,
+
+                // No rules and no sources: compaction is a direct producer,
+                // two-valued at N = 1, and its own evidence (ADR-0026 §1.2).
+                Evaluations = [],
+                Sources = EvidenceSources.None,
+                RawRetention = _options.Retention.Raw,
                 Stored = stored,
                 FlapHistories = flaps,
                 Hysteresis = _options.Hysteresis,

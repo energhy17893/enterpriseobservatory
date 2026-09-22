@@ -227,6 +227,77 @@ public class MonitoringCycleTests : IDisposable
         Assert.Equal(2, result.Visible.Select(a => a.Fingerprint).Distinct().Count());
     }
 
+    [Fact]
+    public async Task A_long_metric_outage_keeps_one_open_unreachable_alert_until_the_source_answers()
+    {
+        // Past the breaker threshold the source is not asked at all, and every
+        // one of those cycles must still hold the alert open. The same against
+        // PostgreSQL, across a restart: CollectorUnreachableTests.
+        var metrics = new FakeObservationSource("vc-1"); // throws
+
+        var cycle = Cycle();
+        var options = new MonitoringOptions { Collection = CollectionPolicy.Default with { MaxRetries = 0 } };
+
+        for (var i = 0; i < 40; i++)
+        {
+            await cycle.RunObservationsAsync([metrics], options, CancellationToken.None);
+
+            if (i >= 1)
+            {
+                var open = Assert.Single(_alerts.InstancesIn(AlertScopes.Observation),
+                    a => a.Title == "Collector unreachable (metrics)");
+                Assert.Equal(AlertLifecycleState.Open, open.State);
+                Assert.True(open.IsConfirmed);
+            }
+
+            _clock.Advance(TimeSpan.FromSeconds(30));
+        }
+
+        Assert.Single(_notifier.Dispatched, a => a.Title == "Collector unreachable (metrics)");
+
+        metrics.Behaviour = () => Batch("vc-1", _clock.UtcNow);
+        _clock.Advance(CollectionPolicy.Default.CircuitBreakerCooldown);
+
+        await cycle.RunObservationsAsync([metrics], options, CancellationToken.None);
+
+        var resolved = Assert.Single(_alerts.InstancesIn(AlertScopes.Observation),
+            a => a.Title == "Collector unreachable (metrics)");
+        Assert.Equal(AlertLifecycleState.Resolved, resolved.State);
+        Assert.Contains(resolved.History, t => t.Reason == AlertTransitionReason.ConditionCleared);
+    }
+
+    [Fact]
+    public async Task A_long_inventory_outage_keeps_one_open_unreachable_alert_until_the_source_answers()
+    {
+        var inventory = new FakeInventorySource("vc-1");
+        var cycle = Cycle();
+        var options = new MonitoringOptions { Collection = CollectionPolicy.Default with { MaxRetries = 0 } };
+
+        for (var i = 0; i < 12; i++)
+        {
+            await cycle.RunInventoryAsync([inventory], options, CancellationToken.None);
+
+            if (i >= 1)
+            {
+                var open = Assert.Single(_alerts.InstancesIn(AlertScopes.Inventory),
+                    a => a.Title == "Collector unreachable (inventory)");
+                Assert.Equal(AlertLifecycleState.Open, open.State);
+            }
+
+            _clock.Advance(TimeSpan.FromMinutes(5));
+        }
+
+        Assert.Single(_notifier.Dispatched, a => a.Title == "Collector unreachable (inventory)");
+
+        inventory.Behaviour = () => Snapshot("vc-1", _clock.UtcNow);
+
+        await cycle.RunInventoryAsync([inventory], options, CancellationToken.None);
+
+        var resolved = Assert.Single(_alerts.InstancesIn(AlertScopes.Inventory),
+            a => a.Title == "Collector unreachable (inventory)");
+        Assert.Equal(AlertLifecycleState.Resolved, resolved.State);
+    }
+
     // --- notification -----------------------------------------------------
 
     [Fact]
@@ -949,6 +1020,9 @@ public class MonitoringCycleTests : IDisposable
                 Stored = stored,
                 FlapHistories = flaps,
                 NowUtc = _clock.UtcNow,
+                Evaluations = [],
+                Sources = EvidenceSources.None,
+                RawRetention = TimeSpan.FromDays(2),
             }));
 
         var filed = Assert.Single(_alerts.InstancesIn(AlertScopes.Inventory));
@@ -1044,14 +1118,24 @@ public class MonitoringCycleTests : IDisposable
         // a notification just because the cycle ran.
         Assert.DoesNotContain(result.ToNotify, a => a.Category == "Fault");
 
-        // And once the source answers again without the fault, it resolves as
-        // before -- this is not a scope that stopped resolving anything.
+        // And once the source answers again without the fault, it resolves --
+        // this is not a scope that stopped resolving anything -- after the
+        // rule's N fresh absences (ADR-0026), not on the first.
         reachable = true;
-        _clock.Advance(TimeSpan.FromSeconds(30));
-        var recovered = await cycle.RunObservationsAsync(
-            [new FakeObservationSource("vc-1") { Behaviour = () => Batch("vc-1", _clock.UtcNow) }],
-            Options,
-            CancellationToken.None);
+        var clean = new FakeObservationSource("vc-1") { Behaviour = () => Batch("vc-1", _clock.UtcNow) };
+        var n = new FaultCountersRule().Resolution.ConsecutiveAbsent;
+        MonitoringCycleResult recovered = null!;
+
+        for (var i = 1; i <= n; i++)
+        {
+            _clock.Advance(TimeSpan.FromSeconds(30));
+            recovered = await cycle.RunObservationsAsync([clean], Options, CancellationToken.None);
+
+            if (i < n)
+            {
+                Assert.Contains(recovered.Visible, a => a.Category == "Fault");
+            }
+        }
 
         Assert.DoesNotContain(recovered.Visible, a => a.Category == "Fault");
     }
@@ -1549,7 +1633,12 @@ public class MonitoringCycleTests : IDisposable
             Behaviour = () => Snapshot(
                 "vc-1", _clock.UtcNow, entities: [Node("vc-1:datastore-41", EntityKind.Datastore, "vmfs01")]),
         };
-        await cycle.RunInventoryAsync([answered], Options, CancellationToken.None);
+        // After the rule's N fresh absences (ADR-0026), not on the first.
+        for (var i = 0; i < new DatastoreTimeToFullRule().Resolution.ConsecutiveAbsent; i++)
+        {
+            await cycle.RunInventoryAsync([answered], Options, CancellationToken.None);
+            _clock.Advance(TimeSpan.FromMinutes(5));
+        }
 
         Assert.Equal(
             AlertLifecycleState.Resolved,
@@ -2159,6 +2248,11 @@ internal sealed class ScopeWatchingAlertStateStore(InMemoryAlertStateStore inner
 
     public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints) =>
         inner.MarkNotified(scope, fingerprints);
+
+    public IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc) =>
+        inner.ResolvedBetween(fromUtc, toUtc);
+
+    public int PruneHistory(DateTimeOffset olderThanUtc) => inner.PruneHistory(olderThanUtc);
 }
 
 /// <summary>A sample store whose failure can end, as a real one's does.</summary>

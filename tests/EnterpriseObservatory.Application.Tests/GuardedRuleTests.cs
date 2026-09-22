@@ -16,7 +16,7 @@ namespace EnterpriseObservatory.Application.Tests;
 /// </remarks>
 public class GuardedRuleTests
 {
-    private static IReadOnlyList<AlertDefinition> Boom() =>
+    private static IReadOnlyList<SubjectVerdict> Boom() =>
         throw new InvalidOperationException("Sequence contains no elements");
 
     private static AlertDefinition Finding(string id) => new()
@@ -29,12 +29,22 @@ public class GuardedRuleTests
         Source = "vc-1",
     };
 
+    private static ConditionPresent Present(AlertDefinition alert) => new()
+    {
+        Covers = [alert.Fingerprint],
+        Alerts = [alert],
+        EvidenceAtUtc = DateTimeOffset.UnixEpoch,
+    };
+
     [Fact]
     public void A_rule_that_works_is_passed_through_untouched()
     {
-        var findings = new[] { Finding("a"), Finding("b") };
+        IReadOnlyList<SubjectVerdict> findings = [Present(Finding("a")), Present(Finding("b"))];
 
-        Assert.Equal(findings, GuardedRule.Run("r", () => findings));
+        var result = GuardedRule.Run("r", () => findings);
+
+        Assert.Same(findings, result.Verdicts);
+        Assert.Empty(result.Failures);
     }
 
     [Fact]
@@ -43,7 +53,7 @@ public class GuardedRuleTests
         // The whole point. Before this, the exception reached the worker, which
         // logged the cycle as failed -- discarding that cycle's collection
         // alerts and notifications along with the rule's own findings.
-        Assert.Single(GuardedRule.Run("peer-outliers", Boom));
+        Assert.Single(GuardedRule.Run("peer-outliers", Boom).Failures);
     }
 
     [Fact]
@@ -52,7 +62,7 @@ public class GuardedRuleTests
         // ADR-0005: "we are not analysing" belongs in the product, not in a
         // file on the server. An operator who cannot see the blind spot will
         // read the quiet as good news.
-        var alert = Assert.Single(GuardedRule.Run("peer-outliers", Boom));
+        var alert = Assert.Single(GuardedRule.Run("peer-outliers", Boom).Failures);
 
         Assert.Equal(AlertSeverity.Warning, alert.Severity);
         Assert.Equal("platform", alert.Source);
@@ -64,7 +74,7 @@ public class GuardedRuleTests
     {
         // Without both, the alert says only that something somewhere broke,
         // which tells a support engineer nothing they can act on.
-        var alert = Assert.Single(GuardedRule.Run("peer-outliers", Boom));
+        var alert = Assert.Single(GuardedRule.Run("peer-outliers", Boom).Failures);
 
         Assert.Contains("peer-outliers", alert.Description, StringComparison.Ordinal);
         Assert.Contains("InvalidOperationException", alert.Description, StringComparison.Ordinal);
@@ -72,15 +82,26 @@ public class GuardedRuleTests
     }
 
     [Fact]
-    public void The_failure_admits_that_this_rules_open_alerts_were_resolved_unchecked()
+    public void The_failure_says_this_rules_open_alerts_are_kept_open_and_stale()
     {
-        // The cost of the design, stated in the product rather than hidden in
-        // it. A rule that throws reports nothing, and reconciliation reads
-        // nothing as "the fault is gone" -- so a real fault closes without
-        // anybody rechecking it. The operator has to be told that.
-        var alert = Assert.Single(GuardedRule.Run("peer-outliers", Boom));
+        // Until ADR-0026 this said they were resolved without being rechecked:
+        // the cost of a two-valued design, stated in the product. Now they stay.
+        var alert = Assert.Single(GuardedRule.Run("peer-outliers", Boom).Failures);
 
-        Assert.Contains("resolved without being rechecked", alert.Description, StringComparison.Ordinal);
+        Assert.Contains("kept open and marked stale", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_rule_that_throws_gives_every_alert_it_holds_rule_failed_and_nothing_else()
+    {
+        var held = new HeldAlert(Finding("a").Fingerprint, new EntityId("esx01"));
+
+        var result = GuardedRule.Run("peer-outliers", Boom, [held]);
+
+        var unknown = Assert.IsType<Unknown>(Assert.Single(result.Verdicts));
+        Assert.Equal(UnknownReason.RuleFailed, unknown.Reason);
+        Assert.Equal([held.Fingerprint], unknown.Covers);
+        Assert.Contains("InvalidOperationException", unknown.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -89,8 +110,8 @@ public class GuardedRuleTests
         // Distinct fingerprints, or fixing one rule would resolve the alert for
         // the other and the second blind spot would vanish from the product
         // while it was still blind.
-        var first = Assert.Single(GuardedRule.Run("fault-counters", Boom));
-        var second = Assert.Single(GuardedRule.Run("peer-outliers", Boom));
+        var first = Assert.Single(GuardedRule.Run("fault-counters", Boom).Failures);
+        var second = Assert.Single(GuardedRule.Run("peer-outliers", Boom).Failures);
 
         Assert.NotEqual(first.Fingerprint, second.Fingerprint);
     }
@@ -100,9 +121,9 @@ public class GuardedRuleTests
     {
         // A rule broken by a bug fails every thirty seconds. A fingerprint that
         // moved would raise two thousand alerts a day for one problem.
-        var first = Assert.Single(GuardedRule.Run("peer-outliers", Boom));
+        var first = Assert.Single(GuardedRule.Run("peer-outliers", Boom).Failures);
         var second = Assert.Single(GuardedRule.Run(
-            "peer-outliers", () => throw new ArgumentException("different message")));
+            "peer-outliers", () => throw new ArgumentException("different message")).Failures);
 
         Assert.Equal(first.Fingerprint, second.Fingerprint);
     }

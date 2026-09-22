@@ -307,7 +307,7 @@ public static class DatastoreTimeToFull
             // product's reading, and it must not belong to a datastore's
             // source, or a silent vCenter would hold it open.
             Fingerprint = AlertFingerprint.Create(
-                "platform", HistoryUnreadableTitle, GuardedRule.Category, RuleId, "datastore-history-unreadable"),
+                "platform", HistoryUnreadableTitle, GuardedRule.Category, RuleId, HistoryUnreadableCheckId),
 
             // Warning, for the reason a failed rule is one: nothing says the
             // estate is broken, only that part of it is not being rechecked.
@@ -438,7 +438,17 @@ public static class DatastoreTimeToFull
     // alert says the same thing.
     private static AlertFingerprint OvercommitFingerprint(DatastoreCapacity datastore) =>
         AlertFingerprint.Create(
-            datastore.Source, OvercommitTitle, Category, datastore.Name, "datastore-overcommitted");
+            datastore.Source, OvercommitTitle, Category, datastore.Name, OvercommitCheckId);
+
+    /// <summary>The check id of the over-commit alert, the fingerprint's last segment.</summary>
+    public const string OvercommitCheckId = "datastore-overcommitted";
+
+    /// <summary>The check id of the "history could not be read" alert.</summary>
+    public const string HistoryUnreadableCheckId = "datastore-history-unreadable";
+
+    /// <summary>Whether a fingerprint is an over-commit alert, which resolves at its own N.</summary>
+    public static bool IsOvercommit(AlertFingerprint fingerprint) =>
+        fingerprint.Value.EndsWith("|" + OvercommitCheckId, StringComparison.Ordinal);
 
     private static AlertDefinition? Filling(
         DatastoreCapacity datastore, TimeToFullResult estimate, DatastoreTimeToFullPolicy policy)

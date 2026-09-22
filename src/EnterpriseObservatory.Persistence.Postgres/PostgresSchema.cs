@@ -633,6 +633,167 @@ internal static class PostgresSchema
             'has been read again. Does NOT cover entity-level gaps such as one host disconnected for '
             '20 minutes; those are covered only within the live read''s few samples back.';
         """,
+
+        // --- 14: three-valued evaluation and the durable alert history ------
+        //
+        // ADR-0026 and its design note §4. Two things, in one migration because
+        // both change what an alert row means.
+        //
+        // alert_instance gains the three-valued state: the rule that owns the
+        // alert (NULL = a direct producer, two-valued at N = 1), when its last
+        // fresh verdict's evidence is from, whether it is stale and why, and
+        // how many fresh absences it has had in a row. evidence_at_utc starts
+        // as last_seen_utc, so every open alert starts fresh: no alert changes
+        // state because of the deploy. rule_id is read from the fingerprint's
+        // last segment, the check id, with the same map RuleCheckIds holds in
+        // code (a test keeps them equal); an unmapped row stays NULL, which is
+        // today's behaviour.
+        //
+        // alert_history replaces alert_transition. The old table hung off
+        // alert_instance by ON DELETE CASCADE and was rewritten with the scope
+        // every cycle, so a resolved alert's transitions went with it the
+        // cycle it retired -- after the outage of 22 September nothing in the
+        // database said a vCenter had been gone for four hours. The new table
+        // has no foreign key, is appended to and never rewritten, and keys a
+        // row by the episode (the instance's first_seen_utc) as well as the
+        // fingerprint, because a fingerprint can live more than once. Each row
+        // carries what a report needs to show an alert that no longer exists.
+        // Kept 90 days, the hourly tier's retention (ADR-0017), swept by the
+        // compaction pass -- only for episodes that have ended.
+        //
+        // The old rows are copied across, then the old table dropped rather
+        // than kept beside it: two tables holding the same transitions would
+        // need two writes per transition, forever, to stay equal. Every row is
+        // copied, including one whose instance is already gone (a LEFT JOIN:
+        // CASCADE made that impossible, but the migration does not assume it),
+        // and a guard refuses the DROP unless alert_history holds at least as
+        // many rows. Like every migration this runs in one transaction with its
+        // version bump (Apply, PostgresDatabase.Write), so a failure anywhere
+        // leaves version 13 and alert_transition as they were.
+        """
+        ALTER TABLE alert_instance ADD COLUMN rule_id            text        NULL;
+        ALTER TABLE alert_instance ADD COLUMN evidence_at_utc    timestamptz NULL;
+        ALTER TABLE alert_instance ADD COLUMN stale_since_utc    timestamptz NULL;
+        ALTER TABLE alert_instance ADD COLUMN stale_reason       text        NULL;
+        ALTER TABLE alert_instance ADD COLUMN stale_detail       text        NULL;
+        ALTER TABLE alert_instance ADD COLUMN consecutive_absent integer     NOT NULL DEFAULT 0;
+
+        UPDATE alert_instance SET evidence_at_utc = last_seen_utc;
+        ALTER TABLE alert_instance ALTER COLUMN evidence_at_utc SET NOT NULL;
+
+        UPDATE alert_instance a SET rule_id = m.rule_id
+        FROM (VALUES
+            ('fault-counter',                'fault-counters'),
+            ('peer-outlier',                 'peer-outliers'),
+            ('cpu-host-saturated',           'cpu-contention'),
+            ('cpu-limit-reached',            'cpu-contention'),
+            ('cpu-ready-outlier',            'cpu-contention'),
+            ('cpu-costop-oversized',         'cpu-contention'),
+            ('cpu-width-unreadable',         'cpu-contention'),
+            ('memory-host-pressure',         'memory-pressure'),
+            ('memory-guest-pressure',        'memory-pressure'),
+            ('memory-limit-pressure',        'memory-pressure'),
+            ('storage-layer',                'storage-layer-split'),
+            ('shared-volume',                'shared-volume-latency'),
+            ('storage-latency-blind-spot',   'storage-latency-blind-spot'),
+            ('net-dropped-packets',          'dropped-packets'),
+            ('storage-noisy-neighbour',      'storage-noisy-neighbour'),
+            ('storage-path-redundancy',      'storage-path-redundancy'),
+            ('remote-logging',               'remote-logging'),
+            ('datastore-time-to-full',       'datastore-time-to-full'),
+            ('datastore-overcommitted',      'datastore-time-to-full'),
+            ('datastore-history-unreadable', 'datastore-time-to-full'),
+            ('collection-coverage',          'collection-coverage')
+        ) AS m(check_id, rule_id)
+        WHERE regexp_replace(a.fingerprint, '^.*\|', '') = m.check_id;
+
+        -- One check id per condition of the event table.
+        UPDATE alert_instance SET rule_id = 'vcenter-events'
+        WHERE regexp_replace(fingerprint, '^.*\|', '') LIKE 'vcenter-events:%';
+
+        -- The four rules K2 retired keep owning their open alarms, which keeps
+        -- them open until the continuity evaluation resolves them as moved.
+        UPDATE alert_instance a SET rule_id = m.rule_id
+        FROM (VALUES
+            ('cluster-ha-scorecard'),
+            ('drs-rule-violation'),
+            ('multipath-single-point-of-failure'),
+            ('cluster-n-plus-one')
+        ) AS m(rule_id)
+        WHERE a.rule_id IS NULL
+          AND (regexp_replace(a.fingerprint, '^.*\|', '') = m.rule_id
+               OR regexp_replace(a.fingerprint, '^.*\|', '') LIKE m.rule_id || '-%');
+
+        CREATE INDEX ix_alert_rule ON alert_instance (scope, rule_id);
+
+        CREATE TABLE alert_history (
+            id                     bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            fingerprint            text        NOT NULL,
+            episode_first_seen_utc timestamptz NOT NULL,
+            ordinal                integer     NOT NULL,
+            from_state             text        NOT NULL,
+            to_state               text        NOT NULL,
+            reason                 text        NOT NULL,
+            at_utc                 timestamptz NOT NULL,
+            actor                  text        NULL,
+            detail                 text        NULL,
+            rule_id                text        NULL,
+            evidence_at_utc        timestamptz NULL,
+            -- What the alert was. NULL only on a transition copied from
+            -- alert_transition whose instance was already gone: kept as
+            -- evidence, with nothing invented about the alert it belonged to.
+            scope                  text        NULL,
+            severity               text        NULL,
+            title                  text        NULL,
+            category               text        NULL,
+            source                 text        NULL,
+            entity_id              text        NULL,
+            is_derived             boolean     NULL,
+            last_seen_utc          timestamptz NULL,
+            UNIQUE (fingerprint, episode_first_seen_utc, ordinal)
+        );
+
+        -- The sweep and the report's "resolved in the window" both read by time.
+        CREATE INDEX ix_alert_history_at ON alert_history (at_utc);
+
+        INSERT INTO alert_history (
+            fingerprint, episode_first_seen_utc, ordinal, from_state, to_state, reason, at_utc,
+            actor, detail, rule_id, evidence_at_utc, scope, severity, title, category, source,
+            entity_id, is_derived, last_seen_utc)
+        SELECT t.fingerprint,
+               -- An orphan's episode is its own first transition: alert_transition
+               -- held one life per fingerprint, so this is unique and stable.
+               COALESCE(a.first_seen_utc, min(t.at_utc) OVER (PARTITION BY t.fingerprint)),
+               t.ordinal, t.from_state, t.to_state, t.reason, t.at_utc,
+               t.actor, NULL, a.rule_id, NULL, a.scope, a.severity, a.title, a.category, a.source,
+               a.entity_id, a.is_derived, a.last_seen_utc
+        FROM alert_transition t
+        LEFT JOIN alert_instance a ON a.fingerprint = t.fingerprint
+        -- A duplicate (possible only where alert_transition lost its key) is
+        -- not written twice; the guard below then refuses the whole migration
+        -- rather than let the counts quietly differ.
+        ON CONFLICT (fingerprint, episode_first_seen_utc, ordinal) DO NOTHING;
+
+        -- The DROP below cannot be undone. Every transition must be across
+        -- first, or nothing happens: the exception rolls back this migration's
+        -- transaction, alert_transition included, and the version stays at 13.
+        DO $guard$
+        BEGIN
+            IF (SELECT count(*) FROM alert_history) < (SELECT count(*) FROM alert_transition) THEN
+                RAISE EXCEPTION
+                    'migration 14: alert_history holds % rows but alert_transition % -- not dropping it',
+                    (SELECT count(*) FROM alert_history), (SELECT count(*) FROM alert_transition);
+            END IF;
+        END
+        $guard$;
+
+        DROP TABLE alert_transition;
+
+        COMMENT ON TABLE alert_history IS
+            'Every alert transition, appended and never rewritten; outlives the alert_instance row. '
+            'An episode is one life of a fingerprint (its first_seen_utc). Kept 90 days after the '
+            'episode ends (ADR-0017 hourly tier), swept by the compaction pass. ADR-0026.';
+        """,
     ];
 
     public static int Current => Migrations.Length;

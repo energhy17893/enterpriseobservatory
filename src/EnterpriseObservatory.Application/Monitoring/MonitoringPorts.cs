@@ -114,6 +114,35 @@ public interface IAlertStateStore
     /// alert notify on every cycle for as long as it fires.
     /// </remarks>
     void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints);
+
+    /// <summary>
+    /// Alerts that moved to resolved within [<paramref name="fromUtc"/>,
+    /// <paramref name="toUtc"/>] and are resolved still, read from the durable
+    /// history (ADR-0026).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not from <see cref="All"/>: a resolved alert retires the next cycle it
+    /// is absent, and its row goes. Its history does not. Each result is the
+    /// alert as it was when it resolved — title, severity, entity, rule — with
+    /// that life's transitions, including who acknowledged or cleared it.
+    /// </para>
+    /// <para>
+    /// One entry per life of a fingerprint: raised, resolved, retired and
+    /// raised again is two.
+    /// </para>
+    /// </remarks>
+    IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc);
+
+    /// <summary>
+    /// Deletes history older than <paramref name="olderThanUtc"/> of alerts
+    /// that no longer exist; returns how many transitions went.
+    /// </summary>
+    /// <remarks>
+    /// A live alert keeps its whole history however old. Called by the
+    /// compaction pass with the hourly tier's retention (ADR-0017).
+    /// </remarks>
+    int PruneHistory(DateTimeOffset olderThanUtc);
 }
 
 /// <summary>Holds collector health between cycles.</summary>

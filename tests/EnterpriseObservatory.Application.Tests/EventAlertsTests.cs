@@ -374,7 +374,12 @@ public class EventAlertsTests
         var policy = new EventAlertPolicy { Conditions = [row, row with { Id = "copy" }] };
 
         var alert = Assert.Single(GuardedRule.Run(
-            EventAlerts.RuleId, () => EventAlerts.Evaluate([], T0, policy)));
+            EventAlerts.RuleId, () => [.. EventAlerts.Evaluate([], T0, policy).Select(a => (SubjectVerdict)new ConditionPresent
+            {
+                Covers = [a.Fingerprint],
+                Alerts = [a],
+                EvidenceAtUtc = T0,
+            })]).Failures);
 
         Assert.Equal("Analysis rule failed", alert.Title);
     }

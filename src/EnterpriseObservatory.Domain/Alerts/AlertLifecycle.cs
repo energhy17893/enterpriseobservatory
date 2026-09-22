@@ -45,12 +45,17 @@ public static class AlertLifecycle
     /// Windows that may suppress notification. Suppression never hides the
     /// alert — see <see cref="MaintenanceWindow"/>.
     /// </param>
+    /// <param name="evidenceAtUtc">
+    /// Time of the newest input the observation rests on; the cycle time when
+    /// not given, which is what a direct producer's observation is.
+    /// </param>
     public static AlertInstance OnObserved(
         AlertInstance? existing,
         AlertDefinition observed,
         HysteresisPolicy policy,
         DateTimeOffset nowUtc,
-        IReadOnlyList<MaintenanceWindow>? maintenanceWindows = null)
+        IReadOnlyList<MaintenanceWindow>? maintenanceWindows = null,
+        DateTimeOffset? evidenceAtUtc = null)
     {
         ArgumentNullException.ThrowIfNull(observed);
         ArgumentNullException.ThrowIfNull(policy);
@@ -61,12 +66,14 @@ public static class AlertLifecycle
                 "Info alerts do not enter the lifecycle.", nameof(observed));
         }
 
+        var evidence = evidenceAtUtc ?? nowUtc;
+
         var suppressedBy = MaintenanceSuppression.WindowSuppressing(
             observed.Entity, maintenanceWindows ?? [], nowUtc);
 
         if (existing is null)
         {
-            return Raise(observed, policy, nowUtc, suppressedBy);
+            return Raise(observed, policy, nowUtc, suppressedBy, evidence);
         }
 
         if (existing.Fingerprint != observed.Fingerprint)
@@ -82,10 +89,17 @@ public static class AlertLifecycle
             return existing with
             {
                 LastSeenUtc = nowUtc,
+                EvidenceAtUtc = evidence,
+                ConsecutiveAbsent = 0,
                 PendingNotification = AlertNotificationKind.None,
                 SuppressedByWindowId = suppressedBy,
             };
         }
+
+        // Fresh evidence for a stale or unknown alarm: back to what it was,
+        // without a notification (ADR-0026 point 5). Everything below then
+        // runs on the restored instance, so an escalation is still one.
+        existing = Refresh(existing, evidence, nowUtc) with { ConsecutiveAbsent = 0 };
 
         var hits = existing.ConsecutiveHits + 1;
         var confirmed = existing.IsConfirmed ||
@@ -140,11 +154,23 @@ public static class AlertLifecycle
     }
 
     /// <summary>
-    /// Applies the absence of a problem in the current cycle.
+    /// Applies a fresh statement that the problem is not there (ADR-0026).
     /// </summary>
-    public static AbsenceResult OnAbsent(AlertInstance existing, DateTimeOffset nowUtc)
+    /// <remarks>
+    /// The only way to resolve an alert, and it takes the evidence and N: a
+    /// confirmed alert resolves on the Nth consecutive fresh absence, and an
+    /// unknown in between (see <see cref="OnUnknown"/>) resets the count. A
+    /// cessation is reported at resolution, not at the first absence.
+    /// </remarks>
+    public static AbsenceResult OnAbsent(
+        AlertInstance existing,
+        AlertAbsence absence,
+        ResolutionPolicy resolution,
+        DateTimeOffset nowUtc)
     {
         ArgumentNullException.ThrowIfNull(existing);
+        ArgumentNullException.ThrowIfNull(absence);
+        ArgumentNullException.ThrowIfNull(resolution);
 
         // Never confirmed, now gone: it was flapping. Forget the instance
         // rather than leaving a resolved alert nobody needed to see — but
@@ -155,24 +181,159 @@ public static class AlertLifecycle
             return new AbsenceResult(null, CeasedFiring: true);
         }
 
-        // Already resolved and now absent: this is where a sticky clear ends.
-        // The fault is gone, so the instance retires; if it ever returns it
-        // will be born fresh and can notify again. It stopped firing on an
-        // earlier cycle, so this is not a new cessation.
         if (existing.State == AlertLifecycleState.Resolved)
         {
+            // A sticky clear ends once the fault has been gone N times over.
+            // It stopped firing on an earlier cycle, so this is not a new
+            // cessation; if it ever returns it is born fresh and can notify.
+            if (existing.ClearedByOperator && existing.ConsecutiveAbsent + 1 < resolution.ConsecutiveAbsent)
+            {
+                return new AbsenceResult(
+                    existing with
+                    {
+                        ConsecutiveAbsent = existing.ConsecutiveAbsent + 1,
+                        EvidenceAtUtc = absence.EvidenceAtUtc,
+                    },
+                    CeasedFiring: false);
+            }
+
             return new AbsenceResult(null, CeasedFiring: false);
         }
 
-        var resolved = existing
-            .With(AlertLifecycleState.Resolved, AlertTransitionReason.ConditionCleared, nowUtc) with
+        // Evidence that follows a blind stretch starts the count again: the
+        // unknown reset it, whatever it was before.
+        var count = (existing.IsStale || existing.State == AlertLifecycleState.Unknown
+            ? 0
+            : existing.ConsecutiveAbsent) + 1;
+
+        var next = Refresh(existing, absence.EvidenceAtUtc, nowUtc) with { ConsecutiveAbsent = count };
+
+        if (count < resolution.ConsecutiveAbsent)
+        {
+            return new AbsenceResult(next, CeasedFiring: false);
+        }
+
+        var resolved = next
+            .With(AlertLifecycleState.Resolved, ResolvedBecause(absence.Because), nowUtc) with
         {
             ConsecutiveHits = 0,
+            ConsecutiveAbsent = 0,
             PendingNotification = AlertNotificationKind.None,
         };
 
         return new AbsenceResult(resolved, CeasedFiring: true);
     }
+
+    /// <summary>
+    /// Applies "nothing could be said about this problem this cycle".
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// There is no edge from here to resolved (ADR-0026). An open alarm stays
+    /// open and is marked stale, with the reason and when it happened; the
+    /// absence count starts again. After <paramref name="rawRetention"/> without
+    /// fresh evidence it moves to <see cref="AlertLifecycleState.Unknown"/>,
+    /// out of the open count — the samples it rested on are gone from the store
+    /// by then. Neither step notifies: the source going quiet is already its
+    /// own alert.
+    /// </para>
+    /// <para>
+    /// The one instance this can forget is an unconfirmed one past raw
+    /// retention: it was never shown to anyone.
+    /// </para>
+    /// </remarks>
+    /// <param name="rawRetention">Read from the retention policy, never copied (ADR-0017).</param>
+    public static AbsenceResult OnUnknown(
+        AlertInstance existing,
+        AlertUnknown unknown,
+        TimeSpan rawRetention,
+        DateTimeOffset nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(existing);
+        ArgumentNullException.ThrowIfNull(unknown);
+
+        if (existing.State == AlertLifecycleState.Resolved)
+        {
+            return new AbsenceResult(existing, CeasedFiring: false);
+        }
+
+        var expired = nowUtc - existing.EvidenceAtUtc >= rawRetention;
+
+        if (!existing.IsConfirmed)
+        {
+            return new AbsenceResult(expired ? null : existing, CeasedFiring: false);
+        }
+
+        var next = existing with
+        {
+            StaleReason = unknown.Reason,
+            StaleDetail = unknown.Detail,
+            ConsecutiveAbsent = 0,
+        };
+
+        if (existing.State == AlertLifecycleState.Unknown)
+        {
+            return new AbsenceResult(next, CeasedFiring: false);
+        }
+
+        if (!existing.IsStale)
+        {
+            next = (next with { StaleSinceUtc = nowUtc })
+                .RecordEvent(AlertTransitionReason.EvidenceLost, nowUtc, detail: Describe(unknown));
+        }
+
+        if (expired)
+        {
+            next = next.With(
+                AlertLifecycleState.Unknown,
+                AlertTransitionReason.EvidenceExpired,
+                nowUtc,
+                detail: Describe(unknown));
+        }
+
+        return new AbsenceResult(next, CeasedFiring: false);
+    }
+
+    private static string Describe(AlertUnknown unknown) => $"{unknown.Reason}: {unknown.Detail}";
+
+    private static AlertTransitionReason ResolvedBecause(AbsenceKind because) => because switch
+    {
+        AbsenceKind.SubjectRemoved => AlertTransitionReason.SubjectRemoved,
+        AbsenceKind.Superseded => AlertTransitionReason.Superseded,
+        AbsenceKind.Expired => AlertTransitionReason.Expired,
+        _ => AlertTransitionReason.ConditionCleared,
+    };
+
+    /// <summary>
+    /// Takes a stale or unknown instance back to fresh on new evidence; a fresh
+    /// one just gets the new evidence time.
+    /// </summary>
+    private static AlertInstance Refresh(AlertInstance existing, DateTimeOffset evidenceAtUtc, DateTimeOffset nowUtc)
+    {
+        var fresh = existing with
+        {
+            EvidenceAtUtc = evidenceAtUtc,
+            StaleSinceUtc = null,
+            StaleReason = null,
+            StaleDetail = null,
+        };
+
+        if (existing.State == AlertLifecycleState.Unknown)
+        {
+            return fresh.With(StateBeforeUnknown(existing), AlertTransitionReason.EvidenceReturned, nowUtc);
+        }
+
+        return existing.IsStale
+            ? fresh.RecordEvent(AlertTransitionReason.EvidenceReturned, nowUtc)
+            : fresh;
+    }
+
+    /// <summary>The operator's sub-state an alert held before it went unknown.</summary>
+    private static AlertLifecycleState StateBeforeUnknown(AlertInstance instance) =>
+        instance.History.LastOrDefault(t => t.To == AlertLifecycleState.Unknown)?.From is { } from &&
+        from != AlertLifecycleState.Unknown
+            ? from
+            : AlertLifecycleState.Open;
 
     /// <summary>An operator takes ownership. Notifications stop; the alert stays visible.</summary>
     public static AlertInstance Acknowledge(AlertInstance existing, string actor, DateTimeOffset nowUtc)
@@ -301,7 +462,8 @@ public static class AlertLifecycle
         AlertDefinition observed,
         HysteresisPolicy policy,
         DateTimeOffset nowUtc,
-        string? suppressedBy)
+        string? suppressedBy,
+        DateTimeOffset evidenceAtUtc)
     {
         // A brand new instance has been firing for no time at all, so a non-zero
         // minimum duration always defers confirmation to a later cycle.
@@ -325,6 +487,7 @@ public static class AlertLifecycle
             PendingNotification = confirmed ? AlertNotificationKind.Raised : AlertNotificationKind.None,
             FirstSeenUtc = nowUtc,
             LastSeenUtc = nowUtc,
+            EvidenceAtUtc = evidenceAtUtc,
             SuppressedByWindowId = suppressedBy,
         };
 
@@ -336,6 +499,7 @@ public static class AlertLifecycle
                 To = AlertLifecycleState.Open,
                 Reason = confirmed ? AlertTransitionReason.Confirmed : AlertTransitionReason.Raised,
                 AtUtc = nowUtc,
+                EvidenceAtUtc = evidenceAtUtc,
             }],
         };
     }

@@ -78,6 +78,32 @@ public sealed class LiveDatabase : IDisposable
         _database = new PostgresDatabase(Options(_schema));
     }
 
+    /// <summary>
+    /// Reads through a connection of its own, not the product's: for a test
+    /// whose <see cref="Restart"/> failed on purpose, leaving no database open.
+    /// </summary>
+    public T ReadRaw<T>(Func<NpgsqlConnection, T> read)
+    {
+        ArgumentNullException.ThrowIfNull(read);
+
+        var options = Options(_schema);
+
+        using var connection = new NpgsqlConnection(
+            new NpgsqlConnectionStringBuilder
+            {
+                Host = options.Host,
+                Port = options.Port,
+                Database = options.Database,
+                Username = options.Username,
+                Password = options.Password.Reveal(),
+                SearchPath = _schema,
+            }.ConnectionString);
+
+        connection.Open();
+
+        return read(connection);
+    }
+
     public void Dispose()
     {
         _database?.Dispose();

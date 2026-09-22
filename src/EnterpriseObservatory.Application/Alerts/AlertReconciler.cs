@@ -1,16 +1,55 @@
+using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Alerts;
 
 /// <summary>
+/// Which sources answered this cycle, and who owns an entity — the evidence
+/// behind every verdict about an entity (ADR-0026 design note §1.3).
+/// </summary>
+/// <remarks>
+/// <para>
+/// Replaces the silent-source carry. It lists the sources that
+/// <em>answered</em>, not the ones that did not, so the forgetful value is the
+/// safe one: an empty list means nothing answered, and a verdict resting on an
+/// entity of a source that did not answer becomes
+/// <see cref="UnknownReason.SourceSilent"/> — never a resolution.
+/// </para>
+/// <para>
+/// An entity whose owner is not known (purged from the graph, or never in it)
+/// is not clamped: nothing says its source was silent.
+/// </para>
+/// </remarks>
+public sealed record EvidenceSources
+{
+    /// <summary>Sources that returned a snapshot or a batch this cycle.</summary>
+    public required IReadOnlyCollection<string> Reporting { get; init; }
+
+    /// <summary>Which source an entity belongs to, or null when it is not known.</summary>
+    public required Func<EntityId, string?> OwnerOf { get; init; }
+
+    /// <summary>
+    /// For a scope whose alerts belong to no source, such as compaction: nothing
+    /// reported, and nothing is owned.
+    /// </summary>
+    public static EvidenceSources None { get; } = new() { Reporting = [], OwnerOf = static _ => null };
+
+    /// <summary>The source that owns <paramref name="entity"/> and did not report, if there is one.</summary>
+    internal string? SilentOwnerOf(EntityId? entity) =>
+        entity is { } id &&
+        OwnerOf(id) is { } owner &&
+        !Reporting.Contains(owner, StringComparer.Ordinal)
+            ? owner
+            : null;
+}
+
+/// <summary>
 /// Everything one reconciliation pass needs.
 /// </summary>
 /// <remarks>
-/// <see cref="Observed"/> and <see cref="Stored"/> must describe the same
-/// scope. Reconciliation treats what it is given as the whole truth, so an
-/// instance from another scope handed in here would be resolved for never
-/// having been observed. Slicing happens at the store — see
+/// <see cref="Observed"/>, <see cref="Evaluations"/> and <see cref="Stored"/>
+/// must describe the same scope. Slicing happens at the store — see
 /// <c>AlertScopes</c>.
 /// </remarks>
 public sealed record AlertReconciliationRequest
@@ -31,17 +70,52 @@ public sealed record AlertReconciliationRequest
     /// </para>
     /// <para>
     /// Now it is said once, here, and <see cref="AlertReconciler"/> applies it
-    /// to everything it returns. Omitting it is a compile error rather than an
-    /// alert filed under nothing, which is the point: a fourth store, or a
-    /// fifth caller, has nothing left to get wrong.
+    /// to everything it returns.
     /// </para>
     /// </remarks>
     public required string Scope { get; init; }
 
     /// <summary>
-    /// Problems seen this cycle, from every source in this scope combined.
+    /// What the direct producers found this cycle: collection alerts, store
+    /// failures, rule failures, compaction. Two-valued at N = 1.
     /// </summary>
+    /// <remarks>
+    /// A direct producer runs every cycle and is its own evidence (design note
+    /// §1.2), so its alert not being here is its absence — unless the alert is
+    /// about an entity of a source that did not report, which is unknown.
+    /// </remarks>
     public IReadOnlyList<AlertDefinition> Observed { get; init; } = [];
+
+    /// <summary>
+    /// What each rule of this scope concluded, with its N (ADR-0026).
+    /// </summary>
+    /// <remarks>
+    /// An alert a rule holds and gives no verdict about is
+    /// <see cref="UnknownReason.NotReported"/>: kept open, marked stale. An
+    /// empty list therefore resolves nothing a rule holds, which is the point
+    /// — "pass an empty list" used to mean "everything cleared" (#63).
+    /// </remarks>
+    public required IReadOnlyList<RuleEvaluation> Evaluations { get; init; }
+
+    /// <summary>Who answered this cycle, for the source clamp.</summary>
+    public required EvidenceSources Sources { get; init; }
+
+    /// <summary>
+    /// How long an alert may go without fresh evidence before it moves to
+    /// <see cref="AlertLifecycleState.Unknown"/>: raw retention, read from the
+    /// retention policy rather than copied (ADR-0017, ADR-0026).
+    /// </summary>
+    public required TimeSpan RawRetention { get; init; }
+
+    /// <summary>
+    /// The age clamp: a verdict whose evidence is older than this is
+    /// <see cref="UnknownReason.InputStale"/>. Null leaves it off.
+    /// </summary>
+    /// <remarks>
+    /// 2 × the scope's interval + its read budget, computed from the collection
+    /// policy and never set as a number of its own (design note §1.3, Z3).
+    /// </remarks>
+    public TimeSpan? EvidenceLimit { get; init; }
 
     /// <summary>Instances currently stored for this scope.</summary>
     public IReadOnlyList<AlertInstance> Stored { get; init; } = [];
@@ -56,47 +130,6 @@ public sealed record AlertReconciliationRequest
     public FlapPolicy Flap { get; init; } = FlapPolicy.Default;
 
     public required DateTimeOffset NowUtc { get; init; }
-
-    /// <summary>
-    /// Sources expected to report in this scope that did not.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The rule <c>EntityGraph.Merge</c> applies to entities, applied to
-    /// alerts: a vCenter that did not answer has told us nothing, so nothing
-    /// it would have re-reported may be taken to have stopped. A stored
-    /// instance whose <see cref="AlertInstance.Entity"/> belongs to one of
-    /// these (see <see cref="SourceOf"/>) and that was not observed is carried
-    /// forward unchanged — not resolved, not counted as a cessation.
-    /// </para>
-    /// <para>
-    /// Only the sources that were asked and did not answer, not every source
-    /// absent from the reports: an entity left behind by a vCenter that was
-    /// removed from configuration must not hold its alerts open forever.
-    /// Alerts with no entity are judged as before; a silent source's own
-    /// "unreachable" alert is observed, not carried.
-    /// </para>
-    /// </remarks>
-    public IReadOnlyCollection<string> SilentSources { get; init; } = [];
-
-    /// <summary>
-    /// Which source an entity belongs to, or null when it is not known.
-    /// Needed only with <see cref="SilentSources"/>.
-    /// </summary>
-    public Func<EntityId, string?>? SourceOf { get; init; }
-
-    /// <summary>
-    /// Fingerprints a rule could not evaluate this cycle.
-    /// </summary>
-    /// <remarks>
-    /// A rule that could not read its input for one entity says so here
-    /// rather than going quiet about it: a stored instance with one of these
-    /// fingerprints that was not observed is carried forward unchanged, like
-    /// one belonging to a silent source. The rule still has to report the
-    /// failure itself — carrying forward keeps the finding, it does not
-    /// explain why it stopped being rechecked.
-    /// </remarks>
-    public IReadOnlyCollection<AlertFingerprint> Unevaluated { get; init; } = [];
 }
 
 /// <summary>What the caller must persist and act on.</summary>
@@ -107,13 +140,11 @@ public sealed record AlertReconciliationResult
     /// Every one of them carries <see cref="AlertReconciliationRequest.Scope"/>,
     /// whatever the definition it came from said and whatever the stored
     /// instance said before. A store may therefore file this result exactly as
-    /// it is given it, and must: a store that stamps is a second opinion on a
-    /// question that now has one answer, and a second opinion is only ever
-    /// noticed when it differs.
+    /// it is given it, and must.
     /// </remarks>
     public IReadOnlyList<AlertInstance> Instances { get; init; } = [];
 
-    /// <summary>Instances that should be deleted from storage.</summary>
+    /// <summary>Instances that should be deleted from storage. Their history stays.</summary>
     public IReadOnlyList<AlertFingerprint> Retired { get; init; } = [];
 
     /// <summary>
@@ -134,7 +165,7 @@ public sealed record AlertReconciliationResult
 }
 
 /// <summary>
-/// Folds one cycle's observations into the stored alert state.
+/// Folds one cycle's verdicts into the stored alert state.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -143,18 +174,15 @@ public sealed record AlertReconciliationResult
 /// without infrastructure.
 /// </para>
 /// <para>
-/// This is the single place alert state is advanced. Every view — the inbox,
-/// an entity page, a vendor deep view — reads the result rather than computing
-/// its own. In the previous product some screens read the per-cycle snapshot
-/// list while others read lifecycle instances, so the same alert could appear
-/// acknowledged on one page and open on another. See ADR-0007.
+/// This is the single place alert state is advanced, and the single place an
+/// alert's scope is decided. See ADR-0007.
 /// </para>
 /// <para>
-/// For the same reason it is also the single place an alert's scope is
-/// decided. It knows the scope — the request names it — and it produces every
-/// instance and every flap history the rest of the product will ever see, so
-/// nothing downstream needs to know how to fill the field in, and nothing
-/// upstream needs to remember to.
+/// Three-valued since ADR-0026. Each fingerprint gets one decision for the
+/// cycle: present, absent or unknown. Present wins over unknown, and unknown
+/// over absent — when two verdicts disagree about the same fingerprint, the
+/// one that cannot fabricate a resolution is kept. Only an absent decision
+/// can resolve, and only at the rule's N.
 /// </para>
 /// </remarks>
 public static class AlertReconciler
@@ -169,32 +197,32 @@ public static class AlertReconciler
         // alerts under a slice no cycle ever reconciles — they would be
         // invisible in every inbox and never resolve.
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Scope);
+        ArgumentNullException.ThrowIfNull(request.Evaluations);
+        ArgumentNullException.ThrowIfNull(request.Sources);
 
         var stored = request.Stored.ToDictionary(i => i.Fingerprint);
         var flaps = request.FlapHistories.ToDictionary(f => f.Fingerprint);
-
-        // Info never enters the lifecycle. Dropping it here rather than at each
-        // call site means a new alert source cannot forget to.
-        var observed = request.Observed
-            .Where(a => AlertLifecycle.EntersLifecycle(a.Severity))
-            .GroupBy(a => a.Fingerprint)
-            // Two sources reporting the same problem is one problem. Keep the
-            // worse reading rather than letting collector order decide.
-            .ToDictionary(g => g.Key, g => g.MaxBy(a => a.Severity)!);
-
-        var carried = CarriedForward(request);
+        var decisions = Decide(request, stored);
 
         // Count this cycle's cessations before deciding what is flapping, so a
         // signal that stops on this very cycle is judged on current evidence.
+        // A cessation is a resolution (or an unconfirmed alert forgotten), not
+        // the first absence: an alert "resolving 1/3" has not stopped firing.
+        var absences = new Dictionary<AlertFingerprint, AbsenceResult>();
+
         foreach (var (fingerprint, instance) in stored)
         {
+            if (decisions.GetValueOrDefault(fingerprint) is not Gone gone)
+            {
+                continue;
+            }
+
+            var absence = AlertLifecycle.OnAbsent(instance, gone.Absence, gone.Resolution, request.NowUtc);
+            absences[fingerprint] = absence;
+
             // Derived alerts are excluded: tracking the instability of the
             // instability detector recurses and tells an operator nothing.
-            // A carried instance did not cease; nobody looked.
-            if (instance.IsDerived ||
-                observed.ContainsKey(fingerprint) ||
-                carried(instance) ||
-                !AlertLifecycle.OnAbsent(instance, request.NowUtc).CeasedFiring)
+            if (instance.IsDerived || !absence.CeasedFiring)
             {
                 continue;
             }
@@ -205,13 +233,6 @@ public static class AlertReconciler
                 {
                     Fingerprint = fingerprint,
                     ObjectName = instance.Title,
-
-                    // The scope being reconciled, not the one on the instance
-                    // that ceased. They are the same value — the instance was
-                    // read from this scope's slice — but only one of them is
-                    // the answer to "where does the derived alert belong", and
-                    // reading it off the instance is how this field came to be
-                    // copied from a field that was itself sometimes empty.
                     Scope = request.Scope,
                 };
 
@@ -220,64 +241,66 @@ public static class AlertReconciler
 
         // A signal that will not hold still is a problem in its own right, and
         // one that leaves no instance behind. It is re-derived every cycle and
-        // then treated exactly like anything a collector reported, so it
-        // confirms under hysteresis and resolves on its own once the signal
-        // settles — rather than being raised once and retired on the next pass
-        // for not having been observed.
+        // then treated exactly like anything a direct producer reported.
         foreach (var history in flaps.Values)
         {
             var derived = FlapDetection.Evaluate(history, request.NowUtc, request.Flap);
             if (derived is not null)
             {
-                observed[derived.Fingerprint] = derived;
+                decisions[derived.Fingerprint] = new Seen(derived, request.NowUtc, null);
+                absences.Remove(derived.Fingerprint);
             }
         }
 
         var next = new Dictionary<AlertFingerprint, AlertInstance>();
         var retired = new List<AlertFingerprint>();
 
-        foreach (var (fingerprint, definition) in observed)
+        foreach (var (fingerprint, decision) in decisions)
         {
             stored.TryGetValue(fingerprint, out var existing);
-            next[fingerprint] = AlertLifecycle.OnObserved(
-                existing, definition, request.Hysteresis, request.NowUtc, request.MaintenanceWindows);
+
+            switch (decision)
+            {
+                case Seen seen:
+                    next[fingerprint] = AlertLifecycle.OnObserved(
+                        existing,
+                        seen.Definition,
+                        request.Hysteresis,
+                        request.NowUtc,
+                        request.MaintenanceWindows,
+                        seen.EvidenceAtUtc) with
+                    {
+                        RuleId = seen.RuleId ?? existing?.RuleId,
+                    };
+                    break;
+
+                case Gone gone when existing is not null:
+                    Keep(absences.TryGetValue(fingerprint, out var absence)
+                        ? absence
+                        : AlertLifecycle.OnAbsent(existing, gone.Absence, gone.Resolution, request.NowUtc));
+                    break;
+
+                // Unknown never opens: with nothing stored, there is nothing to do.
+                case Blind blind when existing is not null:
+                    Keep(AlertLifecycle.OnUnknown(existing, blind.Unknown, request.RawRetention, request.NowUtc));
+                    break;
+            }
+
+            void Keep(AbsenceResult result)
+            {
+                if (result.Instance is null)
+                {
+                    retired.Add(fingerprint);
+                }
+                else
+                {
+                    next[fingerprint] = result.Instance;
+                }
+            }
         }
 
-        foreach (var (fingerprint, instance) in stored)
-        {
-            if (observed.ContainsKey(fingerprint))
-            {
-                continue;
-            }
-
-            // Not observed because it was not looked for: kept exactly as it
-            // was. Resolving it would say "the problem went away" when the
-            // truth is "we could not look", and the two lead to opposite
-            // actions — the second is already its own alert.
-            if (carried(instance))
-            {
-                next[fingerprint] = instance;
-                continue;
-            }
-
-            var absence = AlertLifecycle.OnAbsent(instance, request.NowUtc);
-
-            if (absence.Instance is null)
-            {
-                retired.Add(fingerprint);
-            }
-            else
-            {
-                next[fingerprint] = absence.Instance;
-            }
-        }
-
-        // Stamped once, on the way out, over everything: what a collector
-        // reported, what a rule found, what a guarded write failed to do, what
-        // flap detection derived, and what was already stored. Applied here
-        // rather than to the observations on the way in because this is the
-        // last point at which anything is produced — an instance that reaches
-        // a caller without passing through this line does not exist.
+        // Stamped once, on the way out, over everything: an instance that
+        // reaches a caller without passing through this line does not exist.
         var instances = next.Values
             .Select(i => i with { Scope = request.Scope })
             .ToList();
@@ -291,28 +314,200 @@ public static class AlertReconciler
         };
     }
 
-    /// <summary>
-    /// Whether a stored instance that was not observed was simply not looked
-    /// for this cycle. See <see cref="AlertReconciliationRequest.SilentSources"/>
-    /// and <see cref="AlertReconciliationRequest.Unevaluated"/>.
-    /// </summary>
-    private static Func<AlertInstance, bool> CarriedForward(AlertReconciliationRequest request)
+    /// <summary>One decision per fingerprint, from every producer and every stored instance.</summary>
+    private static Dictionary<AlertFingerprint, Decision> Decide(
+        AlertReconciliationRequest request, Dictionary<AlertFingerprint, AlertInstance> stored)
     {
-        var unevaluated = request.Unevaluated.ToHashSet();
-        var silent = new HashSet<string>(request.SilentSources, StringComparer.Ordinal);
-        var sourceOf = request.SourceOf;
+        var decisions = new Dictionary<AlertFingerprint, Decision>();
 
-        if (unevaluated.Count == 0 && (silent.Count == 0 || sourceOf is null))
+        void Offer(AlertFingerprint fingerprint, Decision decision)
         {
-            return static _ => false;
+            if (!decisions.TryGetValue(fingerprint, out var current) || Outranks(decision, current))
+            {
+                decisions[fingerprint] = decision;
+            }
         }
 
-        return instance =>
-            unevaluated.Contains(instance.Fingerprint) ||
-            (silent.Count > 0 &&
-             sourceOf is not null &&
-             instance.Entity is { } entity &&
-             sourceOf(entity) is { } source &&
-             silent.Contains(source));
+        // Info never enters the lifecycle. Dropping it here rather than at each
+        // call site means a new alert source cannot forget to.
+        foreach (var alert in request.Observed.Where(a => AlertLifecycle.EntersLifecycle(a.Severity)))
+        {
+            Offer(alert.Fingerprint, new Seen(alert, request.NowUtc, null));
+        }
+
+        foreach (var evaluation in request.Evaluations)
+        {
+            foreach (var verdict in evaluation.Verdicts)
+            {
+                switch (Clamp(verdict, request))
+                {
+                    case ConditionPresent present:
+                        var raised = present.Alerts
+                            .Where(a => AlertLifecycle.EntersLifecycle(a.Severity))
+                            .ToList();
+
+                        foreach (var alert in raised)
+                        {
+                            Offer(alert.Fingerprint, new Seen(alert, present.EvidenceAtUtc, evaluation.RuleId));
+                        }
+
+                        // Covered and not raised: this verdict says it is absent.
+                        foreach (var fingerprint in present.Covers.Except(raised.Select(a => a.Fingerprint)))
+                        {
+                            Offer(fingerprint, new Gone(
+                                new AlertAbsence { EvidenceAtUtc = present.EvidenceAtUtc },
+                                evaluation.Resolution));
+                        }
+
+                        break;
+
+                    case ConditionAbsent absent:
+                        foreach (var fingerprint in absent.Covers)
+                        {
+                            Offer(fingerprint, new Gone(
+                                new AlertAbsence { EvidenceAtUtc = absent.EvidenceAtUtc, Because = absent.Because },
+                                absent.Resolution ?? evaluation.Resolution));
+                        }
+
+                        break;
+
+                    case Unknown unknown:
+                        foreach (var fingerprint in unknown.Covers)
+                        {
+                            Offer(fingerprint, new Blind(
+                                new AlertUnknown { Reason = unknown.Reason, Detail = unknown.Detail }));
+                        }
+
+                        break;
+                }
+            }
+        }
+
+        var roster = request.Evaluations.Select(e => e.RuleId).ToHashSet(StringComparer.Ordinal);
+
+        foreach (var (fingerprint, instance) in stored)
+        {
+            if (decisions.ContainsKey(fingerprint))
+            {
+                continue;
+            }
+
+            // A resolved alert of a rule that is no longer registered (K2's
+            // four, M3.3's remote logging) is over and nothing will ever speak
+            // for it again: it retires, and its history stays. An open one is
+            // left "not reported" below, so the path that retires the rule —
+            // ContinuityAlarmTransition for K2 — decides how it closes.
+            if (instance is { RuleId: { } retiredRule, State: AlertLifecycleState.Resolved } &&
+                !roster.Contains(retiredRule))
+            {
+                decisions[fingerprint] = new Gone(
+                    new AlertAbsence { EvidenceAtUtc = request.NowUtc }, ResolutionPolicy.Immediate);
+                continue;
+            }
+
+            decisions[fingerprint] = instance.RuleId is { } ruleId
+                // The flipped default: a rule that said nothing about an alert
+                // it holds has not found the condition gone.
+                ? new Blind(new AlertUnknown
+                {
+                    Reason = UnknownReason.NotReported,
+                    Detail = $"'{ruleId}' gave no verdict about this alert this cycle",
+                })
+
+                // A direct producer's silence is its absence, unless the alert
+                // is about an entity of a source that did not answer: that
+                // source has told us nothing, and EntityGraph.Merge keeps its
+                // entities for the same reason.
+                : request.Sources.SilentOwnerOf(instance.Entity) is { } silent
+                    ? new Blind(new AlertUnknown
+                    {
+                        Reason = UnknownReason.SourceSilent,
+                        Detail = $"source '{silent}' did not report this cycle",
+                    })
+                    : new Gone(new AlertAbsence { EvidenceAtUtc = request.NowUtc }, ResolutionPolicy.Immediate);
+        }
+
+        return decisions;
     }
+
+    /// <summary>
+    /// The two structural clamps (design note §1.3): a verdict that rests on a
+    /// silent source, or on evidence older than the scope allows, is unknown.
+    /// </summary>
+    /// <remarks>
+    /// Applied to present verdicts as well as absent ones: "unknown never
+    /// opens" means a clamped present cannot raise a new alert either.
+    /// </remarks>
+    private static SubjectVerdict Clamp(SubjectVerdict verdict, AlertReconciliationRequest request)
+    {
+        var evidence = verdict switch
+        {
+            ConditionPresent present => present.EvidenceAtUtc,
+            ConditionAbsent absent => absent.EvidenceAtUtc,
+            _ => (DateTimeOffset?)null,
+        };
+
+        if (evidence is not { } at)
+        {
+            return verdict;
+        }
+
+        // Nothing answered at all: nothing this cycle is evidence of anything,
+        // whether or not the verdict names an entity. This is the restart
+        // symptom's cycle — no observations, no reporting sources.
+        if (request.Sources.Reporting.Count == 0)
+        {
+            return Unknown(verdict, UnknownReason.SourceSilent, "no source reported this cycle");
+        }
+
+        if (request.Sources.SilentOwnerOf(verdict.Entity) is { } silent)
+        {
+            return Unknown(verdict, UnknownReason.SourceSilent, $"source '{silent}' did not report this cycle");
+        }
+
+        if (request.EvidenceLimit is { } limit && request.NowUtc - at > limit)
+        {
+            return Unknown(
+                verdict,
+                UnknownReason.InputStale,
+                $"evidence from {at:u} is older than the {limit} this scope allows");
+        }
+
+        return verdict;
+    }
+
+    private static Unknown Unknown(SubjectVerdict verdict, UnknownReason reason, string detail) => new()
+    {
+        // A present verdict's raised fingerprints are covered too, whether or
+        // not the rule listed them.
+        Covers = verdict is ConditionPresent present
+            ? [.. present.Covers.Union(present.Alerts.Select(a => a.Fingerprint))]
+            : verdict.Covers,
+        Entity = verdict.Entity,
+        Reason = reason,
+        Detail = detail,
+    };
+
+    private static bool Outranks(Decision candidate, Decision current) => (candidate, current) switch
+    {
+        // Two readings of one problem are one problem; the worse one wins
+        // rather than whichever producer happened to run last.
+        (Seen a, Seen b) => a.Definition.Severity > b.Definition.Severity,
+        _ => Rank(candidate) > Rank(current),
+    };
+
+    private static int Rank(Decision decision) => decision switch
+    {
+        Seen => 3,
+        Blind => 2,
+        _ => 1,
+    };
+
+    private abstract record Decision;
+
+    private sealed record Seen(AlertDefinition Definition, DateTimeOffset EvidenceAtUtc, string? RuleId) : Decision;
+
+    private sealed record Gone(AlertAbsence Absence, ResolutionPolicy Resolution) : Decision;
+
+    private sealed record Blind(AlertUnknown Unknown) : Decision;
 }

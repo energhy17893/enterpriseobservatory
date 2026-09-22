@@ -100,6 +100,43 @@ public class CompactionVisibilityTests
         string.Equals(instance.Title, title, StringComparison.Ordinal);
 
     [Fact]
+    public async Task A_sweep_prunes_the_history_of_ended_alerts_past_the_hourly_retention()
+    {
+        // The alert history is kept 90 days (ADR-0017's hourly tier) and swept
+        // by the same pass as the measurements (ADR-0026, migration 14).
+        var harness = new Harness { Store = { Broken = false } };
+        var old = new AlertDefinition
+        {
+            Fingerprint = AlertFingerprint.Create("vc-1", "Host down", "Hardware", "esx-01"),
+            Severity = AlertSeverity.Critical,
+            Title = "Host down",
+        };
+
+        AlertReconciliationResult Cycle(IReadOnlyList<AlertDefinition> observed, DateTimeOffset now) =>
+            harness.Alerts.Reconcile(AlertScopes.Observation, (stored, flaps) =>
+                AlertReconciler.Reconcile(new AlertReconciliationRequest
+                {
+                    Scope = AlertScopes.Observation,
+                    Observed = observed,
+                    Stored = stored,
+                    FlapHistories = flaps,
+                    NowUtc = now,
+                    Evaluations = [],
+                    Sources = EvidenceSources.None,
+                    RawRetention = TimeSpan.FromDays(2),
+                }));
+
+        var then = T0.AddDays(-100);
+        Cycle([old], then);
+        Cycle([], then.AddMinutes(1));
+        Cycle([], then.AddMinutes(2));
+        Assert.Single(harness.Alerts.ResolvedBetween(then, then.AddHours(1)));
+
+        await harness.SweepAsync();
+
+        Assert.Empty(harness.Alerts.ResolvedBetween(then, then.AddHours(1)));
+    }
+    [Fact]
     public async Task A_sweep_that_keeps_failing_reaches_the_alert_inbox()
     {
         // The defect. Without this the product shows a healthy estate while
@@ -229,6 +266,9 @@ public class CompactionVisibilityTests
                 Stored = stored,
                 FlapHistories = flaps,
                 NowUtc = T0,
+                Evaluations = [],
+                Sources = EvidenceSources.None,
+                RawRetention = TimeSpan.FromDays(2),
             }));
 
         harness.Clock.Advance(TimeSpan.FromMinutes(5));

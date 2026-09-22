@@ -60,7 +60,7 @@ public class AlertLifecycleTests
         // ceased is what lets flap detection see the instability at all.
         var first = AlertLifecycle.OnObserved(null, Alert(), HysteresisPolicy.Default, Cycle(0));
 
-        var result = AlertLifecycle.OnAbsent(first, Cycle(1));
+        var result = Gone(first, Cycle(1));
 
         Assert.Null(result.Instance);
         Assert.True(result.CeasedFiring);
@@ -136,7 +136,7 @@ public class AlertLifecycleTests
     {
         var i = AlertLifecycle.Acknowledge(Confirmed(), "ertugrul", Cycle(2));
 
-        var result = AlertLifecycle.OnAbsent(i, Cycle(3));
+        var result = Gone(i, Cycle(3));
 
         Assert.NotNull(result.Instance);
         Assert.Equal(AlertLifecycleState.Resolved, result.Instance.State);
@@ -184,7 +184,7 @@ public class AlertLifecycleTests
         var i = AlertLifecycle.Clear(Confirmed(), "ertugrul", Cycle(2));
         i = AlertLifecycle.OnObserved(i, Alert(), HysteresisPolicy.Default, Cycle(3));
 
-        var result = AlertLifecycle.OnAbsent(i, Cycle(4));
+        var result = Gone(i, Cycle(4));
 
         Assert.Null(result.Instance);
         // It stopped firing on an earlier cycle, so this is not a new cessation
@@ -196,7 +196,7 @@ public class AlertLifecycleTests
     public void A_fault_that_returns_after_a_clear_is_a_fresh_alert_and_notifies()
     {
         var i = AlertLifecycle.Clear(Confirmed(), "ertugrul", Cycle(2));
-        Assert.Null(AlertLifecycle.OnAbsent(i, Cycle(3)).Instance);
+        Assert.Null(Gone(i, Cycle(3)).Instance);
 
         var reborn = AlertLifecycle.OnObserved(
             null, Alert(AlertSeverity.Critical), HysteresisPolicy.Default, Cycle(9));
@@ -210,7 +210,7 @@ public class AlertLifecycleTests
     public void A_condition_that_resolves_on_its_own_and_returns_does_notify_again()
     {
         // Distinct from the cleared case: nobody decided this was handled.
-        var resolved = AlertLifecycle.OnAbsent(Confirmed(), Cycle(2)).Instance;
+        var resolved = Gone(Confirmed(), Cycle(2)).Instance;
         Assert.NotNull(resolved);
         Assert.False(resolved.ClearedByOperator);
 
@@ -391,6 +391,11 @@ public class AlertLifecycleTests
         Assert.Equal(AlertLifecycleState.Acknowledged, clear.From);
         Assert.Equal(AlertLifecycleState.Resolved, clear.To);
     }
+
+    /// <summary>A fresh absence at N = 1: what a direct producer's silence is.</summary>
+    private static AbsenceResult Gone(AlertInstance instance, DateTimeOffset at) =>
+        AlertLifecycle.OnAbsent(
+            instance, new AlertAbsence { EvidenceAtUtc = at }, ResolutionPolicy.Immediate, at);
 
     private static AlertInstance Confirmed()
     {

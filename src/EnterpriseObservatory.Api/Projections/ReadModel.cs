@@ -204,24 +204,27 @@ public sealed class ReadModel(
         };
     }
 
-    /// <summary>Open (in any of its three live states) plus resolved-within-range.</summary>
-    private IReadOnlyList<AlertInstance> ReportCandidates(DateTimeOffset from, DateTimeOffset to) =>
-        [.. _alerts.All.Where(a => a.IsConfirmed && IsInReport(a, from, to))];
-
-    private static bool IsInReport(AlertInstance alert, DateTimeOffset from, DateTimeOffset to) =>
-        alert.State != AlertLifecycleState.Resolved ||
-        (ResolvedAtUtc(alert) is { } resolvedAt && resolvedAt >= from && resolvedAt <= to);
-
-    /// <summary>When an instance last moved into <see cref="AlertLifecycleState.Resolved"/>.</summary>
+    /// <summary>Open (in any of its live states) plus resolved-within-range.</summary>
     /// <remarks>
-    /// From the transition history rather than <c>LastSeenUtc</c>: a resolved
-    /// alert is not observed again, so its last-seen time is when the
-    /// condition was last true, not when it stopped being one. A resolved
-    /// alert with no such transition (state restored some other way) has no
-    /// answer and is excluded rather than guessed at.
+    /// <para>
+    /// The open half from the store; the resolved half from the durable
+    /// history (<see cref="IAlertStateStore.ResolvedBetween"/>). A resolved
+    /// alert retires the cycle after it resolves, and until migration 14 its
+    /// transitions went with it — so an alert that resolved an hour ago was on
+    /// the report for thirty seconds and then was not (ADR-0026).
+    /// </para>
+    /// <para>
+    /// Windowed by when it resolved, from the history rather than
+    /// <c>LastSeenUtc</c>: a resolved alert is not observed again, so its
+    /// last-seen time is when the condition was last true, not when it stopped
+    /// being one.
+    /// </para>
     /// </remarks>
-    private static DateTimeOffset? ResolvedAtUtc(AlertInstance alert) =>
-        alert.History.LastOrDefault(t => t.To == AlertLifecycleState.Resolved)?.AtUtc;
+    private IReadOnlyList<AlertInstance> ReportCandidates(DateTimeOffset from, DateTimeOffset to) =>
+    [
+        .. _alerts.All.Where(a => a.IsConfirmed && a.State != AlertLifecycleState.Resolved),
+        .. _alerts.ResolvedBetween(from, to).Where(a => a.IsConfirmed),
+    ];
 
     private static AlertReportRow ToReportRow(AlertInstance alert, EntityGraph graph)
     {
