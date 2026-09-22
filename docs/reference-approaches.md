@@ -936,7 +936,9 @@ collector oturumla ölür; token için belge yok, biz iptal etmeye devam ederiz)
 Bitti kanıtı doğrudan: tur sonunda `viewList` = 0. `maxCollector` okunur ve
 olay okuyucusu onu aşmaz. E'ye "Start'sız Shutdown" vakası eklenir; çift
 Shutdown vakası da eklenir (sözleşme metni istiyor, şablon test etmiyor — biz
-ederiz). **Reddedilen:** OTel'in view'ı iptal edilmiş bağlamla yok etmesi
+ederiz). **F3'te reddedilen (22 Eylül gece):** Telegraf'ın CurrentTime ön yoklaması ve OTel'in SessionIsActive yoklaması — her üst çağrıya bir tur ekler; üretim sayacı + tek kilit aynı garantiyi bedelsiz verir, süresi dolan oturum ilk NotAuthenticated'da aynı exchange içinde bir kez yeniden girişle kapanır. govmomi'nin 10 dk keepalive'ı — etkileşimli istemciler için; bizde okuma kadansı (her tur) oturumu canlı tutar, kesici açıkken ölen oturum ilk çağrıda yenilenir. Giriş yalnız taşıma hatasında ve bir kez yeniden denenir; SOAP fault asla (kilitlenme döngüsü yok).
+
+**Reddedilen:** OTel'in view'ı iptal edilmiş bağlamla yok etmesi
 (iptalde yok etme hiç çalışmaz).
 
 **F5 — tampon birimi ve sınırı (kaynak kod):**
