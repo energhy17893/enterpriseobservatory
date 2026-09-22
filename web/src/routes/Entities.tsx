@@ -152,8 +152,9 @@ function EntityTable({ rows }: { rows: EntityView[] }) {
                     )}
                   </div>
                   <Identifier>{entity.kind}</Identifier>
-                  <div>
+                  <div className="flex flex-wrap items-center gap-1">
                     <StatusBadge status={healthStatus(entity.health)}>{entity.health}</StatusBadge>
+                    {entity.healthIsStale && <StatusBadge status="Unknown">stale</StatusBadge>}
                   </div>
                   <div className="text-right tabular">{entity.alertCount || ''}</div>
                   <div className="text-right text-xs text-muted-foreground">

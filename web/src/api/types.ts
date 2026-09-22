@@ -10,6 +10,18 @@
 
 export type HealthState = 'Unknown' | 'Healthy' | 'Warning' | 'Critical'
 
+/**
+ * What `EntityView.health` rests on (K3/ADR-0018/ADR-0026): the entity's own
+ * alerts, an Unknown-only alert set, the collector's rollup when there is no
+ * alert and the source is reporting, or nothing observed at all.
+ */
+export type HealthBasis =
+  | 'NoAlertsSourceReporting'
+  | 'NoAlertsSourceSilent'
+  | 'Alerts'
+  | 'UnknownAlerts'
+  | 'NotObserved'
+
 export type AlertSeverity = 'Info' | 'Warning' | 'Critical'
 
 export type AlertLifecycleState = 'Open' | 'Acknowledged' | 'Silenced' | 'Resolved'
@@ -78,6 +90,12 @@ export interface EntityView {
   displayName: string
   /** Effective health: an entity we cannot see is Unknown, not its last colour. */
   health: HealthState
+  /** What `health` rests on -- alerts, Unknown alerts, the collector, or nothing seen. */
+  healthBasis: HealthBasis
+  /** Whether the alerts setting the colour have all lost fresh evidence; the colour stands. */
+  healthIsStale: boolean
+  /** Since when the colour has not been rechecked; null while fresh. */
+  healthStaleSinceUtc: string | null
   observationState: ObservationState
   source: string
   lastSeenUtc: string

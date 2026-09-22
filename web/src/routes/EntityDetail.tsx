@@ -4,7 +4,7 @@ import { api, ApiError } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { SeriesChart } from '@/components/SeriesChart'
 import { AlertActions } from '@/components/AlertActions'
-import { ago, findingLabel, findingStatus, healthStatus, ramp, severityStatus } from '@/lib/ui'
+import { ago, findingLabel, findingStatus, healthBasisLabel, healthStatus, ramp, severityStatus } from '@/lib/ui'
 import type {
   ClusterFailoverResourceView,
   ClusterFailoverView,
@@ -75,6 +75,11 @@ export function EntityDetail() {
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold">{entity.displayName}</h1>
           <StatusBadge status={healthStatus(entity.health)}>{entity.health}</StatusBadge>
+          {entity.healthIsStale && (
+            <StatusBadge status="Unknown">
+              stale{entity.healthStaleSinceUtc && <> since {ago(entity.healthStaleSinceUtc)}</>}
+            </StatusBadge>
+          )}
           {entity.observationState !== 'Active' && (
             <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
               {entity.observationState === 'Vanished' ? 'Vanished' : 'In maintenance'}
@@ -83,7 +88,8 @@ export function EntityDetail() {
         </div>
         <div className="mt-1">
           <Identifier>
-            {entity.kind} · {entity.source} · last seen {ago(entity.lastSeenUtc)}
+            {entity.kind} · {entity.source} · last seen {ago(entity.lastSeenUtc)} · health{' '}
+            {healthBasisLabel(entity.healthBasis)}
           </Identifier>
         </div>
         {entity.observationState === 'Vanished' && (
