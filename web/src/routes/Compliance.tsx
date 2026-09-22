@@ -426,7 +426,7 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
   const [excepting, setExcepting] = useState(false)
 
   const accept = useMutation({
-    mutationFn: () => api.acceptFinding(finding.controlId, finding.entityId, reason),
+    mutationFn: () => api.acceptFinding(finding.controlId, finding.entityId, finding.subject, reason),
     onSuccess: () => {
       setError(null)
       void queryClient.invalidateQueries({ queryKey: ['compliance'] })
@@ -502,7 +502,13 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
       )}
 
       {canAct && excepting && (
-        <ExceptionForm controlId={finding.controlId} entityId={finding.entityId} label="Except this host" />
+        <ExceptionForm
+          controlId={finding.controlId}
+          entityId={finding.entityId}
+          subject={finding.subject}
+          subjectLabel={finding.subjectLabel}
+          label="Except this host"
+        />
       )}
 
       {error !== null && <ErrorLine message={error} />}
@@ -510,26 +516,45 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
   )
 }
 
+/**
+ * K3 §5: an exception's scope must be explicit, and default to the narrow
+ * one. A finding with a non-empty `subject` (an `eo-continuity` per-subject
+ * control -- an HBA, a DRS rule, a device) defaults to excepting **that
+ * subject only**; widening it to every subject of the control on this host
+ * is an affirmative, separately-labelled checkbox, never the unlabelled
+ * default. SCG findings (`subject` always `""`) show none of this and behave
+ * exactly as before -- there is only one subject, the entity itself.
+ */
 function ExceptionForm({
   controlId,
   entityId,
+  subject,
+  subjectLabel,
   label,
 }: {
   controlId: string
   entityId: string | null
+  /** The finding's subject, when this form is scoped to one finding. */
+  subject?: string
+  subjectLabel?: string | null
   label: string
 }) {
   const queryClient = useQueryClient()
   const [reason, setReason] = useState('')
   const [owner, setOwner] = useState('')
   const [days, setDays] = useState<number>(90)
+  const [widenSubject, setWidenSubject] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const hasSubject = Boolean(subject)
+  const effectiveSubject = hasSubject && !widenSubject ? subject : null
 
   const add = useMutation({
     mutationFn: () =>
       api.addComplianceException({
         controlId,
         entityId,
+        subject: effectiveSubject,
         reason,
         owner,
         expiresUtc: new Date(Date.now() + days * 86_400_000).toISOString(),
@@ -594,6 +619,17 @@ function ExceptionForm({
       >
         {add.isPending ? 'Working…' : label}
       </button>
+      {hasSubject && (
+        <label className="flex w-full items-center gap-1.5 text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={widenSubject}
+            onChange={(event) => setWidenSubject(event.target.checked)}
+          />
+          Widen: except every subject of this control on this host, not just{' '}
+          <span className="font-mono">{subjectLabel || subject}</span>
+        </label>
+      )}
       {error !== null && (
         <div className="w-full">
           <ErrorLine message={error} />
@@ -638,6 +674,10 @@ function Exceptions({
                   <Identifier>{exception.controlId}</Identifier>
                   <span className="text-xs text-muted-foreground">
                     {exception.entityId === null ? 'every host' : exception.entityId}
+                    {' · '}
+                    {exception.subject === null || exception.subject === ''
+                      ? 'every subject'
+                      : exception.subject}
                   </span>
                   {exception.expired && <StatusBadge status="Warning">Expired</StatusBadge>}
                 </div>

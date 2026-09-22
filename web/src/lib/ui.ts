@@ -91,6 +91,28 @@ export function healthBasisLabel(basis: HealthBasis): string {
 }
 
 /**
+ * K3: the same fact as {@link healthBasisLabel}, short enough for a table row
+ * or a badge. Only the three bases that ever produce grey (Unknown) need a
+ * phrase here -- a green or coloured entity does not say why, only a grey one
+ * has to (ADR-0018/ADR-0026: grey means "we do not know", and an operator
+ * reading a list of them needs to tell "source silent" apart from "only
+ * Unknown alerts" apart from "never observed" without opening each one).
+ */
+export function healthBasisShort(basis: HealthBasis): string | null {
+  switch (basis) {
+    case 'NoAlertsSourceSilent':
+      return 'source silent'
+    case 'UnknownAlerts':
+      return 'only unknown alerts'
+    case 'NotObserved':
+      return 'not observed'
+    case 'NoAlertsSourceReporting':
+    case 'Alerts':
+      return null
+  }
+}
+
+/**
  * A finding's state as a status name, the compliance screen's mapping:
  * failing is a warning (not an outage), accepted and excepted are decisions
  * on record, not evaluated is unknown -- never folded into passing.
