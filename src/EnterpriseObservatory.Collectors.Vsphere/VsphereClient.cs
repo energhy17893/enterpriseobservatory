@@ -363,12 +363,24 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             "config.instanceUuid",
             "config.hardware.numCPU",
             "config.hardware.memoryMB",
+
+            // Collection PR 1, each seen on 145 of 145 live machines. Every
+            // machine has a connection state, a consolidation flag and a
+            // device list (a keyboard and a video card at the least), so an
+            // absent one was not read.
+            "runtime.connectionState",
+            "runtime.consolidationNeeded",
+            "config.hardware.device",
         ],
         ["ClusterComputeResource"] =
         [
             "name",
             "configuration.dasConfig.enabled",
             "configuration.drsConfig.enabled",
+
+            // Every cluster has a summary (3 of 3 live). Its currentEVCModeKey
+            // is legitimately absent when EVC is off, and is not a row.
+            "summary",
 
             // Stands for its dasConfig child: configurationEx can only be
             // requested whole, and every cluster's carries dasConfig, so a
@@ -498,6 +510,23 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             // The three-valued mode, not the legacy adminDisabled boolean,
             // which cannot tell normal lockdown from strict.
             "config.lockdownMode",
+
+            // Collection PR 1 -- every path below was read alone on a live
+            // vCenter before entering this list
+            // (docs/measurements/collection-pr1-shapes.md). Read in
+            // InventoryVerdictParser.
+            //
+            // vCenter's own verdicts: its configuration issues (an empty
+            // array on a healthy host) and the hardware sensors (749 on 10
+            // hosts, 343 KB).
+            InventoryVerdictParser.ConfigIssuePath,
+            InventoryVerdictParser.HealthSystemRuntimePath,
+
+            // M8.7: the ESXi certificate, whole, for its expiry. The
+            // certificate manager's certificateInfo would be smaller and is
+            // refused to the read-only role (NoPermission, measured); this is
+            // ~55 KB a host.
+            InventoryVerdictParser.CertificatePath,
         ],
         ["VirtualMachine"] =
         [
@@ -524,6 +553,14 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             "snapshot",
             "layoutEx.file",
             "layoutEx.disk",
+
+            // Collection PR 1 (measured live, see the host list). The device
+            // list is the largest addition -- ~8 KB a machine -- and there is
+            // no narrower path to a CD drive's backing and connection (M8.4).
+            InventoryVerdictParser.ConfigIssuePath,
+            InventoryVerdictParser.ConnectionStatePath,
+            InventoryVerdictParser.ConsolidationNeededPath,
+            InventoryVerdictParser.DevicePath,
         ],
         ["ClusterComputeResource"] =
         [
@@ -540,6 +577,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             // can only walk declared types.
             "configurationEx",
             "triggeredAlarmState",
+
+            // Collection PR 1. summary whole, for EVC (M8.4): its
+            // currentEVCModeKey sub-path is InvalidProperty on a live
+            // vCenter, like configurationEx's children.
+            InventoryVerdictParser.ConfigIssuePath,
+            InventoryVerdictParser.ClusterSummaryPath,
         ],
         ["Datastore"] =
         [
@@ -555,6 +598,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             // has — see counter map §4.
             "summary.uncommitted",
             "triggeredAlarmState",
+
+            // Collection PR 1: vCenter's verdicts, and which hosts mount it
+            // (M8.4 -- one mounting host pins its machines to that host).
+            InventoryVerdictParser.ConfigIssuePath,
+            InventoryVerdictParser.MaintenanceModePath,
+            InventoryVerdictParser.DatastoreHostPath,
         ],
     };
 
@@ -1142,6 +1191,22 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                     $"distinct targets {byTransport.Select(p => p.Target).OfType<string>().Distinct(StringComparer.Ordinal).Count()}");
             }
 
+            // Collection PR 1: which verdict keys each object type yielded,
+            // and on how many objects. Keys and counts only.
+            lines.Add("verdicts");
+            foreach (var byType in objects
+                .GroupBy(o => o.Type, StringComparer.Ordinal)
+                .OrderBy(g => g.Key, StringComparer.Ordinal))
+            {
+                foreach (var key in byType
+                    .SelectMany(o => InventoryVerdictParser.Read(o).Keys)
+                    .GroupBy(k => k, StringComparer.Ordinal)
+                    .OrderBy(g => g.Key, StringComparer.Ordinal))
+                {
+                    lines.Add($"  {byType.Key,-24} {key.Key,-34} {key.Count()}/{byType.Count()}");
+                }
+            }
+
             return lines;
         }
         finally
@@ -1483,6 +1548,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         VirtualSwitchSecurity = HostConfigurationParser.ReadVirtualSwitchSecurity(o),
         PortGroupSecurity = HostConfigurationParser.ReadPortGroupSecurity(o),
         LockdownMode = HostConfigurationParser.ReadLockdownMode(o),
+        Verdicts = InventoryVerdictParser.Read(o),
     };
 
     public static VsphereVirtualMachine ToVirtualMachine(PropertyObject o) => new()
@@ -1504,6 +1570,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         MemoryLimitMb = PropertyCollectorParser.ReadLong(o.Values, "config.memoryAllocation.limit"),
         Snapshots = ReadSnapshots(o),
         SnapshotBytes = ReadSnapshotBytes(o),
+        Verdicts = InventoryVerdictParser.Read(o),
     };
 
     /// <summary>Reads a count that must fit in an int, or null.</summary>
@@ -1530,6 +1597,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         HaSettings = ClusterConfigurationParser.ReadHaSettings(o) ?? ClusterHaSettings.None,
         Groups = PropertyCollectorParser.ReadClusterGroups(o.Structures),
         DrsRules = PropertyCollectorParser.ReadDrsRules(o.Structures),
+        Verdicts = InventoryVerdictParser.Read(o),
     };
 
     public static VsphereDatastore ToDatastore(
@@ -1548,6 +1616,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 : [],
         Accessible = PropertyCollectorParser.ReadBoolean(o.Values, "summary.accessible"),
         Type = PropertyCollectorParser.ReadString(o.Values, "summary.type"),
+        Verdicts = InventoryVerdictParser.Read(o),
     };
 
     // --- IVsphereEventApi -------------------------------------------------

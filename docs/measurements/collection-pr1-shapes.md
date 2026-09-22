@@ -228,3 +228,48 @@ sayfalı (sayfa başına ~100 nesne ≈ 0,8 MB), 64 MB yanıt sınırının çok
   GET /api/appliance/recovery/backup/job     403
   DELETE /api/session                        204
 ```
+
+## Değişiklikten sonra — tam envanter okuması (`probe --from-store --shapes`)
+
+Yeni yollar koleksiyonun **tek** `RetrievePropertiesEx` isteğinde; okuma hatasız tamamlandı. Yalnızca yeni yolların satırları ve verdict anahtarlarının sayıları:
+
+```
+=== Inventory shape (names and counts only) ===
+  ClusterComputeResource (3)
+    configIssue                                  value                  3/3
+    summary                                      structure              3/3
+  Datastore (41)
+    configIssue                                  value                  41/41
+    host                                         structure              41/41
+    summary.maintenanceMode                      value                  41/41
+  HostSystem (10)
+    config.certificate                           value                  10/10
+    configIssue                                  value                  10/10
+    runtime.connectionState                      value                  10/10
+    runtime.healthSystemRuntime                  structure              10/10
+  VirtualMachine (145)
+    config.hardware.device                       structure              145/145
+    configIssue                                  value                  145/145
+    runtime.connectionState                      value                  145/145
+    runtime.consolidationNeeded                  value                  145/145
+  verdicts
+    ClusterComputeResource   configIssue.count                  3/3
+    ClusterComputeResource   evc.enabled                        3/3
+    ClusterComputeResource   evc.modeKey                        1/3
+    Datastore                configIssue.count                  41/41
+    Datastore                maintenanceMode                    41/41
+    Datastore                mountedHosts                       41/41
+    HostSystem               certificate.notAfter               10/10
+    HostSystem               configIssue.count                  10/10
+    HostSystem               hardwareHealth.alerting            1/10
+    HostSystem               hardwareHealth.sensors             10/10
+    HostSystem               hardwareHealth.sensors.green       10/10
+    HostSystem               hardwareHealth.sensors.red         10/10
+    HostSystem               hardwareHealth.sensors.unknown     10/10
+    HostSystem               hardwareHealth.sensors.yellow      10/10
+    VirtualMachine           cdrom.connected                    145/145
+    VirtualMachine           cdrom.connectedIso                 145/145
+    VirtualMachine           configIssue.count                  145/145
+    VirtualMachine           connectionState                    145/145
+    VirtualMachine           consolidationNeeded                145/145
+```

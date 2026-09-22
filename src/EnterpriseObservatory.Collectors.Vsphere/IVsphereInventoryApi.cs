@@ -138,6 +138,12 @@ public sealed record VsphereTriggeredAlarm
 /// </remarks>
 public sealed record VsphereHost
 {
+    /// <summary>
+    /// Verdicts and M8.4/M8.7 inputs, keyed by <see cref="InventoryVerdicts"/>;
+    /// merged into <c>Entity.Settings</c>. A missing key means not read.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Verdicts { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     /// <summary>Managed object reference, e.g. <c>host-123</c>.</summary>
     public required string MoRef { get; init; }
 
@@ -266,6 +272,12 @@ public sealed record VsphereStoragePath
 /// <summary>A virtual machine as vCenter sees it.</summary>
 public sealed record VsphereVirtualMachine
 {
+    /// <summary>
+    /// Verdicts and M8.4/M8.7 inputs, keyed by <see cref="InventoryVerdicts"/>;
+    /// merged into <c>Entity.Settings</c>. A missing key means not read.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Verdicts { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public required string MoRef { get; init; }
 
     public required string Name { get; init; }
@@ -356,6 +368,12 @@ public sealed record VsphereSnapshot
 /// <summary>A cluster as vCenter sees it.</summary>
 public sealed record VsphereCluster
 {
+    /// <summary>
+    /// Verdicts and M8.4/M8.7 inputs, keyed by <see cref="InventoryVerdicts"/>;
+    /// merged into <c>Entity.Settings</c>. A missing key means not read.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Verdicts { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public required string MoRef { get; init; }
 
     public required string Name { get; init; }
@@ -487,6 +505,12 @@ public sealed record VsphereDrsRule
 /// <summary>A datastore as vCenter sees it.</summary>
 public sealed record VsphereDatastore
 {
+    /// <summary>
+    /// Verdicts and M8.4/M8.7 inputs, keyed by <see cref="InventoryVerdicts"/>;
+    /// merged into <c>Entity.Settings</c>. A missing key means not read.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Verdicts { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public required string MoRef { get; init; }
 
     public required string Name { get; init; }

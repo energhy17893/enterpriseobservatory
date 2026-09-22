@@ -134,7 +134,7 @@ internal static class Candidates
             .ToList();
 
         // The device list is hundreds of types deep; its detail is below.
-        Tree(nodes, depth: property == "config.hardware.device" ? 1 : 3);
+        Tree(nodes, depth: property == "config.hardware.device" ? 1 : 4);
     }
 
     /// <summary>Element names and xsi:types, aggregated, to a depth.</summary>
