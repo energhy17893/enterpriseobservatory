@@ -111,6 +111,12 @@ public static class HealthAssessment
         {
             AssessRole(CollectorRole.Inventory, health, monitoring.InventoryInterval, healthOptions, nowUtc),
             AssessRole(CollectorRole.Observation, health, monitoring.ObservationInterval, healthOptions, nowUtc),
+
+            // Events (F1, CollectorRole.Events) reads on the inventory
+            // cadence — it runs right after the inventory cycle, on the same
+            // vCenters that just answered — so its own collector_health row
+            // is judged against that interval too.
+            AssessRole(CollectorRole.Events, health, monitoring.InventoryInterval, healthOptions, nowUtc),
         };
 
         // No sources of a role configured reports that role Healthy (nothing

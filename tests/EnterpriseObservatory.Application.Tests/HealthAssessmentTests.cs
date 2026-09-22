@@ -145,6 +145,22 @@ public class HealthAssessmentTests
     }
 
     [Fact]
+    public void The_events_role_is_judged_alongside_inventory_and_observation()
+    {
+        // F1 gave the event read its own collector_health row (CollectorRole
+        // .Events); /health must report it as its own role rather than
+        // silently folding it into inventory's.
+        var lastSuccess = T0 - TimeSpan.FromMinutes(20);
+        var health = new[] { Of(CollectorRole.Events, lastSuccess) };
+
+        var report = HealthAssessment.Assess(health, Options, Health, NoGaps, T0);
+
+        var events = Assert.Single(report.Roles, r => r.Role == CollectorRole.Events);
+        Assert.Equal(ServiceHealthStatus.Unhealthy, events.Status);
+        Assert.Equal(ServiceHealthStatus.Unhealthy, report.Status);
+    }
+
+    [Fact]
     public void Gap_counts_pass_through_by_state()
     {
         var gapCounts = new Dictionary<CollectionGapState, int>

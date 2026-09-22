@@ -98,9 +98,14 @@ public sealed class MonitoringWorker(
                 // one inventory interval. A source cut off keeps its mark.
                 //
                 // Only the vCenters whose inventory just answered are asked.
-                // This read has no breaker of its own, and without that it
-                // kept presenting a rejected password after the inventory
-                // breaker had already stopped doing so.
+                // The read now has its own breaker and its own collector_health
+                // row (F1, CollectorRole.Events): a rejected login backs off on
+                // its own count rather than riding inventory's, one strike
+                // rather than several consecutive failures before it stops
+                // asking. What is still borrowed from the inventory cycle is
+                // the verdict on which sources are worth asking at all — an
+                // events read is never attempted for a source inventory did
+                // not just hear from.
                 var events = await _events
                     .RunAsync(_sources.Events, result.ReportingSources, _options.EventReadDeadline, token)
                     .ConfigureAwait(false);

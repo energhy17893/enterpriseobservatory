@@ -215,6 +215,29 @@ export interface OverviewView {
   oldestSuccessfulReadUtc: string | null
 }
 
+/** One role's most recent monitoring cycle (Package D). */
+export interface CycleMetricsView {
+  atUtc: string | null
+  durationSeconds: number
+  /** `alert_history` rows this cycle appended. */
+  transitionsAppended: number
+  /** Verdicts clamped to Unknown by the age rule (ADR-0026 §Z3) this cycle. */
+  ageClampedToUnknown: number
+}
+
+/**
+ * The runner's own self-monitoring numbers, for the overview's own-health
+ * card. See `/api/metrics`.
+ */
+export interface SelfMetricsView {
+  generatedAtUtc: string
+  inventory: CycleMetricsView
+  observation: CycleMetricsView
+  unknownAlerts: number
+  openGaps: number
+  unrecoverableGaps: number
+}
+
 export type SeriesResolution = 'Raw' | 'FiveMinutes' | 'OneHour'
 
 export type RollupType =
