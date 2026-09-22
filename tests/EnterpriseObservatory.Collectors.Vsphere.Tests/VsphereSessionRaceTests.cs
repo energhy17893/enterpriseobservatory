@@ -25,14 +25,15 @@ public class VsphereSessionRaceTests
     public async Task Two_calls_that_find_the_session_expired_sign_in_once()
     {
         var server = new ScriptedVcenter();
-        using var http = new HttpClient(server) { BaseAddress = new Uri("https://vc.invalid") };
-        using var client = new VsphereClient(http, new VsphereConnectionOptions
+        var options = new VsphereConnectionOptions
         {
             BaseAddress = new Uri("https://vc.invalid"),
             Username = "svc-readonly@vsphere.local",
             Password = Secret.From("not-a-real-password"),
             InstanceId = "vc-test",
-        });
+        };
+        using var channel = new VsphereSessionChannel(server, options);
+        var client = new VsphereClient(channel, options);
 
         Assert.Equal(256, await client.GetMaxQueryMetricsAsync(CancellationToken.None));
         Assert.Equal(1, server.Logins);

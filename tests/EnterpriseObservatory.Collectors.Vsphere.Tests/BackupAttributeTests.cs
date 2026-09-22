@@ -159,7 +159,7 @@ public class BackupAttributeTests
     public async Task The_definitions_are_read_in_a_call_of_their_own_and_the_vm_carries_its_backup_time()
     {
         var server = new CustomFieldServer();
-        using var client = Client(server);
+        var client = Client(server);
 
         var payload = await client.RetrieveInventoryAsync(CancellationToken.None);
 
@@ -178,7 +178,7 @@ public class BackupAttributeTests
     [Fact]
     public async Task A_refused_definition_read_is_a_failure_and_the_vm_is_not_read_for_backup()
     {
-        using var client = Client(new CustomFieldServer { RefuseFields = true });
+        var client = Client(new CustomFieldServer { RefuseFields = true });
 
         var payload = await client.RetrieveInventoryAsync(CancellationToken.None);
 
@@ -189,18 +189,20 @@ public class BackupAttributeTests
         Assert.True(failure.IsPermissionDenied);
     }
 
-    private static VsphereClient Client(CustomFieldServer server) =>
-        new(new HttpClient(server) { BaseAddress = new Uri("https://vc.invalid") },
-            new VsphereConnectionOptions
-            {
-                BaseAddress = new Uri("https://vc.invalid"),
-                Username = "svc-readonly@vsphere.local",
-                Password = Secret.From("not-a-real-password"),
-                InstanceId = "vc-test",
-            })
+    private static VsphereClient Client(CustomFieldServer server)
+    {
+        var options = new VsphereConnectionOptions
         {
-            BackupTimeZone = Plus3,
+            BaseAddress = new Uri("https://vc.invalid"),
+            Username = "svc-readonly@vsphere.local",
+            Password = Secret.From("not-a-real-password"),
+            InstanceId = "vc-test",
         };
+
+        var channel = new VsphereSessionChannel(server, options);
+
+        return new VsphereClient(channel, options) { BackupTimeZone = Plus3 };
+    }
 
     private static PropertyNode Definition(string key, string name, string type) => new()
     {

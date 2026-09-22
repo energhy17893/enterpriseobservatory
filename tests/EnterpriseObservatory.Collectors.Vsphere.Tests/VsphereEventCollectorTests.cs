@@ -44,15 +44,16 @@ public class VsphereEventCollectorTests
         bool failOlderPages = false)
     {
         var server = new ScriptedVcenter(events, offersEventManager, failOlderPages);
-        var http = new HttpClient(server) { BaseAddress = new Uri("https://vc.invalid") };
-
-        var client = new VsphereClient(http, new VsphereConnectionOptions
+        var options = new VsphereConnectionOptions
         {
             BaseAddress = new Uri("https://vc.invalid"),
             Username = "svc-readonly@vsphere.local",
             Password = Secret.From("not-a-real-password"),
             InstanceId = "vc-test",
-        });
+        };
+
+        var channel = new VsphereSessionChannel(server, options);
+        var client = new VsphereClient(channel, options);
 
         return (client, server);
     }

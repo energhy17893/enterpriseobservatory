@@ -52,15 +52,17 @@ public class VsphereReplyHardeningTests
 
     private static VsphereClient Connect(Func<HttpResponseMessage> reply)
     {
-        var http = new HttpClient(new OneReply(reply)) { BaseAddress = new Uri("https://vc.invalid") };
-
-        return new VsphereClient(http, new VsphereConnectionOptions
+        var options = new VsphereConnectionOptions
         {
             BaseAddress = new Uri("https://vc.invalid"),
             Username = "svc-readonly@vsphere.local",
             Password = Secret.From("not-a-real-password"),
             InstanceId = "vc-test",
-        });
+        };
+
+        var channel = new VsphereSessionChannel(new OneReply(reply), options);
+
+        return new VsphereClient(channel, options);
     }
 
     private static HttpResponseMessage Ok(HttpContent content) =>
@@ -111,7 +113,7 @@ public class VsphereReplyHardeningTests
     {
         var body = new EndlessStream();
         var content = new StreamContent(body);
-        content.Headers.ContentLength = VsphereClient.MaxResponseBytes + 1;
+        content.Headers.ContentLength = VsphereSessionChannel.MaxResponseBytes + 1;
         var client = Connect(() => Ok(content));
 
         var failure = await Assert.ThrowsAsync<VsphereApiException>(
@@ -133,7 +135,8 @@ public class VsphereReplyHardeningTests
             () => client.GetCounterCatalogAsync(CancellationToken.None));
 
         Assert.Contains("MB", failure.Message, StringComparison.Ordinal);
-        Assert.InRange(body.BytesRead, VsphereClient.MaxResponseBytes, VsphereClient.MaxResponseBytes + (1024 * 1024));
+        Assert.InRange(
+            body.BytesRead, VsphereSessionChannel.MaxResponseBytes, VsphereSessionChannel.MaxResponseBytes + (1024 * 1024));
     }
 
     private sealed class FixedClock : IClock

@@ -20,21 +20,27 @@ namespace EnterpriseObservatory.Collectors.Contract.Tests;
 /// </remarks>
 public sealed class VsphereTransportContractFixture : ITransportContractFixture
 {
-    private static VsphereClient Connect(HttpMessageHandler handler) =>
-        new(new HttpClient(handler) { BaseAddress = new Uri("https://vc.invalid") }, new VsphereConnectionOptions
+    private static (VsphereClient Client, VsphereSessionChannel Channel) Connect(HttpMessageHandler handler)
+    {
+        var options = new VsphereConnectionOptions
         {
             BaseAddress = new Uri("https://vc.invalid"),
             Username = "svc-readonly@vsphere.local",
             Password = Secret.From("not-a-real-password"),
             InstanceId = "vc-contract",
-        });
+        };
+
+        var channel = new VsphereSessionChannel(handler, options);
+
+        return (new VsphereClient(channel, options), channel);
+    }
 
     public async Task<bool> DisposingWithoutAnyCallIsSilentAsync()
     {
         var server = new RefusingServer();
-        using var client = Connect(server);
+        var (_, channel) = Connect(server);
 
-        client.Dispose();
+        channel.Dispose();
 
         return server.RequestCount == 0;
     }
@@ -42,7 +48,8 @@ public sealed class VsphereTransportContractFixture : ITransportContractFixture
     public async Task<int> ReadHealthyInventoryEntityCountAsync(int targetCount)
     {
         var server = new HealthyServer(targetCount);
-        using var client = Connect(server);
+        var (client, channel) = Connect(server);
+        using var _ = channel;
 
         var payload = await client.RetrieveInventoryAsync(CancellationToken.None);
 
@@ -53,7 +60,8 @@ public sealed class VsphereTransportContractFixture : ITransportContractFixture
     {
         using var cutOff = new CancellationTokenSource();
         var server = new CutOffServer(onFirstPage: cutOff.Cancel);
-        using var client = Connect(server);
+        var (client, channel) = Connect(server);
+        using var _ = channel;
 
         var threw = false;
         try
@@ -71,7 +79,8 @@ public sealed class VsphereTransportContractFixture : ITransportContractFixture
     public async Task<bool> SingleInvalidFieldFailsWholeReadAsync()
     {
         var server = new InvalidPropertyServer();
-        using var client = Connect(server);
+        var (client, channel) = Connect(server);
+        using var _ = channel;
 
         try
         {
@@ -94,7 +103,8 @@ public sealed class VsphereTransportContractFixture : ITransportContractFixture
     public async Task<bool> MalformedReplyNeverBecomesEmptySuccessAsync()
     {
         var server = new MalformedReplyServer();
-        using var client = Connect(server);
+        var (client, channel) = Connect(server);
+        using var _ = channel;
 
         try
         {
@@ -113,7 +123,8 @@ public sealed class VsphereTransportContractFixture : ITransportContractFixture
     public async Task<int> ReauthenticationsWhenTwoConcurrentCallsNoticeExpiredSessionAsync()
     {
         var server = new ExpiringSessionServer();
-        using var client = Connect(server);
+        var (client, channel) = Connect(server);
+        using var _ = channel;
 
         // Establish the first session.
         await client.GetMaxQueryMetricsAsync(CancellationToken.None);

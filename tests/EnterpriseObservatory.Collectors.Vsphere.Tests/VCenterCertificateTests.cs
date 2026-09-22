@@ -37,18 +37,20 @@ public class VCenterCertificateTests
         }
     }
 
-    private static VsphereClient Client(IEndpointCertificateReader? reader) =>
-        new(new HttpClient(new VsphereSessionCleanupTests.ScriptedVcenter()) { BaseAddress = new Uri("https://vc.invalid") },
-            new VsphereConnectionOptions
-            {
-                BaseAddress = new Uri("https://vc.invalid"),
-                Username = "svc-readonly@vsphere.local",
-                Password = Secret.From("not-a-real-password"),
-                InstanceId = "vc-test",
-            })
+    private static VsphereClient Client(IEndpointCertificateReader? reader)
+    {
+        var options = new VsphereConnectionOptions
         {
-            CertificateReader = reader,
+            BaseAddress = new Uri("https://vc.invalid"),
+            Username = "svc-readonly@vsphere.local",
+            Password = Secret.From("not-a-real-password"),
+            InstanceId = "vc-test",
         };
+
+        var channel = new VsphereSessionChannel(new VsphereSessionCleanupTests.ScriptedVcenter(), options);
+
+        return new VsphereClient(channel, options) { CertificateReader = reader };
+    }
 
     [Fact]
     public async Task The_inventory_read_carries_the_vcenter_certificate_expiry_and_fingerprint()
