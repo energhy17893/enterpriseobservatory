@@ -809,6 +809,16 @@ fault tip adı; zaman aralığı verildiğinde `MaxSample`'ın hangi uçtan kest
 tek sorguda güvenli örnek sayısı; 2000+ VM'de işçi sayısı (yalnızca başparmak
 kuralı var); `WaitForUpdatesEx` ölçekte.
 
+**Hiçbir toplayıcının belgelemediği, canlıda ölçülen (22 Eylül 2026):**
+vCenter yeni bir gerçek zamanlı slotu `sampleInfo`'da değerleri dolmadan
+(`-1`) listeliyor ve birkaç saniye sonra dolu veriyor — 07:21:20Z'de beş
+host'ta 759 serinin 474'ü ilk görüşte `-1`, hepsi sonra doldu. Yüksek su
+işaretini "dönen en yeni zaman"a taşıyan bir toplayıcı bu slotu kalıcı olarak
+atlar. Telegraf'ın `-1` değerleri işarete nasıl yansıttığı kaynakta
+doğrulanmadı; bizim çözümümüz dolmamış
+slotu en çok 6 örnek geriye kadar yeniden okumak (#76). Ayrıntı ve tekrar
+yöntemi: `docs/live-verification.md` §8.
+
 **Sonuç:** ADR-0005'in "ikinci dilim" `WaitForUpdatesEx` sözü, yıllardır büyük
 ortamlarda çalışan dört toplayıcının hiçbirinin ihtiyaç duymadığı bir şey.
 Yalnızca ölçüm gerektirirse yapılır.
