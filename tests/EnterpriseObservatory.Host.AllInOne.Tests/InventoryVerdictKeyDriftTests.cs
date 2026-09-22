@@ -25,6 +25,11 @@ public class InventoryVerdictKeyDriftTests
         { InventoryVerdictKeys.MountedHostCount, InventoryVerdicts.MountedHostCount },
         { InventoryVerdictKeys.CertificateNotAfter, InventoryVerdicts.CertificateNotAfter },
         { InventoryVerdictKeys.CertificateSha256, InventoryVerdicts.CertificateSha256 },
+        { InventoryVerdictKeys.BackupRead, InventoryVerdicts.BackupRead },
+        { InventoryVerdictKeys.BackupField, InventoryVerdicts.BackupField },
+        { InventoryVerdictKeys.BackupValue, InventoryVerdicts.BackupValue },
+        { InventoryVerdictKeys.BackupLastUtc, InventoryVerdicts.BackupLastUtc },
+        { InventoryVerdictKeys.BackupTimeBasis, InventoryVerdicts.BackupTimeBasis },
     };
 
     [Theory]

@@ -114,6 +114,17 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// </remarks>
     public IEndpointCertificateReader? CertificateReader { get; init; }
 
+    /// <summary>
+    /// The time zone a VM's last-backup attribute is read in (M8.8).
+    /// </summary>
+    /// <remarks>
+    /// The backup product writes its server's local time with no offset; the
+    /// collector's own zone is the default assumption, and the reading records
+    /// which zone it used. Settable so a test is not at the mercy of the
+    /// machine it runs on.
+    /// </remarks>
+    public TimeZoneInfo BackupTimeZone { get; init; } = TimeZoneInfo.Local;
+
     // --- IVsphereApi ------------------------------------------------------
 
     public async Task<IReadOnlyList<VsphereCounter>> GetCounterCatalogAsync(CancellationToken cancellationToken)
@@ -487,6 +498,10 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             "runtime.connectionState",
             "runtime.consolidationNeeded",
             "config.hardware.device",
+
+            // M8.8: 145 of 145 live; a machine with no custom values answers
+            // with an empty array (59 did), never with nothing.
+            BackupAttributeParser.CustomValuePath,
         ],
         ["ClusterComputeResource"] =
         [
@@ -685,6 +700,15 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             InventoryVerdictParser.ConnectionStatePath,
             InventoryVerdictParser.ConsolidationNeededPath,
             InventoryVerdictParser.DevicePath,
+
+            // M8.8 (docs/measurements/backup-freshness-shapes.md): the custom
+            // attribute values, where a backup product leaves its last backup
+            // time. Whole: declared CustomFieldValue[], its elements the
+            // polymorphic CustomFieldStringValue, so no sub-path. Read alone
+            // live on 145 of 145 machines without a fault, ~50 KB. The names
+            // behind the keys come from CustomFieldsManager, in a call of
+            // their own.
+            BackupAttributeParser.CustomValuePath,
         ],
         ["ClusterComputeResource"] =
         [
@@ -775,13 +799,20 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
 
             var vCenterVerdicts = await ReadVCenterCertificateAsync(cancellationToken).ConfigureAwait(false);
 
+            var backupFields = await ReadLastBackupFieldsAsync(content, failures, cancellationToken)
+                .ConfigureAwait(false);
+
             return new VsphereInventoryPayload
             {
                 VCenterName = string.IsNullOrWhiteSpace(content.Name) ? InstanceId : content.Name,
                 VCenterVerdicts = vCenterVerdicts,
                 RootFolderMoRef = content.RootFolder,
                 Hosts = [.. objects.Where(o => o.Type == "HostSystem").Select(ToHost)],
-                VirtualMachines = [.. objects.Where(o => o.Type == "VirtualMachine").Select(ToVirtualMachine)],
+                VirtualMachines =
+                [
+                    .. objects.Where(o => o.Type == "VirtualMachine")
+                        .Select(o => WithBackup(ToVirtualMachine(o), o, backupFields)),
+                ],
                 Clusters = [.. objects.Where(o => o.Type == "ClusterComputeResource").Select(ToCluster)],
                 Datastores =
                 [
@@ -821,6 +852,84 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         return certificate is null
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             : InventoryVerdictParser.CertificateVerdicts(certificate);
+    }
+
+    /// <summary>
+    /// The custom field definitions that name a last backup time, key to name
+    /// (M8.8), or null when they could not be read.
+    /// </summary>
+    /// <remarks>
+    /// A call of its own, like the root folder's alarms: a refusal costs the
+    /// backup reading and nothing else, and is recorded. Null — not an empty
+    /// map — so a VM is then "not read", never "no backup attribute". A
+    /// vCenter that offers no custom fields manager has no custom fields, and
+    /// that is an empty map.
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<string, string>?> ReadLastBackupFieldsAsync(
+        VsphereServiceContent content,
+        List<VsphereReadFailure> failures,
+        CancellationToken cancellationToken)
+    {
+        const string target = "custom field definitions: field";
+
+        if (content.CustomFieldsManager is not { Length: > 0 } manager)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        try
+        {
+            var response = await SendAsync(
+                VsphereSoapRequests.RetrieveObjectProperties(
+                    content.PropertyCollector, "CustomFieldsManager", [manager], [BackupAttributeParser.FieldPath]),
+                cancellationToken).ConfigureAwait(false);
+
+            var objects = PropertyCollectorParser.ParsePage(response).Objects;
+
+            if (objects.SelectMany(o => o.Missing).FirstOrDefault() is { } missing)
+            {
+                failures.Add(new VsphereReadFailure
+                {
+                    Target = target,
+                    Detail = missing.FaultType.Length == 0 ? "unreadable" : missing.FaultType,
+                    IsPermissionDenied = missing.IsPermissionDenied,
+                });
+
+                return null;
+            }
+
+            return BackupAttributeParser.LastBackupFields(objects.SelectMany(o =>
+                o.Structures.TryGetValue(BackupAttributeParser.FieldPath, out var definitions) ? definitions : []));
+        }
+        catch (VsphereApiException ex)
+        {
+            failures.Add(new VsphereReadFailure
+            {
+                Target = target,
+                Detail = $"backup freshness is not read: {ex.Message}",
+                IsPermissionDenied = ex.Kind == VsphereFaultKind.NoPermission,
+            });
+
+            return null;
+        }
+    }
+
+    private VsphereVirtualMachine WithBackup(
+        VsphereVirtualMachine vm, PropertyObject o, IReadOnlyDictionary<string, string>? backupFields)
+    {
+        var backup = BackupAttributeParser.Read(o, backupFields, BackupTimeZone);
+        if (backup.Count == 0)
+        {
+            return vm;
+        }
+
+        var merged = new Dictionary<string, string>(vm.Verdicts, StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in backup)
+        {
+            merged.TryAdd(key, value);
+        }
+
+        return vm with { Verdicts = merged };
     }
 
     private Task<string> CreateViewAsync(VsphereServiceContent content, CancellationToken cancellationToken) =>

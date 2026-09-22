@@ -67,6 +67,9 @@ public static class ContinuityControls
     /// <summary>vCenter, subject <c>''</c>: its endpoint's certificate is not expired or about to (M8.7).</summary>
     public const string CertVCenter = "eo-cont.cert-vcenter";
 
+    /// <summary>VM, subject <c>''</c>: its last backup is within the RPO (M8.8).</summary>
+    public const string BackupFreshness = "eo-cont.backup-freshness";
+
     private const string CertificateThreshold = "Tool default (vCheck 60 days)";
 
     private const string VMotionRequirements =
@@ -132,6 +135,9 @@ public static class ContinuityControls
             CertificateThreshold, new CertificateExpiryCheck(EntityKind.EsxiHost)),
         Check(CertVCenter, "vCenter", "The vCenter certificate is not expired or about to expire",
             CertificateThreshold, new CertificateExpiryCheck(EntityKind.VCenter)),
+        Check(BackupFreshness, "Virtual Machine", "The last backup is within the RPO",
+            "Product policy, measured: 10 of 23 gaps 24–30 h (daily schedule), limit = daily + 12 h",
+            new BackupFreshnessCheck()),
     ];
 
     private static ContinuityCheck Check(
