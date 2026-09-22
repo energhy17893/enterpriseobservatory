@@ -203,6 +203,16 @@ try
         return 0;
     }
 
+    // Collection PR 2's gate: the root folder's triggered alarms and each
+    // host's maximum EVC mode, each read alone.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --candidates-pr2
+    if (args.Contains("--candidates-pr2", StringComparer.OrdinalIgnoreCase))
+    {
+        await EnterpriseObservatory.VsphereProbe.Candidates.RunPr2Async(client, cancellation.Token);
+        return 0;
+    }
+
     // Collection PR 1's gate: every candidate path and call, each read alone,
     // before any of them enters the collector's request list.
     //
@@ -312,7 +322,9 @@ try
             ? Show(resolved, mask)
             : $"(unresolved {alarm.AlarmMoRef})";
 
-        var attached = payload.Hosts.Any(h => h.MoRef == alarm.EntityMoRef) ||
+        var attached = alarm.EntityMoRef == payload.RootFolderMoRef
+            ? "   [raised on the root folder: goes on the vCenter entity]"
+            : payload.Hosts.Any(h => h.MoRef == alarm.EntityMoRef) ||
                        payload.VirtualMachines.Any(v => v.MoRef == alarm.EntityMoRef) ||
                        payload.Datastores.Any(d => d.MoRef == alarm.EntityMoRef) ||
                        payload.Clusters.Any(c => c.MoRef == alarm.EntityMoRef)

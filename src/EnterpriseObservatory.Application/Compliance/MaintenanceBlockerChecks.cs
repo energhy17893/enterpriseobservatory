@@ -247,21 +247,28 @@ public sealed class SingleHostDatastoreCheck : IComplianceCheck
 /// </para>
 /// <para>
 /// EVC on passes. EVC off is only a blocker when the hosts' CPU generations
-/// differ, and that is read from each host's <c>summary.maxEVCModeKey</c>,
-/// which is not collected (collection PR 1 measured it and left it out). So
-/// EVC off is not evaluated, with that reason — never a failure on a guess,
-/// never a pass on silence.
+/// differ, read from each member host's <c>summary.maxEVCModeKey</c>
+/// (collection PR 2): two or more different modes fail, because vMotion from
+/// a newer generation to an older one can be refused; one mode passes, with
+/// that mode as the reason. A host whose mode was not read leaves the verdict
+/// open — not evaluated, naming it — unless the hosts that were read already
+/// differ, which no unread host can undo. Members are the hosts with a
+/// <c>PartOf</c> edge to the cluster that have not vanished; a cluster of one
+/// host or none has nothing to move between and passes.
 /// </para>
 /// </remarks>
 public sealed class EvcCheck : IComplianceCheck
 {
     private const string Expected = "EVC on, or every host of the cluster the same CPU generation";
 
+    private static readonly ConditionalWeakTable<EntityGraph, Dictionary<EntityId, List<Entity>>> Members = [];
+
     public EntityKind AppliesTo => EntityKind.Cluster;
 
     public IReadOnlyList<CheckVerdict> Judge(ComplianceControl control, Entity entity, CheckContext context)
     {
         ArgumentNullException.ThrowIfNull(entity);
+        ArgumentNullException.ThrowIfNull(context);
 
         if (!entity.Settings.TryGetValue(InventoryVerdictKeys.EvcEnabled, out var raw) ||
             !bool.TryParse(raw, out var enabled))
@@ -280,11 +287,82 @@ public sealed class EvcCheck : IComplianceCheck
             return [Verdict(ComplianceVerdict.Passing, Expected, mode is null ? "EVC on" : $"EVC on ({mode})")];
         }
 
+        var hosts = Members.GetValue(context.Graph, HostsByCluster)
+            .GetValueOrDefault(entity.Id, [])
+            .Where(h => h.ObservationState != ObservationState.Vanished)
+            .ToList();
+
+        if (hosts.Count < 2)
+        {
+            return
+            [
+                Verdict(ComplianceVerdict.Passing, Expected,
+                    $"EVC off; {hosts.Count} {(hosts.Count == 1 ? "host" : "hosts")}, nothing to move between"),
+            ];
+        }
+
+        var byMode = hosts
+            .Where(h => h.Settings.TryGetValue(InventoryVerdictKeys.HostMaxEvcModeKey, out var m) && m.Length > 0)
+            .GroupBy(h => h.Settings[InventoryVerdictKeys.HostMaxEvcModeKey], StringComparer.Ordinal)
+            .OrderBy(g => g.Key, StringComparer.Ordinal)
+            .ToList();
+
+        if (byMode.Count >= 2)
+        {
+            var modes = byMode.Select(g =>
+                $"{g.Key}: {FirstFew([.. g.Select(h => h.DisplayName).Order(StringComparer.OrdinalIgnoreCase)])}");
+
+            return
+            [
+                Verdict(ComplianceVerdict.Failing, Expected,
+                    $"EVC off; hosts of {byMode.Count} CPU generations ({string.Join("; ", modes)}): " +
+                    "vMotion from a newer one to an older one can be refused"),
+            ];
+        }
+
+        var unread = hosts
+            .Where(h => !h.Settings.TryGetValue(InventoryVerdictKeys.HostMaxEvcModeKey, out var m) || m.Length == 0)
+            .Select(h => h.DisplayName)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (unread.Count > 0)
+        {
+            return
+            [
+                Verdict(ComplianceVerdict.NotEvaluated, Expected, "EVC off", reason:
+                    $"EVC is off and summary.maxEVCModeKey was not read for {FirstFew(unread)}, so whether " +
+                    "the hosts' CPU generations differ cannot be said."),
+            ];
+        }
+
         return
         [
-            Verdict(ComplianceVerdict.NotEvaluated, Expected, "EVC off", reason:
-                "EVC is off, which only blocks vMotion when the hosts' CPU generations differ; each host's " +
-                "summary.maxEVCModeKey is not collected, so whether they differ cannot be said."),
+            Verdict(ComplianceVerdict.Passing, Expected,
+                $"EVC off; all {hosts.Count} hosts the same CPU generation ({byMode[0].Key}), " +
+                "so vMotion between them is not blocked by CPU"),
         ];
+    }
+
+    private static Dictionary<EntityId, List<Entity>> HostsByCluster(EntityGraph graph)
+    {
+        var map = new Dictionary<EntityId, List<Entity>>();
+
+        foreach (var edge in graph.Relationships.Where(r => r.Kind == RelationshipKind.PartOf))
+        {
+            if (!graph.Entities.TryGetValue(edge.From, out var host) || host.Kind != EntityKind.EsxiHost)
+            {
+                continue;
+            }
+
+            if (!map.TryGetValue(edge.To, out var hosts))
+            {
+                map[edge.To] = hosts = [];
+            }
+
+            hosts.Add(host);
+        }
+
+        return map;
     }
 }

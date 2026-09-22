@@ -485,9 +485,11 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
     /// <para>
     /// Alarms about objects outside the collected inventory are dropped rather
     /// than attached to something nearby. vCenter raises alarms on datacentres,
-    /// folders and the vCenter itself, none of which this collector reads yet;
+    /// folders and resource pools, none of which this collector reads yet;
     /// an alert pointing at an entity that does not exist is worse than a known
-    /// gap, because it cannot be navigated to or understood.
+    /// gap, because it cannot be navigated to or understood. The one exception
+    /// is the root folder, which is the vCenter itself in the inventory tree:
+    /// an alarm raised there goes on the vCenter entity.
     /// </para>
     /// </remarks>
     private void AddTriggeredAlarms(
@@ -530,7 +532,13 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 continue;
             }
 
-            var entity = id(alarm.EntityMoRef);
+            // Raised on the root folder is raised on the vCenter as a whole
+            // (collection PR 2): its own licence expiry, for one. The root
+            // folder is not an entity of its own; the vCenter is, and it is
+            // where the M8.7 certificate finding already sits.
+            var entity = alarm.EntityMoRef == payload.RootFolderMoRef
+                ? id("vcenter")
+                : id(alarm.EntityMoRef);
 
             if (!known.Contains(entity))
             {
@@ -577,8 +585,8 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 Title = "vCenter alarms on uncollected objects",
                 Description =
                     $"{unattached.ToString(CultureInfo.InvariantCulture)} alarm(s) vCenter has " +
-                    "raised concern objects this collector does not read — datacentres, folders, " +
-                    "resource pools or the vCenter itself. They are counted rather than shown, " +
+                    "raised concern objects this collector does not read — datacentres, folders " +
+                    "or resource pools. They are counted rather than shown, " +
                     "because an alert pointing at an entity that does not exist cannot be acted on.",
                 Category = "vCenter",
                 Source = InstanceId,

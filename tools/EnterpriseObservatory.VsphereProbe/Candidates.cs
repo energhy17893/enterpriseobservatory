@@ -100,6 +100,105 @@ internal static class Candidates
         await ApplianceRestAsync(baseAddress, user, password, insecure, cancellationToken);
     }
 
+    /// <summary>
+    /// Collection PR 2's gate: the root folder's triggered alarms and each
+    /// host's maximum EVC mode, read alone. Names, types and counts only.
+    /// </summary>
+    public static async Task RunPr2Async(VsphereClient client, CancellationToken cancellationToken)
+    {
+        Section("Collection PR 2 candidates (each read alone; names and counts only)");
+
+        var root = await client.GetRootFolderAsync(cancellationToken);
+        var rootAlarms = await client.ReadCandidateObjectsAsync(
+            "Folder", [root], "triggeredAlarmState", cancellationToken);
+        Describe(rootAlarms);
+        RootAlarmDetail(rootAlarms);
+
+        // What the collector already reads, for comparison: the union of the
+        // four types' alarm keys against the root folder's.
+        var collected = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var type in new[] { "HostSystem", "VirtualMachine", "ClusterComputeResource", "Datastore" })
+        {
+            var read = await client.ReadCandidatePathAsync(type, "triggeredAlarmState", cancellationToken);
+            Console.WriteLine(read.Fault is null
+                ? $"  {type,-24} triggeredAlarmState  objects {read.Objects.Count}, alarm states {AlarmStates(read).Count}"
+                : $"  {type,-24} triggeredAlarmState  FAULT {read.Fault}");
+            collected.UnionWith(AlarmStates(read).Select(s => s.TextOf("key")));
+        }
+
+        var rootKeys = AlarmStates(rootAlarms).Select(s => s.TextOf("key")).ToHashSet(StringComparer.Ordinal);
+        Console.WriteLine($"  root keys also on a collected object   {rootKeys.Count(collected.Contains)}");
+        Console.WriteLine($"  root keys on no collected object       {rootKeys.Count(k => !collected.Contains(k))}");
+        Console.WriteLine($"  collected keys missing from the root   {collected.Count(k => !rootKeys.Contains(k))}");
+
+        var maxEvc = await client.ReadCandidatePathAsync("HostSystem", "summary.maxEVCModeKey", cancellationToken);
+        Describe(maxEvc);
+
+        var parents = await client.ReadCandidatePathAsync("HostSystem", "parent", cancellationToken);
+        var summaries = await client.ReadCandidatePathAsync("ClusterComputeResource", "summary", cancellationToken);
+        EvcDetail(maxEvc, parents, summaries);
+    }
+
+    private static List<PropertyNode> AlarmStates(VsphereCandidateRead read) =>
+        read.Fault is not null
+            ? []
+            : [.. read.Objects.SelectMany(o =>
+                o.Structures.TryGetValue("triggeredAlarmState", out var states) ? states : [])];
+
+    private static void RootAlarmDetail(VsphereCandidateRead read)
+    {
+        var states = AlarmStates(read);
+        Console.WriteLine($"  root alarm states              {states.Count}");
+        Console.WriteLine("  by entity type                 " + string.Join(", ", states
+            .GroupBy(s => s.TypeOf("entity") is { Length: > 0 } t ? t : "(untyped)")
+            .OrderBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => $"{g.Key}({g.Count()})")));
+        Console.WriteLine("  by overallStatus               " + string.Join(", ", states
+            .GroupBy(s => s.TextOf("overallStatus") is { Length: > 0 } t ? t : "(none)")
+            .OrderBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => $"{g.Key}({g.Count()})")));
+
+        var rootMoRef = read.Objects.Count > 0 ? read.Objects[0].MoRef : string.Empty;
+        Console.WriteLine($"  raised on the root folder itself   {states.Count(s => s.TextOf("entity") == rootMoRef)}");
+        Console.WriteLine($"  with key, entity and alarm         {states.Count(s =>
+            s.TextOf("key").Length > 0 && s.TextOf("entity").Length > 0 && s.TextOf("alarm").Length > 0)}");
+        Console.WriteLine($"  distinct keys                      {states.Select(s => s.TextOf("key")).Distinct(StringComparer.Ordinal).Count()}");
+    }
+
+    /// <summary>Per cluster: EVC on or off, hosts, distinct max modes. Counts only.</summary>
+    private static void EvcDetail(
+        VsphereCandidateRead maxEvc, VsphereCandidateRead parents, VsphereCandidateRead summaries)
+    {
+        if (maxEvc.Fault is not null || parents.Fault is not null || summaries.Fault is not null)
+        {
+            Console.WriteLine("  EVC detail not read");
+            return;
+        }
+
+        var parentOf = parents.Objects.ToDictionary(
+            o => o.MoRef, o => o.Values.GetValueOrDefault("parent") ?? string.Empty, StringComparer.Ordinal);
+        var modeOf = maxEvc.Objects.ToDictionary(
+            o => o.MoRef, o => o.Values.GetValueOrDefault("summary.maxEVCModeKey"), StringComparer.Ordinal);
+
+        var index = 0;
+        foreach (var cluster in summaries.Objects.OrderBy(o => o.MoRef, StringComparer.Ordinal))
+        {
+            index++;
+            var evcOn = cluster.Structures.TryGetValue("summary", out var summary) &&
+                        summary.Any(n => n.Name == "currentEVCModeKey" && n.Text.Length > 0);
+            var hosts = parentOf.Where(p => p.Value == cluster.MoRef).Select(p => p.Key).ToList();
+            var read = hosts.Where(h => modeOf.GetValueOrDefault(h) is { Length: > 0 }).ToList();
+            var distinct = read.Select(h => modeOf[h]).Distinct(StringComparer.Ordinal).Count();
+
+            Console.WriteLine(
+                $"  cluster #{index}   EVC {(evcOn ? "on " : "off")}   hosts {hosts.Count}, " +
+                $"maxEVCModeKey read {read.Count}, distinct {distinct}");
+        }
+
+        var standalone = parentOf.Count(p => !summaries.Objects.Any(c => c.MoRef == p.Value));
+        Console.WriteLine($"  hosts outside a cluster        {standalone}");
+    }
+
     private static void Describe(VsphereCandidateRead read)
     {
         Console.WriteLine();
