@@ -227,6 +227,77 @@ public class MonitoringCycleTests : IDisposable
         Assert.Equal(2, result.Visible.Select(a => a.Fingerprint).Distinct().Count());
     }
 
+    [Fact]
+    public async Task A_long_metric_outage_keeps_one_open_unreachable_alert_until_the_source_answers()
+    {
+        // Past the breaker threshold the source is not asked at all, and every
+        // one of those cycles must still hold the alert open. The same against
+        // PostgreSQL, across a restart: CollectorUnreachableTests.
+        var metrics = new FakeObservationSource("vc-1"); // throws
+
+        var cycle = Cycle();
+        var options = new MonitoringOptions { Collection = CollectionPolicy.Default with { MaxRetries = 0 } };
+
+        for (var i = 0; i < 40; i++)
+        {
+            await cycle.RunObservationsAsync([metrics], options, CancellationToken.None);
+
+            if (i >= 1)
+            {
+                var open = Assert.Single(_alerts.InstancesIn(AlertScopes.Observation),
+                    a => a.Title == "Collector unreachable (metrics)");
+                Assert.Equal(AlertLifecycleState.Open, open.State);
+                Assert.True(open.IsConfirmed);
+            }
+
+            _clock.Advance(TimeSpan.FromSeconds(30));
+        }
+
+        Assert.Single(_notifier.Dispatched, a => a.Title == "Collector unreachable (metrics)");
+
+        metrics.Behaviour = () => Batch("vc-1", _clock.UtcNow);
+        _clock.Advance(CollectionPolicy.Default.CircuitBreakerCooldown);
+
+        await cycle.RunObservationsAsync([metrics], options, CancellationToken.None);
+
+        var resolved = Assert.Single(_alerts.InstancesIn(AlertScopes.Observation),
+            a => a.Title == "Collector unreachable (metrics)");
+        Assert.Equal(AlertLifecycleState.Resolved, resolved.State);
+        Assert.Contains(resolved.History, t => t.Reason == AlertTransitionReason.ConditionCleared);
+    }
+
+    [Fact]
+    public async Task A_long_inventory_outage_keeps_one_open_unreachable_alert_until_the_source_answers()
+    {
+        var inventory = new FakeInventorySource("vc-1");
+        var cycle = Cycle();
+        var options = new MonitoringOptions { Collection = CollectionPolicy.Default with { MaxRetries = 0 } };
+
+        for (var i = 0; i < 12; i++)
+        {
+            await cycle.RunInventoryAsync([inventory], options, CancellationToken.None);
+
+            if (i >= 1)
+            {
+                var open = Assert.Single(_alerts.InstancesIn(AlertScopes.Inventory),
+                    a => a.Title == "Collector unreachable (inventory)");
+                Assert.Equal(AlertLifecycleState.Open, open.State);
+            }
+
+            _clock.Advance(TimeSpan.FromMinutes(5));
+        }
+
+        Assert.Single(_notifier.Dispatched, a => a.Title == "Collector unreachable (inventory)");
+
+        inventory.Behaviour = () => Snapshot("vc-1", _clock.UtcNow);
+
+        await cycle.RunInventoryAsync([inventory], options, CancellationToken.None);
+
+        var resolved = Assert.Single(_alerts.InstancesIn(AlertScopes.Inventory),
+            a => a.Title == "Collector unreachable (inventory)");
+        Assert.Equal(AlertLifecycleState.Resolved, resolved.State);
+    }
+
     // --- notification -----------------------------------------------------
 
     [Fact]
