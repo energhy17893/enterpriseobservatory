@@ -37,6 +37,13 @@ public enum AlertLifecycleState
 
     /// <summary>No longer firing, or cleared by an operator.</summary>
     Resolved = 3,
+
+    /// <summary>
+    /// No fresh evidence for as long as raw retention (ADR-0026): neither open
+    /// nor resolved. Out of the inbox and the open count, and never notified.
+    /// The first fresh verdict decides where it goes.
+    /// </summary>
+    Unknown = 4,
 }
 
 /// <summary>Why an instance moved between states. Kept for auditing.</summary>
@@ -59,6 +66,24 @@ public enum AlertTransitionReason
     /// finding" and its silence, if any, was not carried over as an acceptance.
     /// </summary>
     MovedToFinding,
+
+    /// <summary>The rule could not judge an open alert this cycle; it stays open, marked stale.</summary>
+    EvidenceLost,
+
+    /// <summary>A fresh verdict arrived for a stale or unknown alert.</summary>
+    EvidenceReturned,
+
+    /// <summary>Stale for as long as raw retention: moved to <see cref="AlertLifecycleState.Unknown"/>.</summary>
+    EvidenceExpired,
+
+    /// <summary>Resolved because the subject is gone from a freshly read table.</summary>
+    SubjectRemoved,
+
+    /// <summary>Resolved because another alert now covers the same condition.</summary>
+    Superseded,
+
+    /// <summary>Resolved because an occurrence aged out; the type declares it two-valued.</summary>
+    Expired,
 }
 
 /// <summary>One recorded change in an alert's life.</summary>
@@ -74,6 +99,12 @@ public sealed record AlertTransition
 
     /// <summary>Which operator acted, for operator-initiated transitions.</summary>
     public string? Actor { get; init; }
+
+    /// <summary>What was missing, for <see cref="AlertTransitionReason.EvidenceLost"/> and its kin.</summary>
+    public string? Detail { get; init; }
+
+    /// <summary>The instance's evidence time when this happened.</summary>
+    public DateTimeOffset? EvidenceAtUtc { get; init; }
 }
 
 /// <summary>
@@ -183,6 +214,41 @@ public sealed record AlertInstance
     public IReadOnlyList<AlertTransition> History { get; init; } = [];
 
     /// <summary>
+    /// The rule that owns this alert, or null for a direct producer (collection
+    /// alerts, store failures, rule failures, compaction, flapping).
+    /// </summary>
+    /// <remarks>
+    /// Null is the two-valued kind with N = 1 (design note §1.2): its producer
+    /// runs every cycle and is its own evidence. Anything with a rule id is
+    /// judged three-valued, and a cycle in which its rule says nothing about it
+    /// is "not reported", never "gone".
+    /// </remarks>
+    public string? RuleId { get; init; }
+
+    private readonly DateTimeOffset? _evidenceAtUtc;
+
+    /// <summary>Time of the newest input the last fresh verdict rested on.</summary>
+    /// <remarks>Falls back to <see cref="LastSeenUtc"/> for an instance built without one.</remarks>
+    public DateTimeOffset EvidenceAtUtc
+    {
+        get => _evidenceAtUtc ?? LastSeenUtc;
+        init => _evidenceAtUtc = value;
+    }
+
+    /// <summary>When the evidence stopped being fresh; null while it is fresh.</summary>
+    public DateTimeOffset? StaleSinceUtc { get; init; }
+
+    public UnknownReason? StaleReason { get; init; }
+
+    public string? StaleDetail { get; init; }
+
+    /// <summary>Consecutive fresh absences so far; resolution needs N of them.</summary>
+    public int ConsecutiveAbsent { get; init; }
+
+    /// <summary>Open, but the last cycles could not recheck it.</summary>
+    public bool IsStale => StaleSinceUtc is not null;
+
+    /// <summary>
     /// Whether an operator should see this in the alert inbox.
     /// </summary>
     /// <remarks>
@@ -198,7 +264,8 @@ public sealed record AlertInstance
         AlertLifecycleState state,
         AlertTransitionReason reason,
         DateTimeOffset atUtc,
-        string? actor = null)
+        string? actor = null,
+        string? detail = null)
     {
         if (state == State)
         {
@@ -215,6 +282,8 @@ public sealed record AlertInstance
                 Reason = reason,
                 AtUtc = atUtc,
                 Actor = actor,
+                Detail = detail,
+                EvidenceAtUtc = EvidenceAtUtc,
             }],
         };
     }
@@ -232,7 +301,8 @@ public sealed record AlertInstance
     internal AlertInstance RecordEvent(
         AlertTransitionReason reason,
         DateTimeOffset atUtc,
-        string? actor = null) =>
+        string? actor = null,
+        string? detail = null) =>
         this with
         {
             History = [.. History, new AlertTransition
@@ -242,6 +312,8 @@ public sealed record AlertInstance
                 Reason = reason,
                 AtUtc = atUtc,
                 Actor = actor,
+                Detail = detail,
+                EvidenceAtUtc = EvidenceAtUtc,
             }],
         };
 }
