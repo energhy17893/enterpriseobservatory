@@ -164,6 +164,45 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         }
     }
 
+    /// <summary>
+    /// Why <see cref="GetMaxQueryMetricsAsync"/> returned null, in one line, without the value.
+    /// </summary>
+    /// <remarks>
+    /// For the read-only probe only. The collector treats every unreadable
+    /// case the same (fall back to 256); an operator deciding whether to grant
+    /// a privilege or set the option needs to know which case it is.
+    /// </remarks>
+    public async Task<string> DiagnoseMaxQueryMetricsAsync(CancellationToken cancellationToken)
+    {
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+
+        if (content.SettingManager is not { } settingManager)
+        {
+            return "no OptionManager (setting) in ServiceContent";
+        }
+
+        try
+        {
+            var response = await SendAsync(
+                VsphereSoapRequests.QueryMaxQueryMetrics(settingManager), cancellationToken)
+                .ConfigureAwait(false);
+
+            var value = VsphereXml.Parse(response)
+                .Descendants()
+                .FirstOrDefault(e => e.Name.LocalName == "value")?.Value;
+
+            return value is null
+                ? "not present (empty result)"
+                : int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)
+                    ? "present and readable (value withheld)"
+                    : "present but not an integer";
+        }
+        catch (VsphereApiException ex)
+        {
+            return $"fault {ex.Kind}";
+        }
+    }
+
     public async Task<IReadOnlyList<string>> GetAvailableCounterKeysAsync(
         string entityMoRef,
         VsphereEntityType entityType,

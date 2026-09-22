@@ -14,6 +14,8 @@ Aşağıdaki sentetik tabloların tek varsayımı çağrı gecikmesiydi; bu böl
 `dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --mask --time-queryperf 30`
 (bağlantı ürünün deposundan, parola user-secrets'tan; servis durdurulmadı).
 Estate: 10 host, 145 VM; `maxQueryMetrics` okunamıyor (varsayılan 256).
+**Neden okunamıyor** (tek salt-okunur sorgu, `--why-max-query-metrics`):
+`config.vpxd.stats.maxQueryMetrics` → **fault `InvalidName` — seçenek bu vCenter'da tanımlı değil** (b), yetki reddi değil (a).
 Süre, istemci çağrısının tamamı (istek + sunucu + yanıt + ayrıştırma);
 her vakada ilk çağrı ısınma sayılıp dışarıda bırakıldı; çağrılar arası 200 ms.
 

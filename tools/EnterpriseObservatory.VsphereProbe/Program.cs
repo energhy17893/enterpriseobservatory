@@ -177,6 +177,16 @@ try
         return 0;
     }
 
+    // Why maxQueryMetrics could not be read: one read-only query, one line,
+    // never the value.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --why-max-query-metrics
+    if (args.Contains("--why-max-query-metrics", StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"  maxQueryMetrics          {await client.DiagnoseMaxQueryMetricsAsync(cancellation.Token)}");
+        return 0;
+    }
+
     // Which keys this vCenter returns and in what form, names only. Settles
     // the readers that were written from the schema rather than from a server.
     //
