@@ -39,9 +39,10 @@ public sealed record ObservationCycleResult
 /// rather than a transient fault — see the vSphere metric contract §6.1.
 /// </para>
 /// </remarks>
-public sealed class ObservationCollectionPipeline(IClock clock)
+public sealed class ObservationCollectionPipeline(IClock clock, TimeProvider? timeProvider = null)
 {
-    private readonly SourceRunner _runner = new(clock ?? throw new ArgumentNullException(nameof(clock)));
+    private readonly SourceRunner _runner =
+        new(clock ?? throw new ArgumentNullException(nameof(clock)), timeProvider);
 
     public async Task<ObservationCycleResult> RunAsync(
         IReadOnlyList<IObservationSource> sources,

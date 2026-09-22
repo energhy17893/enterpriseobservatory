@@ -38,14 +38,14 @@ public sealed class InventoryCollectionPipeline
     private readonly IEventHistory? _events;
 
     /// <summary>A pipeline with no event history: every snapshot's creator is reported unknown, and why.</summary>
-    public InventoryCollectionPipeline(IClock clock)
+    public InventoryCollectionPipeline(IClock clock, TimeProvider? timeProvider = null)
     {
-        _runner = new(clock ?? throw new ArgumentNullException(nameof(clock)));
+        _runner = new(clock ?? throw new ArgumentNullException(nameof(clock)), timeProvider);
     }
 
     /// <summary>A pipeline that names who took each stale snapshot from the event history.</summary>
-    public InventoryCollectionPipeline(IClock clock, IEventHistory events)
-        : this(clock)
+    public InventoryCollectionPipeline(IClock clock, IEventHistory events, TimeProvider? timeProvider = null)
+        : this(clock, timeProvider)
     {
         _events = events ?? throw new ArgumentNullException(nameof(events));
     }
