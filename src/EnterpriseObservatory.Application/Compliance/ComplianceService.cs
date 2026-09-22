@@ -230,6 +230,17 @@ public sealed class ComplianceService
     public IReadOnlyList<ComplianceCatalogue> Catalogues { get; }
 
     /// <summary>
+    /// Every loaded catalogue, described for the posture screen's scorecard.
+    /// </summary>
+    /// <remarks>
+    /// Independent of <see cref="Catalogues"/>' order: a caller building a
+    /// scorecard per catalogue (P1) must not read meaning into which one
+    /// comes first, only <see cref="Catalogue"/> may.
+    /// </remarks>
+    public IReadOnlyList<CatalogueDescriptor> Descriptors() =>
+        [.. Catalogues.Select(CatalogueDescriptor.Of)];
+
+    /// <summary>
     /// Every control of every catalogue, tagged with its catalogue, with the
     /// reason for each one this product cannot judge.
     /// </summary>
