@@ -55,6 +55,56 @@ public class DatastoreTimeToFullTests
     }
 
     [Fact]
+    public void A_datastore_already_full_is_a_critical_filling_alert()
+    {
+        // It used to resolve "filling": the estimate refuses a full volume,
+        // and a refusal raised nothing. Full is the worst case of the
+        // condition, not its absence (ADR-0026 §5.10).
+        var full = new TimeToFullResult.Refusal
+        {
+            Reason = TimeToFullRefusalReason.AlreadyFull,
+            Detail = "The latest reading is at or above capacity.",
+            PointsUsed = 200,
+        };
+
+        var alert = Assert.Single(DatastoreTimeToFull.Evaluate([(Store(), full)]));
+
+        Assert.Equal(DatastoreTimeToFull.FillingTitle, alert.Title);
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+        Assert.Contains("is full", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void No_free_space_read_this_cycle_is_full_whatever_the_history_says()
+    {
+        // The current reading is fresher than the newest hourly bucket.
+        var alert = Assert.Single(DatastoreTimeToFull.Evaluate([(Store(free: 0), Refusal())]));
+
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+        Assert.Equal(DatastoreTimeToFull.FillingTitle, alert.Title);
+    }
+
+    [Fact]
+    public void A_week_with_a_hole_in_it_is_not_estimated_and_says_how_much_was_read()
+    {
+        // Twenty-one days spanned, but the product was down for four of the
+        // last seven: the shared "enough history" test refuses it (ADR-0026).
+        var buckets = HourlyGrowth(21)
+            .Where(b => b.StartUtc < T0.AddDays(-5) || b.StartUtc > T0.AddDays(-1))
+            .ToList();
+
+        var estimate = DatastoreTimeToFull.Estimate(
+            new SeriesResult { Key = default, Resolution = SeriesResolution.OneHour, Points = buckets, Exists = true },
+            100 * Gb,
+            T0,
+            DatastoreTimeToFullPolicy.Default);
+
+        var refusal = Assert.IsType<TimeToFullResult.Refusal>(estimate);
+        Assert.Equal(TimeToFullRefusalReason.InsufficientHistory, refusal.Reason);
+        Assert.Contains("42% of the 7 days read, 80% needed", refusal.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_fill_date_beyond_thirty_days_is_not_an_alert()
     {
         Assert.Empty(DatastoreTimeToFull.Evaluate([(Store(), Forecast(30.5))]));
@@ -240,15 +290,15 @@ public class DatastoreTimeToFullTests
     {
         // A level, not a rate: the bucket's average is not a quantity anybody
         // asked about. Here the averages are flat and the last readings grow.
-        var buckets = Enumerable.Range(0, 21)
+        var buckets = Enumerable.Range(0, (20 * 24) + 1)
             .Select(i => new AggregatedSample
             {
-                StartUtc = T0.AddDays(i - 20),
+                StartUtc = T0.AddHours(i - (20 * 24)),
                 Min = 0,
-                Max = (30 + i) * Gb,
+                Max = (30 + (i / 24d)) * Gb,
                 Sum = 10 * Gb,
                 Count = 1,
-                Last = (30 + i) * Gb,
+                Last = (30 + (i / 24d)) * Gb,
             })
             .ToList();
 
@@ -357,7 +407,7 @@ public class DatastoreTimeToFullTests
 
         // And the unreadable one's alerts are held open rather than resolved:
         // unknown because the rule failed for that datastore, never absent.
-        var unknown = verdicts.OfType<Unknown>().ToList();
+        var unknown = verdicts.OfType<Unknown>().Where(u => u.Covers.Any(held.Contains)).ToList();
         Assert.Equal(held.ToHashSet(), unknown.SelectMany(u => u.Covers).ToHashSet());
         Assert.All(unknown, u => Assert.Equal(UnknownReason.RuleFailed, u.Reason));
         Assert.Empty(verdicts.OfType<ConditionAbsent>());
@@ -432,9 +482,148 @@ public class DatastoreTimeToFullTests
         Assert.True(cache.Count <= 2);
     }
 
+    /// <summary>Hourly buckets of used space over <paramref name="days"/>, rising 2 GB a day to 50 GB at <see cref="T0"/>.</summary>
+    private static List<AggregatedSample> HourlyGrowth(int days) =>
+    [
+        .. Enumerable.Range(0, (days * 24) + 1).Select(i =>
+        {
+            var used = (50 - (2 * (days - (i / 24d)))) * Gb;
+
+            return new AggregatedSample
+            {
+                StartUtc = T0.AddHours(i - (days * 24)),
+                Min = used,
+                Max = used,
+                Sum = used,
+                Count = 1,
+                Last = used,
+            };
+        }),
+    ];
+
+    // --- three values (ADR-0026) -------------------------------------------
+
+    private static RuleContext Context(
+        ISeriesReader series,
+        IReadOnlyList<Observation> readings,
+        params AlertFingerprint[] held) => new()
+        {
+            Snapshots = [new InventorySnapshot { SourceInstanceId = "vc-1", ReadAtUtc = T0, Observations = readings }],
+            ReadGraph = () => GraphWith("vmfs01"),
+            NowUtc = T0,
+            Options = MonitoringOptions.Default,
+            Series = series,
+            Events = new NoEvents(),
+            HeldBy = _ => [.. held.Select(f => new HeldAlert(f, Ds))],
+        };
+
+    private static Observation[] Capacity(double free, double? uncommitted = null) =>
+    [
+        Reading(CapacityCounters.DatastoreCapacity, 100 * Gb),
+        Reading(CapacityCounters.DatastoreFree, free),
+        .. uncommitted is { } u ? [Reading(CapacityCounters.DatastoreUncommitted, u)] : Array.Empty<Observation>(),
+    ];
+
+    private static AlertFingerprint FillingFp => DatastoreTimeToFull.Fingerprints(Store())[0];
+
+    private static AlertFingerprint OvercommitFp => DatastoreTimeToFull.Fingerprints(Store())[1];
+
+    private static SubjectVerdict VerdictOn(IReadOnlyList<SubjectVerdict> verdicts, AlertFingerprint fingerprint) =>
+        Assert.Single(verdicts, v =>
+            v.Covers.Contains(fingerprint) ||
+            (v is ConditionPresent p && p.Alerts.Any(a => a.Fingerprint == fingerprint)));
+
+    [Fact]
+    public void A_fill_date_beyond_the_thresholds_is_absent_on_fresh_evidence()
+    {
+        // 50 GB free, 2 GB a day: 25 days, so move the capacity to push it out.
+        var verdicts = new DatastoreTimeToFullRule().Evaluate(Context(
+            new GrowingSeries(),
+            [Reading(CapacityCounters.DatastoreCapacity, 400 * Gb), Reading(CapacityCounters.DatastoreFree, 350 * Gb), Reading(CapacityCounters.DatastoreUncommitted, 0)],
+            FillingFp));
+
+        var absent = Assert.IsType<ConditionAbsent>(VerdictOn(verdicts, FillingFp));
+        Assert.Equal(Ds, absent.Entity);
+        Assert.Equal(T0, absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void Too_little_history_is_unknown_not_absent_and_says_why()
+    {
+        // Three days of hourly history: the filling alert cannot be judged,
+        // so an open one stays open (it used to resolve).
+        var verdicts = new DatastoreTimeToFullRule().Evaluate(Context(
+            new GrowingSeries { Days = 4 }, Capacity(50 * Gb, 0), FillingFp));
+
+        var unknown = Assert.IsType<Unknown>(VerdictOn(verdicts, FillingFp));
+        Assert.Equal(UnknownReason.InsufficientSeries, unknown.Reason);
+        Assert.Contains("of the 7 days", unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_full_datastore_is_present_critical_even_without_enough_history()
+    {
+        var verdicts = new DatastoreTimeToFullRule().Evaluate(Context(
+            new GrowingSeries { Days = 2 }, Capacity(0, 0), FillingFp));
+
+        var present = Assert.IsType<ConditionPresent>(VerdictOn(verdicts, FillingFp));
+        Assert.Equal(AlertSeverity.Critical, Assert.Single(present.Alerts).Severity);
+    }
+
+    [Fact]
+    public void Uncommitted_space_that_was_not_read_is_unknown_and_read_within_free_is_absent()
+    {
+        var unread = new DatastoreTimeToFullRule().Evaluate(Context(
+            new GrowingSeries(), Capacity(80 * Gb, uncommitted: null), OvercommitFp));
+
+        var unknown = Assert.IsType<Unknown>(VerdictOn(unread, OvercommitFp));
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+
+        var read = new DatastoreTimeToFullRule().Evaluate(Context(
+            new GrowingSeries(), Capacity(80 * Gb, uncommitted: 40 * Gb), OvercommitFp));
+
+        var absent = Assert.IsType<ConditionAbsent>(VerdictOn(read, OvercommitFp));
+        Assert.Equal(2, absent.Resolution?.ConsecutiveAbsent);
+    }
+
+    [Fact]
+    public void A_datastore_not_read_this_cycle_gets_no_verdict_so_its_alerts_are_not_reported()
+    {
+        var verdicts = new DatastoreTimeToFullRule().Evaluate(Context(
+            new GrowingSeries(), [], FillingFp, OvercommitFp));
+
+        Assert.DoesNotContain(verdicts, v => v.Covers.Contains(FillingFp) || v.Covers.Contains(OvercommitFp));
+    }
+
+    [Fact]
+    public void A_renamed_datastores_old_over_commit_alert_is_superseded_by_its_new_name()
+    {
+        // The over-commit fingerprint is keyed by name; the entity was read
+        // this cycle under another one.
+        var old = AlertFingerprint.Create("vc-1", "Datastore over-committed", "Capacity", "old-name", "datastore-overcommitted");
+
+        var verdicts = new DatastoreTimeToFullRule().Evaluate(Context(
+            new GrowingSeries(), Capacity(80 * Gb, 300 * Gb), old));
+
+        var absent = Assert.IsType<ConditionAbsent>(VerdictOn(verdicts, old));
+        Assert.Equal(AbsenceKind.Superseded, absent.Because);
+    }
+
+    [Fact]
+    public void The_history_alert_is_absent_when_every_history_was_read()
+    {
+        var unreadable = AlertFingerprint.Create(
+            "platform", DatastoreTimeToFull.HistoryUnreadableTitle, GuardedRule.Category,
+            DatastoreTimeToFull.RuleId, DatastoreTimeToFull.HistoryUnreadableCheckId);
+
+        var verdicts = new DatastoreTimeToFullRule().Evaluate(Context(new GrowingSeries(), Capacity(50 * Gb, 0), unreadable));
+
+        Assert.IsType<ConditionAbsent>(VerdictOn(verdicts, unreadable));
+    }
+
     /// <summary>
-    /// Used space rising 2 GB a day from 10 GB, one bucket a day, ending at
-    /// <see cref="T0"/>; throws for <see cref="Failing"/>.
+    /// Used space rising 2 GB a day to 50 GB at <see cref="T0"/>, one bucket an
+    /// hour over <see cref="Days"/> − 1 days; throws for <see cref="Failing"/>.
     /// </summary>
     private sealed class GrowingSeries : ISeriesReader
     {
@@ -458,18 +647,7 @@ public class DatastoreTimeToFullTests
                 Key = query.Key,
                 Resolution = SeriesResolution.OneHour,
                 Exists = true,
-                Points =
-                [
-                    .. Enumerable.Range(0, Days).Select(i => new AggregatedSample
-                    {
-                        StartUtc = T0.AddDays(i - Days + 1),
-                        Min = (10 + 2 * i) * Gb,
-                        Max = (10 + 2 * i) * Gb,
-                        Sum = (10 + 2 * i) * Gb,
-                        Count = 1,
-                        Last = (10 + 2 * i) * Gb,
-                    }),
-                ],
+                Points = HourlyGrowth(Days - 1),
             };
         }
 

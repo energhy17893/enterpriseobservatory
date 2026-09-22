@@ -42,6 +42,13 @@ public sealed record DatastoreTimeToFullPolicy
     /// <summary>The refusal thresholds of the estimate itself.</summary>
     public TimeToFullPolicy Estimate { get; init; } = TimeToFullPolicy.Default;
 
+    /// <summary>
+    /// How much of the history must have been read before a date is given:
+    /// the shared "enough history" test, seven days and 80% of their points —
+    /// <b>product policy</b> (ADR-0026).
+    /// </summary>
+    public HistoryCoveragePolicy History { get; init; } = HistoryCoveragePolicy.Default;
+
     public static DatastoreTimeToFullPolicy Default { get; } = new();
 }
 
@@ -187,6 +194,27 @@ public static class DatastoreTimeToFull
         ArgumentNullException.ThrowIfNull(usedHistory);
         ArgumentNullException.ThrowIfNull(policy);
 
+        // The shared "enough history" test (ADR-0026), before any fit: a
+        // month spanned with a hole in the last week is not a week of evidence.
+        var coverage = HistoryCoverage.Of(
+            usedHistory.Points.Select(p => p.StartUtc),
+            SeriesResolutions.Width(usedHistory.Resolution),
+            nowUtc,
+            policy.History);
+
+        if (!coverage.IsEnough)
+        {
+            return new TimeToFullResult.Refusal
+            {
+                Reason = TimeToFullRefusalReason.InsufficientHistory,
+                Detail = $"Not enough history: {coverage.Reason}.",
+                PointsUsed = usedHistory.Points.Count,
+                Window = usedHistory.Points.Count > 0
+                    ? new TrendWindow(usedHistory.Points[0].StartUtc, usedHistory.Points[^1].StartUtc)
+                    : null,
+            };
+        }
+
         return TimeToFull.Estimate(
             [.. usedHistory.Points.Select(p => new TrendPoint(p.StartUtc, p.Last))],
             capacityBytes,
@@ -226,41 +254,66 @@ public static class DatastoreTimeToFull
             () => Estimate(history, capacityBytes, nowUtc, policy));
     }
 
+    /// <summary>N of the over-commit alert: 2, where filling is the rule's 3 (design note §3.1).</summary>
+    public static ResolutionPolicy OvercommitResolution { get; } = new() { ConsecutiveAbsent = 2 };
+
     /// <summary>
-    /// Estimates each datastore and returns the alerts, so that one whose
+    /// Estimates each datastore read this cycle and says, for each of its two
+    /// alerts, present, absent or unknown (ADR-0026) — so that one whose
     /// history cannot be read costs that datastore and not the others.
     /// </summary>
     /// <param name="datastores">This cycle's capacity readings.</param>
     /// <param name="estimate">Reads and estimates one datastore; may throw.</param>
-    /// <param name="unevaluated">
-    /// Receives the fingerprints of every datastore that could not be read,
-    /// so reconciliation keeps their alerts as they were rather than resolving
-    /// them unchecked.
-    /// </param>
+    /// <param name="held">The alerts the rule holds, for the renamed-datastore case.</param>
+    /// <param name="evidenceAtUtc">When the capacity readings were taken.</param>
     /// <param name="policy">The thresholds.</param>
     /// <remarks>
-    /// The failure is reported, never swallowed: a datastore whose alerts are
-    /// being held without being rechecked is itself something an operator
-    /// has to know, so it raises <see cref="HistoryUnreadableTitle"/>.
+    /// <para>
+    /// Filling: present for a date inside the thresholds, or a datastore
+    /// already full (Critical: the worst case of the condition, not its
+    /// absence). Absent for a date beyond them, or a refusal that is itself an
+    /// answer — not filling, beyond the horizon, below the usage floor, no
+    /// trend. Unknown for a refusal that is not — too few points, too short a
+    /// window, a step, too little of the week read.
+    /// </para>
+    /// <para>
+    /// Over-commit: present when the promises exceed the free space; absent
+    /// when <c>summary.uncommitted</c> was read and they do not; unknown when it
+    /// was not read, which coverage cannot tell apart from "no thin disks"
+    /// (design note §5.10).
+    /// </para>
+    /// <para>
+    /// A datastore not read this cycle gets no verdict: its alerts are "not
+    /// reported", never absent. A history that throws is
+    /// <see cref="UnknownReason.RuleFailed"/> for that datastore, and the
+    /// failure is reported, never swallowed, as <see cref="HistoryUnreadableTitle"/>.
+    /// </para>
     /// </remarks>
-    public static IReadOnlyList<AlertDefinition> EvaluateEach(
+    public static IReadOnlyList<SubjectVerdict> Judge(
         IReadOnlyList<DatastoreCapacity> datastores,
         Func<DatastoreCapacity, TimeToFullResult> estimate,
-        ICollection<AlertFingerprint> unevaluated,
+        IReadOnlyList<HeldAlert> held,
+        DateTimeOffset evidenceAtUtc,
         DatastoreTimeToFullPolicy? policy = null)
     {
         ArgumentNullException.ThrowIfNull(datastores);
         ArgumentNullException.ThrowIfNull(estimate);
-        ArgumentNullException.ThrowIfNull(unevaluated);
+        ArgumentNullException.ThrowIfNull(held);
 
-        var estimated = new List<(DatastoreCapacity, TimeToFullResult)>(datastores.Count);
+        var rules = policy ?? DatastoreTimeToFullPolicy.Default;
+        var verdicts = new List<SubjectVerdict>();
         var failed = new List<(DatastoreCapacity Datastore, Exception Error)>();
+        var current = new HashSet<AlertFingerprint>();
 
         foreach (var datastore in datastores)
         {
+            current.UnionWith(Fingerprints(datastore));
+
+            TimeToFullResult result;
+
             try
             {
-                estimated.Add((datastore, estimate(datastore)));
+                result = estimate(datastore);
             }
             catch (OperationCanceledException)
             {
@@ -273,23 +326,120 @@ public static class DatastoreTimeToFull
 #pragma warning restore CA1031
             {
                 failed.Add((datastore, ex));
-
-                foreach (var fingerprint in Fingerprints(datastore))
+                verdicts.Add(new Unknown
                 {
-                    unevaluated.Add(fingerprint);
+                    Covers = Fingerprints(datastore),
+                    Entity = datastore.Datastore,
+                    Reason = UnknownReason.RuleFailed,
+                    Detail = $"the used-space history of '{datastore.Name}' could not be read: " +
+                             $"{ex.GetType().Name}: {ex.Message}",
+                });
+
+                continue;
+            }
+
+            verdicts.Add(FillingVerdict(datastore, result, rules, evidenceAtUtc));
+            verdicts.Add(OvercommitVerdict(datastore, result, evidenceAtUtc));
+        }
+
+        // Only when there was something to read: with no datastore read,
+        // "every history was read" would be said of nothing.
+        if (datastores.Count > 0)
+        {
+            verdicts.Add(failed.Count > 0
+                ? new ConditionPresent
+                {
+                    Covers = [HistoryUnreadableFingerprint],
+                    Alerts = [HistoryUnreadable(failed)],
+                    EvidenceAtUtc = evidenceAtUtc,
                 }
+                : new ConditionAbsent { Covers = [HistoryUnreadableFingerprint], EvidenceAtUtc = evidenceAtUtc });
+        }
+
+        // The over-commit fingerprint is keyed by name. A datastore read this
+        // cycle under a new name has its old alert superseded by the new one,
+        // on a fresh read of the same entity, rather than left "not reported".
+        var read = datastores.Select(d => d.Datastore).ToHashSet();
+
+        foreach (var alert in held)
+        {
+            if (alert.Entity is { } entity && read.Contains(entity) &&
+                IsOvercommit(alert.Fingerprint) && !current.Contains(alert.Fingerprint))
+            {
+                verdicts.Add(new ConditionAbsent
+                {
+                    Covers = [alert.Fingerprint],
+                    Entity = entity,
+                    EvidenceAtUtc = evidenceAtUtc,
+                    Because = AbsenceKind.Superseded,
+                    Resolution = OvercommitResolution,
+                });
             }
         }
 
-        var alerts = Evaluate(estimated, policy).ToList();
+        return verdicts;
+    }
 
-        if (failed.Count > 0)
+    private static SubjectVerdict FillingVerdict(
+        DatastoreCapacity datastore, TimeToFullResult estimate, DatastoreTimeToFullPolicy policy, DateTimeOffset at)
+    {
+        IReadOnlyList<AlertFingerprint> covers = [FillingFingerprint(datastore)];
+
+        if (Filling(datastore, estimate, policy) is { } alert)
         {
-            alerts.Add(HistoryUnreadable(failed));
+            return new ConditionPresent { Covers = covers, Alerts = [alert], Entity = datastore.Datastore, EvidenceAtUtc = at };
         }
 
-        return alerts;
+        if (estimate is TimeToFullResult.Refusal
+            {
+                Reason: TimeToFullRefusalReason.TooFewPoints or TimeToFullRefusalReason.WindowTooShort or
+                        TimeToFullRefusalReason.StepChange or TimeToFullRefusalReason.InsufficientHistory,
+            } refusal)
+        {
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = datastore.Datastore,
+                Reason = UnknownReason.InsufficientSeries,
+                Detail = $"cannot estimate a fill date for '{datastore.Name}': {refusal.Detail}",
+            };
+        }
+
+        return new ConditionAbsent { Covers = covers, Entity = datastore.Datastore, EvidenceAtUtc = at };
     }
+
+    private static SubjectVerdict OvercommitVerdict(DatastoreCapacity datastore, TimeToFullResult estimate, DateTimeOffset at)
+    {
+        IReadOnlyList<AlertFingerprint> covers = [OvercommitFingerprint(datastore)];
+
+        if (Overcommitted(datastore, estimate) is { } alert)
+        {
+            return new ConditionPresent { Covers = covers, Alerts = [alert], Entity = datastore.Datastore, EvidenceAtUtc = at };
+        }
+
+        if (datastore.UncommittedBytes is null)
+        {
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = datastore.Datastore,
+                Reason = UnknownReason.InputNotCollected,
+                Detail = $"summary.uncommitted was not read for '{datastore.Name}' this cycle",
+            };
+        }
+
+        return new ConditionAbsent
+        {
+            Covers = covers,
+            Entity = datastore.Datastore,
+            EvidenceAtUtc = at,
+            Resolution = OvercommitResolution,
+        };
+    }
+
+    /// <summary>The fingerprint of the "history could not be read" alert: one for the rule.</summary>
+    public static AlertFingerprint HistoryUnreadableFingerprint { get; } = AlertFingerprint.Create(
+        "platform", HistoryUnreadableTitle, GuardedRule.Category, RuleId, HistoryUnreadableCheckId);
 
     public const string HistoryUnreadableTitle = "Datastore history could not be read";
 
@@ -306,8 +456,7 @@ public static class DatastoreTimeToFull
             // One alert for the rule, not one per datastore: it is about this
             // product's reading, and it must not belong to a datastore's
             // source, or a silent vCenter would hold it open.
-            Fingerprint = AlertFingerprint.Create(
-                "platform", HistoryUnreadableTitle, GuardedRule.Category, RuleId, HistoryUnreadableCheckId),
+            Fingerprint = HistoryUnreadableFingerprint,
 
             // Warning, for the reason a failed rule is one: nothing says the
             // estate is broken, only that part of it is not being rechecked.
@@ -453,6 +602,29 @@ public static class DatastoreTimeToFull
     private static AlertDefinition? Filling(
         DatastoreCapacity datastore, TimeToFullResult estimate, DatastoreTimeToFullPolicy policy)
     {
+        // Full is the worst case of "filling", not its absence (ADR-0026
+        // §5.10). This cycle's free space is fresher than the newest hourly
+        // bucket, so it decides first; the estimate's own "already full" on
+        // the history is the other way to know.
+        if (datastore.FreeBytes <= 0 ||
+            estimate is TimeToFullResult.Refusal { Reason: TimeToFullRefusalReason.AlreadyFull })
+        {
+            return new AlertDefinition
+            {
+                Fingerprint = FillingFingerprint(datastore),
+                Severity = AlertSeverity.Critical,
+                Title = FillingTitle,
+                Description = string.Create(CultureInfo.InvariantCulture,
+                    $"'{datastore.Name}' is full: {Gigabytes(Math.Max(0, datastore.FreeBytes)):0.#} GB of " +
+                    $"{Gigabytes(datastore.CapacityBytes):0.#} GB is free. Writes to its thin disks and " +
+                    $"snapshots can fail now; there is no fill date to wait for."),
+                Category = Category,
+                Source = datastore.Source,
+                Entity = datastore.Datastore,
+                IsDerived = true,
+            };
+        }
+
         if (estimate is not TimeToFullResult.Forecast forecast)
         {
             return null;

@@ -380,9 +380,7 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
         var readings = DatastoreTimeToFull.CurrentReadings(
             context.Snapshots.SelectMany(s => s.Observations), context.Graph);
 
-        var unevaluated = new List<AlertFingerprint>();
-
-        var raised = DatastoreTimeToFull.EvaluateEach(
+        return DatastoreTimeToFull.Judge(
             readings,
             d => DatastoreTimeToFull.Read(
                 context.Series,
@@ -391,18 +389,10 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
                 context.NowUtc,
                 policy,
                 context.Options.Retention),
-            unevaluated,
+            context.HeldBy(RuleId),
+            context.NowUtc,
             policy);
-
-        return TwoValuedVerdicts.From(
-            context,
-            RuleId,
-            raised,
-            unevaluated,
-            fingerprint => DatastoreTimeToFull.IsOvercommit(fingerprint) ? Overcommit : null);
     }
-
-    private static readonly ResolutionPolicy Overcommit = new() { ConsecutiveAbsent = 2 };
 }
 
 /// <summary>Adapts <see cref="CollectionCoverage"/>.</summary>

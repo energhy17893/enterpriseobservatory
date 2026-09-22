@@ -82,8 +82,11 @@ public sealed record ResourceDemand
 
     public required double AvailableAfterFailoverHosts { get; init; }
 
-    /// <summary>From the first to the last point of the aggregated history.</summary>
-    public TimeSpan HistoryCovered { get; init; }
+    /// <summary>
+    /// How much of the aggregated history was read (ADR-0026's shared "enough
+    /// history" test); null when there is none.
+    /// </summary>
+    public Analysis.HistoryCoverage? History { get; init; }
 
     /// <summary>The newest point of the history, or null when there is none.</summary>
     public DateTimeOffset? HistoryEndUtc { get; init; }

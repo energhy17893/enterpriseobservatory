@@ -803,13 +803,13 @@ public class ReadModelTests
     [Fact]
     public void A_datastore_page_says_when_it_fills_and_over_what_window()
     {
-        // 1 GB a day for twenty days, on course for 50 GB of 100 now: fifty
+        // 1 GB a day for 21 days, hourly, on course for 50 GB of 100 now: fifty
         // days left, and the window it was measured over travels with it.
         GivenEntities(Datastore("vc-1:ds-1"));
         GivenCapacity(100 * Gb);
         _observations.Recorded[CapacityCounters.DatastoreUsed] =
         [
-            .. Enumerable.Range(0, 21).Select(i => Bucket(T0.AddDays(i - 21), (29 + i) * Gb)),
+            .. Enumerable.Range(0, 21 * 24).Select(i => Bucket(T0.AddHours(i - (21 * 24)), (29 + (i / 24d)) * Gb)),
         ];
 
         var forecast = Model().Entity("vc-1:ds-1")!.TimeToFull!;
@@ -818,10 +818,10 @@ public class ReadModelTests
         Assert.Equal(50d, forecast.Days!.Value, 3);
         Assert.Equal(T0.AddDays(50), forecast.FullAtUtc!.Value, TimeSpan.FromMinutes(1));
         Assert.Equal(T0.AddDays(-21), forecast.WindowFromUtc);
-        Assert.Equal(T0.AddDays(-1), forecast.WindowToUtc);
-        Assert.Equal(21, forecast.PointsUsed);
+        Assert.Equal(T0.AddHours(-1), forecast.WindowToUtc);
+        Assert.Equal(21 * 24, forecast.PointsUsed);
         Assert.StartsWith("Fills in 50 days (on ", forecast.Summary, StringComparison.Ordinal);
-        Assert.Contains("20 days of history", forecast.Summary, StringComparison.Ordinal);
+        Assert.Contains("21 days of history", forecast.Summary, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -839,7 +839,7 @@ public class ReadModelTests
         var refusal = Model().Entity("vc-1:ds-1")!.TimeToFull!;
 
         Assert.False(refusal.IsForecast);
-        Assert.Equal("WindowTooShort", refusal.Reason);
+        Assert.Equal("InsufficientHistory", refusal.Reason);
         Assert.Null(refusal.FullAtUtc);
         Assert.StartsWith("Cannot estimate a fill date: ", refusal.Summary, StringComparison.Ordinal);
         Assert.DoesNotContain("..", refusal.Summary, StringComparison.Ordinal);
@@ -1101,7 +1101,7 @@ public class ReadModelTests
         GivenCapacity(100 * Gb);
         _observations.Recorded[CapacityCounters.DatastoreUsed] =
         [
-            .. Enumerable.Range(0, 21).Select(i => Bucket(T0.AddDays(i - 21), (70 + i) * Gb)),
+            .. Enumerable.Range(0, 21 * 24).Select(i => Bucket(T0.AddHours(i - (21 * 24)), (70 + (i / 24d)) * Gb)),
         ];
 
         var summary = Model().CapacityReport().Summary;

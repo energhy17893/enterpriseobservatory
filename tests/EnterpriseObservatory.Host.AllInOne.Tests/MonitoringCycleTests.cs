@@ -1524,8 +1524,8 @@ public class MonitoringCycleTests : IDisposable
 
         _observations.Append(
         [
-            .. Enumerable.Range(0, 20).Select(i => CapacityCounters.Reading(
-                datastore, CapacityCounters.DatastoreUsed, (10 + 2 * i) * gb, T0.AddDays(i - 20), "vc-1")),
+            .. Enumerable.Range(0, 20 * 24).Select(i => CapacityCounters.Reading(
+                datastore, CapacityCounters.DatastoreUsed, (10 + (2 * i / 24d)) * gb, T0.AddHours(i - (20 * 24)), "vc-1")),
         ]);
 
         var cycle = Cycle();
@@ -1565,7 +1565,7 @@ public class MonitoringCycleTests : IDisposable
 
     /// <summary>
     /// A vCenter reporting one datastore filling at 2 GB a day with 10 GB
-    /// left, over twenty days of recorded history in <paramref name="store"/>.
+    /// left, over twenty days of hourly history in <paramref name="store"/>.
     /// </summary>
     private FakeInventorySource FillingDatastore(IObservationStore store, Func<bool> reachable)
     {
@@ -1574,8 +1574,8 @@ public class MonitoringCycleTests : IDisposable
 
         store.Append(
         [
-            .. Enumerable.Range(0, 20).Select(i => CapacityCounters.Reading(
-                datastore, CapacityCounters.DatastoreUsed, (10 + 2 * i) * gb, T0.AddDays(i - 20), "vc-1")),
+            .. Enumerable.Range(0, 20 * 24).Select(i => CapacityCounters.Reading(
+                datastore, CapacityCounters.DatastoreUsed, (10 + (2 * i / 24d)) * gb, T0.AddHours(i - (20 * 24)), "vc-1")),
         ]);
 
         return new FakeInventorySource("vc-1")
@@ -1625,13 +1625,25 @@ public class MonitoringCycleTests : IDisposable
         Assert.Equal(AlertLifecycleState.Open, held.State);
         Assert.Equal(raised.LastSeenUtc, held.LastSeenUtc);
 
-        // And once it answers without the problem, it resolves as before.
+        // And once it answers without the problem, it resolves as before --
+        // on a capacity actually read: a datastore with no reading this cycle
+        // gets no verdict, and "not reported" never resolves (ADR-0026).
         reachable = true;
         _clock.Advance(TimeSpan.FromMinutes(5));
+        const double gb = 1024d * 1024 * 1024;
+        var datastore = new EntityId("vc-1:datastore-41");
         var answered = new FakeInventorySource("vc-1")
         {
             Behaviour = () => Snapshot(
-                "vc-1", _clock.UtcNow, entities: [Node("vc-1:datastore-41", EntityKind.Datastore, "vmfs01")]),
+                "vc-1", _clock.UtcNow, entities: [Node(datastore.Value, EntityKind.Datastore, "vmfs01")]) with
+            {
+                // Grown: at 2 GB a day, 950 GB free is beyond the horizon.
+                Observations =
+                [
+                    CapacityCounters.Reading(datastore, CapacityCounters.DatastoreCapacity, 1000 * gb, _clock.UtcNow, "vc-1"),
+                    CapacityCounters.Reading(datastore, CapacityCounters.DatastoreFree, 950 * gb, _clock.UtcNow, "vc-1"),
+                ],
+            },
         };
         // After the rule's N fresh absences (ADR-0026), not on the first.
         for (var i = 0; i < new DatastoreTimeToFullRule().Resolution.ConsecutiveAbsent; i++)

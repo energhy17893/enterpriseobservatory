@@ -100,7 +100,11 @@ public static class ContinuityDemand
         {
             DemandHosts = demand,
             AvailableAfterFailoverHosts = available,
-            HistoryCovered = trend.Count > 1 ? trend[^1].AtUtc - trend[0].AtUtc : TimeSpan.Zero,
+            History = HistoryCoverage.Of(
+                trend.Select(p => p.AtUtc),
+                ClusterNPlusOne.HistoryInterval(policy, retention),
+                nowUtc,
+                HistoryCoveragePolicy.Default with { MinimumSpan = policy.MinimumHistory }),
             HistoryEndUtc = trend.Count > 0 ? trend[^1].AtUtc : null,
             Date = ClusterNPlusOne.EstimateCached(
                 state.Cluster, trend, available, resource, nowUtc, policy, cache),
@@ -196,10 +200,13 @@ public sealed class NPlusOneCheck(ClusterCapacityResource resource) : IComplianc
             return Verdict(ComplianceVerdict.Failing, expected, observed + " — it does not fit today");
         }
 
-        if (resource.HistoryCovered < snapshot.MinimumHistory)
+        // The shared "enough history" test (ADR-0026): the span, and 80% of
+        // the week's points read. "Holds" is never said on less.
+        if (resource.History is not { IsEnough: true })
         {
-            return NotEvaluated(string.Create(CultureInfo.InvariantCulture,
-                $"No {snapshot.MinimumHistory.TotalDays:0} days of demand history yet ({resource.HistoryCovered.TotalDays:0.#} days); it fits today, but that it holds is not said on so little."),
+            return NotEvaluated(
+                $"Not enough demand history: {resource.History?.Reason ?? "none was read"}. It fits today, " +
+                "but that it holds is not said on so little.",
                 observed);
         }
 
