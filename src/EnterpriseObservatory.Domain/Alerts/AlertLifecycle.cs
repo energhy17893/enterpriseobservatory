@@ -301,6 +301,7 @@ public static class AlertLifecycle
         AbsenceKind.SubjectRemoved => AlertTransitionReason.SubjectRemoved,
         AbsenceKind.Superseded => AlertTransitionReason.Superseded,
         AbsenceKind.Expired => AlertTransitionReason.Expired,
+        AbsenceKind.RuleRetired => AlertTransitionReason.RuleRetired,
         _ => AlertTransitionReason.ConditionCleared,
     };
 

@@ -663,4 +663,75 @@ public class AlertReconcilerTests
         Assert.Equal([Psu().Fingerprint], next.Retired);
         Assert.Equal(AlertLifecycleState.Open, Assert.Single(next.Instances).State);
     }
+
+    // --- retirement (ADR-0026 design note §2, housekeeping) ------------------
+
+    [Fact]
+    public void An_open_alert_of_a_rule_no_longer_registered_resolves_as_rule_retired_then_retires()
+    {
+        // K2's moved alarms that nothing moved stayed "not reported" forever.
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        AlertReconciliationResult Next(AlertReconciliationResult previous, int n) =>
+            AlertReconciler.Reconcile(new AlertReconciliationRequest
+            {
+                Scope = AlertScopes.Observation,
+                Stored = previous.Instances,
+                NowUtc = Cycle(n),
+                Evaluations = [],
+                Sources = Reporting,
+                RawRetention = Raw,
+                RegisteredRules = ["some-other-rule"],
+            });
+
+        // One cycle unreported first: the path that retired the rule (K2's
+        // move to a finding) gets it to close the alarm its own way.
+        var unreported = Next(r, 1);
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(unreported.Instances).State);
+        Assert.Equal(UnknownReason.NotReported, Assert.Single(unreported.Instances).StaleReason);
+
+        var retired = Next(unreported, 2);
+        var psu = Assert.Single(retired.Instances);
+        Assert.Equal(AlertLifecycleState.Resolved, psu.State);
+        Assert.Equal(AlertTransitionReason.RuleRetired, psu.History[^1].Reason);
+        Assert.Empty(retired.ToNotify);
+
+        Assert.Equal([Psu().Fingerprint], Next(retired, 3).Retired);
+    }
+
+    [Fact]
+    public void Without_the_registered_rules_nothing_is_called_retired()
+    {
+        // The forgetful call is the safe one: no roster, no retirement.
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        var next = Rules(r, Cycle(1), []);
+
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(next.Instances).State);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void An_alert_on_a_vanished_entity_resolves_as_subject_removed(bool ofARule)
+    {
+        var r = ofARule ? Rules(null, Cycle(0), [Present(Psu())]) : Run([Psu()], now: Cycle(0));
+        var vanished = Reporting with { IsVanished = e => e.Value == "esx01" };
+
+        var next = Rules(r, Cycle(1), [], sources: vanished);
+
+        var psu = Assert.Single(next.Instances);
+        Assert.Equal(AlertLifecycleState.Resolved, psu.State);
+        Assert.Equal(AlertTransitionReason.SubjectRemoved, psu.History[^1].Reason);
+    }
+
+    [Fact]
+    public void A_vanished_entity_does_not_override_a_present_verdict()
+    {
+        var vanished = Reporting with { IsVanished = e => e.Value == "esx01" };
+
+        var r = Rules(null, Cycle(0), [Present(Psu())], sources: vanished);
+
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(r.Instances).State);
+    }
 }

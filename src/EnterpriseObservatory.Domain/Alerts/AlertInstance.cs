@@ -84,6 +84,9 @@ public enum AlertTransitionReason
 
     /// <summary>Resolved because an occurrence aged out; the type declares it two-valued.</summary>
     Expired,
+
+    /// <summary>Resolved because the rule that raised it is no longer registered (K2, M3.3).</summary>
+    RuleRetired,
 }
 
 /// <summary>One recorded change in an alert's life.</summary>

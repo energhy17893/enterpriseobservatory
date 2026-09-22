@@ -30,6 +30,18 @@ public sealed record EvidenceSources
     public required Func<EntityId, string?> OwnerOf { get; init; }
 
     /// <summary>
+    /// Whether an entity is gone from a source that answered: marked vanished
+    /// in the graph. Its alerts resolve as <see cref="AbsenceKind.SubjectRemoved"/>,
+    /// never as "condition cleared" (design note §2).
+    /// </summary>
+    /// <remarks>
+    /// "Nothing vanished" by default, which is the safe answer: it retires
+    /// nothing. A purged entity is not claimed here — it is not in the graph,
+    /// and not being in the graph is also what an entity never read looks like.
+    /// </remarks>
+    public Func<EntityId, bool> IsVanished { get; init; } = static _ => false;
+
+    /// <summary>
     /// For a scope whose alerts belong to no source, such as compaction: nothing
     /// reported, and nothing is owned.
     /// </summary>
@@ -135,6 +147,13 @@ public sealed record AlertReconciliationRequest
     /// reconciler re-derives them itself every cycle.
     /// </remarks>
     public IReadOnlyList<ProducerRun> ProducersRun { get; init; } = [];
+
+    /// <summary>
+    /// Every rule registered in the product, across scopes. An open alert of a
+    /// rule not in it resolves as <see cref="AbsenceKind.RuleRetired"/> (K2's
+    /// moved alarms, M3.3's remote logging); null retires nothing.
+    /// </summary>
+    public IReadOnlyCollection<string>? RegisteredRules { get; init; }
 
     /// <summary>
     /// What each rule of this scope concluded, with its N (ADR-0026).
@@ -455,6 +474,25 @@ public static class AlertReconciler
                 continue;
             }
 
+            // An open alert of a rule that is registered nowhere: nothing will
+            // ever speak for it again, so it is over -- as "rule retired", not
+            // as "condition cleared". Only with the roster in hand (a request
+            // without it retires nothing), and only once it has already gone a
+            // cycle unreported: the path that retired the rule gets that cycle
+            // to close it its own way (ContinuityAlarmTransition's "moved to
+            // compliance finding" for K2's four).
+            if (instance.RuleId is { } unregistered &&
+                request.RegisteredRules is { } registered &&
+                !registered.Contains(unregistered, StringComparer.Ordinal) &&
+                (instance.State == AlertLifecycleState.Unknown ||
+                 instance is { IsStale: true, StaleReason: UnknownReason.NotReported }))
+            {
+                decisions[fingerprint] = new Gone(
+                    new AlertAbsence { EvidenceAtUtc = request.NowUtc, Because = AbsenceKind.RuleRetired },
+                    ResolutionPolicy.Immediate);
+                continue;
+            }
+
             decisions[fingerprint] = instance.RuleId is { } ruleId
                 // The flipped default: a rule that said nothing about an alert
                 // it holds has not found the condition gone.
@@ -464,6 +502,21 @@ public static class AlertReconciler
                     Detail = $"'{ruleId}' gave no verdict about this alert this cycle",
                 })
                 : DirectProducer(request, instance);
+        }
+
+        // A subject gone from a source that answered: whatever was said or
+        // not said about it, the alert is over as "subject removed". Only a
+        // present verdict outranks it -- something is still being seen.
+        foreach (var (fingerprint, instance) in stored)
+        {
+            if (instance.Entity is { } entity &&
+                request.Sources.IsVanished(entity) &&
+                decisions.GetValueOrDefault(fingerprint) is not Seen)
+            {
+                decisions[fingerprint] = new Gone(
+                    new AlertAbsence { EvidenceAtUtc = request.NowUtc, Because = AbsenceKind.SubjectRemoved },
+                    ResolutionPolicy.Immediate);
+            }
         }
 
         return decisions;

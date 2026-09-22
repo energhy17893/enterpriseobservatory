@@ -260,6 +260,8 @@ public sealed class MonitoringCycle(
             {
                 Reporting = reporting,
                 OwnerOf = entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
+                IsVanished = entity => graph.Entities.TryGetValue(entity, out var e) &&
+                                       e.ObservationState == ObservationState.Vanished,
             },
             options,
             options.InventoryInterval,
@@ -405,6 +407,8 @@ public sealed class MonitoringCycle(
             {
                 Reporting = answered,
                 OwnerOf = entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
+                IsVanished = entity => graph.Entities.TryGetValue(entity, out var e) &&
+                                       e.ObservationState == ObservationState.Vanished,
             },
             options,
             options.ObservationInterval,
@@ -749,11 +753,18 @@ public sealed class MonitoringCycle(
                 Evaluations = evaluations,
                 Sources = sources,
 
+                // Every rule the product registers, across scopes: an open
+                // alert of any other rule is over, as "rule retired".
+                RegisteredRules = RegisteredRules,
+
                 // Read from the retention policy, not copied: if ADR-0017
                 // changes raw retention, the limit moves with it.
                 RawRetention = options.Retention.Raw,
                 EvidenceLimit = EvidenceLimit(options, interval),
             }));
+
+    private static readonly IReadOnlyCollection<string> RegisteredRules =
+        AnalysisRules.All.Select(r => r.RuleId).ToHashSet(StringComparer.Ordinal);
 
     /// <summary>
     /// The age clamp: 2 × the scope's interval + its read budget (design note
