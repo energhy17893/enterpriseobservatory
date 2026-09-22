@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -493,7 +494,55 @@ public static class CpuContention
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Observation> observations,
         EntityGraph graph,
-        CpuContentionPolicy? policy = null)
+        CpuContentionPolicy? policy = null) =>
+        [.. Judge(observations, graph, policy, DateTimeOffset.MinValue).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same verdicts in three values (ADR-0026): one per host (saturated),
+    /// one per measured guest for each of victim, limit and width, and one for
+    /// the estate's width-unreadable finding.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A host's own usage counter missing is <see cref="UnknownReason.InputNotCollected"/>
+    /// for the host verdict — a missing reading is not a low one, and falling
+    /// through to judging the guests as though the host were quiet is exactly
+    /// the confident wrong answer this conversion removes.
+    /// </para>
+    /// <para>
+    /// A guest whose vCPU count could not be read is
+    /// <see cref="UnknownReason.InputNotCollected"/> for its victim, limit and
+    /// width verdicts alike: all three are per-vCPU figures, and none of them
+    /// can be formed without the width, whatever the ready, co-stop or
+    /// max-limited counters said.
+    /// </para>
+    /// <para>
+    /// A guest whose co-stop or max-limited counter did not arrive is
+    /// <see cref="UnknownReason.InputNotCollected"/> for the width or limit
+    /// verdict respectively, and only for the one the missing counter feeds. A
+    /// guest that is not itself waiting is absent for the limit verdict
+    /// whether or not the max-limited counter arrived — a machine that is not
+    /// waiting is not being held back by anything.
+    /// </para>
+    /// <para>
+    /// A host with fewer than <see cref="CpuContentionPolicy.MinimumSiblings"/>
+    /// measured guests is <see cref="UnknownReason.NotJudgeable"/> for every
+    /// one of its waiting, unthrottled guests' victim verdicts: a median needs
+    /// a population, and today's silence there was read as "healthy".
+    /// </para>
+    /// <para>
+    /// A victim verdict a saturated host's own verdict already speaks for, or
+    /// a limit verdict a machine's own configured ceiling already speaks for,
+    /// is <see cref="AbsenceKind.Superseded"/> rather than a plain absence —
+    /// the machine is not being said to be fine, it is being said to have a
+    /// verdict that already accounts for it.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        EntityGraph graph,
+        CpuContentionPolicy? policy,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(observations);
         ArgumentNullException.ThrowIfNull(graph);
@@ -511,10 +560,12 @@ public static class CpuContention
         // of vCPU counts wearing a contention costume: the widest machine on a
         // mixed host clears any multiple of the median for its shape alone.
         var readyBeforeWidth = PercentagesOf(observations, rules.ReadyCounter);
+        var costopBeforeWidth = PercentagesOf(observations, rules.CoStopCounter);
+        var limitedBeforeWidth = PercentagesOf(observations, rules.MaxLimitedCounter);
 
         var ready = PerVirtualCpu(readyBeforeWidth, graph);
-        var costop = PerVirtualCpu(PercentagesOf(observations, rules.CoStopCounter), graph);
-        var limited = PerVirtualCpu(PercentagesOf(observations, rules.MaxLimitedCounter), graph);
+        var costop = PerVirtualCpu(costopBeforeWidth, graph);
+        var limited = PerVirtualCpu(limitedBeforeWidth, graph);
 
         // Not divided: a host usage percentage is already a percentage of the
         // whole host and has no per-vCPU meaning.
@@ -530,17 +581,28 @@ public static class CpuContention
             .Where(e => graph.Entities.TryGetValue(e, out var known) &&
                         known.Kind == EntityKind.VirtualMachine &&
                         known.Sizing?.VirtualCpuCount is not > 0)
-            .ToList();
+            .ToHashSet();
 
-        var alerts = new List<AlertDefinition>();
+        var verdicts = new List<SubjectVerdict>();
 
         if (WidthIsKnowable(ready) && unmeasurable.Count > 0)
         {
-            alerts.Add(WidthUnreadable(unmeasurable, readyBeforeWidth.Count));
+            verdicts.Add(new ConditionPresent
+            {
+                Covers = [WidthUnreadableFingerprint],
+                Alerts = [WidthUnreadable([.. unmeasurable], readyBeforeWidth.Count)],
+                EvidenceAtUtc = evidenceAtUtc,
+            });
+        }
+        else if (WidthIsKnowable(ready))
+        {
+            verdicts.Add(new ConditionAbsent { Covers = [WidthUnreadableFingerprint], EvidenceAtUtc = evidenceAtUtc });
         }
 
         foreach (var (host, guests) in GuestsByHost(graph))
         {
+            var hostFingerprint = HostFingerprint(host);
+
             // Only machines we actually measured. A powered-off VM reports
             // nothing, and counting it as a quiet sibling would drag the median
             // down and make every waiting machine look exceptional.
@@ -553,35 +615,202 @@ public static class CpuContention
             // design: they stop being evidence about the host and stop being
             // candidates to name, and they stay in the population the sibling
             // median is taken over. See the type's remarks for both arguments.
-            var throttled = waiting.Where(g => Throttled(g, limited, rules)).ToList();
-            var victims = waiting.Where(g => !Throttled(g, limited, rules)).ToList();
+            var throttled = waiting.Where(g => Throttled(g, limited, rules)).ToHashSet();
+            var victims = waiting.Where(g => !throttled.Contains(g)).ToList();
 
-            if (Saturated(host, victims.Count, hostUsage, rules))
+            var hostUsageKnown = hostUsage.TryGetValue(host, out var usage);
+            var saturated = hostUsageKnown && Saturated(host, victims.Count, hostUsage, rules);
+
+            verdicts.Add(!hostUsageKnown
+                ? new Unknown
+                {
+                    Covers = [hostFingerprint],
+                    Entity = host,
+                    Reason = UnknownReason.InputNotCollected,
+                    Detail = $"'{rules.HostUsageCounter}' did not arrive for this host this cycle",
+                }
+                : saturated
+                    ? new ConditionPresent
+                    {
+                        Covers = [hostFingerprint],
+                        Alerts = [HostIsShort(host, victims, ready, usage, rules)],
+                        Entity = host,
+                        EvidenceAtUtc = evidenceAtUtc,
+                    }
+                    : new ConditionAbsent { Covers = [hostFingerprint], Entity = host, EvidenceAtUtc = evidenceAtUtc });
+
+            foreach (var guest in guests)
             {
-                alerts.Add(HostIsShort(host, victims, ready, hostUsage[host], rules));
-            }
-            else if (measured.Count >= rules.MinimumSiblings)
-            {
-                alerts.AddRange(Victims(host, measured, victims, ready, rules));
-            }
+                var victimFingerprint = VictimFingerprint(guest, rules);
+                var limitFingerprint = LimitFingerprint(guest, rules);
+                var widthFingerprint = WidthFingerprint(guest, rules);
 
-            // Every machine the suppression removed, named for the real cause.
-            // One gate decides both, so this set and the set withdrawn above
-            // are the same set — a machine cannot fall between them and
-            // disappear from the product.
-            alerts.AddRange(
-                throttled.Select(g => HeldByItsLimit(g, ready[g], limited[g], rules)));
+                if (!ready.ContainsKey(guest))
+                {
+                    if (unmeasurable.Contains(guest))
+                    {
+                        var detail = "this machine's configured vCPU count could not be read, and every " +
+                                     "verdict here is a per-vCPU figure";
 
-            // Width is judged per machine and needs no peers: a VM's vCPU count
-            // is wrong or it is not, whoever it shares a host with. It is the
-            // one verdict a host running a single VM can still receive.
-            alerts.AddRange(
-                guests.Where(g => TooWide(g, ready, costop, rules))
-                      .Select(g => OverWide(g, ready[g], costop[g], Width(graph, g), rules)));
+                        verdicts.Add(new Unknown { Covers = [victimFingerprint], Entity = guest, Reason = UnknownReason.InputNotCollected, Detail = detail });
+                        verdicts.Add(new Unknown { Covers = [limitFingerprint], Entity = guest, Reason = UnknownReason.InputNotCollected, Detail = detail });
+                        verdicts.Add(new Unknown { Covers = [widthFingerprint], Entity = guest, Reason = UnknownReason.InputNotCollected, Detail = detail });
+                    }
+
+                    // Otherwise the ready counter simply did not arrive for
+                    // this guest this cycle: no verdict, left "not reported".
+                    continue;
+                }
+
+                // Victim.
+                if (throttled.Contains(guest))
+                {
+                    verdicts.Add(new ConditionAbsent
+                    {
+                        Covers = [victimFingerprint],
+                        Entity = guest,
+                        EvidenceAtUtc = evidenceAtUtc,
+                        Because = AbsenceKind.Superseded,
+                    });
+                }
+                else if (saturated && victims.Contains(guest))
+                {
+                    verdicts.Add(new ConditionAbsent
+                    {
+                        Covers = [victimFingerprint],
+                        Entity = guest,
+                        EvidenceAtUtc = evidenceAtUtc,
+                        Because = AbsenceKind.Superseded,
+                    });
+                }
+                else if (ready[guest] < rules.ReadyPercent)
+                {
+                    verdicts.Add(new ConditionAbsent { Covers = [victimFingerprint], Entity = guest, EvidenceAtUtc = evidenceAtUtc });
+                }
+                else if (measured.Count < rules.MinimumSiblings)
+                {
+                    verdicts.Add(new Unknown
+                    {
+                        Covers = [victimFingerprint],
+                        Entity = guest,
+                        Reason = UnknownReason.NotJudgeable,
+                        Detail = string.Create(CultureInfo.InvariantCulture,
+                            $"{measured.Count} measured sibling(s) on this host; {rules.MinimumSiblings} are " +
+                            $"needed before any of them can be an outlier"),
+                    });
+                }
+                else
+                {
+                    var peers = measured.Where(g => g != guest).Select(g => ready[g]).ToList();
+                    var median = Math.Max(Stats.Median(peers), rules.SiblingFloorPercent);
+
+                    verdicts.Add(ready[guest] >= rules.SiblingMultiple * median
+                        ? new ConditionPresent
+                        {
+                            Covers = [victimFingerprint],
+                            Alerts = [Victim(host, guest, ready[guest], peers, median, rules)],
+                            Entity = guest,
+                            EvidenceAtUtc = evidenceAtUtc,
+                        }
+                        : new ConditionAbsent { Covers = [victimFingerprint], Entity = guest, EvidenceAtUtc = evidenceAtUtc });
+                }
+
+                // Limit: absent whenever the machine is not itself waiting,
+                // whether or not the max-limited counter arrived — a machine
+                // that is not waiting is not being held back by anything.
+                if (ready[guest] < rules.ReadyPercent)
+                {
+                    verdicts.Add(new ConditionAbsent { Covers = [limitFingerprint], Entity = guest, EvidenceAtUtc = evidenceAtUtc });
+                }
+                else if (!limited.TryGetValue(guest, out var held))
+                {
+                    verdicts.Add(new Unknown
+                    {
+                        Covers = [limitFingerprint],
+                        Entity = guest,
+                        Reason = UnknownReason.InputNotCollected,
+                        Detail = $"'{rules.MaxLimitedCounter}' did not arrive for this machine this cycle",
+                    });
+                }
+                else
+                {
+                    verdicts.Add(held >= rules.MaxLimitedPercent
+                        ? new ConditionPresent
+                        {
+                            Covers = [limitFingerprint],
+                            Alerts = [HeldByItsLimit(guest, ready[guest], held, rules)],
+                            Entity = guest,
+                            EvidenceAtUtc = evidenceAtUtc,
+                        }
+                        : new ConditionAbsent { Covers = [limitFingerprint], Entity = guest, EvidenceAtUtc = evidenceAtUtc });
+                }
+
+                // Width: needs no peers and no notion of saturation, so it is
+                // judged for every measured guest regardless of what else was
+                // decided about it.
+                if (!costop.TryGetValue(guest, out var stopped))
+                {
+                    verdicts.Add(new Unknown
+                    {
+                        Covers = [widthFingerprint],
+                        Entity = guest,
+                        Reason = UnknownReason.InputNotCollected,
+                        Detail = $"'{rules.CoStopCounter}' did not arrive for this machine this cycle",
+                    });
+                }
+                else
+                {
+                    verdicts.Add(TooWide(guest, ready, costop, rules)
+                        ? new ConditionPresent
+                        {
+                            Covers = [widthFingerprint],
+                            Alerts = [OverWide(guest, ready[guest], stopped, Width(graph, guest), rules)],
+                            Entity = guest,
+                            EvidenceAtUtc = evidenceAtUtc,
+                        }
+                        : new ConditionAbsent { Covers = [widthFingerprint], Entity = guest, EvidenceAtUtc = evidenceAtUtc });
+                }
+            }
         }
 
-        return alerts;
+        return verdicts;
     }
+
+    private static readonly AlertFingerprint WidthUnreadableFingerprint =
+        AlertFingerprint.Create(Platform, UnreadableWidthTitle, Category, string.Empty, "cpu-width-unreadable");
+
+    private static AlertFingerprint HostFingerprint(EntityId host) =>
+        AlertFingerprint.Create(Platform, HostTitle, Category, host.Value, "cpu-host-saturated");
+
+    private static AlertFingerprint VictimFingerprint(EntityId guest, CpuContentionPolicy rules) =>
+        AlertFingerprint.Create(Platform, VictimTitle, Category, $"{guest.Value}/{rules.ReadyCounter}", "cpu-ready-outlier");
+
+    private static AlertFingerprint LimitFingerprint(EntityId guest, CpuContentionPolicy rules) =>
+        AlertFingerprint.Create(Platform, LimitTitle, SizingCategory, $"{guest.Value}/{rules.MaxLimitedCounter}", "cpu-limit-reached");
+
+    private static AlertFingerprint WidthFingerprint(EntityId guest, CpuContentionPolicy rules) =>
+        AlertFingerprint.Create(Platform, WidthTitle, SizingCategory, $"{guest.Value}/{rules.CoStopCounter}", "cpu-costop-oversized");
+
+    private static AlertDefinition Victim(
+        EntityId host, EntityId guest, double ready, List<double> peers, double median, CpuContentionPolicy rules) =>
+        new()
+        {
+            Fingerprint = VictimFingerprint(guest, rules),
+            Severity = AlertSeverity.Warning,
+            Title = VictimTitle,
+            Description =
+                $"This virtual machine spent {Readings.Number(ready)}% of the sample " +
+                $"interval waiting for a physical core, against a median of " +
+                $"{Readings.Number(median)}% across the {peers.Count} other measured machine(s) on " +
+                $"host '{host.Value}' (worst of them {Readings.Number(peers.Count > 0 ? peers.Max() : 0d)}%). " +
+                "The host is not reported as short of CPU, so this is about this machine " +
+                "rather than its neighbours: check its CPU limit and shares, its vCPU " +
+                "count, and whether it is pinned.",
+            Category = Category,
+            Source = Platform,
+            Entity = guest,
+            IsDerived = true,
+        };
 
     /// <summary>
     /// Whether the host itself is the answer rather than one of its guests.
@@ -691,71 +920,6 @@ public static class CpuContention
             Entity = guest,
             IsDerived = true,
         };
-
-    /// <summary>
-    /// The guests that are waiting far more than the rest of their host.
-    /// </summary>
-    /// <remarks>
-    /// Every qualifying guest rather than only the worst, unlike
-    /// <c>PeerOutliers</c>, and the difference is in what is being compared.
-    /// There the peers are several views of one resource and only one of them
-    /// can be the odd view out. Here they are separate machines that are
-    /// separately actionable, and two genuine noisy neighbours are two
-    /// tickets. The ratio bounds how many there can be: a machine cannot be
-    /// three times the median of a group most of which is also high.
-    /// </remarks>
-    private static IEnumerable<AlertDefinition> Victims(
-        EntityId host,
-        List<EntityId> measured,
-        List<EntityId> candidates,
-        Dictionary<EntityId, double> ready,
-        CpuContentionPolicy rules)
-    {
-        // `candidates` is the waiting machines minus the ones a configured
-        // limit already explains; `measured` is still everyone with a reading,
-        // limited machines included. The asymmetry is the point — see the
-        // type's remarks on the median.
-        foreach (var guest in candidates)
-        {
-            // The median of everyone else, so the candidate is not compared
-            // with itself — one bad reading among three would otherwise drag
-            // the median up and hide behind it.
-            var peers = measured.Where(g => g != guest).Select(g => ready[g]).ToList();
-            var median = Math.Max(Stats.Median(peers), rules.SiblingFloorPercent);
-
-            if (ready[guest] < rules.SiblingMultiple * median)
-            {
-                continue;
-            }
-
-            yield return new AlertDefinition
-            {
-                // The machine and the counter, and deliberately not the host
-                // it is running on. A VM that vMotions and keeps waiting is
-                // the same problem, and a fingerprint carrying the host would
-                // resolve the alert and open a new one at the moment the
-                // evidence became most interesting — the machine took its
-                // contention with it, which is a fact about the machine.
-                Fingerprint = AlertFingerprint.Create(
-                    Platform, VictimTitle, Category,
-                    $"{guest.Value}/{rules.ReadyCounter}", "cpu-ready-outlier"),
-                Severity = AlertSeverity.Warning,
-                Title = VictimTitle,
-                Description =
-                    $"This virtual machine spent {Readings.Number(ready[guest])}% of the sample " +
-                    $"interval waiting for a physical core, against a median of " +
-                    $"{Readings.Number(median)}% across the {peers.Count} other measured machine(s) on " +
-                    $"host '{host.Value}' (worst of them {Readings.Number(peers.Count > 0 ? peers.Max() : 0d)}%). " +
-                    "The host is not reported as short of CPU, so this is about this machine " +
-                    "rather than its neighbours: check its CPU limit and shares, its vCPU " +
-                    "count, and whether it is pinned.",
-                Category = Category,
-                Source = Platform,
-                Entity = guest,
-                IsDerived = true,
-            };
-        }
-    }
 
     /// <summary>
     /// Whether a machine is losing time to its own width rather than to a

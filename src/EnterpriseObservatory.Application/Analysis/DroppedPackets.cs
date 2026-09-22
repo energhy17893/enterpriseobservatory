@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -153,7 +154,23 @@ public static class DroppedPackets
     /// <param name="policy">Defaults, and why they are what they are.</param>
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Observation> observations,
-        DroppedPacketsPolicy? policy = null)
+        DroppedPacketsPolicy? policy = null) =>
+        [.. Judge(observations, policy, DateTimeOffset.MinValue).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same, in three values (ADR-0026): dropped and packets both read,
+    /// below the drop line, is absent. The packets counter missing is
+    /// <see cref="UnknownReason.InputNotCollected"/> — there is no denominator,
+    /// not a clean ratio. Traffic below the floor is
+    /// <see cref="UnknownReason.NotJudgeable"/> — a ratio over a handful of
+    /// packets is arithmetic on noise, not evidence either way. An entity whose
+    /// dropped counter never arrived gets no verdict at all: there is no
+    /// subject to hold an opinion about.
+    /// </summary>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        DroppedPacketsPolicy? policy,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(observations);
 
@@ -161,27 +178,49 @@ public static class DroppedPackets
 
         return
         [
-            .. Direction(observations, rules, rules.DroppedRxCounter, rules.PacketsRxCounter, ReceiveTitle, "received"),
-            .. Direction(observations, rules, rules.DroppedTxCounter, rules.PacketsTxCounter, TransmitTitle, "transmitted"),
+            .. Direction(
+                observations, rules, rules.DroppedRxCounter, rules.PacketsRxCounter,
+                ReceiveTitle, "received", evidenceAtUtc),
+            .. Direction(
+                observations, rules, rules.DroppedTxCounter, rules.PacketsTxCounter,
+                TransmitTitle, "transmitted", evidenceAtUtc),
         ];
     }
 
-    private static IEnumerable<AlertDefinition> Direction(
+    private static IEnumerable<SubjectVerdict> Direction(
         IReadOnlyList<Observation> observations,
         DroppedPacketsPolicy rules,
         string droppedCounter,
         string packetsCounter,
         string title,
-        string verb)
+        string verb,
+        DateTimeOffset evidenceAtUtc)
     {
         var dropped = CountsOf(observations, droppedCounter);
         var packets = CountsOf(observations, packetsCounter);
 
         foreach (var (entity, drop) in dropped.OrderBy(d => d.Key.Value, StringComparer.Ordinal))
         {
-            // No denominator, no verdict. See the type's remarks.
+            // The entity and the counter, not the ratio: the share moves
+            // every cycle while the problem stays the same one, and a
+            // fingerprint carrying it would open a fresh alert each time.
+            var fingerprint = AlertFingerprint.Create(
+                Platform, title, Category, $"{entity.Value}/{droppedCounter}", "net-dropped-packets");
+            IReadOnlyList<AlertFingerprint> covers = [fingerprint];
+
+            // No denominator, no ratio: not the same as no drop. See the
+            // type's remarks.
             if (!packets.TryGetValue(entity, out var passed))
             {
+                yield return new Unknown
+                {
+                    Covers = covers,
+                    Entity = entity,
+                    Reason = UnknownReason.InputNotCollected,
+                    Detail = $"'{packetsCounter}' ({verb}) did not arrive for this entity this cycle; " +
+                             "the drop ratio needs it as the denominator",
+                };
+
                 continue;
             }
 
@@ -191,6 +230,16 @@ public static class DroppedPackets
 
             if (perSecond < rules.MinimumPacketsPerSecond)
             {
+                yield return new Unknown
+                {
+                    Covers = covers,
+                    Entity = entity,
+                    Reason = UnknownReason.NotJudgeable,
+                    Detail = string.Create(CultureInfo.InvariantCulture,
+                        $"{perSecond:0.##} {verb} packets a second, below the {rules.MinimumPacketsPerSecond:0.##} " +
+                        $"that makes a drop ratio mean anything"),
+                };
+
                 continue;
             }
 
@@ -200,36 +249,58 @@ public static class DroppedPackets
 
             if (percent < rules.DropPercent)
             {
+                yield return new ConditionAbsent
+                {
+                    Covers = covers,
+                    Entity = entity,
+                    EvidenceAtUtc = evidenceAtUtc,
+                };
+
                 continue;
             }
 
-            yield return new AlertDefinition
+            yield return new ConditionPresent
             {
-                // The entity and the counter, not the ratio: the share moves
-                // every cycle while the problem stays the same one, and a
-                // fingerprint carrying it would open a fresh alert each time.
-                Fingerprint = AlertFingerprint.Create(
-                    Platform, title, Category, $"{entity.Value}/{droppedCounter}", "net-dropped-packets"),
-                Severity = AlertSeverity.Warning,
-                Title = title,
-                Description =
-                    $"{Readings.Number(drop.Count)} of {Readings.Number(total)} {verb} packets ({Readings.Number(percent)}%) " +
-                    $"were dropped in the last {Readings.Number(seconds)} seconds, at {Readings.Number(perSecond)} " +
-                    $"packets per second. The line is {Readings.Number(rules.DropPercent)}% of real traffic " +
-                    $"(at least {Readings.Number(rules.MinimumPacketsPerSecond)} packets per second), not any " +
-                    "drop at all: a busy link drops the odd frame legitimately. This is the aggregate " +
-                    "across every NIC of this entity, so it does not say which one. On a virtual " +
-                    "machine, receive drops usually mean the guest is not draining its ring buffer " +
-                    "(guest CPU, or a small vmxnet3 ring); transmit drops usually mean the uplink or " +
-                    "a traffic shaping policy is the bottleneck. On a host, check the physical " +
-                    "uplinks and the switch ports they land on.",
-                Category = Category,
-                Source = Platform,
+                Covers = covers,
+                Alerts = [Alert(entity, fingerprint, title, drop, total, seconds, perSecond, percent, rules, verb)],
                 Entity = entity,
-                IsDerived = true,
+                EvidenceAtUtc = evidenceAtUtc,
             };
         }
     }
+
+    private static AlertDefinition Alert(
+        EntityId entity,
+        AlertFingerprint fingerprint,
+        string title,
+        (double Count, double Seconds) drop,
+        double total,
+        double seconds,
+        double perSecond,
+        double percent,
+        DroppedPacketsPolicy rules,
+        string verb) =>
+        new()
+        {
+            Fingerprint = fingerprint,
+            Severity = AlertSeverity.Warning,
+            Title = title,
+            Description =
+                $"{Readings.Number(drop.Count)} of {Readings.Number(total)} {verb} packets ({Readings.Number(percent)}%) " +
+                $"were dropped in the last {Readings.Number(seconds)} seconds, at {Readings.Number(perSecond)} " +
+                $"packets per second. The line is {Readings.Number(rules.DropPercent)}% of real traffic " +
+                $"(at least {Readings.Number(rules.MinimumPacketsPerSecond)} packets per second), not any " +
+                "drop at all: a busy link drops the odd frame legitimately. This is the aggregate " +
+                "across every NIC of this entity, so it does not say which one. On a virtual " +
+                "machine, receive drops usually mean the guest is not draining its ring buffer " +
+                "(guest CPU, or a small vmxnet3 ring); transmit drops usually mean the uplink or " +
+                "a traffic shaping policy is the bottleneck. On a host, check the physical " +
+                "uplinks and the switch ports they land on.",
+            Category = Category,
+            Source = Platform,
+            Entity = entity,
+            IsDerived = true,
+        };
 
     /// <summary>
     /// A summed packet counter per entity, with the window it covers.

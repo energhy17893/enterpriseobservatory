@@ -1,4 +1,6 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
+using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -230,5 +232,112 @@ public class PeerOutliersTests
     public void Nothing_at_all_produces_nothing()
     {
         Assert.Empty(PeerOutliers.Evaluate([]));
+        Assert.Empty(PeerOutliers.Judge([], null, T0));
+    }
+
+    // --- three values (ADR-0026) --------------------------------------------
+
+    private static SubjectVerdict JudgeOne(IReadOnlyList<Observation> observations, PeerOutlierPolicy? policy = null) =>
+        Assert.Single(PeerOutliers.Judge(observations, policy, T0));
+
+    [Fact]
+    public void An_outlier_is_present()
+    {
+        var present = Assert.IsType<ConditionPresent>(JudgeOne([.. Healthy(), From("esx10", 12)]));
+
+        Assert.Equal(present.Covers[0], Assert.Single(present.Alerts).Fingerprint);
+        Assert.Equal(new EntityId("vc-1:ds-prod"), present.Entity);
+        Assert.Equal(T0, present.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void A_healthy_volume_is_absent()
+    {
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne([.. Healthy(0), From("esx10", 2)]));
+
+        Assert.Equal(T0, absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void Fewer_than_three_vantage_points_is_not_judgeable()
+    {
+        var unknown = Assert.IsType<Unknown>(JudgeOne([From("esx01", 0), From("esx02", 40)]));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        Assert.Contains("2 vantage point", unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_quiet_run_keeps_the_alert_open_across_the_rules_n_and_an_unknown_resets_the_count()
+    {
+        // Raise, confirm, then: one fresh absence (count 1), an unknown cycle
+        // (must not count and must not resolve), then fresh absences again.
+        // With N = 3 the alert must still be open after the unknown resets the
+        // count back to zero.
+        var rule = new PeerOutliersRule();
+        List<Observation> raised = [.. Healthy(), From("esx10", 12)];
+        List<Observation> absent = [.. Healthy(0), From("esx10", 2)];
+        List<Observation> unknown = [From("esx01", 0), From("esx02", 40)];
+
+        IReadOnlyList<AlertInstance> stored = [];
+
+        List<Observation>[] cycles =
+        [
+            raised, raised, // Pending -> Active (Warning confirms on the 2nd hit)
+            absent,         // 1/3
+            unknown,        // resets to 0/3, must not resolve
+            absent, absent, // 1/3, 2/3
+        ];
+
+        for (var minute = 0; minute < cycles.Length; minute++)
+        {
+            stored = Reconcile(rule, cycles[minute], stored, T0.AddMinutes(minute));
+        }
+
+        var alert = Assert.Single(stored);
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.Equal(2, alert.ConsecutiveAbsent);
+
+        // One more fresh absence reaches N = 3 and resolves it.
+        stored = Reconcile(rule, absent, stored, T0.AddMinutes(cycles.Length));
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
+    }
+
+    private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
+        TRule rule, IReadOnlyList<Observation> observations, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        where TRule : IAnalysisRule
+    {
+        var context = new RuleContext
+        {
+            Observations = observations,
+            ReadGraph = () => EntityGraph.Empty,
+            NowUtc = nowUtc,
+            Options = MonitoringOptions.Default,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+        };
+
+        return AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = "observation",
+            Stored = stored,
+            NowUtc = nowUtc,
+            Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+            Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+            RawRetention = TimeSpan.FromDays(2),
+        }).Instances;
+    }
+
+    private sealed class NoSeries : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query) => new() { Key = query.Key, Resolution = SeriesResolution.Raw };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    private sealed class NoEvents : EnterpriseObservatory.Application.Collection.IEventReader
+    {
+        public IReadOnlyList<EnterpriseObservatory.Application.Collection.SourceEvent> OfTypes(
+            IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 }

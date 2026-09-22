@@ -167,12 +167,33 @@ public static class StorageLayerSplit
 
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Observation> observations,
-        StorageLayerPolicy? policy = null)
+        StorageLayerPolicy? policy = null) =>
+        [.. Judge(observations, policy, DateTimeOffset.MinValue).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same, in three values (ADR-0026). One verdict per device, covering
+    /// all three of its fingerprints (queue, kernel, array) at once: at most
+    /// one of the three is ever the winner, and the other two are absent
+    /// because this verdict covers them and does not raise them.
+    /// </summary>
+    /// <remarks>
+    /// Any of the three layer counters missing is
+    /// <see cref="UnknownReason.InputNotCollected"/> — two of three cannot
+    /// split three layers, and "could not look" is not "found nothing".
+    /// Deferring to a host's fault counters is
+    /// <see cref="UnknownReason.NotJudgeable"/>: the fault explains the
+    /// latency better than any share of a total does, and the deferral says so
+    /// rather than quietly calling every device on that host healthy, which is
+    /// what it did before.
+    /// </remarks>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        StorageLayerPolicy? policy,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(observations);
 
         var rules = policy ?? StorageLayerPolicy.Default;
-        var alerts = new List<AlertDefinition>();
 
         // Hosts whose fault counters already explain themselves. Gathered once
         // rather than per device: the list is short and the join to a device
@@ -186,19 +207,125 @@ public static class StorageLayerSplit
 
         var devices = observations
             .Where(o => IsLayerReading(o.Value, rules))
-            .Where(o => !explained.Contains(o.Entity))
             .GroupBy(o => (o.Entity, o.Value.Instance));
 
-        foreach (var device in devices)
+        return
+        [
+            .. devices.Select(device => Judge(
+                device.Key.Entity, device.Key.Instance, [.. device],
+                explained.Contains(device.Key.Entity), rules, evidenceAtUtc)),
+        ];
+    }
+
+    private static SubjectVerdict Judge(
+        EntityId entity,
+        string instance,
+        List<Observation> device,
+        bool deferred,
+        StorageLayerPolicy rules,
+        DateTimeOffset evidenceAtUtc)
+    {
+        var source = device[0].Source;
+
+        IReadOnlyList<AlertFingerprint> covers =
+        [
+            FingerprintOf(source, entity, instance, QueueTitle),
+            FingerprintOf(source, entity, instance, KernelTitle),
+            FingerprintOf(source, entity, instance, ArrayTitle),
+        ];
+
+        if (deferred)
         {
-            if (Verdict(device, rules) is { } found)
+            return new Unknown
             {
-                alerts.Add(found);
-            }
+                Covers = covers,
+                Entity = entity,
+                Reason = UnknownReason.NotJudgeable,
+                Detail = $"this host reported a fault this cycle; 'storage-layer-split' defers to " +
+                         $"'{FaultCounters.RuleId}' for this device rather than guessing which layer explains it",
+            };
         }
 
-        return alerts;
+        var array = Layer(device, rules.ArrayCounter);
+        var kernel = Layer(device, rules.KernelCounter);
+        var queue = Layer(device, rules.QueueCounter);
+
+        if (array is null || kernel is null || queue is null)
+        {
+            var missing = new List<string>();
+
+            if (queue is null)
+            {
+                missing.Add(rules.QueueCounter);
+            }
+
+            if (kernel is null)
+            {
+                missing.Add(rules.KernelCounter);
+            }
+
+            if (array is null)
+            {
+                missing.Add(rules.ArrayCounter);
+            }
+
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = entity,
+                Reason = UnknownReason.InputNotCollected,
+                Detail = $"{string.Join(", ", missing)} not in this cycle's batch; splitting the layers needs all three",
+            };
+        }
+
+        var a = array.Value.Raw;
+        var k = kernel.Value.Raw;
+        var q = queue.Value.Raw;
+
+        // Host-side first, and the order is the argument. See the type's remarks.
+        if (Dominates(q, rules.HostMultiple, a) && Over(q, rules))
+        {
+            return new ConditionPresent
+            {
+                Covers = covers,
+                Alerts = [Alert(queue!, QueueTitle, DescribeQueue(a, k, q))],
+                Entity = entity,
+                EvidenceAtUtc = evidenceAtUtc,
+            };
+        }
+
+        if (Dominates(k, rules.HostMultiple, a) && Over(k, rules))
+        {
+            return new ConditionPresent
+            {
+                Covers = covers,
+                Alerts = [Alert(kernel!, KernelTitle, DescribeKernel(a, k, q))],
+                Entity = entity,
+                EvidenceAtUtc = evidenceAtUtc,
+            };
+        }
+
+        if (Dominates(a, rules.ArrayMultiple, Math.Max(k, q)) && Over(a, rules))
+        {
+            return new ConditionPresent
+            {
+                Covers = covers,
+                Alerts = [Alert(array!, ArrayTitle, DescribeArray(a, k, q))],
+                Entity = entity,
+                EvidenceAtUtc = evidenceAtUtc,
+            };
+        }
+
+        return new ConditionAbsent
+        {
+            Covers = covers,
+            Entity = entity,
+            EvidenceAtUtc = evidenceAtUtc,
+        };
     }
+
+    private static AlertFingerprint FingerprintOf(string source, EntityId entity, string instance, string title) =>
+        AlertFingerprint.Create(source, title, Category, $"{entity.Value}/{instance}", "storage-layer");
 
     /// <summary>
     /// A reading this rule is entitled to judge.
@@ -228,52 +355,6 @@ public static class StorageLayerSplit
 
     private static bool Is(CounterValue value, string counter) =>
         Readings.IsCounter(value.CounterName, counter);
-
-    private static AlertDefinition? Verdict(
-        IEnumerable<Observation> readings, StorageLayerPolicy rules)
-    {
-        var device = readings.ToList();
-
-        var array = Layer(device, rules.ArrayCounter);
-        var kernel = Layer(device, rules.KernelCounter);
-        var queue = Layer(device, rules.QueueCounter);
-
-        // All three or nothing. Two of them cannot split three layers, and the
-        // ladder's third answer — could not look — is silence here rather than
-        // a guess with one term missing. This is also what stops a device that
-        // only reports the total: the total is a different counter and is not
-        // one of the three.
-        if (array is null || kernel is null || queue is null)
-        {
-            return null;
-        }
-
-        var a = array.Value.Raw;
-        var k = kernel.Value.Raw;
-        var q = queue.Value.Raw;
-
-        // Host-side first, and the order is the argument. Queue saturation is
-        // the most specific and most cheaply fixed of the three, the kernel is
-        // next, and the array is reached only when neither host-side
-        // explanation held. Being tried last and needing the larger multiple
-        // are the same decision said twice.
-        if (Dominates(q, rules.HostMultiple, a) && Over(q, rules))
-        {
-            return Alert(queue, QueueTitle, DescribeQueue(a, k, q));
-        }
-
-        if (Dominates(k, rules.HostMultiple, a) && Over(k, rules))
-        {
-            return Alert(kernel, KernelTitle, DescribeKernel(a, k, q));
-        }
-
-        if (Dominates(a, rules.ArrayMultiple, Math.Max(k, q)) && Over(a, rules))
-        {
-            return Alert(array, ArrayTitle, DescribeArray(a, k, q));
-        }
-
-        return null;
-    }
 
     private static bool Over(double value, StorageLayerPolicy rules) =>
         value >= rules.MinimumMilliseconds;

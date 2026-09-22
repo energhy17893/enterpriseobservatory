@@ -1,5 +1,8 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
+using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Tests;
 
@@ -370,5 +373,120 @@ public class StorageLayerSplitTests
     public void Nothing_at_all_produces_nothing()
     {
         Assert.Empty(StorageLayerSplit.Evaluate([]));
+        Assert.Empty(StorageLayerSplit.Judge([], null, T0));
+    }
+
+    // --- three values (ADR-0026) --------------------------------------------
+
+    private static SubjectVerdict JudgeOne(IReadOnlyList<Observation> observations, StorageLayerPolicy? policy = null) =>
+        Assert.Single(StorageLayerSplit.Judge(observations, policy, T0));
+
+    [Fact]
+    public void A_dominant_queue_is_present_and_covers_all_three_layers()
+    {
+        var present = Assert.IsType<ConditionPresent>(JudgeOne([.. Triple(device: 2, kernel: 1, queue: 12)]));
+
+        Assert.Equal(3, present.Covers.Count);
+        Assert.Equal("Host queue depth is the bottleneck", Assert.Single(present.Alerts).Title);
+        Assert.Equal(T0, present.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void Three_layers_within_noise_are_absent_rather_than_silent()
+    {
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne([.. Triple(device: 12, kernel: 11, queue: 10)]));
+
+        Assert.Equal(3, absent.Covers.Count);
+        Assert.Equal(T0, absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void A_device_missing_one_layer_is_not_collected_rather_than_not_judged()
+    {
+        var unknown = Assert.IsType<Unknown>(JudgeOne([One(Device, 40), One(Kernel, 1)]));
+
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+        Assert.Contains(StorageLayerPolicy.Default.QueueCounter, unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Deferring_to_a_hosts_fault_is_not_judgeable_rather_than_healthy()
+    {
+        List<Observation> readings =
+        [
+            .. Triple(device: 40, kernel: 1, queue: 1),
+            One("storagePath.busResets.summation", 3, instance: "vmhba0:C0:T0:L1", fault: true),
+        ];
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(readings));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        Assert.Contains(FaultCounters.RuleId, unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_quiet_run_keeps_the_alert_open_across_the_rules_n_and_an_unknown_resets_the_count()
+    {
+        var rule = new StorageLayerSplitRule();
+        List<Observation> raised = [.. Triple(device: 2, kernel: 1, queue: 12)];
+        List<Observation> absent = [.. Triple(device: 12, kernel: 11, queue: 10)];
+        List<Observation> unknown =
+        [
+            .. Triple(device: 2, kernel: 1, queue: 12),
+            One("storagePath.busResets.summation", 3, instance: "vmhba0:C0:T0:L1", fault: true),
+        ];
+
+        IReadOnlyList<AlertInstance> stored = [];
+        List<List<Observation>> cycles = [raised, raised, absent, unknown, absent, absent];
+
+        for (var minute = 0; minute < cycles.Count; minute++)
+        {
+            stored = Reconcile(rule, cycles[minute], stored, T0.AddMinutes(minute));
+        }
+
+        var alert = Assert.Single(stored);
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.Equal(2, alert.ConsecutiveAbsent);
+
+        stored = Reconcile(rule, absent, stored, T0.AddMinutes(cycles.Count));
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
+    }
+
+    private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
+        TRule rule, IReadOnlyList<Observation> observations, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        where TRule : IAnalysisRule
+    {
+        var context = new RuleContext
+        {
+            Observations = observations,
+            ReadGraph = () => EntityGraph.Empty,
+            NowUtc = nowUtc,
+            Options = MonitoringOptions.Default,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+        };
+
+        return AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = "observation",
+            Stored = stored,
+            NowUtc = nowUtc,
+            Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+            Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+            RawRetention = TimeSpan.FromDays(2),
+        }).Instances;
+    }
+
+    private sealed class NoSeries : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query) => new() { Key = query.Key, Resolution = SeriesResolution.Raw };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    private sealed class NoEvents : EnterpriseObservatory.Application.Collection.IEventReader
+    {
+        public IReadOnlyList<EnterpriseObservatory.Application.Collection.SourceEvent> OfTypes(
+            IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 }

@@ -1,4 +1,5 @@
-﻿using EnterpriseObservatory.Domain;
+﻿using System.Globalization;
+using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Analysis;
@@ -86,43 +87,64 @@ public static class PeerOutliers
 
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Observation> observations,
-        PeerOutlierPolicy? policy = null)
+        PeerOutlierPolicy? policy = null) =>
+        [.. Judge(observations, policy, DateTimeOffset.MinValue).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same, in three values (ADR-0026). Fewer vantage points than
+    /// <see cref="PeerOutlierPolicy.MinimumVantagePoints"/> is
+    /// <see cref="UnknownReason.NotJudgeable"/>: two cannot say which of them
+    /// is wrong, which is not the same as saying neither is. Used to resolve.
+    /// </summary>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        PeerOutlierPolicy? policy,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(observations);
 
         var rules = policy ?? PeerOutlierPolicy.Default;
-        var alerts = new List<AlertDefinition>();
 
         var groups = observations
             .Where(o => o.Value.InstanceIsVantagePoint && Readings.IsMilliseconds(o.Value.Unit))
             .GroupBy(o => (o.Entity, o.Value.CounterName));
 
-        foreach (var group in groups)
-        {
-            if (Outlier(group, rules) is { } found)
-            {
-                alerts.Add(found);
-            }
-        }
-
-        return alerts;
+        return [.. groups.Select(group => Outlier(group, rules, evidenceAtUtc))];
     }
 
-    private static AlertDefinition? Outlier(
-        IEnumerable<Observation> readings, PeerOutlierPolicy rules)
+    private static SubjectVerdict Outlier(
+        IEnumerable<Observation> readings, PeerOutlierPolicy rules, DateTimeOffset evidenceAtUtc)
     {
         var ordered = readings.OrderByDescending(o => o.Value.Raw).ToList();
+        var worst = ordered[0];
+
+        IReadOnlyList<AlertFingerprint> covers =
+        [
+            // The entity and counter, not the vantage point. The vantage point
+            // is what the alert is about, but which host is worst may change
+            // between cycles while the volume stays the sick one — and a
+            // fingerprint that moved with it would raise a new alert each time
+            // and lose the history of a fault that has run for hours.
+            AlertFingerprint.Create(
+                worst.Source, Title, Category, $"{worst.Entity.Value}/{worst.Value.CounterName}", "peer-outlier"),
+        ];
 
         if (ordered.Count < rules.MinimumVantagePoints)
         {
-            return null;
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = worst.Entity,
+                Reason = UnknownReason.NotJudgeable,
+                Detail = string.Create(CultureInfo.InvariantCulture,
+                    $"{ordered.Count} vantage point reading(s) this cycle; " +
+                    $"{rules.MinimumVantagePoints} are needed before any of them can be an outlier"),
+            };
         }
-
-        var worst = ordered[0];
 
         if (worst.Value.Raw < rules.MinimumMilliseconds)
         {
-            return null;
+            return new ConditionAbsent { Covers = covers, Entity = worst.Entity, EvidenceAtUtc = evidenceAtUtc };
         }
 
         // The median of everyone else, so the outlier is not compared with
@@ -136,25 +158,27 @@ public static class PeerOutliers
         // infinite multiple.
         if (worst.Value.Raw < Stats.FlooredMultiple(rules.Multiple, median, 1d))
         {
-            return null;
+            return new ConditionAbsent { Covers = covers, Entity = worst.Entity, EvidenceAtUtc = evidenceAtUtc };
         }
 
-        return new AlertDefinition
+        return new ConditionPresent
         {
-            // The entity and counter, not the vantage point. The vantage point
-            // is what the alert is about, but which host is worst may change
-            // between cycles while the volume stays the sick one — and a
-            // fingerprint that moved with it would raise a new alert each time
-            // and lose the history of a fault that has run for hours.
-            Fingerprint = AlertFingerprint.Create(
-                worst.Source, Title, Category, $"{worst.Entity.Value}/{worst.Value.CounterName}",
-                "peer-outlier"),
-            Severity = AlertSeverity.Warning,
-            Title = Title,
-            Description = Describe(worst, peers, median),
-            Category = Category,
-            Source = worst.Source,
+            Covers = covers,
+            Alerts =
+            [
+                new AlertDefinition
+                {
+                    Fingerprint = covers[0],
+                    Severity = AlertSeverity.Warning,
+                    Title = Title,
+                    Description = Describe(worst, peers, median),
+                    Category = Category,
+                    Source = worst.Source,
+                    Entity = worst.Entity,
+                },
+            ],
             Entity = worst.Entity,
+            EvidenceAtUtc = evidenceAtUtc,
         };
     }
 

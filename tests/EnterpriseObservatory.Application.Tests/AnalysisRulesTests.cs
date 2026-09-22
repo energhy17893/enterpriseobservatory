@@ -146,7 +146,12 @@ public class AnalysisRulesTests
         };
 
         Assert.Single(SharedVolumeLatency.Evaluate(unanimous, raised.SharedVolumes));
-        Assert.Empty(new SharedVolumeLatencyRule().Evaluate(Context(unanimous, raised)));
+
+        // Three-valued: held to the raised floor, the volume is a genuine
+        // absence (not merely "nothing raised") rather than empty.
+        var verdicts = new SharedVolumeLatencyRule().Evaluate(Context(unanimous, raised));
+        Assert.Empty(verdicts.OfType<ConditionPresent>());
+        Assert.IsType<ConditionAbsent>(Assert.Single(verdicts));
     }
 
     [Fact]

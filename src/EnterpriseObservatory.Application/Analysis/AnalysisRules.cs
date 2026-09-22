@@ -92,7 +92,7 @@ public sealed class PeerOutliersRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, PeerOutliers.Evaluate(context.Observations, context.Options.PeerOutliers));
+        return PeerOutliers.Judge(context.Observations, context.Options.PeerOutliers, context.NowUtc);
     }
 }
 
@@ -110,8 +110,7 @@ public sealed class CpuContentionRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, CpuContention.Evaluate(
-            context.Observations, context.Graph, context.Options.CpuContention));
+        return CpuContention.Judge(context.Observations, context.Graph, context.Options.CpuContention, context.NowUtc);
     }
 }
 
@@ -150,7 +149,7 @@ public sealed class StorageLayerSplitRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, StorageLayerSplit.Evaluate(context.Observations, context.Options.StorageLayers));
+        return StorageLayerSplit.Judge(context.Observations, context.Options.StorageLayers, context.NowUtc);
     }
 }
 
@@ -177,8 +176,8 @@ public sealed class SharedVolumeLatencyRule : IAnalysisRule
 
         var options = context.Options;
 
-        return TwoValuedVerdicts.From(context, RuleId, SharedVolumeLatency.Evaluate(
-            context.Observations, options.SharedVolumes with { Peers = options.PeerOutliers }));
+        return SharedVolumeLatency.Judge(
+            context.Observations, options.SharedVolumes with { Peers = options.PeerOutliers }, context.NowUtc);
     }
 }
 
@@ -229,7 +228,7 @@ public sealed class DroppedPacketsRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, DroppedPackets.Evaluate(context.Observations, context.Options.DroppedPackets));
+        return DroppedPackets.Judge(context.Observations, context.Options.DroppedPackets, context.NowUtc);
     }
 }
 
@@ -256,12 +255,13 @@ public sealed class StorageNoisyNeighbourRule : IAnalysisRule
 
         var options = context.Options;
 
-        return TwoValuedVerdicts.From(context, RuleId, StorageNoisyNeighbour.Evaluate(
+        return StorageNoisyNeighbour.Judge(
             context.Observations,
             context.Graph,
             StorageNoisyNeighbour.TypicalRateFrom(
                 context.Series, context.NowUtc, options.StorageNoisyNeighbour),
-            options.StorageNoisyNeighbour with { Peers = options.PeerOutliers }));
+            options.StorageNoisyNeighbour with { Peers = options.PeerOutliers },
+            context.NowUtc);
     }
 }
 
@@ -294,8 +294,8 @@ public sealed class StoragePathRedundancyRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, StoragePathRedundancy.Evaluate(
-            [.. context.Graph.Active], context.Options.StoragePathRedundancy));
+        return StoragePathRedundancy.Judge(
+            [.. context.Graph.Active], context.Options.StoragePathRedundancy, context.HeldBy(RuleId), context.NowUtc);
     }
 }
 
@@ -359,8 +359,8 @@ public sealed class EventAlertsRule : IAnalysisRule
 
         var policy = context.Options.EventAlerts;
 
-        var verdicts = TwoValuedVerdicts.From(context, RuleId, EventAlerts.Evaluate(
-            EventAlerts.Read(context.Events, context.NowUtc, policy), context.NowUtc, policy));
+        var verdicts = EventAlerts.Judge(
+            EventAlerts.Read(context.Events, context.NowUtc, policy), context.NowUtc, context.HeldBy(RuleId), policy);
 
         // No event is not no condition for a source whose events were not
         // read up to now: its held alerts are unknown, not absent.
