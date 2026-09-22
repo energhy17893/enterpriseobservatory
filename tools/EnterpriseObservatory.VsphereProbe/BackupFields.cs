@@ -153,6 +153,29 @@ internal static partial class BackupFields
             Classify([.. group.Select(v => v.Value)], now);
         }
 
+        // The collector's own reading, through the full inventory request with
+        // customValue in it: the gate proper (one bad path fails all of it).
+        Section("The collector's reading (full inventory request; counts only)");
+        var payload = await client.RetrieveInventoryAsync(cancellationToken);
+        var vms = payload.VirtualMachines;
+        Console.WriteLine($"  inventory read                  ok, {vms.Count} VMs, failures {payload.Failures.Count}");
+        Console.WriteLine($"  customValue coverage            " + string.Join(", ", payload.Coverage
+            .Where(c => c.Property == "customValue").Select(c => $"{c.Answered}/{c.Asked}")));
+        Console.WriteLine($"  backup.read                     {vms.Count(v => v.Verdicts.ContainsKey(InventoryVerdicts.BackupRead))}");
+        Console.WriteLine($"  with a backup attribute         {vms.Count(v => v.Verdicts.ContainsKey(InventoryVerdicts.BackupField))}");
+        Console.WriteLine($"  of them read as a time          {vms.Count(v => v.Verdicts.ContainsKey(InventoryVerdicts.BackupLastUtc))}");
+        Console.WriteLine($"  time basis                      " + string.Join(", ", vms
+            .Select(v => v.Verdicts.GetValueOrDefault(InventoryVerdicts.BackupTimeBasis))
+            .OfType<string>().GroupBy(b => b).Select(g => $"{g.Key} ({g.Count()})")));
+        var judged = vms
+            .Select(v => v.Verdicts.GetValueOrDefault(InventoryVerdicts.BackupLastUtc))
+            .OfType<string>()
+            .Select(s => now - DateTimeOffset.Parse(s, CultureInfo.InvariantCulture))
+            .ToList();
+        Console.WriteLine($"  within 24 h {judged.Count(a => a <= TimeSpan.FromHours(24) && a >= TimeSpan.FromMinutes(-15))}, " +
+                          $"older {judged.Count(a => a > TimeSpan.FromHours(24))}, " +
+                          $"future {judged.Count(a => a < TimeSpan.FromMinutes(-15))}");
+
         // Vendor independence: some products write the VM's Notes instead.
         var notes = await client.ReadCandidatePathAsync("VirtualMachine", "config.annotation", cancellationToken);
         Section("Notes (config.annotation) mentioning backup");

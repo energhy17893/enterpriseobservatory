@@ -161,10 +161,22 @@ Sonuçlar: *(Ertuğrul çalıştıracak — buraya sayılar gelecek.)*
   klasörü (`parent`) toplanmıyor → **yalnızca estate geneli varsayılan**, VM
   başına etiket/klasör geçersiz kılması yok.
 
+## Toplayıcının kendi okuması (tam envanter isteği, customValue içinde)
+
+Kapının asıl sınavı: yeni yol **tam** envanter isteğinde, diğer bütün
+yollarla birlikte. probe --candidates-backup sonundaki bölüm:
+
+- envanter okundu, 145 VM, hata **0**; customValue kapsamı **145/145**
+- ackup.read 145; son yedek niteliği olan 86; zamana çevrilen **86/86**
+  (eğik çizgili tek değer dahil — ay önce, kesin)
+- zaman temeli: collector local time, UTC+03:00 (86)
+- 24 saat içinde **79**, daha eski **7**, gelecekte 0 (ikinci ölçüm, ilkinden
+  saatler sonra: bir VM 24 saat sınırını geçmişti)
+
 ## Bu estate için beklenen (145 VM, ölçüm anına göre)
 
 | Yargı | Sayı | Neden |
 |---|---|---|
-| Passing | 80 | son yedek < 24 sa |
-| Failing | 6 | 1 tanesi 24–48 sa, 5 tanesi > 30 gün (kapsamdan çıkmış ama niteliği kalmış VM'ler olabilir — bulgu yaşı söyler) |
+| Passing | 79–80 | son yedek ≤ 24 sa |
+| Failing | 6–7 | 24 saati geçenler; 5 tanesi > 30 gün (kapsamdan çıkmış ama niteliği kalmış VM'ler olabilir — bulgu yaşı söyler) |
 | NotEvaluated ("no backup attribute") | 59 | hiçbir özel değer yok; "yedeklenmiyor" **denmez** |
