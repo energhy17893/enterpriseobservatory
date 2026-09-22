@@ -322,7 +322,9 @@ try
             ? Show(resolved, mask)
             : $"(unresolved {alarm.AlarmMoRef})";
 
-        var attached = payload.Hosts.Any(h => h.MoRef == alarm.EntityMoRef) ||
+        var attached = alarm.EntityMoRef == payload.RootFolderMoRef
+            ? "   [raised on the root folder: goes on the vCenter entity]"
+            : payload.Hosts.Any(h => h.MoRef == alarm.EntityMoRef) ||
                        payload.VirtualMachines.Any(v => v.MoRef == alarm.EntityMoRef) ||
                        payload.Datastores.Any(d => d.MoRef == alarm.EntityMoRef) ||
                        payload.Clusters.Any(c => c.MoRef == alarm.EntityMoRef)
