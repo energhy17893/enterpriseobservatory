@@ -1201,7 +1201,24 @@ public class ReadModelTests
         Assert.True(report.Summary.Evaluated);
         Assert.Null(report.Summary.Note);
         Assert.Equal(1, report.Summary.ByControl[ContinuityControls.HaAdmissionControl].Accepted);
-        Assert.Equal(12, report.Summary.ByControl.Count);
+        Assert.Equal(ContinuityCatalogue.Production.Count, report.Summary.ByControl.Count);
+    }
+
+    [Fact]
+    public void Maintenance_and_expiry_findings_are_counted_in_the_summary_by_control()
+    {
+        // M8.4/M8.7 findings sit on VMs, datastores, hosts and the vCenter,
+        // not on a cluster: the summary picks them up by control, generically.
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")));
+        GivenFindings(
+            Finding(ContinuityControls.MaintCdrom, new EntityId("vc-1:vm-1"), ComplianceVerdict.Failing),
+            Finding(ContinuityControls.CertVCenter, new EntityId("vc-1:vcenter"), ComplianceVerdict.Passing));
+
+        var summary = Model().ContinuityReport().Summary;
+
+        Assert.Equal(1, summary.ByControl[ContinuityControls.MaintCdrom].Failing);
+        Assert.Equal(1, summary.ByControl[ContinuityControls.CertVCenter].Passing);
+        Assert.Equal(1, summary.Totals.Failing);
     }
 
     [Fact]

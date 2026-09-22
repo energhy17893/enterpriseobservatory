@@ -49,6 +49,29 @@ public static class ContinuityControls
     /// <summary>Cluster, subject <c>''</c>: the survivors absorb the memory demand if one host fails.</summary>
     public const string NPlusOneMemory = "eo-cont.n-plus-one-mem";
 
+    /// <summary>VM, subject <c>''</c>: no CD/DVD drive is connected (M8.4).</summary>
+    public const string MaintCdrom = "eo-cont.maint-cdrom";
+
+    /// <summary>VM, subject <c>''</c>: vCenter does not report its disks as needing consolidation (M8.4).</summary>
+    public const string MaintConsolidation = "eo-cont.maint-consolidation";
+
+    /// <summary>Datastore, subject <c>''</c>: not mounted on one host alone while running VMs depend on it (M8.4).</summary>
+    public const string MaintSingleHostDatastore = "eo-cont.maint-single-host-datastore";
+
+    /// <summary>Cluster, subject <c>''</c>: EVC keeps vMotion open across CPU generations (M8.4).</summary>
+    public const string MaintEvc = "eo-cont.maint-evc";
+
+    /// <summary>ESXi host, subject <c>''</c>: its certificate is not expired or about to (M8.7).</summary>
+    public const string CertEsxi = "eo-cont.cert-esxi";
+
+    /// <summary>vCenter, subject <c>''</c>: its endpoint's certificate is not expired or about to (M8.7).</summary>
+    public const string CertVCenter = "eo-cont.cert-vcenter";
+
+    private const string CertificateThreshold = "Tool default (vCheck 60 days)";
+
+    private const string VMotionRequirements =
+        "vCenter Server and Host Management guide, Virtual Machine Conditions and Limitations for vMotion";
+
     private const string AvailabilityGuide = "vSphere Availability guide";
 
     /// <summary>
@@ -92,6 +115,23 @@ public static class ContinuityControls
         Check(NPlusOneMemory, "Cluster", "The cluster absorbs one host failing (memory)",
             "Product policy: 90% post-failover ceiling, 30-day warning, 7 days of history",
             new NPlusOneCheck(Analysis.ClusterCapacityResource.Memory)),
+        Check(MaintCdrom, "Virtual Machine", "No CD/DVD drive is connected (blocks vMotion off its host)",
+            VMotionRequirements + "; product policy: an ISO counts too, its datastore is not judged",
+            new ConnectedCdromCheck()),
+        Check(MaintConsolidation, "Virtual Machine", "No virtual machine needs disk consolidation",
+            "vCenter's own verdict: VirtualMachineRuntimeInfo.consolidationNeeded (vSphere API reference)",
+            new ConsolidationCheck()),
+        Check(MaintSingleHostDatastore, "Datastore",
+            "No running virtual machine depends on a datastore only one host mounts",
+            "vCenter Server and Host Management guide, vMotion Shared Storage Requirements",
+            new SingleHostDatastoreCheck()),
+        Check(MaintEvc, "Cluster", "EVC keeps vMotion open across the cluster's CPU generations",
+            "vCenter Server and Host Management guide, CPU Compatibility and EVC",
+            new EvcCheck()),
+        Check(CertEsxi, "ESX", "The ESXi host certificate is not expired or about to expire",
+            CertificateThreshold, new CertificateExpiryCheck(EntityKind.EsxiHost)),
+        Check(CertVCenter, "vCenter", "The vCenter certificate is not expired or about to expire",
+            CertificateThreshold, new CertificateExpiryCheck(EntityKind.VCenter)),
     ];
 
     private static ContinuityCheck Check(

@@ -65,6 +65,8 @@ public class ContinuityChecksTests
             "eo-cont.ha-storage-protection", "eo-cont.ha-heartbeat-datastores", "eo-cont.ha-network-warning",
             "eo-cont.drs-rule", "eo-cont.path-single", "eo-cont.path-single-hba", "eo-cont.path-single-target",
             "eo-cont.n-plus-one-cpu", "eo-cont.n-plus-one-mem",
+            "eo-cont.maint-cdrom", "eo-cont.maint-consolidation", "eo-cont.maint-single-host-datastore",
+            "eo-cont.maint-evc", "eo-cont.cert-esxi", "eo-cont.cert-vcenter",
         ], Catalogue.Controls.Select(c => c.ControlId));
 
         Assert.All(Catalogue.Controls, c => Assert.False(string.IsNullOrWhiteSpace(c.Source)));
