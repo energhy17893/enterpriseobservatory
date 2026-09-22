@@ -396,7 +396,17 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
     private static void AppendHistory(
         NpgsqlConnection connection, string scope, AlertInstance instance, AlertInstance? previous)
     {
-        var from = previous is not null && previous.FirstSeenUtc == instance.FirstSeenUtc
+        // An unconfirmed alert was never shown to anyone, so it leaves no
+        // durable history: its opening row is written when it is confirmed,
+        // and one forgotten before that writes nothing. A pending alert that
+        // flapped away and back was a new "Raised" row every time (post-#83
+        // measurement: 307 in 43 minutes for one rule's fingerprints).
+        if (!instance.IsConfirmed)
+        {
+            return;
+        }
+
+        var from = previous is { IsConfirmed: true } && previous.FirstSeenUtc == instance.FirstSeenUtc
             ? Math.Min(previous.History.Count, instance.History.Count)
             : 0;
 

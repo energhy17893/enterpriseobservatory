@@ -134,9 +134,22 @@ public class ThreeValuedLifecycleTests
         Assert.Equal(before.EvidenceAtUtc, i.EvidenceAtUtc);
         Assert.Equal(AlertNotificationKind.None, i.PendingNotification);
 
-        var step = i.History[^1];
-        Assert.Equal(AlertTransitionReason.EvidenceLost, step.Reason);
-        Assert.Equal("SourceSilent: vc-1 did not answer", step.Detail);
+        // Not a transition, so not history: the stale mark and its reason
+        // are on the instance. A quiet cycle writes no row (post-#83: the
+        // history had filled with same-state rows).
+        Assert.Equal(before.History, i.History);
+    }
+
+    [Fact]
+    public void Observing_an_open_or_pending_alert_again_adds_no_history_row()
+    {
+        var pending = AlertLifecycle.OnObserved(null, Alert(), HysteresisPolicy.Default, Cycle(0));
+        var open = AlertLifecycle.OnObserved(pending, Alert(), HysteresisPolicy.Default, Cycle(1));
+        var again = AlertLifecycle.OnObserved(open, Alert(), HysteresisPolicy.Default, Cycle(2));
+
+        Assert.Equal(AlertTransitionReason.Raised, Assert.Single(pending.History).Reason);
+        Assert.Equal(pending.History, open.History);
+        Assert.Equal(pending.History, again.History);
     }
 
     [Fact]
@@ -228,7 +241,9 @@ public class ThreeValuedLifecycleTests
         Assert.Null(i.StaleReason);
         Assert.Equal(Cycle(3), i.EvidenceAtUtc);
         Assert.Equal(AlertNotificationKind.None, i.PendingNotification);
-        Assert.Equal(AlertTransitionReason.EvidenceReturned, i.History[^1].Reason);
+
+        // Stale to fresh is not a transition either: no row.
+        Assert.DoesNotContain(i.History, t => t.Reason == AlertTransitionReason.EvidenceReturned);
     }
 
     [Fact]

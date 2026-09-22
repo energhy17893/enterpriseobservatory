@@ -413,10 +413,12 @@ public sealed class CollectionCoverageRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, CollectionCoverage.Evaluate(
+        return CollectionCoverage.Judge(
             context.Snapshots.ToDictionary(
                 s => s.SourceInstanceId,
                 s => s.Coverage,
-                StringComparer.Ordinal)));
+                StringComparer.Ordinal),
+            context.HeldBy(RuleId),
+            context.NowUtc);
     }
 }

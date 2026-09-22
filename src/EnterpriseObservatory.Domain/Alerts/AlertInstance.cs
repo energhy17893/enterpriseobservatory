@@ -289,21 +289,32 @@ public sealed record AlertInstance
     }
 
     /// <summary>
-    /// Records something that happened without changing state.
+    /// Records something that happened without changing state — only when an
+    /// operator did it.
     /// </summary>
     /// <remarks>
-    /// A severity change is the case that matters: an alert going from critical
-    /// to warning stays open, but the improvement is exactly the sort of thing
-    /// someone will later want to see in the history. <see cref="With"/>
-    /// deliberately ignores same-state calls, so this exists to say that the
-    /// no-op is not what was meant.
+    /// <para>
+    /// The history is the durable record (<c>alert_history</c>) and holds
+    /// transitions, not observations: an episode's opening, a real state change
+    /// (<see cref="With"/>), or an explicit operator action. Measured after
+    /// #83: <c>storage-latency-blind-spot</c> wrote 307 "Raised" rows in 43
+    /// minutes for the same fingerprints, and same-state rows (evidence lost
+    /// and back, severity eased) are the same kind of noise one cycle at a
+    /// time. What they said stays on the instance instead: stale since, why,
+    /// and the pending "improved" notification.
+    /// </para>
+    /// <para>
+    /// A system event without an actor is therefore not written, which keeps
+    /// the in-memory history and the stored one the same list, so a restart
+    /// cannot shift the position the next row is written at.
+    /// </para>
     /// </remarks>
     internal AlertInstance RecordEvent(
         AlertTransitionReason reason,
         DateTimeOffset atUtc,
         string? actor = null,
         string? detail = null) =>
-        this with
+        actor is null ? this : this with
         {
             History = [.. History, new AlertTransition
             {
