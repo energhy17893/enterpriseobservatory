@@ -865,6 +865,131 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Assert.Equal(dispatchedAt, view!.LastSentUtc);
     }
 
+    // --- connection kinds (M6.0a) --------------------------------------------
+
+    // Port 1 on loopback refuses immediately -- see VsphereSourceRegistryTests
+    // for why: a live client fails fast at the socket rather than spending
+    // the test in DNS or a connect timeout.
+    private static object VsphereCommand(string instanceId) => new
+    {
+        instanceId,
+        kind = "vsphere",
+        baseAddress = "https://127.0.0.1:1",
+        username = "observatory@vsphere.local",
+        password = "hunter2",
+        acceptUntrustedCertificate = false,
+        pageSize = 250,
+        isEnabled = true,
+    };
+
+    [Fact]
+    public async Task A_vsphere_connection_is_saved_and_tested_exactly_as_before_the_kind_change()
+    {
+        // The composition root wires the real SourceConnectionCatalogue with
+        // the real VsphereConnectionProbe (only the store is swapped), so a
+        // save-then-test here proves the vsphere path was not changed by
+        // adding other kinds -- not just that its tests still pass.
+        Account("root", Role.Administrator);
+        var client = await SignedIn(Client(), "root");
+
+        var added = await client.PostAsJsonAsync("/api/connections", VsphereCommand("vc-1"));
+        Assert.Equal(HttpStatusCode.OK, added.StatusCode);
+
+        var view = await added.Content.ReadFromJsonAsync<Api.ConnectionView>(Json);
+        Assert.Equal("vsphere", view!.Kind);
+
+        var tested = await client.PostAsJsonAsync("/api/connections/test", VsphereCommand("vc-1"));
+        Assert.Equal(HttpStatusCode.OK, tested.StatusCode);
+
+        var probe = await tested.Content.ReadFromJsonAsync<Api.ProbeView>(Json);
+
+        // Unreachable (127.0.0.1 is not what vc.example.local resolves to in a
+        // test run), but through the real prober -- not the no-collector path.
+        Assert.False(probe!.NoCollector);
+    }
+
+    [Fact]
+    public async Task A_redfish_connection_is_saved_and_kept_and_its_test_says_no_collector_yet()
+    {
+        Account("root", Role.Administrator);
+        var client = await SignedIn(Client(), "root");
+
+        var command = new
+        {
+            instanceId = "ilo-1",
+            kind = "redfish",
+            baseAddress = "https://ilo-host/",
+            username = "observatory",
+            password = "hunter2",
+            acceptUntrustedCertificate = false,
+            pageSize = 250,
+            isEnabled = false,
+        };
+
+        var added = await client.PostAsJsonAsync("/api/connections", command);
+        Assert.Equal(HttpStatusCode.OK, added.StatusCode);
+
+        // Kept -- not rejected for lacking a collector.
+        var list = await client.GetFromJsonAsync<List<Api.ConnectionView>>("/api/connections", Json);
+        Assert.Contains(list!, c => c.InstanceId == "ilo-1" && c.Kind == "redfish");
+
+        var tested = await client.PostAsJsonAsync("/api/connections/test", command);
+        Assert.Equal(HttpStatusCode.OK, tested.StatusCode);
+
+        var probe = await tested.Content.ReadFromJsonAsync<Api.ProbeView>(Json);
+        Assert.False(probe!.Succeeded);
+        Assert.True(probe.NoCollector);
+        Assert.Contains("no collector", probe.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("vsphere")]
+    [InlineData("redfish")]
+    [InlineData("simplivity")]
+    public async Task Each_known_kind_is_accepted_on_add(string kind)
+    {
+        Account("root", Role.Administrator);
+        var client = await SignedIn(Client(), "root");
+
+        var response = await client.PostAsJsonAsync("/api/connections", new
+        {
+            instanceId = $"conn-{kind}",
+            kind,
+            baseAddress = "https://host.example.local",
+            username = "observatory",
+            password = "hunter2",
+            acceptUntrustedCertificate = false,
+            pageSize = 250,
+            isEnabled = false,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Adding_a_connection_with_an_unrecognized_kind_is_refused()
+    {
+        Account("root", Role.Administrator);
+        var client = await SignedIn(Client(), "root");
+
+        var response = await client.PostAsJsonAsync("/api/connections", new
+        {
+            instanceId = "nas-1",
+            kind = "netapp",
+            baseAddress = "https://nas.example.local",
+            username = "observatory",
+            password = "hunter2",
+            acceptUntrustedCertificate = false,
+            pageSize = 250,
+            isEnabled = false,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var list = await client.GetFromJsonAsync<List<Api.ConnectionView>>("/api/connections", Json);
+        Assert.DoesNotContain(list!, c => c.InstanceId == "nas-1");
+    }
+
     // --- the host itself ----------------------------------------------------
 
     [Fact]

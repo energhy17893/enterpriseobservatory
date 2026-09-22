@@ -240,6 +240,32 @@ public class VsphereSourceRegistryTests : IDisposable
         Assert.Same(first, Registry().Inventory.Single());
     }
 
+    // --- two connections of the same kind stay separate (M6.0a) ------------
+
+    [Fact]
+    public void Two_vsphere_connections_produce_two_independent_sources()
+    {
+        // SimpliVity turns out to live under its own vCenter, which is added
+        // as a second vsphere connection rather than a new kind. Nothing here
+        // is new behaviour -- EntityId has refused to collapse two sources'
+        // ids since EntityIdTests.An_id_carries_the_source_that_named_it --
+        // but this is the level where the registry could still do it by
+        // accident, by keying a source on Kind instead of InstanceId. It does
+        // not: each connection gets its own source and its own client.
+        _connections.Add(Connection("vc-1"));
+        _connections.Add(Connection("vc-2"));
+
+        var inventory = Registry().Inventory;
+
+        Assert.Equal(
+            ["vc-1", "vc-2"],
+            inventory.Select(s => s.InstanceId).OrderBy(id => id, StringComparer.Ordinal));
+
+        Assert.NotSame(
+            inventory.Single(s => s.InstanceId == "vc-1"),
+            inventory.Single(s => s.InstanceId == "vc-2"));
+    }
+
     // --- helpers -----------------------------------------------------------
 
     /// <summary>
