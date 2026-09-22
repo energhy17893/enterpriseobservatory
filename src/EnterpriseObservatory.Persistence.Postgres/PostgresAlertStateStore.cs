@@ -488,6 +488,10 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
                     FROM alert_history
                     WHERE to_state = 'Resolved' AND from_state <> 'Resolved'
                       AND at_utc >= @from AND at_utc <= @to
+                      -- A transition migration 14 copied without its instance
+                      -- is evidence in the table, not a report row: nothing
+                      -- says what the alert was called or how severe it was.
+                      AND title IS NOT NULL
                 )
                 SELECT h.fingerprint, h.episode_first_seen_utc, h.from_state, h.to_state, h.reason,
                        h.at_utc, h.actor, h.detail, h.evidence_at_utc, h.rule_id, h.scope,

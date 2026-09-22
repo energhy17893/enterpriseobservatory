@@ -663,7 +663,13 @@ internal static class PostgresSchema
         //
         // The old rows are copied across, then the old table dropped rather
         // than kept beside it: two tables holding the same transitions would
-        // need two writes per transition, forever, to stay equal.
+        // need two writes per transition, forever, to stay equal. Every row is
+        // copied, including one whose instance is already gone (a LEFT JOIN:
+        // CASCADE made that impossible, but the migration does not assume it),
+        // and a guard refuses the DROP unless alert_history holds at least as
+        // many rows. Like every migration this runs in one transaction with its
+        // version bump (Apply, PostgresDatabase.Write), so a failure anywhere
+        // leaves version 13 and alert_transition as they were.
         """
         ALTER TABLE alert_instance ADD COLUMN rule_id            text        NULL;
         ALTER TABLE alert_instance ADD COLUMN evidence_at_utc    timestamptz NULL;
@@ -733,14 +739,17 @@ internal static class PostgresSchema
             detail                 text        NULL,
             rule_id                text        NULL,
             evidence_at_utc        timestamptz NULL,
-            scope                  text        NOT NULL,
-            severity               text        NOT NULL,
-            title                  text        NOT NULL,
-            category               text        NOT NULL,
-            source                 text        NOT NULL,
+            -- What the alert was. NULL only on a transition copied from
+            -- alert_transition whose instance was already gone: kept as
+            -- evidence, with nothing invented about the alert it belonged to.
+            scope                  text        NULL,
+            severity               text        NULL,
+            title                  text        NULL,
+            category               text        NULL,
+            source                 text        NULL,
             entity_id              text        NULL,
-            is_derived             boolean     NOT NULL,
-            last_seen_utc          timestamptz NOT NULL,
+            is_derived             boolean     NULL,
+            last_seen_utc          timestamptz NULL,
             UNIQUE (fingerprint, episode_first_seen_utc, ordinal)
         );
 
@@ -751,11 +760,32 @@ internal static class PostgresSchema
             fingerprint, episode_first_seen_utc, ordinal, from_state, to_state, reason, at_utc,
             actor, detail, rule_id, evidence_at_utc, scope, severity, title, category, source,
             entity_id, is_derived, last_seen_utc)
-        SELECT t.fingerprint, a.first_seen_utc, t.ordinal, t.from_state, t.to_state, t.reason, t.at_utc,
+        SELECT t.fingerprint,
+               -- An orphan's episode is its own first transition: alert_transition
+               -- held one life per fingerprint, so this is unique and stable.
+               COALESCE(a.first_seen_utc, min(t.at_utc) OVER (PARTITION BY t.fingerprint)),
+               t.ordinal, t.from_state, t.to_state, t.reason, t.at_utc,
                t.actor, NULL, a.rule_id, NULL, a.scope, a.severity, a.title, a.category, a.source,
                a.entity_id, a.is_derived, a.last_seen_utc
         FROM alert_transition t
-        JOIN alert_instance a ON a.fingerprint = t.fingerprint;
+        LEFT JOIN alert_instance a ON a.fingerprint = t.fingerprint
+        -- A duplicate (possible only where alert_transition lost its key) is
+        -- not written twice; the guard below then refuses the whole migration
+        -- rather than let the counts quietly differ.
+        ON CONFLICT (fingerprint, episode_first_seen_utc, ordinal) DO NOTHING;
+
+        -- The DROP below cannot be undone. Every transition must be across
+        -- first, or nothing happens: the exception rolls back this migration's
+        -- transaction, alert_transition included, and the version stays at 13.
+        DO $guard$
+        BEGIN
+            IF (SELECT count(*) FROM alert_history) < (SELECT count(*) FROM alert_transition) THEN
+                RAISE EXCEPTION
+                    'migration 14: alert_history holds % rows but alert_transition % -- not dropping it',
+                    (SELECT count(*) FROM alert_history), (SELECT count(*) FROM alert_transition);
+            END IF;
+        END
+        $guard$;
 
         DROP TABLE alert_transition;
 
