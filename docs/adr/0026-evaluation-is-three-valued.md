@@ -66,9 +66,22 @@ durumu gösterir, Zabbix dondurur, Grafana ayrı bir NoData kaydı açar.
 **Karar: Seçenek 2, N = ham saklama süresi (2 gün).** O noktadan sonra alarmın
 dayandığı örnekler de depoda yoktur, yani kanıt gerçekten kalmamıştır. Alarm
 kapanmaz ve çözülmez; "bilinmiyor" durumunu alır, açık sayımından düşer, ve
-kaynak geri döndüğünde ilk taze değerlendirmeyle ya yeniden açılır ya çözülür.
+kaynak geri döndüğünde ilk taze değerlendirme **yönü belirler**: taze "koşul
+var" alarmı önceki alt durumuna döndürür (yeniden bildirilmez), taze "koşul yok"
+çözülme sayacını 1'den başlatır — çözülme yine N ardışık taze "koşul yok" ister.
+Araya giren bir "bilinmiyor" sayacı sıfırlar.
 N bir **seçimdir**, alıntı değil: ham saklama süresine bağlıdır ve o süre
 değişirse (ADR-0017) birlikte değişir.
+
+### Sağlığa etkisi (ADR-0018'in uzantısı)
+
+ADR-0018 sağlığı o nesneye açılmış en şiddetli alarmdan türetir. Bu ADR ona iki
+durum ekler ve kuralı değiştirmez: **bayat** bir Critical alarm varlığı kırmızı
+tutar, "şu tarihten beri" işaretiyle; **bilinmiyor** durumundaki bir alarm
+varlığın sağlığını gri yapar, yeşil değil — ürün o varlık hakkında bir şey
+bilmediğini söyler, iyi olduğunu değil. Bayatlama ve "bilinmiyor"a geçiş
+bildirim üretmez; kaynağın susması zaten kendi alarmıyla ("Collector
+unreachable") bildirilir.
 
 ## Gerekçe
 
