@@ -1,6 +1,6 @@
 # ADR-0025: Toplayıcı yalnızca okur; koruma, temizlik ve öz-ölçü çalıştırıcınındır
 
-- **Durum:** Önerildi
+- **Durum:** Kabul edildi
 - **Tarih:** 2026-09-22
 - **Karar verenler:** Ertuğrul Ünal
 - **İlgili:** ADR-0005 (collector sözleşmesi — bu ADR §3 ve §5'i daraltır), ADR-0020,

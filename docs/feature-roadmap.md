@@ -115,7 +115,7 @@ yürür, üstünde değil: hiçbiri M6'yı bekletmez, M6 da onları.
 Beş araştırma kolu (`reference-approaches.md` §10) iş paketlerinin kapsamını
 değiştirdi. Tek cümleyle: bulduğumuz açıkların hepsi atlanabilir bir yoldan
 doğdu, ve olgun çatılar bunu testle değil **yapıyla** kapatıyor. İki karar
-önerildi ve onay bekliyor: [ADR-0025](adr/0025-collectors-only-read.md) (toplayıcı
+22 Eylül 2026'da **kabul edildi**: [ADR-0025](adr/0025-collectors-only-read.md) (toplayıcı
 yalnızca okur) ve [ADR-0026](adr/0026-evaluation-is-three-valued.md) (üç değerli
 değerlendirme).
 
@@ -124,12 +124,12 @@ değerlendirme).
 | **A — Okuma bütçesi** | batch, limit hatası, varlık yalıtımı, kısmi okuma | **aynı + OTel'in yalıtım kuralı birebir**; limit hatasında metin eşleşmesi birincil kalır (denetimdeki şüphe yanlıştı — KB 301449 metni aynen veriyor) | §10.3 |
 | **A′ — Eşzamanlılık** *(yeni, dalga 1)* | T2.3'ün yarısıydı, dalga 3 | tek vCenter'a paralel `QueryPerf` tavanı; başlangıç noktası Telegraf'ın kuralı (**VM / 1500, asla 8'den fazla**) ve canlı gidiş-dönüş ölçümü; "aralık estate boyutuna göre mi" sorusu dahil | A'nın 2000 VM ölçümü: seri okuma 30 sn'ye sığmıyor |
 | **T0.4b — Geri doldurma** | "boşluğa göre `maxSample`'ı büyüt" | **yüksek su işareti**: `StartTime` = serinin depodaki en yeni zaman damgası (dışlayıcı), `EndTime` = sunucunun `CurrentTime`'ı; ~1 saate kadar doldurur; saat farkı bedavaya ölçülür. Önce iki ölçüm: `MaxSample` hangi uçtan kesiyor, tek sorguda kaç örnek | §10.3 — Telegraf `endpoint.go`, eksikleriyle |
-| **D — Öz-izleme** | `/health`, döngü süresi, bekçi | **ADR-0025 kabul edilirse çalıştırıcı üretir**, toplayıcı başına eklenmez; + tutulan oturum sayısı, saat farkı, kuyrukta düşen örnek; + bayat alarm işareti (ADR-0026) | §10.1, §10.2 |
+| **D — Öz-izleme** | `/health`, döngü süresi, bekçi | **çalıştırıcı üretir** (ADR-0025), toplayıcı başına eklenmez; + tutulan oturum sayısı, saat farkı, kuyrukta düşen örnek; + bayat alarm işareti (ADR-0026) | §10.1, §10.2 |
 | **E — Sözleşme takımı** | vaka listesi tahmindi | **referansların uzlaştığı yedi vaka + bizden iki** (geçersiz tek özellik yolu; süresi dolan oturumu iki çağrının birlikte fark etmesi); denge kuralı: üretilen = kabul edilen + düşürülen. **İlk toplayıcıdan itibaren zorunlu** | §10.2 |
-| **F — Ortak parçalar** | taşıma işi | **ADR-0025 kabul edilirse yetkinin tersine çevrilmesi**: `HttpClient`, oturum, temizlik ve öğrenilen durum toplayıcıdan çalıştırıcıya. Büyür; E **önce** | §10.2 |
+| **F — Ortak parçalar** | taşıma işi | **yetkinin tersine çevrilmesi** (ADR-0025): `HttpClient`, oturum, temizlik ve öğrenilen durum toplayıcıdan çalıştırıcıya. Büyür; E **önce** | §10.2 |
 | **H — Değişim akışı** | dalga 5, M6'nın önünde | **koşullu**: incelenen dört toplayıcının hiçbiri `WaitForUpdatesEx` kullanmıyor; yalnızca ölçüm gerektirirse. M6'nın giriş şartından **çıkar** | §10.3 |
 | **Yeni — Depo kuyruğu** *(F ile)* | yoktu | depo kapalıyken örnekler düşüyor ve yalnızca loglanıyor → boyut **ve yaşla** sınırlı bellek kuyruğu, düşen sayılır ve alarm olur; disk taşması ayrı karar | §10.2 — Telegraf + Datadog + Zabbix hybrid |
-| **Yeni — Üç değerli kurallar** *(ADR-0026 kabul edilirse, dalga 2)* | #63 bir örneği kapattı | `IAnalysisRule` sonucu koşul var / yok / bilinmiyor; alarm yeniden başlatmadan önce geri yüklenir | §10.1 |
+| **Yeni — Üç değerli kurallar** *(ADR-0026, dalga 2)* | #63 bir örneği kapattı | `IAnalysisRule` sonucu koşul var / yok / bilinmiyor; alarm yeniden başlatmadan önce geri yüklenir | §10.1 |
 
 **M8 ve M9'a etkisi** (§10.4, §10.5):
 - **Önce aktar, sonra hesapla.** vCenter'ın zaten hesapladığı ve salt-okunur
