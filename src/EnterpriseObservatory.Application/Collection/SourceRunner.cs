@@ -15,7 +15,7 @@ internal readonly record struct SourceRunOutcome<TResult>(
 /// </summary>
 /// <remarks>
 /// <para>
-/// Shared by the inventory and observation pipelines. They read different
+/// Shared by the inventory, observation and (since F1) event pipelines. They read different
 /// things on different rhythms (ADR-0005) but must fail identically: a vendor
 /// that times out on metrics should behave exactly as one that times out on
 /// inventory, and nobody should have to remember to keep two copies in step.
@@ -458,7 +458,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectorHealth health,
         bool backingOff)
     {
-        var what = role == CollectorRole.Inventory ? "inventory" : "metrics";
+        var what = RoleLabel(role);
 
         var detail = backingOff
             ? $"Not being polled: {health.ConsecutiveFailures} consecutive failures, backing off. " +
@@ -492,7 +492,21 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             "Collector unreachable",
             "Configuration",
             instanceId,
-            $"collector-unreachable:{(role == CollectorRole.Inventory ? "inventory" : "metrics")}");
+            $"collector-unreachable:{RoleLabel(role)}");
+
+    /// <summary>How a role reads in an alert title and fingerprint.</summary>
+    /// <remarks>
+    /// A switch, not "inventory or else metrics": with a third role (events,
+    /// F1) the else branch labelled an event read failure as metrics, and gave
+    /// it the observation role's fingerprint, so each would resolve the other.
+    /// </remarks>
+    private static string RoleLabel(CollectorRole role) => role switch
+    {
+        CollectorRole.Inventory => "inventory",
+        CollectorRole.Observation => "metrics",
+        CollectorRole.Events => "events",
+        _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown collector role."),
+    };
 
     internal static CollectorHealth Existing(
         IReadOnlyList<CollectorHealth> health,

@@ -148,6 +148,48 @@ public class VsphereEventCollectorTests
         Assert.False(string.IsNullOrWhiteSpace(read.Detail));
     }
 
+    private sealed class FaultingEventApi(Exception error) : IVsphereEventApi
+    {
+        public string InstanceId => "vc-test";
+
+        public Task<EventRead> ReadEventsAsync(EventMark? since, DateTimeOffset nowUtc, CancellationToken cancellationToken) =>
+            throw error;
+    }
+
+    [Theory]
+    [InlineData(VsphereFaultKind.InvalidLogin)]
+    [InlineData(VsphereFaultKind.NotAuthenticated)]
+    [InlineData(VsphereFaultKind.NoPermission)]
+    public async Task A_session_or_credential_fault_reaches_the_runner_rather_than_becoming_could_not_ask(
+        VsphereFaultKind kind)
+    {
+        // Demoted to a value, a rejected login would look like a read that
+        // succeeded in saying "could not ask" — the runner would never see
+        // the fault and the one-strike rule could never fire (F1).
+        var source = new VsphereEventSource(
+            new FaultingEventApi(new VsphereApiException(kind, "refused")), new FixedClock());
+
+        var thrown = await Assert.ThrowsAsync<VsphereApiException>(
+            () => source.ReadAsync(null, CancellationToken.None));
+
+        Assert.Equal(kind, thrown.Kind);
+    }
+
+    [Fact]
+    public async Task A_rejected_login_is_classified_as_not_worth_retrying()
+    {
+        var source = new VsphereEventSource(
+            new FaultingEventApi(new VsphereApiException(VsphereFaultKind.InvalidLogin, "Cannot complete login")),
+            new FixedClock());
+
+        var thrown = await Assert.ThrowsAsync<VsphereApiException>(
+            () => source.ReadAsync(null, CancellationToken.None));
+
+        var kind = ((ICollectionFault)thrown).Kind;
+        Assert.Equal(CollectionFailureKind.AuthenticationRejected, kind);
+        Assert.False(CollectionFailures.IsWorthRetrying(kind));
+    }
+
     [Fact]
     public async Task A_quiet_window_is_an_empty_list_not_a_failure()
     {
