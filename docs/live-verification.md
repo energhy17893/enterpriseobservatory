@@ -356,6 +356,18 @@ Present başlıyor). 3 dilim hiç Present'e ulaşmıyor — pencereyi dolduramad
 K=60 bu estate'te sıfır çalkalanma veriyor, ama bu %4,5 ölçülebilirliğin artefaktı:
 ölçüm geri geldiğinde fark etme süresini iki katına çıkarır. Seçim K=30 P=90.
 
+**Ders (ölçüm sorgusunun kendi varsayımı):** §4/§5 ilk koşuda boş döndü. Sebep
+`HAVING count(*) >= 60` idi — "30 dakika" yerine "60 satır" sayıyor ve dakikada iki
+yargılanan tur varsayıyordu. Gerçek hız volume başına ~1,1/dk olduğu için eşik neredeyse
+iki katı süre istedi ve bir saatten kısa her gerçek kör dilimi düşürdü. Duvar saatine
+çevrildi (`>= 1800 sn`). Kural: **satır sayısı geçen süre değildir**; "önce ölç"
+kuralına ek olarak ölçüm sorgusunun varsayımı da sınanır. Aynı sebeple: seçilen
+varyant (K=30 P=90) yeniden oynatma SQL'inde ve `BlindSpotReplayTests`'te bulunmalı —
+yoksa yayımlanan ayar, hiç ölçülmemiş tek ayar olur.
+
+Yeniden oynatma SQL'i canlı veritabanında koşulmadan önce compaction'ın
+`completed_to_utc`'sine bakılır: ikisi aynı ham `sample` tablosunu okuyor ve ağır
+okuma compaction'ı zaman aşımına düşürebiliyor (22 Eylül'de 4 kez oldu).
 Yayım sonrası 24 saatte çalkalanma yeniden sayılacak (hedef: volume başına ≤1/gün
 ortalama; 1 volume'ün çalkalanmaya devam etmesi kabul edilebilir).
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
@@ -578,4 +590,5 @@ Dürüstlük gereği: aşağıdakiler **çalışıyor diye bilinmiyor.**
 - **Yetkisi kısıtlı hesap.** Bağlantı `gentel@vsphere.local` ile kuruldu.
   Salt-okunur bir servis hesabının hangi özellikleri okuyamadığı ölçülmedi —
   `missingSet` yolu kodda var ve test edildi, canlıda tetiklenmedi.
+
 

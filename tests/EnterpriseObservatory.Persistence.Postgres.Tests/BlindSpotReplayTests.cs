@@ -177,12 +177,27 @@ public sealed class BlindSpotReplayTests : IDisposable
         var thirty = Row(rows, "5 blind-stretch", "K=30 P=70", "vc-1:ds-blind");
         Assert.Equal(30, Number(thirty, "cycles_to_present"));
 
+        // The variant the product actually ships (K = 30, P = 90: see
+        // StorageLatencyBlindSpotPolicy.Default) has to be one the replay can
+        // reproduce, or the shipped setting is the one setting never measured.
+        var shipped = Row(rows, "5 blind-stretch", "K=30 P=90", "vc-1:ds-blind");
+        Assert.Equal(30, Number(shipped, "cycles_to_present"));
+        Assert.Equal("Present", shipped["state"]);
+
         Assert.Equal(1, Number(Row(rows, "4 blind-summary", "K=10 P=50", null), "stretch_cycles"));
 
-        // The open alert on ds-blind would stay open under every variant.
+        // The open alert on ds-blind would stay open under every variant: one
+        // row each, counted from the variants the replay actually ran rather
+        // than from a number that has to be edited whenever one is added.
         Assert.All(
             rows.Where(r => (string)r["section"]! == "6 open-now"),
             r => Assert.Equal("Present -> stays open", r["state"]));
-        Assert.Equal(7, rows.Count(r => (string)r["section"]! == "6 open-now"));
+
+        var variants = rows
+            .Where(r => (string)r["section"]! == "2 totals")
+            .Select(r => (string?)r["variant"])
+            .Distinct()
+            .Count();
+        Assert.Equal(variants, rows.Count(r => (string)r["section"]! == "6 open-now"));
     }
 }
