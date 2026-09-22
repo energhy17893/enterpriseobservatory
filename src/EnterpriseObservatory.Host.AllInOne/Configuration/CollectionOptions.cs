@@ -1,4 +1,5 @@
 using EnterpriseObservatory.Application.Collection;
+using Microsoft.Extensions.Configuration;
 
 namespace EnterpriseObservatory.Host.AllInOne.Configuration;
 
@@ -18,8 +19,45 @@ public sealed class CollectionOptions
 {
     private static readonly CollectionPolicy Defaults = CollectionPolicy.Default;
 
-    /// <summary>How long one source may take before the cycle moves on without it.</summary>
-    public int SourceTimeoutSeconds { get; set; } = (int)Defaults.SourceTimeout.TotalSeconds;
+    /// <summary>
+    /// The share of its collection interval one source may spend being read.
+    /// </summary>
+    /// <remarks>
+    /// Replaces the fixed <c>SourceTimeoutSeconds</c>: the timeout is derived
+    /// from the interval (T1.1, <see cref="CollectionPolicy.ForInterval"/>).
+    /// In (0, 1].
+    /// </remarks>
+    public double IntervalShare { get; set; } = Defaults.IntervalShare;
+
+    /// <summary>The least any source is given, however short its interval. At least 1 s.</summary>
+    public double MinimumSourceTimeoutSeconds { get; set; } = Defaults.MinimumSourceTimeout.TotalSeconds;
+
+    /// <summary>A key this section no longer reads, and what replaced it.</summary>
+    private const string RetiredSourceTimeoutKey = "Collection:SourceTimeoutSeconds";
+
+    /// <summary>
+    /// Keys under <c>Collection</c> that no longer mean anything, as startup problems.
+    /// </summary>
+    /// <remarks>
+    /// The fixed timeout is gone — it is derived from each pipeline's interval
+    /// — and binding would silently drop it. An operator who set it would
+    /// believe it was in force, so its presence refuses to start and says what
+    /// to use instead.
+    /// </remarks>
+    public static IReadOnlyList<string> RetiredKeyProblems(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return configuration[RetiredSourceTimeoutKey] is null
+            ? []
+            :
+            [
+                $"{RetiredSourceTimeoutKey} is no longer read: the source timeout is derived from each " +
+                "collection interval. Remove it and, if needed, set Collection:IntervalShare (share of the " +
+                "interval, in (0, 1], default 0.8) and Collection:MinimumSourceTimeoutSeconds (floor, at " +
+                "least 1, default 10) instead.",
+            ];
+    }
 
     /// <summary>Attempts after the first, for failures that might be temporary.</summary>
     public int MaxRetries { get; set; } = Defaults.MaxRetries;
@@ -47,9 +85,14 @@ public sealed class CollectionOptions
     {
         var problems = new List<string>();
 
-        if (SourceTimeoutSeconds <= 0)
+        if (!(IntervalShare > 0 && IntervalShare <= 1))
         {
-            problems.Add("Collection:SourceTimeoutSeconds must be positive.");
+            problems.Add("Collection:IntervalShare must be greater than 0 and at most 1.");
+        }
+
+        if (!(MinimumSourceTimeoutSeconds >= 1))
+        {
+            problems.Add("Collection:MinimumSourceTimeoutSeconds must be at least 1.");
         }
 
         if (MaxRetries < 0)
@@ -83,7 +126,8 @@ public sealed class CollectionOptions
     /// <summary>The domain policy these values describe.</summary>
     public CollectionPolicy ToPolicy() => new()
     {
-        SourceTimeout = TimeSpan.FromSeconds(SourceTimeoutSeconds),
+        IntervalShare = IntervalShare,
+        MinimumSourceTimeout = TimeSpan.FromSeconds(MinimumSourceTimeoutSeconds),
         MaxRetries = MaxRetries,
         RetryBaseDelay = TimeSpan.FromSeconds(RetryBaseDelaySeconds),
         CircuitBreakerThreshold = CircuitBreakerThreshold,

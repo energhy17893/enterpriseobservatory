@@ -43,6 +43,14 @@ public sealed record VsphereServiceContent
     /// </remarks>
     public string? EventManager { get; init; }
 
+    /// <summary>
+    /// The host profile compliance manager, or null when it was not offered.
+    /// </summary>
+    public string? ComplianceManager { get; init; }
+
+    /// <summary>The license manager, or null when it was not offered.</summary>
+    public string? LicenseManager { get; init; }
+
     /// <summary>The API version the server reports, e.g. <c>8.0.3.0</c>.</summary>
     public string ApiVersion { get; init; } = string.Empty;
 
@@ -102,6 +110,8 @@ public static class VsphereServiceContentParser
             PerformanceManager = perfManager,
             SettingManager = Child(returnVal, "setting"),
             EventManager = Child(returnVal, "eventManager"),
+            ComplianceManager = Child(returnVal, "complianceManager"),
+            LicenseManager = Child(returnVal, "licenseManager"),
             ApiVersion = about is null ? string.Empty : Child(about, "apiVersion") ?? string.Empty,
             Name = about is null ? string.Empty : Child(about, "name") ?? string.Empty,
         };

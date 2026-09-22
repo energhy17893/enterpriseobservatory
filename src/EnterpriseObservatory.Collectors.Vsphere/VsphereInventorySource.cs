@@ -87,6 +87,38 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         };
     }
 
+    /// <summary>
+    /// Adds collection PR 1's verdicts beside what an entity already carries.
+    /// </summary>
+    /// <remarks>
+    /// The verdict keys are dotted camelCase (<see cref="InventoryVerdicts"/>)
+    /// and cannot collide with an advanced setting or an HA key; if one ever
+    /// did, the setting already there wins, because it is the older contract.
+    /// </remarks>
+    private static IReadOnlyDictionary<string, string> WithVerdicts(
+        IReadOnlyDictionary<string, string> settings,
+        IReadOnlyDictionary<string, string> verdicts)
+    {
+        if (verdicts.Count == 0)
+        {
+            return settings;
+        }
+
+        var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, value) in verdicts)
+        {
+            merged[key] = value;
+        }
+
+        foreach (var (key, value) in settings)
+        {
+            merged[key] = value;
+        }
+
+        return merged;
+    }
+
     private void AddClusters(
         VsphereInventoryPayload payload,
         Func<string, EntityId> id,
@@ -125,7 +157,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // rather than judged -- the same contract host advanced
                 // settings and datastore type follow. The HA scorecard rule
                 // reads these; this collector only ever hands them over.
-                Settings = cluster.HaSettings,
+                Settings = WithVerdicts(cluster.HaSettings, cluster.Verdicts),
             });
 
             if (cluster.HighAvailabilityEnabled is null || cluster.DrsEnabled is null)
@@ -254,7 +286,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // Carried, not judged -- same contract as the path table
                 // above. Which settings arrive is decided in
                 // AdvancedSettings; what they mean is a rule's business.
-                Settings = host.AdvancedSettings,
+                Settings = WithVerdicts(host.AdvancedSettings, host.Verdicts),
                 // Same contract again, and null passes through as null: a
                 // host whose services were not read must not reach a rule
                 // looking like a host with none.
@@ -329,9 +361,11 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // (VMFS, NFS, vsan, ...), not translated — the same choice
                 // Settings makes everywhere else. Absent from the dictionary,
                 // not written empty, when vCenter did not report one.
-                Settings = datastore.Type is { Length: > 0 } type
-                    ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["type"] = type }
-                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                Settings = WithVerdicts(
+                    datastore.Type is { Length: > 0 } type
+                        ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["type"] = type }
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                    datastore.Verdicts),
             });
 
             relationships.Add(Edge(id(datastore.MoRef), id("vcenter"), RelationshipKind.ManagedBy, now));
@@ -729,12 +763,14 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // yellow or red. Empty when the platform did not report a power
                 // state at all, the same "absent is not a value" contract every
                 // other Settings key follows.
-                Settings = string.IsNullOrWhiteSpace(vm.PowerState)
-                    ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        [PowerStateSetting] = vm.PowerState,
-                    },
+                Settings = WithVerdicts(
+                    string.IsNullOrWhiteSpace(vm.PowerState)
+                        ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            [PowerStateSetting] = vm.PowerState,
+                        },
+                    vm.Verdicts),
             });
 
             AddSnapshotAlert(vm, datastores, id(vm.MoRef), now, alerts, snapshotFindings);

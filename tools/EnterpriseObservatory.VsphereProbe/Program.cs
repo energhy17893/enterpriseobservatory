@@ -177,6 +177,16 @@ try
         return 0;
     }
 
+    // Why maxQueryMetrics could not be read: one read-only query, one line,
+    // never the value.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --why-max-query-metrics
+    if (args.Contains("--why-max-query-metrics", StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"  maxQueryMetrics          {await client.DiagnoseMaxQueryMetricsAsync(cancellation.Token)}");
+        return 0;
+    }
+
     // Which keys this vCenter returns and in what form, names only. Settles
     // the readers that were written from the schema rather than from a server.
     //
@@ -193,8 +203,19 @@ try
         return 0;
     }
 
+    // Collection PR 1's gate: every candidate path and call, each read alone,
+    // before any of them enters the collector's request list.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --candidates
+    if (args.Contains("--candidates", StringComparer.OrdinalIgnoreCase))
+    {
+        await EnterpriseObservatory.VsphereProbe.Candidates.RunAsync(
+            client, baseAddress, user, password, insecure, cancellation.Token);
+        return 0;
+    }
+
     Section("Connection");
-    Console.WriteLine($"  endpoint                 {Show(baseAddress.Host, mask)}");
+    Console.WriteLine($"  endpoint                {Show(baseAddress.Host, mask)}");
     Console.WriteLine($"  certificate validation   {(insecure ? "RELAXED (self-signed accepted)" : "enforced")}");
 
     var catalog = await client.GetCounterCatalogAsync(cancellation.Token);
@@ -352,6 +373,24 @@ try
         Console.WriteLine();
         Console.WriteLine("No hosts found; skipping the counter checks.");
         return 0;
+    }
+
+    // Real QueryPerf round trips, timed; the read-budget measurement's missing
+    // number. Read-only.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --time-queryperf 30
+    var timingIndex = Array.FindIndex(args, a =>
+        string.Equals(a, "--time-queryperf", StringComparison.OrdinalIgnoreCase));
+    if (timingIndex >= 0)
+    {
+        var calls = timingIndex + 1 < args.Length &&
+                    int.TryParse(args[timingIndex + 1], out var n) && n >= 20
+            ? n
+            : 20;
+
+        Section("QueryPerf round trips");
+        return await EnterpriseObservatory.VsphereProbe.QueryPerfTiming.RunAsync(
+            client, payload, catalog, calls, cancellation.Token);
     }
 
     // The full map, and then nothing else: it is a reference document, not a

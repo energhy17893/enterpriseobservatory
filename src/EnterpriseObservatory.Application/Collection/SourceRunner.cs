@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -88,14 +89,28 @@ internal sealed class SourceRunner(IClock clock)
     {
         Exception? lastError = null;
 
+        // One budget for the source this cycle, shared by its attempts. Each
+        // retry used to get a fresh SourceTimeout, and the cycle waits for every
+        // source, so one slow vCenter held a 30-second metric cycle for three
+        // timeouts and the retry delays between them.
+        var budget = Stopwatch.StartNew();
+
         for (var attempt = 1; attempt <= policy.MaxRetries + 1; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var left = policy.SourceTimeout - budget.Elapsed;
+            if (attempt > 1 && left <= policy.ReturnGrace)
+            {
+                // Nothing worth starting: the attempt would be asked to stop
+                // before it could have done anything.
+                break;
+            }
+
             try
             {
                 var result = await ReadWithHardTimeoutAsync(
-                    instanceId, read, policy.SourceTimeout, cancellationToken).ConfigureAwait(false);
+                    instanceId, read, left, policy.ReturnGrace, cancellationToken).ConfigureAwait(false);
 
                 return new SourceRunOutcome<TResult>(
                     result,
@@ -143,13 +158,26 @@ internal sealed class SourceRunner(IClock clock)
                         null, fatal, [UnreachableAlert(instanceId, role, fatal, backingOff: false)]);
                 }
 
+                if (ex is OutOfTimeException)
+                {
+                    // The source stopped when asked, so nothing of it is still
+                    // running — but the budget it stopped for is spent.
+                    break;
+                }
+
                 if (attempt <= policy.MaxRetries)
                 {
                     // Jitter matters because every source is driven by the same
                     // loop. Without it, twenty iLOs that failed together would
                     // retry together, turning a blip into a stampede.
-                    await Task.Delay(policy.RetryDelay(attempt, Random.Shared.NextDouble()), cancellationToken)
-                        .ConfigureAwait(false);
+                    var delay = policy.RetryDelay(attempt, Random.Shared.NextDouble());
+                    if (delay >= policy.SourceTimeout - budget.Elapsed - policy.ReturnGrace)
+                    {
+                        // Waiting would spend what is left of the budget.
+                        break;
+                    }
+
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -185,22 +213,41 @@ internal sealed class SourceRunner(IClock clock)
     /// not. A source is free to throw <see cref="TimeoutException"/> itself,
     /// so the type alone cannot carry that distinction.
     /// </para>
+    /// <para>
+    /// The source is asked to stop <paramref name="grace"/> before the runner
+    /// gives up (T1.1). A source that honours the request and returns what it
+    /// has read gets that partial result through; before, both happened at
+    /// the same instant and the partial result lost the race. A source that
+    /// stops by throwing is reported as <see cref="OutOfTimeException"/> —
+    /// "did not finish within", not "the operation was canceled".
+    /// </para>
     /// </remarks>
     private static async Task<TResult> ReadWithHardTimeoutAsync<TResult>(
         string instanceId,
         Func<CancellationToken, Task<TResult>> read,
         TimeSpan timeout,
+        TimeSpan grace,
         CancellationToken cancellationToken)
     {
         using var cooperative = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cooperative.CancelAfter(timeout);
+        var askToStop = timeout - grace;
+        cooperative.CancelAfter(askToStop > TimeSpan.Zero ? askToStop : TimeSpan.Zero);
 
         var reading = read(cooperative.Token);
         var expiry = Task.Delay(timeout, cancellationToken);
 
         if (await Task.WhenAny(reading, expiry).ConfigureAwait(false) == reading)
         {
-            return await reading.ConfigureAwait(false);
+            try
+            {
+                return await reading.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex) when (
+                cooperative.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                throw new OutOfTimeException(
+                    $"Source '{instanceId}' did not finish within {timeout.TotalSeconds:0.#}s.", ex);
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -222,6 +269,13 @@ internal sealed class SourceRunner(IClock clock)
     /// time.
     /// </remarks>
     private sealed class AbandonedReadException(string message) : TimeoutException(message);
+
+    /// <summary>A read that stopped when the runner asked it to, having run out of budget.</summary>
+    /// <remarks>
+    /// Not retried, for the budget's sake rather than for safety: the read has
+    /// finished, but the time it would be retried in is gone.
+    /// </remarks>
+    private sealed class OutOfTimeException(string message, Exception inner) : TimeoutException(message, inner);
 
     private static void Forget(Task task) =>
         _ = task.ContinueWith(

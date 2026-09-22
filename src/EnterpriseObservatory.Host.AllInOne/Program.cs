@@ -59,7 +59,9 @@ if (problems.Count > 0)
 // first time a source is polled with a nonsensical setting.
 var collection = builder.Configuration.GetSection("Collection").Get<CollectionOptions>()
                   ?? new CollectionOptions();
-var collectionProblems = collection.Validate();
+var collectionProblems = CollectionOptions.RetiredKeyProblems(builder.Configuration)
+    .Concat(collection.Validate())
+    .ToList();
 
 if (collectionProblems.Count > 0)
 {

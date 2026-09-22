@@ -297,6 +297,74 @@ public static class VsphereSoapRequests
             """);
     }
 
+    /// <summary>
+    /// Reads properties of objects whose references are already known.
+    /// </summary>
+    /// <remarks>
+    /// No view and no traversal, like <see cref="RetrieveAlarmDefinitions"/>:
+    /// used for managers reached through another object, such as a host's
+    /// certificate manager or the license manager.
+    /// </remarks>
+    public static string RetrieveObjectProperties(
+        string propertyCollectorMoRef,
+        string managedObjectType,
+        IReadOnlyList<string> moRefs,
+        IReadOnlyList<string> paths)
+    {
+        ArgumentNullException.ThrowIfNull(moRefs);
+        ArgumentNullException.ThrowIfNull(paths);
+
+        var pathSet = string.Concat(paths.Select(p => $"""
+
+                      <vim25:pathSet>{Escape(p)}</vim25:pathSet>
+            """));
+
+        var objectSet = string.Concat(moRefs.Select(moRef => $"""
+
+                    <vim25:objectSet>
+                      <vim25:obj type="{Escape(managedObjectType)}">{Escape(moRef)}</vim25:obj>
+                      <vim25:skip>false</vim25:skip>
+                    </vim25:objectSet>
+            """));
+
+        return Envelope($"""
+                <vim25:RetrievePropertiesEx>
+                  <vim25:_this type="PropertyCollector">{Escape(propertyCollectorMoRef)}</vim25:_this>
+                  <vim25:specSet>
+                    <vim25:propSet>
+                      <vim25:type>{Escape(managedObjectType)}</vim25:type>
+                      <vim25:all>false</vim25:all>{pathSet}
+                    </vim25:propSet>{objectSet}
+                  </vim25:specSet>
+                  <vim25:options />
+                </vim25:RetrievePropertiesEx>
+            """);
+    }
+
+    /// <summary>
+    /// Reads the host profile compliance results vCenter already holds.
+    /// </summary>
+    /// <remarks>
+    /// A read: the API reference says <em>"a new ComplianceCheck will not be
+    /// triggered"</em>, and it needs <c>System.View</c>. With neither profile
+    /// nor entity it returns every stored result.
+    /// </remarks>
+    public static string QueryComplianceStatus(
+        string complianceManagerMoRef,
+        IReadOnlyList<string>? hostMoRefs = null)
+    {
+        var entities = string.Concat((hostMoRefs ?? []).Select(moRef => $"""
+
+              <vim25:entity type="HostSystem">{Escape(moRef)}</vim25:entity>
+        """));
+
+        return Envelope($"""
+            <vim25:QueryComplianceStatus>
+              <vim25:_this type="ProfileComplianceManager">{Escape(complianceManagerMoRef)}</vim25:_this>{entities}
+            </vim25:QueryComplianceStatus>
+        """);
+    }
+
     /// <summary>Reads who is signed in to this vCenter, and which session is ours.</summary>
     /// <remarks>
     /// A read, like everything else here. <c>sessionList</c> needs a privilege a
