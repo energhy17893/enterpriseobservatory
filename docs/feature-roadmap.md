@@ -381,6 +381,36 @@ kontrolle başlar.
 
 **→ Mimari kontrol #3**
 
+### M6-S — SimpliVity: Investigate altında derin görünüm + `eo-simplivity` kataloğu *(23 Eylül 2026)*
+
+Ertuğrul: SimpliVity ayrı bir vCenter'ın altında (ikinci `vsphere` bağlantısı
+olarak eklenecek); SVT/OVC düğümü `simplivity` türüyle Connections'a girilir.
+İstek: zeus.sh benzeri sağlık kontrolleri, donanım, federasyon sağlığı,
+best-practice ve **çapraz-ortam** (SimpliVity ↔ VMware) kontrolleri, Investigate
+altında ayrı sayfa. Referans `reference-approaches.md` §10.8: zeus.sh'nin
+listesi yayımlanmamış; HPE'nin üç yayımlanmış kataloğu (olay referansı, `svt-*`
+göstergeleri, Upgrade Guide ön-kontrolleri) esas alınır.
+
+Tasarım: **yeni sayfa, yeni motor değil.** Kontroller ADR-0024 yaşam
+döngüsünde, Duruş sayfasında `eo-simplivity` (hesaplanan) ve
+`vendor-passthrough` (olay aktarımı) katalogları olarak; SimpliVity sayfası
+Investigate altında satıcıya özel derin görünüm (Shell'in "vendor screens hang
+off Investigate" kuralı) ve bulgulara bağlanır. Kimlik katlama: OmniStack host
+↔ ESXi host, OmniStack cluster ↔ vSphere cluster, OVC = VM (ilke 3).
+
+| Adım | İş | Kova | Bağımlılık | Bitti = |
+|---|---|---|---|---|
+| S1 | **Olay aktarımı** — `com.simplivity.event.*` → alarm (geçebilen: arbiter, Storage HA, kapasite, yedek, donanım) ya da bulgu (geçemeyen: DPM, MVA kümesinde HA, arbiter yerleşimi, BIOS, karışık sürüm); HPE renkleri; 188 alarm kategoriye eşlenir, uydurma eşik yok | 1 | ikinci vCenter eklendi | canlıda gelen `com.simplivity.*` türlerinin %100'ü eşlenmiş ya da "sınıflandırılmadı" sayılmış; ilk 24 saat sayım |
+| S2 | **vSphere tarafı çapraz-ortam kontrolleri** (vim25, toplayıcı yok) — DPM açık; MVA/OVC kümesinde HA kapalı; admission control yüzdesi HPE formülünün altında; DRS must-grubu >100 VM/host; `datastore-<seri>`'de OVC dışı VM; politikalı VM'de VMware snapshot; kümeye karışık CPU nesli ve EVC kapalı; ESXi sürüm farkı; lockdown istisnası | 1 | S1; K1 motoru | `eo-simplivity` kataloğu Duruş'ta; 200 VM'lik estate ateşleme tahmini yazılı |
+| S3 | **REST durum toplayıcısı** — host `state`, küme `arbiter_*`/`upgrade_state`, VM `ha_status` (üç değerli: SYNCING geçici, OUT_OF_SCOPE bilgi), yedek `state`/`+`/attempts, politika askıda, kapasite ≤%20/≤%10; token çalıştırıcıda (10 dk hareketsizlik, 401'de bir kez yenile) | 2 | M6.0b şekilleri; F6 | ayrı kaynak `up`; E takımı geçer; ilk 24 saat: host/VM durum dağılımı REST ↔ olay akışı tutarlı |
+| S4 | **Donanım ağacı** — `hosts/{id}/hardware`: adaptör, BBU, mantıksal/fiziksel sürücü, SSD ömrü (≤%10/≤%5), rebuild yüzdesi; iLO ile çakışan alanlar tek varlıkta (M6.2) | 2 | S3; M6.0b şema ölçümü | host ekranında donanım; çift sayım yok |
+| S5 | **SimpliVity sayfası** (Investigate) — federasyon (küme → host: state, arbiter, sürüm), Storage HA ihlal listesi, donanım, yedekler (başarısız/geç/RPO), kapasite (HPE eşikleri + M4 eğilimi), açık bulgu ve alarm özeti → Duruş'a bağlantı | — | S1–S4 | sayfa canlı; her sayı psql'le doğrulanır |
+| S6 | **Federasyon raporu** — M5'e beşinci rapor: Upgrade Guide "Check the federation" listesi denetçi formatında | — | S5 | yazdırılabilir |
+
+Yapılmayan: yalnız `svt-*` CLI ile bakılabilen kontroller (`--mtu-test`,
+`node-compliance`, `support-show`) — salt-okunur REST'te yok; olay akışındaki
+karşılıkları aktarımla yeter. zeus.sh taklidi yok.
+
 ## M7 — SAN switch ve depolama dizisi
 
 Brocade FOS REST, dizi REST API'leri; dizi volume'ü → datastore eşlemesi.
