@@ -64,8 +64,8 @@ Geçmişi silmek, ADR tutmanın amacını ortadan kaldırır.
 | [0022](0022-postgres-tests-run-in-a-linux-job.md) | PostgreSQL testleri ayrı bir Linux işinde, tek kullanımlık parolayla çalışır | Kabul edildi |
 | [0023](0023-postgres-dependency-rejustified.md) | PostgreSQL bağımlılığının gerekçesi yeniden kuruldu | Kabul edildi |
 | [0024](0024-configuration-checks-are-findings.md) | Yapılandırma ve süreklilik kontrolleri alarm değil bulgudur | Kabul edildi |
-| [0025](0025-collectors-only-read.md) | Toplayıcı yalnızca okur; koruma, temizlik ve öz-ölçü çalıştırıcınındır | Önerildi |
-| [0026](0026-evaluation-is-three-valued.md) | Değerlendirme üç değerlidir; "bilinmiyor" bir alarmı çözemez | Önerildi |
+| [0025](0025-collectors-only-read.md) | Toplayıcı yalnızca okur; koruma, temizlik ve öz-ölçü çalıştırıcınındır | Kabul edildi |
+| [0026](0026-evaluation-is-three-valued.md) | Değerlendirme üç değerlidir; "bilinmiyor" bir alarmı çözemez | Kabul edildi |
 
 ## Şablon
 
