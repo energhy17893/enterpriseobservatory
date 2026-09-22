@@ -59,6 +59,7 @@ public class VsphereLateSampleTests
         }
 
         AssertNothingWrittenTwice(written);
+        Assert.DoesNotContain(batches.SelectMany(b => b.Failures), f => f.Target == VsphereObservationSource.GivenUpTarget);
     }
 
     [Fact]
@@ -127,6 +128,36 @@ public class VsphereLateSampleTests
 
         // And everything after it arrived.
         Assert.Contains(written, w => w.At == S0.AddSeconds(240) && w.Series == "disk.deviceLatency.average|naa.2");
+
+        // The one value lost is counted as dropped, once, against the host,
+        // saying why — a permanent loss is never silent.
+        var givenUp = Assert.Single(
+            batches.SelectMany(b => b.Failures),
+            f => f.Target == VsphereObservationSource.GivenUpTarget);
+        Assert.Equal(Id("host-1"), givenUp.Entity);
+        Assert.StartsWith("1 sample(s) of host-1 dropped: 1 real-time slot(s) (07:01:00Z)", givenUp.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_slot_given_up_is_reported_again_if_the_batch_that_reported_it_was_not_stored()
+    {
+        var fixture = new Fixture(placeholders: series => series == "naa.2", neverFills: S0);
+
+        var before = new List<ObservationBatch>();
+        for (var i = 0; i < 4; i++)
+        {
+            before.Add(await fixture.ReadAsync(S0.AddSeconds(1 + (30 * i))));
+        }
+
+        // S0 leaves the six-sample lookback at S0+120; the read at S0+121 says so.
+        var notStored = await fixture.ReadAsync(S0.AddSeconds(121), store: false);
+        var stored = await fixture.ReadAsync(S0.AddSeconds(151));
+        var after = await fixture.ReadAsync(S0.AddSeconds(181));
+
+        Assert.DoesNotContain(before.SelectMany(b => b.Failures), f => f.Target == VsphereObservationSource.GivenUpTarget);
+        Assert.Single(notStored.Failures, f => f.Target == VsphereObservationSource.GivenUpTarget);
+        Assert.Single(stored.Failures, f => f.Target == VsphereObservationSource.GivenUpTarget);
+        Assert.DoesNotContain(after.Failures, f => f.Target == VsphereObservationSource.GivenUpTarget);
     }
 
     private static List<(string Series, DateTimeOffset At, double Raw)> Written(IEnumerable<ObservationBatch> batches) =>
@@ -163,13 +194,17 @@ public class VsphereLateSampleTests
         public static double Latency(DateTimeOffset at, string device) =>
             (device == "naa.2" ? 7 : 3) + ((at - S0).TotalSeconds / 20);
 
-        public async Task<ObservationBatch> ReadAsync(DateTimeOffset serverNow)
+        public async Task<ObservationBatch> ReadAsync(DateTimeOffset serverNow, bool store = true)
         {
             Api.ServerNow = serverNow;
             Clock.UtcNow = serverNow;
 
             var batch = await Source.ReadAsync(CancellationToken.None);
-            batch.Stored?.Invoke();
+            if (store)
+            {
+                batch.Stored?.Invoke();
+            }
+
             return batch;
         }
     }

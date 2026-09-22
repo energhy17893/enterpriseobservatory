@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 
@@ -207,6 +208,7 @@ public sealed class VsphereObservationSource(
 
         SeedMarks(types, failures);
         OpenGapIfBehind(types, serverNow, now, failures);
+        ReportGivenUp(serverNow, failures);
 
         var live = new LiveRead(serverNow);
 
@@ -323,7 +325,8 @@ public sealed class VsphereObservationSource(
         private readonly Dictionary<string, DateTimeOffset> _byMoRef = new(StringComparer.Ordinal);
 
         /// <summary>Slots returned before their values were in, to be read again.</summary>
-        private readonly Dictionary<string, SortedSet<DateTimeOffset>> _unfilled = new(StringComparer.Ordinal);
+        /// Each with the number of series still without a reading when last read.
+        private readonly Dictionary<string, SortedDictionary<DateTimeOffset, int>> _unfilled = new(StringComparer.Ordinal);
 
         /// <summary>
         /// The values already stored for slots a read for an unfilled one
@@ -387,7 +390,35 @@ public sealed class VsphereObservationSource(
         {
             lock (_padlock)
             {
-                return _unfilled.TryGetValue(moRef, out var slots) && slots.Count > 0 ? slots.Min : null;
+                return _unfilled.TryGetValue(moRef, out var slots) && slots.Count > 0 ? slots.Keys.First() : null;
+            }
+        }
+
+        /// <summary>
+        /// The unfilled slots the live read at <paramref name="serverNow"/> no
+        /// longer reaches: lost for good, per entity.
+        /// </summary>
+        /// <remarks>
+        /// Reported, not removed: they leave the record with the rest of this
+        /// read's bookkeeping, once it is stored (<see cref="Advance"/>), so a
+        /// read that is not stored reports them again rather than never.
+        /// </remarks>
+        public List<(string MoRef, List<UnfilledSlot> Slots)> GivenUp(DateTimeOffset serverNow)
+        {
+            var reach = serverNow - RealTimeLookback;
+
+            lock (_padlock)
+            {
+                return
+                [
+                    .. _unfilled
+                        .Select(pair => (pair.Key, pair.Value
+                            .Where(slot => slot.Key <= reach)
+                            .Select(slot => new UnfilledSlot(slot.Key, slot.Value))
+                            .ToList()))
+                        .Where(pair => pair.Item2.Count > 0)
+                        .OrderBy(pair => pair.Key, StringComparer.Ordinal),
+                ];
             }
         }
 
@@ -415,23 +446,40 @@ public sealed class VsphereObservationSource(
                 // that never arrives must not hold the entity's read open.
                 var reach = read.ServerNow - RealTimeLookback;
 
-                foreach (var (moRef, slots) in read.Slots)
+                // Every entity with something unfilled, not only those read this
+                // time: one the budget skipped still gives up on schedule, as
+                // GivenUp reported it.
+                foreach (var moRef in _unfilled.Keys.Union(read.Slots.Keys).ToList())
                 {
                     if (!_unfilled.TryGetValue(moRef, out var unfilled))
                     {
                         _unfilled[moRef] = unfilled = [];
                     }
 
-                    unfilled.ExceptWith(slots.Filled);
-                    unfilled.UnionWith(slots.Unfilled);
-                    unfilled.RemoveWhere(at => at <= reach);
+                    if (read.Slots.TryGetValue(moRef, out var slots))
+                    {
+                        foreach (var at in slots.Filled)
+                        {
+                            unfilled.Remove(at);
+                        }
+
+                        foreach (var (at, series) in slots.Unfilled)
+                        {
+                            unfilled[at] = series;
+                        }
+                    }
+
+                    foreach (var at in unfilled.Keys.Where(at => at <= reach).ToList())
+                    {
+                        unfilled.Remove(at);
+                    }
 
                     if (!_written.TryGetValue(moRef, out var written))
                     {
                         _written[moRef] = written = [];
                     }
 
-                    foreach (var (at, series) in slots.Written)
+                    foreach (var (at, series) in slots?.Written ?? [])
                     {
                         if (!written.TryGetValue(at, out var set))
                         {
@@ -450,7 +498,8 @@ public sealed class VsphereObservationSource(
                     }
                     else
                     {
-                        foreach (var at in written.Keys.Where(at => at < unfilled.Min).ToList())
+                        var oldest = unfilled.Keys.First();
+                        foreach (var at in written.Keys.Where(at => at < oldest).ToList())
                         {
                             written.Remove(at);
                         }
@@ -529,7 +578,10 @@ public sealed class VsphereObservationSource(
                     Slots[moRef] = slots = new SlotsRead();
                 }
 
-                slots.Unfilled.UnionWith(entity.Unfilled);
+                foreach (var slot in entity.Unfilled)
+                {
+                    slots.Unfilled[slot.At] = slot.Series;
+                }
 
                 var earlier = new List<PerfSampleSet>(entity.Earlier.Count);
                 foreach (var set in entity.Earlier)
@@ -549,7 +601,7 @@ public sealed class VsphereObservationSource(
 
                 List<CounterValue> Unwritten(DateTimeOffset at, IReadOnlyList<CounterValue> values)
                 {
-                    if (!entity.Unfilled.Contains(at))
+                    if (!entity.Unfilled.Any(slot => slot.At == at))
                     {
                         slots.Filled.Add(at);
                     }
@@ -579,7 +631,7 @@ public sealed class VsphereObservationSource(
     {
         public HashSet<DateTimeOffset> Filled { get; } = [];
 
-        public HashSet<DateTimeOffset> Unfilled { get; } = [];
+        public Dictionary<DateTimeOffset, int> Unfilled { get; } = [];
 
         public Dictionary<DateTimeOffset, List<string>> Written { get; } = [];
     }
@@ -619,6 +671,38 @@ public sealed class VsphereObservationSource(
 
         return new PerfQueryTarget(moRef, start, serverNow);
     }
+
+    /// <summary>
+    /// Counts as dropped the values of unfilled slots the live read no longer reaches.
+    /// </summary>
+    /// <remarks>
+    /// A slot vCenter returned before its values were in is read again every
+    /// cycle while it is inside the lookback. Past it the missing values are
+    /// lost for good — nothing else will ask for them — and a permanent loss
+    /// is reported, one failure per entity, never left silent.
+    /// </remarks>
+    private void ReportGivenUp(DateTimeOffset serverNow, List<CollectionFailure> failures)
+    {
+        foreach (var (moRef, slots) in _marks.GivenUp(serverNow))
+        {
+            var dropped = slots.Sum(s => s.Series);
+            failures.Add(new CollectionFailure
+            {
+                Kind = CollectionFailureKind.ProtocolError,
+                Target = GivenUpTarget,
+                Entity = _targets.ResolveEntity(moRef),
+                Detail = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{dropped} sample(s) of {moRef} dropped: {slots.Count} real-time slot(s) " +
+                    $"({string.Join(", ", slots.Select(s => s.At.ToString("HH:mm:ss'Z'", CultureInfo.InvariantCulture)))}) " +
+                    $"were returned by vCenter before their values were in and never filled within the " +
+                    $"{LiveLookbackSamples}-sample lookback. Those values are lost; the rest of each slot was stored."),
+            });
+        }
+    }
+
+    /// <summary>The target of a real-time slot given up at the lookback.</summary>
+    public const string GivenUpTarget = "real-time slot never filled within lookback";
 
     /// <summary>Seeds the marks from the store, once per process.</summary>
     private void SeedMarks(

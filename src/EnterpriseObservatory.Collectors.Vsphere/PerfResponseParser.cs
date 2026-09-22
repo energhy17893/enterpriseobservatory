@@ -56,8 +56,13 @@ public sealed record PerfEntitySamples
     /// later. A reader that moves past such a slot never sees those values,
     /// so it has to know which slots to ask for again.
     /// </remarks>
-    public IReadOnlyList<DateTimeOffset> Unfilled { get; init; } = [];
+    public IReadOnlyList<UnfilledSlot> Unfilled { get; init; } = [];
 }
+
+/// <summary>A slot returned before all its values were in, and how many series still had none.</summary>
+/// <param name="At">The slot's sample time.</param>
+/// <param name="Series">Series of the reply with no reading at this slot, as they came off the wire.</param>
+public sealed record UnfilledSlot(DateTimeOffset At, int Series);
 
 /// <summary>One entity's values at one sample time.</summary>
 public sealed record PerfSampleSet
@@ -188,8 +193,10 @@ public static class PerfResponseParser
                 SampledAtUtc = times.Count > 0 ? times[^1] : null,
                 Earlier = ReadEarlier(allSeries, times),
                 Unfilled = [.. Enumerable.Range(0, times.Count)
-                    .Where(slot => UnfilledAt(allSeries, slot, times.Count).Count > 0)
-                    .Select(slot => times[slot])],
+                    .Select(slot => new UnfilledSlot(
+                        times[slot],
+                        allSeries.Count(s => s.Points.Count == times.Count && s.At(slot) is null)))
+                    .Where(slot => slot.Series > 0)],
             });
         }
 
