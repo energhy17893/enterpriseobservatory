@@ -145,3 +145,55 @@ eder. `Failed()`'ın `Critical` değil `Unknown` dönmesinin gerekçesi budur.
   değişmez.
 - Bir kural türü için "bilinmiyor" anlamsız çıkarsa (saf olay kuralları: olay ya
   geldi ya gelmedi) — o tür iki değerli kalabilir, ama bunu tipi söyler.
+
+## Uygulama notu (22 Eylül 2026)
+
+Üç PR'de teslim edildi.
+
+- **PR1 — çekirdek: `alert_history` ve model** (#83, `merge/adr-0026-core`,
+  commit'ler `001f382` domain — üç değerli sonuç tipi (`SubjectVerdict`,
+  `ConditionPresent`/`ConditionAbsent`/`Unknown`) ve `AlertLifecycle`'ın
+  "bilinmiyor"dan "çözüldü"ye geçişi olmayan durum makinesi — ve `a202ae1`
+  application — kural sözleşmesi ve N-derin çözülme). `AlertReconciler`'ın
+  kanıt kaynaklı kararı (`EvidenceSources`, `ProducerRun`), Postgres şeması ve
+  `alert_history` tablosu burada geldi. Susan bir kaynağın alarmlarının ileri
+  taşınması ve ham saklama süresi (2 gün) dolunca "bilinmiyor"a geçişi de.
+- **PR2 — envanter kuralları** (#85, `merge/adr-0026-rules`, alt PR #84
+  `merge/pr2`). Envanter taraflı kuralları ve vSphere envanter kaynağını aynı
+  sözleşmeye taşıdı.
+- **PR3 — kalan sekiz kural** (#98, `merge/adr0026-pr3`, commit `ad51f44`).
+  `peer-outliers`, `cpu-contention`, `storage-layer-split`,
+  `shared-volume-latency`, `dropped-packets`, `storage-noisy-neighbour`,
+  `storage-path-redundancy` ve `vcenter-events` mekanik `TwoValuedVerdicts`
+  adaptöründen kuralın kendi yargısına (`Judge`) geçti — her biri kanıtsızken
+  şunu sessizce çözüyordu:
+
+  | kural | eskiden kanıt olmadan neyi çözüyordu |
+  |---|---|
+  | `peer-outliers` | politika tabanından az vantage noktası |
+  | `cpu-contention` | eksik host/guest sayacı, okunamayan vCPU sayısı |
+  | `storage-layer-split` | eksik katman sayacı; host fault-counter'a devredince o hosttaki her cihaz |
+  | `shared-volume-latency` | 3'ten az bağlı host; boşta/meşgul bastırma |
+  | `dropped-packets` | eksik paket sayacı; 100/s altı trafik |
+  | `storage-noisy-neighbour` | 4'ten az ölçülen sakin; eksik yük sayacı; bilinmeyen taban çizgisi |
+  | `storage-path-redundancy` | bakımdaki host; boş yol tablosu |
+  | `vcenter-events` | belgelenmiş `ClearedBy`'ın temizlemesi hiç gelmemesi |
+
+  Her satır artık gerçek bir "bilinmiyor" sebebi taşıyor
+  (`InputNotCollected`, `NotJudgeable`, `InsufficientSeries`, `SourceSilent`),
+  ve `AlertReconciler` N ardışık taze "koşul yok" olmadan çözmüyor.
+
+Ölçülen gerçekler:
+
+- **Kör-nokta histerezisi K=30, P=90**, canlı yeniden oynatmadan seçildi
+  (`docs/live-verification.md` §11): 2,00 gün, 29 volume, 90.624 yargılanan
+  tur üzerinden alarm çalkalanması 369,9'dan 5,0 flip/güne düştü;
+  ölçülebilirlik %4,5; 385 gerçek kör dilimin %100'ü hâlâ yakalanıyor, en kötü
+  durum 29,0 dakika.
+- **Bu estate'te gözlemlenemezlik.** Dönüştürülen sekiz kuraldan yedisi bu
+  estate'te hiç ateşlemedi — `maintenance_window` boş, bu yüzden örneğin
+  `storage-path-redundancy`'nin "bakımdaki host" dalı hiç tetiklenmedi, ve
+  öbür yedisinin koşulu da bu envanterde hiç oluşmadı. Dönüşümün değeri burada
+  ölçülemez; değeri başka yerdedir — doğruluk, ve bir şey bozulduğunda artık
+  neyin durmayacağı: eskiden bu sekiz kuralın her biri, eksik bir sayaç ya da
+  küçük bir popülasyon karşısında alarmı sessizce çözerdi; artık çözmüyor.
