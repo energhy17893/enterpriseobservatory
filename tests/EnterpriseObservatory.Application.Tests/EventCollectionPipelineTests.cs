@@ -329,4 +329,139 @@ public class EventCollectionPipelineTests
 
         Assert.Equal(Now - EventCollectionPipeline.Retention, store.PrunedBefore);
     }
+
+    // --- F1: the event read goes through SourceRunner ----------------------
+
+    /// <summary>A fault the source classified, as a vendor client would throw it.</summary>
+    private sealed class ClassifiedFault(CollectionFailureKind kind, string message)
+        : Exception(message), ICollectionFault
+    {
+        public CollectionFailureKind Kind => kind;
+    }
+
+    private sealed class CountingSource(string id, Func<EventRead> read) : IEventSource
+    {
+        public int Calls { get; private set; }
+
+        public string InstanceId => id;
+
+        public Task<EventRead> ReadAsync(EventMark? since, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(read());
+        }
+    }
+
+    /// <summary>A read that ignores the token: only a hard timeout can walk away from it.</summary>
+    private sealed class DeafSource(string id) : IEventSource
+    {
+        public string InstanceId => id;
+
+        public async Task<EventRead> ReadAsync(EventMark? since, CancellationToken cancellationToken)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None);
+            return new EventRead { Events = [] };
+        }
+    }
+
+    private sealed class HealthStore : Monitoring.ICollectorHealthStore
+    {
+        private readonly Dictionary<(string, CollectorRole), CollectorHealth> _rows = [];
+
+        public IReadOnlyList<CollectorHealth> Current => [.. _rows.Values];
+
+        public void Merge(IReadOnlyList<CollectorHealth> health)
+        {
+            foreach (var h in health)
+            {
+                _rows[(h.InstanceId, h.Role)] = h;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_rejected_login_on_the_event_read_is_one_strike_and_not_asked_again()
+    {
+        var store = new RecordingStore();
+        var health = new HealthStore();
+        var pipeline = new EventCollectionPipeline(store, new FixedClock(Now), health, Monitoring.MonitoringOptions.Default);
+        var source = new CountingSource(
+            "vc-1", () => throw new ClassifiedFault(CollectionFailureKind.AuthenticationRejected, "Cannot complete login"));
+
+        var first = await pipeline.RunAsync([source], CancellationToken.None);
+        var second = await pipeline.RunAsync([source], CancellationToken.None);
+
+        Assert.Equal(1, source.Calls);
+        Assert.Equal("vc-1", Assert.Single(first.Failures).Source);
+        Assert.Equal("vc-1", Assert.Single(second.Failures).Source);
+
+        var row = Assert.Single(health.Current);
+        Assert.Equal(CollectorRole.Events, row.Role);
+        Assert.Equal(CollectionFailureKind.AuthenticationRejected, row.LastFailureKind);
+        Assert.True(row.IsBackingOff);
+    }
+
+    [Fact]
+    public async Task A_transient_failure_on_the_event_read_is_not_retried_within_the_cycle()
+    {
+        var store = new RecordingStore();
+        var pipeline = new EventCollectionPipeline(store, new FixedClock(Now), new HealthStore(), Monitoring.MonitoringOptions.Default);
+        var source = new CountingSource("vc-1", () => throw new InvalidOperationException("reset"));
+
+        await pipeline.RunAsync([source], CancellationToken.None);
+
+        Assert.Equal(1, source.Calls);
+    }
+
+    [Fact]
+    public async Task A_read_that_ignores_the_token_is_abandoned_at_the_deadline_and_counted()
+    {
+        var store = new RecordingStore();
+        store.Record("vc-deaf", [Event(7)], complete: true, Now.AddMinutes(-5));
+        var before = Assert.Single(store.Cursors);
+        var health = new HealthStore();
+        var pipeline = new EventCollectionPipeline(store, new FixedClock(Now), health, Monitoring.MonitoringOptions.Default);
+
+        var run = pipeline.RunAsync(
+            [new DeafSource("vc-deaf")], answered: null, TimeSpan.FromMilliseconds(200), CancellationToken.None);
+
+        var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(3)));
+        Assert.Same(run, finished);
+
+        var result = await run;
+        Assert.Equal("vc-deaf", Assert.Single(result.Failures).Source);
+        Assert.Equal(before, Assert.Single(store.Cursors));
+
+        var row = Assert.Single(health.Current);
+        Assert.Equal(CollectorRole.Events, row.Role);
+        Assert.Equal(1, row.ConsecutiveFailures);
+        Assert.NotNull(row.LastAttemptUtc);
+    }
+
+    [Fact]
+    public async Task A_successful_event_read_writes_a_healthy_events_row()
+    {
+        var health = new HealthStore();
+        var pipeline = new EventCollectionPipeline(new RecordingStore(), new FixedClock(Now), health, Monitoring.MonitoringOptions.Default);
+
+        await pipeline.RunAsync([new ScriptedSource("vc-1", _ => new EventRead { Events = [Event(1)] })], CancellationToken.None);
+
+        var row = Assert.Single(health.Current);
+        Assert.Equal(CollectorRole.Events, row.Role);
+        Assert.Equal(Domain.HealthState.Healthy, row.Health);
+        Assert.Equal(Now, row.LastSuccessUtc);
+    }
+
+    [Fact]
+    public async Task A_source_whose_inventory_did_not_answer_gets_no_events_health_row()
+    {
+        var health = new HealthStore();
+        var pipeline = new EventCollectionPipeline(new RecordingStore(), new FixedClock(Now), health, Monitoring.MonitoringOptions.Default);
+        var source = new CountingSource("vc-1", () => new EventRead { Events = [] });
+
+        await pipeline.RunAsync([source], answered: [], Timeout.InfiniteTimeSpan, CancellationToken.None);
+
+        Assert.Equal(0, source.Calls);
+        Assert.Empty(health.Current);
+    }
 }
