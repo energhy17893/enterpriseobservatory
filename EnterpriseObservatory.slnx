@@ -11,6 +11,7 @@
     <Project Path="tests/EnterpriseObservatory.Api.Tests/EnterpriseObservatory.Api.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Application.Tests/EnterpriseObservatory.Application.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Architecture.Tests/EnterpriseObservatory.Architecture.Tests.csproj" />
+    <Project Path="tests/EnterpriseObservatory.Collectors.Contract.Tests/EnterpriseObservatory.Collectors.Contract.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Collectors.Vsphere.Tests/EnterpriseObservatory.Collectors.Vsphere.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Domain.Tests/EnterpriseObservatory.Domain.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Host.AllInOne.Tests/EnterpriseObservatory.Host.AllInOne.Tests.csproj" />
