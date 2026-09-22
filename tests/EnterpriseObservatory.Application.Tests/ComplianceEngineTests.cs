@@ -168,11 +168,13 @@ public class ComplianceEngineTests
     }
 
     [Fact]
-    public void Production_registers_no_continuity_check_yet()
+    public void Production_registers_the_m8_continuity_checks()
     {
-        // K1 ships the engine; K2 moves the M8 rules in.
-        Assert.Empty(ContinuityCatalogue.Production);
-        Assert.Empty(ContinuityCatalogue.Build(ContinuityCatalogue.Production).Controls);
+        // K2 moved the M8 rules in; see ContinuityChecksTests for each check.
+        Assert.Equal(12, ContinuityCatalogue.Production.Count);
+        Assert.All(
+            ContinuityCatalogue.Build(ContinuityCatalogue.Production).Controls,
+            c => Assert.StartsWith("eo-cont.", c.ControlId, StringComparison.Ordinal));
     }
 
     [Fact]

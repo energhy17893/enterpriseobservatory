@@ -102,6 +102,27 @@ public sealed record ClusterNPlusOnePolicy
     /// </remarks>
     public TimeSpan WarningWithin { get; init; } = TimeSpan.FromDays(30);
 
+    /// <summary>
+    /// The least demand history on which "N+1 holds" may be said.
+    /// </summary>
+    /// <remarks>
+    /// Seven days — <b>this product's choice</b>: one full weekly cycle, so a
+    /// cluster judged on a quiet weekend is not called safe for the working
+    /// week. A cluster already over its headroom fails on its current
+    /// reading alone; only the pass waits for history.
+    /// </remarks>
+    public TimeSpan MinimumHistory { get; init; } = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// How old a demand snapshot may be before the N+1 checks refuse it.
+    /// </summary>
+    /// <remarks>
+    /// An hour — <b>this product's choice</b>: many inventory intervals, so a
+    /// slow cycle does not blank the verdicts, and short enough that a
+    /// snapshot left behind by a stalled worker is not judged as current.
+    /// </remarks>
+    public TimeSpan MaximumSnapshotAge { get; init; } = TimeSpan.FromHours(1);
+
     /// <summary>How much history the demand trend is fitted to.</summary>
     /// <remarks>Thirty days, for the reason <see cref="DatastoreTimeToFullPolicy.Lookback"/> gives.</remarks>
     public TimeSpan Lookback { get; init; } = TimeSpan.FromDays(30);
@@ -494,6 +515,23 @@ public static class ClusterNPlusOne
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentNullException.ThrowIfNull(retention);
 
+        var trend = ReadTrend(series, hosts, counter, nowUtc, policy, retention);
+
+        return EstimateCached(cluster, trend, availableAfterFailoverHosts, resource, nowUtc, policy, cache);
+    }
+
+    /// <summary>Every host's history of one counter, aggregated into the cluster's demand trend.</summary>
+    public static IReadOnlyList<TrendPoint> ReadTrend(
+        ISeriesReader series,
+        IReadOnlyList<EntityId> hosts,
+        string counter,
+        DateTimeOffset nowUtc,
+        ClusterNPlusOnePolicy policy,
+        SeriesRetentionPolicy retention)
+    {
+        ArgumentNullException.ThrowIfNull(series);
+        ArgumentNullException.ThrowIfNull(hosts);
+
         var histories = new List<SeriesResult>(hosts.Count);
 
         foreach (var host in hosts)
@@ -501,7 +539,22 @@ public static class ClusterNPlusOne
             histories.Add(series.Query(HostHistoryQuery(host, counter, nowUtc, policy, retention)));
         }
 
-        var trend = AggregateDemandTrend(histories);
+        return AggregateDemandTrend(histories);
+    }
+
+    /// <summary>The date estimate of an already-read trend, through the cache.</summary>
+    public static TimeToFullResult EstimateCached(
+        EntityId cluster,
+        IReadOnlyList<TrendPoint> trend,
+        double availableAfterFailoverHosts,
+        ClusterCapacityResource resource,
+        DateTimeOffset nowUtc,
+        ClusterNPlusOnePolicy policy,
+        ClusterNPlusOneCache? cache = null)
+    {
+        ArgumentNullException.ThrowIfNull(trend);
+        ArgumentNullException.ThrowIfNull(policy);
+
         var key = ClusterNPlusOneCache.KeyOf(trend, availableAfterFailoverHosts, nowUtc, policy);
 
         return (cache ?? ClusterNPlusOneCache.Shared).GetOrAdd(
