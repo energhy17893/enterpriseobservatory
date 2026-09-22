@@ -44,6 +44,64 @@ public class ReadModelTests
         Assert.Equal(2, overview.WarningAlerts);
     }
 
+    // --- freshness (ADR-0026 point 3) ----------------------------------------
+
+    [Fact]
+    public void The_open_count_is_two_numbers_fresh_and_stale_and_unknown_is_counted_apart()
+    {
+        GivenAlerts(
+            Alert("a", AlertSeverity.Critical),
+            Alert("b", AlertSeverity.Warning) with
+            {
+                StaleSinceUtc = T0.AddMinutes(-5),
+                StaleReason = UnknownReason.SourceSilent,
+                StaleDetail = "source 'vc-1' did not report this cycle",
+            },
+            Alert("c", AlertSeverity.Warning) with { State = AlertLifecycleState.Unknown });
+
+        var overview = Model().Overview();
+
+        Assert.Equal(1, overview.FreshOpenAlerts);
+        Assert.Equal(1, overview.StaleOpenAlerts);
+        Assert.Equal(1, overview.UnknownAlerts);
+
+        // Unknown is out of the open counts (design note §2).
+        Assert.Equal(1, overview.WarningAlerts);
+    }
+
+    [Fact]
+    public void An_alert_view_carries_its_evidence_time_and_why_it_is_stale()
+    {
+        GivenAlerts(Alert("b", AlertSeverity.Warning) with
+        {
+            EvidenceAtUtc = T0.AddMinutes(-7),
+            StaleSinceUtc = T0.AddMinutes(-5),
+            StaleReason = UnknownReason.SourceSilent,
+            StaleDetail = "source 'vc-1' did not report this cycle",
+        });
+
+        var view = Assert.Single(Model().Alerts().Items);
+
+        Assert.Equal(T0.AddMinutes(-7), view.EvidenceAtUtc);
+        Assert.True(view.IsStale);
+        Assert.Equal(T0.AddMinutes(-5), view.StaleSinceUtc);
+        Assert.Equal(UnknownReason.SourceSilent, view.StaleReason);
+        Assert.Equal("source 'vc-1' did not report this cycle", view.StaleDetail);
+    }
+
+    [Fact]
+    public void Alerts_in_the_unknown_state_are_listed_under_their_own_filter_only()
+    {
+        GivenAlerts(
+            Alert("a", AlertSeverity.Critical),
+            Alert("c", AlertSeverity.Warning) with { State = AlertLifecycleState.Unknown });
+
+        Assert.DoesNotContain(Model().Alerts().Items, a => a.State == AlertLifecycleState.Unknown);
+
+        var unknown = Assert.Single(Model().Alerts(state: AlertLifecycleState.Unknown).Items);
+        Assert.Equal(AlertLifecycleState.Unknown, unknown.State);
+    }
+
     [Fact]
     public void An_unconfirmed_alert_is_not_counted_anywhere()
     {

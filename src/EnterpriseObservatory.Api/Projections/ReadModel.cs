@@ -105,6 +105,9 @@ public sealed class ReadModel(
             WarningAlerts = visible.Count(a => a.Severity == AlertSeverity.Warning),
             UnacknowledgedAlerts = visible.Count(a => a.State == AlertLifecycleState.Open),
             SuppressedAlerts = visible.Count(a => a.SuppressedByWindowId is not null),
+            FreshOpenAlerts = visible.Count(a => !a.IsStale),
+            StaleOpenAlerts = visible.Count(a => a.IsStale),
+            UnknownAlerts = _alerts.All.Count(a => a.IsConfirmed && a.State == AlertLifecycleState.Unknown),
             EntitiesByHealth = byHealth,
             VanishedEntities = graph.Vanished.Count(),
             FailingCollectors = health.Count(c => c.Health != HealthState.Healthy),
@@ -135,7 +138,13 @@ public sealed class ReadModel(
     {
         var graph = _graphs.Current;
 
-        var matching = Visible()
+        // The Unknown state is outside the inbox and is listed under its own
+        // filter only (ADR-0026 design note §2).
+        var pool = state == AlertLifecycleState.Unknown
+            ? [.. _alerts.All.Where(a => a.IsConfirmed && a.State == AlertLifecycleState.Unknown)]
+            : Visible();
+
+        var matching = pool
             .Where(a => severity is null || a.Severity == severity)
             .Where(a => state is null || a.State == state)
             .Where(a => category is null ||
@@ -1230,6 +1239,11 @@ public sealed class ReadModel(
             SuppressedByWindowId = alert.SuppressedByWindowId,
             FirstSeenUtc = alert.FirstSeenUtc,
             LastSeenUtc = alert.LastSeenUtc,
+            EvidenceAtUtc = alert.EvidenceAtUtc,
+            IsStale = alert.IsStale,
+            StaleSinceUtc = alert.StaleSinceUtc,
+            StaleReason = alert.StaleReason,
+            StaleDetail = alert.StaleDetail,
         };
     }
 
