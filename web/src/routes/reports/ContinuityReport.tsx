@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, LoadFailure, Loading, Metric, StatusBadge } from '@/components/Primitives'
-import type { ContinuityReportRow, ContinuityReportView } from '@/api/types'
+import type { ContinuityReportRow, ContinuityReportView, ContinuityStateCounts } from '@/api/types'
 
 /**
  * M8.10: the continuity report.
@@ -11,9 +11,11 @@ import type { ContinuityReportRow, ContinuityReportView } from '@/api/types'
  * generated server-side from the same ReadModel query so the two exports can
  * never disagree. See routes/reports/CapacityReport.tsx.
  *
- * One row per cluster: HA (M8.1) and DRS (M8.3) findings on the cluster
- * itself, storage-path redundancy and multipathing findings rolled up from
- * the hosts under it, and the N+1 what-if capacity findings (M8.2).
+ * One row per cluster: HA (M8.1), DRS (M8.3) and N+1 (M8.2) findings on the
+ * cluster itself, and the multipath findings (M8.6) of the hosts under it --
+ * read from the eo-continuity compliance findings (ADR-0024), counted by state:
+ * failing, accepted (owned, with a reason), excepted (waived until a date),
+ * not evaluated (with a reason), and stale (the vCenter did not answer).
  *
  * The one thing this page must not do is say "all clear" where the input was
  * never read: HA and DRS depend on cluster HA configuration that has not
@@ -63,6 +65,7 @@ export function ContinuityReport() {
 
 function ReportBody({ data }: { data: ContinuityReportView }) {
   const { summary } = data
+  const totals = summary.totals
 
   return (
     <div className="space-y-4">
@@ -81,39 +84,33 @@ function ReportBody({ data }: { data: ContinuityReportView }) {
       </div>
 
       <div className="grid grid-cols-2 gap-2 [break-inside:avoid] sm:grid-cols-4">
-        <Metric label="HA findings" value={summary.byRule['cluster-ha-scorecard'] ?? 0} />
-        <Metric label="DRS findings" value={summary.byRule['drs-rule-violation'] ?? 0} />
+        <Metric label="Failing" value={totals.failing} status={totals.failing > 0 ? 'Warning' : undefined} />
+        <Metric label="Accepted" value={totals.accepted} />
+        <Metric label="Excepted" value={totals.excepted} />
+        <Metric label="Not evaluated" value={totals.notEvaluated} status={totals.notEvaluated > 0 ? 'Unknown' : undefined} />
+        <Metric label="Passing" value={totals.passing} />
+        <Metric label="Stale" value={totals.stale} status={totals.stale > 0 ? 'Unknown' : undefined} />
         <Metric
-          label="Storage path findings"
-          value={
-            (summary.byRule['multipath-single-point-of-failure'] ?? 0) +
-            (summary.byRule['storage-path-redundancy'] ?? 0)
-          }
+          label="Clusters with a failing finding"
+          value={summary.clustersWithFailingCount}
+          status={summary.clustersWithFailingCount > 0 ? 'Warning' : undefined}
         />
-        <Metric label="N+1 findings" value={summary.byRule['cluster-n-plus-one'] ?? 0} />
-        <Metric
-          label="Clusters with a critical finding"
-          value={summary.clustersWithCriticalCount}
-          status={summary.clustersWithCriticalCount > 0 ? 'Critical' : undefined}
-        />
-        <Metric label="Critical" value={summary.bySeverity.Critical ?? 0} status={(summary.bySeverity.Critical ?? 0) > 0 ? 'Critical' : undefined} />
-        <Metric label="Warning" value={summary.bySeverity.Warning ?? 0} />
       </div>
 
-      {!summary.haInputsCollected && summary.note && (
+      {summary.note && (
         <Card className="border-amber-500/50 p-3 text-xs [break-inside:avoid]">
-          <span className="font-medium text-foreground">HA / DRS not collected yet: </span>
+          <span className="font-medium text-foreground">Not all clear: </span>
           <span className="text-muted-foreground">{summary.note}</span>
         </Card>
       )}
 
-      {summary.clustersWithCriticalCount > 0 && (
+      {summary.clustersWithFailingCount > 0 && (
         <Card className="p-3 text-xs text-muted-foreground [break-inside:avoid]">
           <span className="font-medium text-foreground">
-            {summary.clustersWithCriticalCount} cluster{summary.clustersWithCriticalCount === 1 ? '' : 's'} with a
-            critical finding:{' '}
+            {summary.clustersWithFailingCount} cluster{summary.clustersWithFailingCount === 1 ? '' : 's'} with a
+            failing finding:{' '}
           </span>
-          {summary.clustersWithCriticalNames.join(', ')}
+          {summary.clustersWithFailingNames.join(', ')}
         </Card>
       )}
 
@@ -145,8 +142,9 @@ function ReportBody({ data }: { data: ContinuityReportView }) {
         fresh it can possibly be.
       */}
       <div className="border-t border-border pt-2 text-xs text-muted-foreground print:fixed print:bottom-0">
-        Counts are the open findings each rule currently carries for that cluster or its hosts. "Not
-        collected" on the HA column means the setting has never been read, not that it passed.
+        Counts are the continuity findings for that cluster or its hosts, by state. Accept or except a
+        finding on the Compliance screen. "Not collected" on HA and DRS means the cluster configuration
+        has never been read, not that it passed.
       </div>
     </div>
   )
@@ -161,41 +159,59 @@ function ReportRow({ row }: { row: ContinuityReportRow }) {
       </td>
       <td className="px-3 py-2 align-top">
         {row.haSettingsCollected ? (
-          <CountCell critical={row.haCriticalCount} warning={row.haWarningCount} />
+          <CountCell counts={row.ha} />
         ) : (
           <span className="text-xs text-muted-foreground">Not collected</span>
         )}
       </td>
       <td className="px-3 py-2 align-top">
         {row.haSettingsCollected ? (
-          <CountCell critical={row.drsCriticalCount} warning={row.drsWarningCount} />
+          <CountCell counts={row.drs} />
         ) : (
           <span className="text-xs text-muted-foreground">Not collected</span>
         )}
       </td>
       <td className="px-3 py-2 align-top">
-        <CountCell critical={row.storagePathCriticalCount} warning={row.storagePathWarningCount} />
+        <CountCell counts={row.storagePath} />
         {row.storagePathAffectedHosts.length > 0 && (
           <div className="mt-1 text-xs text-muted-foreground">{row.storagePathAffectedHosts.join(', ')}</div>
         )}
       </td>
       <td className="px-3 py-2 align-top">
-        <CountCell critical={row.nPlusOneCriticalCount} warning={row.nPlusOneWarningCount} />
+        <CountCell counts={row.nPlusOne} />
       </td>
     </tr>
   )
 }
 
-/** Critical and warning counts, side by side -- zero is shown plainly, never dressed up as "all clear". */
-function CountCell({ critical, warning }: { critical: number; warning: number }) {
-  if (critical === 0 && warning === 0) {
-    return <span className="tabular text-muted-foreground">0</span>
+/**
+ * The non-passing states side by side. Nothing at all -- no finding in any
+ * state -- is shown as a dash, not a zero: it was not looked at. Only passing
+ * findings are "0", which is then a checked result.
+ */
+function CountCell({ counts }: { counts: ContinuityStateCounts }) {
+  const any =
+    counts.failing + counts.accepted + counts.excepted + counts.notEvaluated + counts.passing > 0
+
+  if (!any) {
+    return <span className="text-xs text-muted-foreground">—</span>
+  }
+
+  const open = counts.failing + counts.accepted + counts.excepted + counts.notEvaluated
+
+  if (open === 0) {
+    return <span className="tabular text-muted-foreground">0 ({counts.passing} passing)</span>
   }
 
   return (
     <div className="flex flex-wrap gap-1">
-      {critical > 0 && <StatusBadge status="Critical">{critical} critical</StatusBadge>}
-      {warning > 0 && <StatusBadge status="Warning">{warning} warning</StatusBadge>}
+      {counts.failing > 0 && <StatusBadge status="Warning">{counts.failing} failing</StatusBadge>}
+      {counts.accepted > 0 && <StatusBadge status="Info">{counts.accepted} accepted</StatusBadge>}
+      {counts.excepted > 0 && <StatusBadge status="Info">{counts.excepted} excepted</StatusBadge>}
+      {counts.notEvaluated > 0 && (
+        <StatusBadge status="Unknown">{counts.notEvaluated} not evaluated</StatusBadge>
+      )}
+      {counts.stale > 0 && <StatusBadge status="Unknown">{counts.stale} stale</StatusBadge>}
     </div>
   )
 }

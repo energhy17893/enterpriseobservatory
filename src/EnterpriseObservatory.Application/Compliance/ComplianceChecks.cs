@@ -29,17 +29,67 @@ public sealed record CheckVerdict
 /// Estate demand, precomputed outside the evaluation so it stays pure.
 /// </summary>
 /// <remarks>
-/// Deliberately minimal: K1 only carries it. K2's N+1 checks fill it and read
-/// its age — too little or stale history is <c>NotEvaluated</c> with the
-/// reason, never a <c>Passing</c> from old numbers.
+/// Filled by <see cref="ContinuityDemand.Take"/> from the series store, the
+/// same data the N+1 alarm read. The N+1 checks read its age and each
+/// cluster's history — too little or stale history is <c>NotEvaluated</c>
+/// with the reason, never a <c>Passing</c> from old numbers. The thresholds
+/// it was taken with travel with it, so the check judges by the same policy
+/// the numbers were computed under.
 /// </remarks>
 public sealed record DemandSnapshot
 {
     /// <summary>When the snapshot was computed.</summary>
     public required DateTimeOffset TakenUtc { get; init; }
 
-    /// <summary>How much history the snapshot rests on.</summary>
+    /// <summary>Older than this, the snapshot is not judged at all.</summary>
+    public TimeSpan MaximumAge { get; init; } = TimeSpan.FromHours(1);
+
+    /// <summary>Less history than this, and "N+1 holds" is not said.</summary>
+    public TimeSpan MinimumHistory { get; init; } = TimeSpan.FromDays(7);
+
+    /// <summary>A forecast loss of headroom this close fails the check.</summary>
+    public TimeSpan WarningWithin { get; init; } = TimeSpan.FromDays(30);
+
+    /// <summary>The post-failover utilisation ceiling the available figures were computed with.</summary>
+    public double MaxUtilizationAfterFailover { get; init; } = 0.9;
+
+    /// <summary>
+    /// Every cluster with at least two hosts in service, by id. A cluster
+    /// missing here has fewer, and N+1 cannot be asked of it.
+    /// </summary>
+    public IReadOnlyDictionary<EntityId, ClusterDemand> Clusters { get; init; } =
+        new Dictionary<EntityId, ClusterDemand>();
+}
+
+/// <summary>One cluster's demand for N+1, in host-equivalents.</summary>
+public sealed record ClusterDemand
+{
+    public required int HostCount { get; init; }
+
+    public required ResourceDemand Cpu { get; init; }
+
+    public required ResourceDemand Memory { get; init; }
+
+    /// <summary>Why the history could not be read, when it could not; the resources are then not judged.</summary>
+    public string? Unreadable { get; init; }
+}
+
+/// <summary>One resource's demand, the headroom it is judged against, and the history behind it.</summary>
+public sealed record ResourceDemand
+{
+    /// <summary>Current demand; null when a host in service had no current reading.</summary>
+    public double? DemandHosts { get; init; }
+
+    public required double AvailableAfterFailoverHosts { get; init; }
+
+    /// <summary>From the first to the last point of the aggregated history.</summary>
     public TimeSpan HistoryCovered { get; init; }
+
+    /// <summary>The newest point of the history, or null when there is none.</summary>
+    public DateTimeOffset? HistoryEndUtc { get; init; }
+
+    /// <summary>When the headroom is lost, or why that cannot be said.</summary>
+    public Analysis.TimeToFullResult? Date { get; init; }
 }
 
 /// <summary>Estate-wide facts a check may need beyond its own entity.</summary>
@@ -128,10 +178,10 @@ public static class ContinuityCatalogue
     public const string Name = "Enterprise Observatory continuity";
 
     /// <summary>
-    /// The checks production registers. None yet: K1 ships the engine, and K2
-    /// moves the M8 continuity rules in.
+    /// The checks production registers: the M8 continuity rules (K2), see
+    /// <see cref="ContinuityControls"/>.
     /// </summary>
-    public static IReadOnlyList<ContinuityCheck> Production { get; } = [];
+    public static IReadOnlyList<ContinuityCheck> Production => ContinuityControls.All;
 
     /// <summary>The catalogue of the given checks' controls, in order.</summary>
     public static ComplianceCatalogue Build(IReadOnlyList<ContinuityCheck> checks)

@@ -384,6 +384,16 @@ public sealed record DrsRule
     /// <summary>The rule's name, unique within its cluster. vim25 <c>name</c>.</summary>
     public required string Name { get; init; }
 
+    /// <summary>
+    /// vim25 <c>ruleUuid</c>, or null when vCenter did not report one.
+    /// </summary>
+    /// <remarks>
+    /// The rule's identity for a continuity finding: a renamed rule keeps its
+    /// uuid, so the finding and its acceptance survive the rename. The name
+    /// stands in only when no uuid was reported.
+    /// </remarks>
+    public string? RuleUuid { get; init; }
+
     public required DrsRuleKind Kind { get; init; }
 
     /// <summary>vim25 <c>enabled</c>. A disabled rule is not enforced by DRS.</summary>

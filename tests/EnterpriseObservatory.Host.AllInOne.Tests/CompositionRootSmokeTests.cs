@@ -427,15 +427,43 @@ public sealed class CompositionRootSmokeTests : IDisposable
     [Fact]
     public void The_compliance_service_judges_the_vendor_guide_first_and_the_continuity_catalogue_beside_it()
     {
-        // K1: the product's own catalogue is registered, and registers no
-        // check until K2 moves the M8 rules in -- so it has no controls and
-        // the vendor guide is judged exactly as before.
+        // K2: the product's own catalogue carries the M8 continuity checks,
+        // every one bound, beside the vendor guide.
         var compliance = _host.Services.GetRequiredService<ComplianceService>();
 
         Assert.Equal(2, compliance.Catalogues.Count);
         Assert.Same(_host.Services.GetRequiredService<Domain.Compliance.ComplianceCatalogue>(), compliance.Catalogue);
         Assert.Equal(ContinuityCatalogue.Release, compliance.Catalogues[1].Release);
-        Assert.Empty(compliance.Catalogues[1].Controls);
+        Assert.Equal(
+            ContinuityCatalogue.Production.Select(c => c.Control.ControlId),
+            compliance.Catalogues[1].Controls.Select(c => c.ControlId));
+        Assert.All(
+            compliance.Controls().Where(c => c.CatalogueRelease == ContinuityCatalogue.Release),
+            c => Assert.True(c.IsEvaluated));
+    }
+
+    [Fact]
+    public void The_continuity_report_reads_the_findings_the_registered_service_wrote()
+    {
+        // K2: the read model is wired to the compliance store, so the report
+        // and the HA scorecard read continuity findings, not alarms.
+        var compliance = _host.Services.GetRequiredService<ComplianceService>();
+        compliance.Evaluate(
+        [
+            new Domain.Entity
+            {
+                Id = new Domain.EntityId("vc-1:domain-c9"),
+                Kind = Domain.EntityKind.Cluster,
+                DisplayName = "k2-smoke",
+                LastSeenUtc = DateTimeOffset.UtcNow,
+                SourceInstanceId = "vc-1",
+            },
+        ]);
+
+        var report = _host.Services.GetRequiredService<Api.Projections.ReadModel>().ContinuityReport();
+
+        Assert.True(report.Summary.Evaluated);
+        Assert.True(report.Summary.ByControl[ContinuityControls.HaEnabled].NotEvaluated >= 1);
     }
 
     [Fact]

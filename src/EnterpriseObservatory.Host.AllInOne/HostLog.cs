@@ -243,6 +243,21 @@ internal static partial class HostLog
                   "that succeeded.")]
     public static partial void ComplianceFailed(ILogger logger, Exception exception);
 
+    /// <summary>The M8 alarms resolved as moved to continuity findings (K2, once).</summary>
+    [LoggerMessage(
+        EventId = 1025,
+        Level = LogLevel.Information,
+        Message = "Continuity: {Moved} alarm(s) resolved as moved to compliance findings; " +
+                  "{Matched} matched a finding by name. Silences were not carried over as acceptances.")]
+    public static partial void AlarmsMovedToFindings(ILogger logger, int moved, int matched);
+
+    /// <summary>The demand snapshot for N+1 could not be taken; N+1 is not evaluated this time.</summary>
+    [LoggerMessage(
+        EventId = 1026,
+        Level = LogLevel.Warning,
+        Message = "Continuity: the N+1 demand snapshot could not be taken; N+1 is not evaluated this cycle.")]
+    public static partial void DemandSnapshotFailed(ILogger logger, Exception exception);
+
     [LoggerMessage(
         EventId = 1023,
         Level = LogLevel.Warning,

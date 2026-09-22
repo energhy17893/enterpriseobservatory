@@ -4,7 +4,7 @@ import { api, ApiError } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { SeriesChart } from '@/components/SeriesChart'
 import { AlertActions } from '@/components/AlertActions'
-import { ago, healthStatus, ramp, severityStatus } from '@/lib/ui'
+import { ago, findingLabel, findingStatus, healthStatus, ramp, severityStatus } from '@/lib/ui'
 import type {
   ClusterFailoverResourceView,
   ClusterFailoverView,
@@ -308,18 +308,33 @@ function HaScorecard({ card }: { card: HaScorecardView }) {
         </Card>
       )}
 
-      {card.findings.length > 0 && (
+      {/*
+        The cluster's HA continuity findings (ADR-0024), every state shown:
+        a passing row is evidence it was checked, a not-evaluated row says
+        why it could not be. Accepting or excepting is done on the
+        compliance screen.
+      */}
+      {card.findings.length === 0 ? (
+        <div className="text-xs text-muted-foreground">
+          The HA continuity checks have not been evaluated for this cluster yet.
+        </div>
+      ) : (
         <ul className="space-y-2">
           {card.findings.map((finding) => (
-            <li key={finding.fingerprint}>
+            <li key={`${finding.controlId}|${finding.subject}`}>
               <Card className="p-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <StatusBadge status={severityStatus(finding.severity)}>
-                    {finding.severity}
-                  </StatusBadge>
+                  <StatusBadge status={findingStatus(finding.state)}>{findingLabel(finding.state)}</StatusBadge>
                   <span className="font-medium">{finding.title}</span>
+                  {finding.stale && <span className="text-xs text-muted-foreground">(stale)</span>}
                 </div>
-                <div className="mt-1 text-sm text-muted-foreground">{finding.description}</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {finding.state === 'NotEvaluated' ? finding.reason : finding.observed ?? '—'}
+                  {finding.acceptedBy && ` — accepted by ${finding.acceptedBy}: ${finding.acceptedReason ?? ''}`}
+                </div>
+                {finding.source && (
+                  <div className="mt-1 text-xs text-muted-foreground">Source: {finding.source}</div>
+                )}
               </Card>
             </li>
           ))}

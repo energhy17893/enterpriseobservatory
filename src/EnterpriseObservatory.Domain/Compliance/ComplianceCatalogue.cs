@@ -35,6 +35,19 @@ public sealed record ComplianceControl
 
     /// <summary>The vendor's PowerCLI assessment, shown so an operator can check by hand.</summary>
     public string Assessment { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Where the control's expectation and any threshold it uses come from,
+    /// e.g. <c>VMware KB 2004739</c>, or <c>product policy</c> when the number
+    /// is this product's own choice.
+    /// </summary>
+    /// <remarks>
+    /// Only a citable basis is named; a threshold nobody published is said to
+    /// be ours rather than dressed up with a citation (reference-approaches
+    /// §10.4). Empty for a vendor guide's control: the guide itself is the
+    /// source.
+    /// </remarks>
+    public string Source { get; init; } = string.Empty;
 }
 
 /// <summary>

@@ -235,6 +235,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         return [.. cluster.DrsRules.Select(rule => new Domain.DrsRule
         {
             Name = rule.Name,
+            RuleUuid = rule.RuleUuid,
             Kind = rule.Kind,
             Enabled = rule.Enabled,
             Mandatory = rule.Mandatory,

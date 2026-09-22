@@ -470,6 +470,9 @@ public sealed record VsphereDrsRule
 {
     public required string Name { get; init; }
 
+    /// <summary>vim25 <c>ruleUuid</c>, or null when not reported.</summary>
+    public string? RuleUuid { get; init; }
+
     public required Domain.DrsRuleKind Kind { get; init; }
 
     /// <summary>vim25 <c>enabled</c>.</summary>

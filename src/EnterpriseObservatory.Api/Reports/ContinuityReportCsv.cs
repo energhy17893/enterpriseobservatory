@@ -6,29 +6,25 @@ namespace EnterpriseObservatory.Api.Reports;
 /// <summary>The continuity report's CSV column mapping. See <see cref="AlertsReportCsv"/>.</summary>
 /// <remarks>
 /// The only continuity-specific code in the CSV path -- everything else is
-/// <see cref="CsvWriter"/>. One row per cluster, critical and warning counts
-/// side by side for each of the five rule groups (HA, DRS, storage-path
-/// redundancy, multipathing and N+1), so a reader can tell "zero because it
-/// is fine" from "zero because it was never checked" without opening the
-/// printable page -- the HA-collected column carries that distinction per
-/// row.
+/// <see cref="CsvWriter"/>. One row per cluster; for each of the four groups
+/// (HA, DRS, storage path, N+1) the continuity findings counted by state, so
+/// "failing" and "accepted with a reason" are told apart, and "not evaluated"
+/// is never folded into a zero. The HA-collected column says per row whether
+/// the cluster's configuration was read at all.
 /// </remarks>
 public static class ContinuityReportCsv
 {
+    private static readonly string[] Groups = ["HA", "DRS", "Storage path", "N+1"];
+
+    private static readonly string[] States = ["failing", "accepted", "excepted", "not evaluated", "stale"];
+
     private static readonly string[] Header =
     [
         "Cluster",
         "Source",
         "HA settings collected",
-        "HA critical",
-        "HA warning",
-        "DRS critical",
-        "DRS warning",
-        "Storage path critical",
-        "Storage path warning",
+        .. Groups.SelectMany(g => States.Select(s => $"{g} {s}")),
         "Storage path affected hosts",
-        "N+1 critical",
-        "N+1 warning",
     ];
 
     public static string Write(IEnumerable<ContinuityReportRow> rows) =>
@@ -39,15 +35,20 @@ public static class ContinuityReportCsv
         row.ClusterName,
         row.Source,
         row.HaSettingsCollected ? "yes" : "no",
-        Number(row.HaCriticalCount),
-        Number(row.HaWarningCount),
-        Number(row.DrsCriticalCount),
-        Number(row.DrsWarningCount),
-        Number(row.StoragePathCriticalCount),
-        Number(row.StoragePathWarningCount),
+        .. Counts(row.Ha),
+        .. Counts(row.Drs),
+        .. Counts(row.StoragePath),
+        .. Counts(row.NPlusOne),
         string.Join("; ", row.StoragePathAffectedHosts),
-        Number(row.NPlusOneCriticalCount),
-        Number(row.NPlusOneWarningCount),
+    ];
+
+    private static IEnumerable<string?> Counts(ContinuityStateCounts counts) =>
+    [
+        Number(counts.Failing),
+        Number(counts.Accepted),
+        Number(counts.Excepted),
+        Number(counts.NotEvaluated),
+        Number(counts.Stale),
     ];
 
     private static string Number(int value) => value.ToString(CultureInfo.InvariantCulture);

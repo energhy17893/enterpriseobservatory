@@ -325,6 +325,33 @@ public class AlertLifecycleTests
             () => AlertLifecycle.Silence(Confirmed(), "ertugrul", Cycle(1), Cycle(2)));
     }
 
+    // --- moved to a finding (ADR-0024, K2) ------------------------------------
+
+    [Fact]
+    public void An_alarm_moved_to_a_finding_is_resolved_with_that_reason_and_its_silence_dropped()
+    {
+        var silenced = AlertLifecycle.Silence(Confirmed(), "ertugrul", Cycle(1).AddDays(30), Cycle(1));
+
+        var moved = AlertLifecycle.MoveToFinding(silenced, Cycle(2));
+
+        Assert.Equal(AlertLifecycleState.Resolved, moved.State);
+        Assert.Null(moved.SilencedUntilUtc);
+        Assert.Equal(AlertNotificationKind.None, moved.PendingNotification);
+
+        var last = moved.History[^1];
+        Assert.Equal(AlertTransitionReason.MovedToFinding, last.Reason);
+        Assert.Equal(AlertLifecycleState.Silenced, last.From);
+        Assert.Equal(AlertLifecycle.SystemActor, last.Actor);
+    }
+
+    [Fact]
+    public void Moving_an_already_resolved_alarm_changes_nothing()
+    {
+        var cleared = AlertLifecycle.Clear(Confirmed(), "ertugrul", Cycle(2));
+
+        Assert.Same(cleared, AlertLifecycle.MoveToFinding(cleared, Cycle(3)));
+    }
+
     // --- guards -----------------------------------------------------------
 
     [Fact]

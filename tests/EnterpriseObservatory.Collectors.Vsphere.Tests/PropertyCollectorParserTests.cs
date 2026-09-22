@@ -632,6 +632,7 @@ public class VsphereSoapFaultReaderTests
                   </rule>
                   <rule xsi:type="ClusterAntiAffinityRuleSpec">
                     <name>separate-db-nodes</name>
+                    <ruleUuid>52a1c3d4-0f6e-4b7a-9c21-8d3e5f6a7b8c</ruleUuid>
                     <enabled>true</enabled>
                     <mandatory>true</mandatory>
                     <inCompliance>false</inCompliance>
@@ -705,6 +706,20 @@ public class VsphereSoapFaultReaderTests
         Assert.True(rule.Mandatory);
         Assert.False(rule.InCompliance);
         Assert.Equal(["vm-101", "vm-102"], rule.VirtualMachineMoRefs);
+    }
+
+    [Fact]
+    public void A_rule_carries_its_uuid_and_one_that_reports_none_carries_null()
+    {
+        // The uuid is the rule's identity for a finding (K2): a rename keeps
+        // the finding and its acceptance. Older vCenters may not report it.
+        var cluster = Assert.Single(PropertyCollectorParser.ParsePage(ClusterConfigurationEx).Objects);
+        var rules = PropertyCollectorParser.ReadDrsRules(cluster.Structures);
+
+        Assert.Equal(
+            "52a1c3d4-0f6e-4b7a-9c21-8d3e5f6a7b8c",
+            Assert.Single(rules, r => r.Name == "separate-db-nodes").RuleUuid);
+        Assert.Null(Assert.Single(rules, r => r.Name == "keep-test-off-licensed-hosts").RuleUuid);
     }
 
     [Fact]

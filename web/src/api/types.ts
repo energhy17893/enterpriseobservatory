@@ -132,8 +132,26 @@ export interface HaScorecardView {
   heartbeatDatastoreCandidatePolicy: string | null
   /** True when vCenter's own network-redundancy warning has been silenced. */
   redundantNetworkWarningSilenced: boolean | null
-  /** The scorecard rule's open findings for this cluster. */
-  findings: AlertView[]
+  /** This cluster's eo-cont.ha-* continuity findings in every state (ADR-0024). */
+  findings: ContinuityFindingView[]
+}
+
+/** One continuity finding as a card or report shows it. */
+export interface ContinuityFindingView {
+  controlId: string
+  title: string
+  /** Citable basis of the expectation, or 'product policy'. */
+  source: string
+  subject: string
+  subjectLabel: string | null
+  state: FindingState
+  stale: boolean
+  expected: string
+  observed: string | null
+  reason: string | null
+  acceptedBy: string | null
+  acceptedReason: string | null
+  lastEvaluatedUtc: string
 }
 
 /**
@@ -509,6 +527,8 @@ export interface ComplianceControlView {
   installationDefault: string
   baselineValue: string
   assessment: string
+  /** Citable basis of the expectation/threshold, or 'product policy'; empty for vendor-guide controls. */
+  source?: string
   /** False when this product cannot judge the control at all. */
   evaluated: boolean
   notEvaluatedReason: string | null
@@ -711,37 +731,45 @@ export interface CapacityReportView {
 
 // --- continuity report (M8.10) -------------------------------------------
 
-/** One cluster's continuity posture: HA, DRS, storage-path redundancy for its hosts, and the N+1 placeholder. */
+/** Findings of one group counted by state; a stale finding also counts in stale. */
+export interface ContinuityStateCounts {
+  failing: number
+  accepted: number
+  excepted: number
+  notEvaluated: number
+  passing: number
+  stale: number
+}
+
+/** One cluster's continuity posture, from the eo-continuity findings (ADR-0024). */
 export interface ContinuityReportRow {
   clusterId: string
   clusterName: string
   source: string
   /** Whether this cluster's own inventory carried a dasConfig.* setting -- whether HA was actually read. */
   haSettingsCollected: boolean
-  haCriticalCount: number
-  haWarningCount: number
-  drsCriticalCount: number
-  drsWarningCount: number
-  storagePathCriticalCount: number
-  storagePathWarningCount: number
-  /** Hosts under this cluster with a multipath or path-redundancy finding, by name. */
+  ha: ContinuityStateCounts
+  drs: ContinuityStateCounts
+  /** The eo-cont.path-* findings of the hosts under this cluster. */
+  storagePath: ContinuityStateCounts
+  /** Hosts under this cluster with a failing, accepted or excepted path finding, by name. */
   storagePathAffectedHosts: string[]
-  /** N+1 capacity rule: a placeholder until that rule ships. Zero until then. */
-  nPlusOneCriticalCount: number
-  nPlusOneWarningCount: number
-  hasCritical: boolean
+  nPlusOne: ContinuityStateCounts
+  hasFailing: boolean
 }
 
 export interface ContinuityReportSummary {
   totalClusters: number
-  /** Alert count per rule id -- cluster-ha-scorecard, drs-rule-violation, multipath-single-point-of-failure, storage-path-redundancy, n-plus-one. */
-  byRule: Record<string, number>
-  bySeverity: Record<string, number>
-  clustersWithCriticalCount: number
-  clustersWithCriticalNames: string[]
-  /** False means the HA/DRS collector wiring has not run against this estate yet. */
+  /** False: the continuity checks have not run yet, so zeros mean "not looked at". */
+  evaluated: boolean
+  /** Per eo-cont.* control. */
+  byControl: Record<string, ContinuityStateCounts>
+  totals: ContinuityStateCounts
+  clustersWithFailingCount: number
+  clustersWithFailingNames: string[]
+  /** False means the HA/DRS configuration has not been read on this estate yet. */
   haInputsCollected: boolean
-  /** Set only when haInputsCollected is false. */
+  /** Set when the checks have not run or HA/DRS inputs were never read. */
   note: string | null
 }
 

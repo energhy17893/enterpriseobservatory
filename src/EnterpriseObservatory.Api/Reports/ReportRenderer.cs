@@ -154,8 +154,8 @@ public sealed class ReportRenderer(ReadModel model, IClock clock, ComplianceServ
 
     /// <summary>
     /// The continuity report as <c>GET /api/reports/continuity.csv</c> builds
-    /// it. A snapshot of the current alert list, same as capacity -- the
-    /// period does not apply.
+    /// it. A snapshot of the current continuity findings, same as capacity --
+    /// the period does not apply.
     /// </summary>
     private ReportContent RenderContinuity()
     {
@@ -167,10 +167,14 @@ public sealed class ReportRenderer(ReadModel model, IClock clock, ComplianceServ
         {
             $"Continuity report for {s.TotalClusters.ToString(CultureInfo.InvariantCulture)} clusters.",
             string.Empty,
-            $"By rule: {FormatCounts(s.ByRule)}",
-            $"By severity: {FormatCounts(s.BySeverity)}",
-            $"Clusters with a critical finding: {s.ClustersWithCriticalCount.ToString(CultureInfo.InvariantCulture)}",
+            $"Findings: {Describe(s.Totals)}",
+            $"Clusters with a failing finding: {s.ClustersWithFailingCount.ToString(CultureInfo.InvariantCulture)}",
         };
+
+        foreach (var (control, counts) in s.ByControl.Where(c => c.Value.Failing + c.Value.Accepted + c.Value.Excepted > 0))
+        {
+            bodyLines.Add($"  {control}: {Describe(counts)}");
+        }
 
         if (s.Note is { } note)
         {
@@ -188,6 +192,10 @@ public sealed class ReportRenderer(ReadModel model, IClock clock, ComplianceServ
             Attachments = [Csv($"continuity-{stamp}.csv", ContinuityReportCsv.Write(report.Rows))],
         };
     }
+
+    private static string Describe(ContinuityStateCounts c) => string.Create(CultureInfo.InvariantCulture,
+        $"{c.Failing} failing, {c.Accepted} accepted, {c.Excepted} excepted, {c.NotEvaluated} not evaluated, " +
+        $"{c.Passing} passing ({c.Stale} stale)");
 
     private static MailAttachment Csv(string fileName, string csv) => new()
     {

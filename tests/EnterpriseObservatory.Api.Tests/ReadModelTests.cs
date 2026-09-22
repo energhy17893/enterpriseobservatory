@@ -2,9 +2,11 @@ using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
+using EnterpriseObservatory.Domain.Compliance;
 
 namespace EnterpriseObservatory.Api.Tests;
 
@@ -21,9 +23,10 @@ public class ReadModelTests
     private readonly StubHealthStore _collectors = new();
     private readonly StubCoverageStore _coverage = new();
     private readonly StubObservationStore _observations = new();
+    private readonly StubComplianceStore _compliance = new();
 
     private ReadModel Model() =>
-        new(_graphs, _alerts, _collectors, _coverage, _observations, MonitoringOptions.Default, new StubClock(T0));
+        new(_graphs, _alerts, _collectors, _coverage, _observations, MonitoringOptions.Default, new StubClock(T0), _compliance);
 
     // --- overview ---------------------------------------------------------
 
@@ -879,29 +882,32 @@ public class ReadModelTests
     }
 
     [Fact]
-    public void The_scorecard_carries_the_clusters_own_open_findings()
+    public void The_scorecard_carries_the_clusters_ha_findings_in_every_state()
     {
-        GivenEntities(Cluster("vc-1:domain-c1", (HaRules.EnabledSetting, "false")));
-        GivenAlerts(Alert("cluster-ha-scorecard-ha-disabled", AlertSeverity.Critical) with
-        {
-            Category = "Configuration",
-            Entity = new EntityId("vc-1:domain-c1"),
-        });
+        GivenEntities(Cluster("vc-1:domain-c1", (HaRules.EnabledSetting, "true")));
+        _compliance.Rows.AddRange(
+        [
+            Finding(ContinuityControls.HaAdmissionControl, new EntityId("vc-1:domain-c1"), ComplianceVerdict.Failing),
+            Finding(ContinuityControls.HaEnabled, new EntityId("vc-1:domain-c1"), ComplianceVerdict.Passing),
+            Finding(ContinuityControls.DrsRule, new EntityId("vc-1:domain-c1"), ComplianceVerdict.Failing, "uuid-1"),
+        ]);
 
         var card = Model().Entity("vc-1:domain-c1")!.HaScorecard!;
 
-        Assert.Single(card.Findings);
+        Assert.Equal(
+            [ContinuityControls.HaEnabled, ContinuityControls.HaAdmissionControl],
+            card.Findings.Select(f => f.ControlId));
+        Assert.Equal(FindingState.Failing, card.Findings[1].State);
+        Assert.Equal("HA admission control is enabled", card.Findings[1].Title);
     }
 
     [Fact]
-    public void An_unrelated_configuration_alert_does_not_appear_on_the_ha_scorecard()
+    public void An_ha_alarm_does_not_appear_on_the_ha_scorecard()
     {
-        // RemoteLogging's alerts share the HA scorecard's "Configuration"
-        // category. Filtering the scorecard by Category alone -- rather than
-        // by which rule actually produced the alert -- used to let a remote
-        // logging finding show up as an HA finding.
+        // The scorecard reads findings now (ADR-0024); an alarm, even one
+        // left over from the retired rule, is not one of them.
         GivenEntities(Cluster("vc-1:domain-c1", (HaRules.EnabledSetting, "false")));
-        GivenAlerts(Alert(RemoteLogging.RuleId, AlertSeverity.Warning) with
+        GivenAlerts(Alert("cluster-ha-scorecard-ha-disabled", AlertSeverity.Critical) with
         {
             Category = "Configuration",
             Entity = new EntityId("vc-1:domain-c1"),
@@ -1071,274 +1077,171 @@ public class ReadModelTests
         Assert.Empty(Model().CapacityReport().Rows);
     }
 
-    // --- continuity report (M8.10) ------------------------------------------
+    // --- continuity report (M8.10), from findings (K2) -------------------------
 
-    /// <summary>
-    /// An alert whose fingerprint carries a rule id the way every rule file
-    /// does -- see <c>ReadModel.HasRule</c>'s remarks. <paramref name="ruleId"/>
-    /// goes in as the fingerprint's check-id, the same slot every analysis
-    /// rule passes its own <c>RuleId</c> constant into.
-    /// </summary>
-    private static AlertInstance RuleAlert(
-        string ruleId, AlertSeverity severity, EntityId entity, string discriminator = "finding") =>
-        new()
+    private static ComplianceFinding Finding(
+        string control,
+        EntityId entity,
+        ComplianceVerdict verdict,
+        string subject = "",
+        bool stale = false,
+        FindingAcceptance? acceptance = null) => new()
         {
-            Fingerprint = AlertFingerprint.Create("platform", ruleId, "Configuration", entity.Value, ruleId + "-" + discriminator),
-            Severity = severity,
-            State = AlertLifecycleState.Open,
-            Title = ruleId,
-            Description = $"{ruleId} on {entity.Value}.",
-            Category = "Configuration",
-            Source = "platform",
+            ControlId = control,
+            CatalogueRelease = ContinuityCatalogue.Release,
             Entity = entity,
-            Scope = AlertScopes.Inventory,
-            ConsecutiveHits = 1,
-            IsConfirmed = true,
-            ClearedByOperator = false,
-            PendingNotification = AlertNotificationKind.None,
+            EntityName = entity.Value,
+            Subject = subject,
+            Verdict = verdict,
+            Expected = "expected",
+            Observed = "observed",
+            Reason = verdict == ComplianceVerdict.NotEvaluated ? "not read" : null,
             FirstSeenUtc = T0,
-            LastSeenUtc = T0,
-            IsDerived = true,
+            LastEvaluatedUtc = T0,
+            Stale = stale,
+            Acceptance = acceptance,
         };
 
-    [Fact]
-    public void A_cluster_with_no_findings_and_no_ha_settings_reports_not_collected()
-    {
-        GivenEntities(Cluster("vc-1:domain-c1"));
+    private void GivenFindings(params ComplianceFinding[] findings) => _compliance.Rows.AddRange(findings);
 
-        var row = Assert.Single(Model().ContinuityReport().Rows);
-
-        Assert.False(row.HaSettingsCollected);
-        Assert.Equal(0, row.HaCriticalCount);
-        Assert.False(Model().ContinuityReport().Summary.HaInputsCollected);
-        Assert.NotNull(Model().ContinuityReport().Summary.Note);
-    }
+    private static readonly EntityId ClusterC1 = new("vc-1:domain-c1");
 
     [Fact]
-    public void A_cluster_with_ha_settings_read_is_not_flagged_as_uncollected()
+    public void Before_any_evaluation_the_report_says_so_rather_than_showing_all_clear()
     {
         GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")));
 
         var summary = Model().ContinuityReport().Summary;
 
-        Assert.True(summary.HaInputsCollected);
-        Assert.Null(summary.Note);
-        Assert.True(Model().ContinuityReport().Rows[0].HaSettingsCollected);
+        Assert.False(summary.Evaluated);
+        Assert.Contains("not been evaluated yet", summary.Note, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void The_ha_scorecard_rules_own_findings_are_counted_on_its_row()
+    public void A_cluster_with_no_ha_settings_reports_not_collected()
     {
-        var clusterId = new EntityId("vc-1:domain-c1");
-        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "false")));
-        GivenAlerts(RuleAlert(ClusterHighAvailability.RuleId, AlertSeverity.Critical, clusterId, "ha-disabled"));
-
-        var row = Assert.Single(Model().ContinuityReport().Rows);
-
-        Assert.Equal(1, row.HaCriticalCount);
-        Assert.Equal(0, row.DrsCriticalCount);
-        Assert.True(row.HasCritical);
-    }
-
-    [Fact]
-    public void Drs_rule_violations_are_counted_separately_from_ha()
-    {
-        var clusterId = new EntityId("vc-1:domain-c1");
         GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Warning, clusterId));
+        GivenFindings(Finding(ContinuityControls.HaEnabled, ClusterC1, ComplianceVerdict.NotEvaluated));
 
-        var row = Assert.Single(Model().ContinuityReport().Rows);
+        var report = Model().ContinuityReport();
+        var row = Assert.Single(report.Rows);
 
-        Assert.Equal(0, row.HaCriticalCount);
-        Assert.Equal(1, row.DrsWarningCount);
-        Assert.False(row.HasCritical);
+        Assert.False(row.HaSettingsCollected);
+        Assert.Equal(1, row.Ha.NotEvaluated);
+        Assert.Equal(0, row.Ha.Failing);
+        Assert.False(report.Summary.HaInputsCollected);
+        Assert.Contains("has not been read yet", report.Summary.Note, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Storage_path_findings_on_a_hosts_alert_roll_up_to_its_cluster()
+    public void Findings_are_counted_by_state_per_group()
     {
-        var clusterId = new EntityId("vc-1:domain-c1");
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")));
+        GivenFindings(
+            Finding(ContinuityControls.HaEnabled, ClusterC1, ComplianceVerdict.Passing),
+            Finding(ContinuityControls.HaAdmissionControl, ClusterC1, ComplianceVerdict.Failing,
+                acceptance: new FindingAcceptance { By = "ertugrul", AtUtc = T0, Reason = "budget" }),
+            Finding(ContinuityControls.HaHostMonitoring, ClusterC1, ComplianceVerdict.Failing),
+            Finding(ContinuityControls.DrsRule, ClusterC1, ComplianceVerdict.Failing, "uuid-1", stale: true),
+            Finding(ContinuityControls.NPlusOneCpu, ClusterC1, ComplianceVerdict.NotEvaluated));
+
+        var report = Model().ContinuityReport();
+        var row = Assert.Single(report.Rows);
+
+        Assert.Equal(1, row.Ha.Passing);
+        Assert.Equal(1, row.Ha.Accepted);
+        Assert.Equal(1, row.Ha.Failing);
+        Assert.Equal(1, row.Drs.Failing);
+        Assert.Equal(1, row.Drs.Stale);
+        Assert.Equal(1, row.NPlusOne.NotEvaluated);
+        Assert.True(row.HasFailing);
+
+        Assert.True(report.Summary.Evaluated);
+        Assert.Null(report.Summary.Note);
+        Assert.Equal(1, report.Summary.ByControl[ContinuityControls.HaAdmissionControl].Accepted);
+        Assert.Equal(12, report.Summary.ByControl.Count);
+    }
+
+    [Fact]
+    public void An_exception_counts_as_excepted_not_failing()
+    {
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")));
+        GivenFindings(Finding(ContinuityControls.HaAdmissionControl, ClusterC1, ComplianceVerdict.Failing));
+        _compliance.Waivers.Add(new ComplianceWaiver
+        {
+            Id = "x1",
+            ControlId = ContinuityControls.HaAdmissionControl,
+            Reason = "test cluster",
+            Owner = "ops",
+            CreatedBy = "ertugrul",
+            CreatedAtUtc = T0,
+            ExpiresUtc = T0.AddDays(30),
+        });
+
+        var row = Assert.Single(Model().ContinuityReport().Rows);
+
+        Assert.Equal(1, row.Ha.Excepted);
+        Assert.Equal(0, row.Ha.Failing);
+        Assert.False(row.HasFailing);
+    }
+
+    [Fact]
+    public void Path_findings_on_a_hosts_roll_up_to_its_cluster_and_others_do_not()
+    {
         var hostId = new EntityId("vc-1:host-1");
+        var otherHost = new EntityId("vc-1:host-2");
 
         GivenEntities(
             Cluster("vc-1:domain-c1"),
-            Host("vc-1:host-1", HealthState.Warning));
+            Host("vc-1:host-1", HealthState.Warning),
+            Host("vc-1:host-2", HealthState.Warning));
         GivenRelationships(new Relationship
         {
             From = hostId,
-            To = clusterId,
+            To = ClusterC1,
             Kind = RelationshipKind.PartOf,
             ObservedAtUtc = T0,
         });
-        GivenAlerts(
-            RuleAlert(StoragePathRedundancy.RuleId, AlertSeverity.Critical, hostId),
-            RuleAlert(MultipathSinglePointOfFailure.RuleId, AlertSeverity.Warning, hostId));
+        GivenFindings(
+            Finding(ContinuityControls.PathSingleHba, hostId, ComplianceVerdict.Failing, "vmhba1"),
+            Finding(ContinuityControls.PathSingle, hostId, ComplianceVerdict.Passing, "naa.1"),
+            Finding(ContinuityControls.PathSingleHba, otherHost, ComplianceVerdict.Failing, "vmhba1"));
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
-        Assert.Equal(1, row.StoragePathCriticalCount);
-        Assert.Equal(1, row.StoragePathWarningCount);
-        Assert.Contains("vc-1:host-1.corp.local", row.StoragePathAffectedHosts);
-        Assert.True(row.HasCritical);
+        Assert.Equal(1, row.StoragePath.Failing);
+        Assert.Equal(1, row.StoragePath.Passing);
+        Assert.Equal(["vc-1:host-1.corp.local"], row.StoragePathAffectedHosts);
     }
 
     [Fact]
-    public void A_storage_path_finding_on_a_host_outside_the_cluster_does_not_roll_up()
+    public void Alarms_no_longer_feed_the_continuity_report()
     {
-        var clusterId = new EntityId("vc-1:domain-c1");
-        var otherHostId = new EntityId("vc-1:host-2");
-
-        GivenEntities(Cluster("vc-1:domain-c1"), Host("vc-1:host-2", HealthState.Warning));
-        GivenAlerts(RuleAlert(StoragePathRedundancy.RuleId, AlertSeverity.Critical, otherHostId));
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "false")));
+        GivenAlerts(Alert("cluster-ha-scorecard-ha-disabled", AlertSeverity.Critical) with { Entity = ClusterC1 });
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
-        Assert.Equal(0, row.StoragePathCriticalCount);
-        Assert.Empty(row.StoragePathAffectedHosts);
+        Assert.Equal(0, row.Ha.Failing);
+        Assert.False(row.HasFailing);
     }
 
     [Fact]
-    public void The_n_plus_one_rule_reads_generically_by_rule_id()
+    public void The_summary_names_clusters_with_a_failing_finding()
     {
-        // Proves the report picks up N+1 the same generic way it picks up
-        // every other rule, from ClusterNPlusOne.RuleId, with no type of its
-        // own to reference.
-        var clusterId = new EntityId("vc-1:domain-c1");
-        GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(RuleAlert(ClusterNPlusOne.RuleId, AlertSeverity.Warning, clusterId));
-
-        var row = Assert.Single(Model().ContinuityReport().Rows);
-
-        Assert.Equal(1, row.NPlusOneWarningCount);
-        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule[ClusterNPlusOne.RuleId]);
-    }
-
-    [Fact]
-    public void The_n_plus_one_history_unreadable_alert_counts_as_an_n_plus_one_finding()
-    {
-        // ClusterNPlusOne files its "history unreadable" alert with a
-        // check-id of "cluster-n-plus-one-history-unreadable" -- the rule's
-        // own id plus a suffix, not the bare id GuardedRule's own failure
-        // alert would use. This is the one real-world case the "starts with
-        // ruleId + '-'" branch of the match exists for.
-        var clusterId = new EntityId("vc-1:domain-c1");
-        GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(new AlertInstance
-        {
-            Fingerprint = AlertFingerprint.Create(
-                "platform", "Cluster N+1 history unreadable", "Configuration",
-                ClusterNPlusOne.RuleId, "cluster-n-plus-one-history-unreadable"),
-            Severity = AlertSeverity.Warning,
-            State = AlertLifecycleState.Open,
-            Title = "Cluster N+1 history unreadable",
-            Category = "Configuration",
-            Source = "platform",
-            Entity = clusterId,
-            Scope = AlertScopes.Inventory,
-            ConsecutiveHits = 1,
-            IsConfirmed = true,
-            ClearedByOperator = false,
-            PendingNotification = AlertNotificationKind.None,
-            FirstSeenUtc = T0,
-            LastSeenUtc = T0,
-            IsDerived = true,
-        });
-
-        var row = Assert.Single(Model().ContinuityReport().Rows);
-
-        Assert.Equal(1, row.NPlusOneWarningCount);
-    }
-
-    [Fact]
-    public void A_rules_own_failure_alert_does_not_count_as_that_rules_finding()
-    {
-        // GuardedRule.Failed's fingerprint carries the failed rule's id as
-        // its object-name segment, not its check-id segment (which is always
-        // the constant "analysis-rule-failed"). A plain substring match over
-        // the whole fingerprint used to count this as an HA finding -- an
-        // analysis outage misreported as "the cluster is fine, zero
-        // findings" would have been the opposite bug, but either way the
-        // rule that broke and the rule whose alert it produced must not be
-        // conflated.
-        GivenEntities(Cluster("vc-1:domain-c1"));
-
-        var failure = Assert.Single(
-            GuardedRule.Run(ClusterHighAvailability.RuleId, () => throw new InvalidOperationException("boom")));
-
-        GivenAlerts(new AlertInstance
-        {
-            Fingerprint = failure.Fingerprint,
-            Severity = failure.Severity,
-            State = AlertLifecycleState.Open,
-            Title = failure.Title,
-            Description = failure.Description,
-            Category = failure.Category,
-            Source = failure.Source,
-            Scope = AlertScopes.Inventory,
-            ConsecutiveHits = 1,
-            IsConfirmed = true,
-            ClearedByOperator = false,
-            PendingNotification = AlertNotificationKind.None,
-            FirstSeenUtc = T0,
-            LastSeenUtc = T0,
-            IsDerived = true,
-        });
-
-        Assert.Equal(0, Model().ContinuityReport().Summary.ByRule[ClusterHighAvailability.RuleId]);
-    }
-
-    [Fact]
-    public void Another_rules_id_appearing_inside_a_title_or_object_name_does_not_cross_match()
-    {
-        // A user is free to name a DRS rule "cluster-n-plus-one" in vCenter.
-        // That text landing in the fingerprint's title or object-name segment
-        // must not make this alert look like an N+1 finding -- only the
-        // check-id segment names which rule produced it.
-        var clusterId = new EntityId("vc-1:domain-c1");
-        GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(new AlertInstance
-        {
-            Fingerprint = AlertFingerprint.Create(
-                "vc-1", "DRS rule 'cluster-n-plus-one' violated", "Configuration",
-                $"{clusterId.Value}/cluster-n-plus-one", DrsRuleViolations.RuleId),
-            Severity = AlertSeverity.Warning,
-            State = AlertLifecycleState.Open,
-            Title = "DRS rule 'cluster-n-plus-one' violated",
-            Category = "Configuration",
-            Source = "vc-1",
-            Entity = clusterId,
-            Scope = AlertScopes.Inventory,
-            ConsecutiveHits = 1,
-            IsConfirmed = true,
-            ClearedByOperator = false,
-            PendingNotification = AlertNotificationKind.None,
-            FirstSeenUtc = T0,
-            LastSeenUtc = T0,
-            IsDerived = true,
-        });
-
-        var row = Assert.Single(Model().ContinuityReport().Rows);
-
-        Assert.Equal(1, row.DrsWarningCount);
-        Assert.Equal(0, row.NPlusOneWarningCount);
-    }
-
-    [Fact]
-    public void The_summary_counts_clusters_with_any_critical_finding()
-    {
-        var quiet = new EntityId("vc-1:domain-c1");
         var loud = new EntityId("vc-1:domain-c2");
 
         GivenEntities(
             Cluster("vc-1:domain-c1") with { DisplayName = "Quiet" },
             Cluster("vc-1:domain-c2") with { DisplayName = "Loud" });
-        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Critical, loud));
+        GivenFindings(
+            Finding(ContinuityControls.DrsRule, loud, ComplianceVerdict.Failing, "uuid-1"),
+            Finding(ContinuityControls.DrsRule, ClusterC1, ComplianceVerdict.Passing, "uuid-2"));
 
         var summary = Model().ContinuityReport().Summary;
 
-        Assert.Equal(1, summary.ClustersWithCriticalCount);
-        Assert.Contains("Loud", summary.ClustersWithCriticalNames);
-        Assert.DoesNotContain("Quiet", summary.ClustersWithCriticalNames);
+        Assert.Equal(1, summary.ClustersWithFailingCount);
+        Assert.Equal(["Loud"], summary.ClustersWithFailingNames);
     }
 
     [Fact]
@@ -1350,16 +1253,46 @@ public class ReadModelTests
     }
 
     [Fact]
-    public void An_unconfirmed_continuity_alert_does_not_count()
+    public void Another_catalogues_findings_are_not_continuity_findings()
     {
-        var clusterId = new EntityId("vc-1:domain-c1");
         GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Critical, clusterId) with
+        GivenFindings(Finding(ContinuityControls.HaEnabled, ClusterC1, ComplianceVerdict.Failing) with
         {
-            IsConfirmed = false,
+            CatalogueRelease = "803-20260612-01",
         });
 
-        Assert.Equal(0, Assert.Single(Model().ContinuityReport().Rows).DrsCriticalCount);
+        Assert.False(Model().ContinuityReport().Summary.Evaluated);
+    }
+
+    /// <summary>Findings and exceptions as the store holds them; nothing is evaluated here.</summary>
+    private sealed class StubComplianceStore : IComplianceStore
+    {
+        public List<ComplianceFinding> Rows { get; } = [];
+
+        public List<ComplianceWaiver> Waivers { get; } = [];
+
+        public IReadOnlyList<ComplianceFinding> Findings => Rows;
+
+        public IReadOnlyList<ComplianceWaiver> Exceptions => Waivers;
+
+        public void Evaluate(
+            string catalogueRelease,
+            DateTimeOffset nowUtc,
+            Func<IReadOnlyList<ComplianceFinding>, IReadOnlyList<ComplianceFinding>> evaluate) =>
+            throw new NotSupportedException();
+
+        public ComplianceFinding? Mutate(
+            string catalogueRelease, string controlId, EntityId entity, string subject,
+            Func<ComplianceFinding, ComplianceFinding> change) => throw new NotSupportedException();
+
+        public void AddException(ComplianceWaiver exception) => Waivers.Add(exception);
+
+        public bool RemoveException(string id, string removedBy, DateTimeOffset removedAtUtc) =>
+            throw new NotSupportedException();
+
+        public ComplianceTransitionsPage TransitionsSince(
+            DateTimeOffset sinceUtc, DateTimeOffset? toUtc = null, string? catalogueRelease = null,
+            string? controlId = null, EntityId? entity = null) => ComplianceTransitionsPage.Empty;
     }
 
     /// <summary>
