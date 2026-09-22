@@ -419,12 +419,17 @@ public sealed record CollectorView
     /// <summary>
     /// Server-side views this source's own session held at the end of its
     /// last cycle (F4, ADR-0025 §3). Zero for a role that does not create
-    /// views. Shown as a number, not an alert: non-zero is not itself a fault.
+    /// views; null when the last cycle could not read the count at all —
+    /// never invented as zero. Shown as a number, not an alert: non-zero is
+    /// not itself a fault.
     /// </summary>
-    public int ViewsHeld { get; init; }
+    public int? ViewsHeld { get; init; }
 
-    /// <summary>The highest <see cref="ViewsHeld"/> since this process started.</summary>
-    public int ViewsHeldMax { get; init; }
+    /// <summary>
+    /// The highest <see cref="ViewsHeld"/> since this process started, or
+    /// null when it has never been read successfully since then.
+    /// </summary>
+    public int? ViewsHeldMax { get; init; }
 }
 
 /// <summary>One thing a collector could not read, and what it is.</summary>

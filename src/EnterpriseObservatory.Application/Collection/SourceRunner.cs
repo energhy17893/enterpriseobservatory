@@ -81,7 +81,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectionPolicy policy,
         SemaphoreSlim gate,
         CancellationToken cancellationToken,
-        Func<TResult, int>? viewsHeld = null)
+        Func<TResult, int?>? viewsHeld = null)
         where TResult : class
     {
         var key = (instanceId, role);
@@ -177,7 +177,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectorHealth prior,
         CollectionPolicy policy,
         Action<Task> onAbandoned,
-        Func<TResult, int>? viewsHeld,
+        Func<TResult, int?>? viewsHeld,
         CancellationToken cancellationToken)
         where TResult : class
     {
@@ -209,7 +209,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
 
                 return new SourceRunOutcome<TResult>(
                     result,
-                    Succeeded(prior, reportedFailures(result), viewsHeld?.Invoke(result) ?? 0, _clock.UtcNow),
+                    Succeeded(prior, reportedFailures(result), viewsHeld?.Invoke(result), _clock.UtcNow),
                     []);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -448,7 +448,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
     private static CollectorHealth Succeeded(
         CollectorHealth prior,
         IReadOnlyList<CollectionFailure> failures,
-        int viewsHeld,
+        int? viewsHeld,
         DateTimeOffset now) =>
         prior with
         {
@@ -456,8 +456,12 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
 
             // Memory first (see CollectorHealth.ViewsHeldMax): prior is never
             // hydrated from the database for this field, so this only ever
-            // grows across this process's own cycles.
-            ViewsHeldMax = Math.Max(prior.ViewsHeldMax, viewsHeld),
+            // grows across this process's own cycles. A null reading is "not
+            // allowed to look", not zero: it must neither raise nor lower the
+            // max, and the max itself stays null until a read actually
+            // succeeds -- inventing zero here is exactly the mistake that let
+            // views_held_max = 0 prove nothing was ever measured.
+            ViewsHeldMax = viewsHeld is { } held ? Math.Max(prior.ViewsHeldMax ?? 0, held) : prior.ViewsHeldMax,
             // Reaching the source but not reading all of it is degraded, not
             // healthy. Anything named in failures is Unknown, never fine.
             Health = failures.Count == 0 ? HealthState.Healthy : HealthState.Warning,

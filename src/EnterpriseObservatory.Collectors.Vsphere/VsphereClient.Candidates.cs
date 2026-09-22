@@ -158,17 +158,26 @@ public sealed partial class VsphereClient
     /// How many views this session's own <c>ViewManager.viewList</c> currently
     /// holds — the <c>views_held</c> self-metric (F4, ADR-0025 §3). Needs
     /// <c>System.View</c>, which the read-only account already has; measured
-    /// live (<c>probe --from-store --views</c>) at about 23 ms. Zero when the
-    /// property could not be read, rather than throwing: a self-metric must
-    /// not fail the read it is reporting on.
+    /// live (<c>probe --from-store --views</c>) at about 23 ms.
     /// </summary>
-    public async Task<int> GetViewsHeldAsync(CancellationToken cancellationToken)
+    /// <remarks>
+    /// Null when the property was not read — a fault, no object at all, or
+    /// vCenter naming it in <c>missingSet</c> — rather than zero: "not allowed
+    /// to look" is not an empty list anywhere else in this product, and a
+    /// self-metric that quietly became zero on every failed read would let
+    /// <c>views_held_max = 0</c> after 24 hours prove nothing was ever
+    /// measured, not that cleanup works. A property vCenter omitted because
+    /// the array is genuinely empty — the same convention
+    /// <see cref="VsphereEventParser.ParseLatestPage"/> relies on — is the one
+    /// case that legitimately reads as zero.
+    /// </remarks>
+    public async Task<int?> GetViewsHeldAsync(CancellationToken cancellationToken)
     {
         var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         return await GetViewsHeldAsync(content, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<int> GetViewsHeldAsync(VsphereServiceContent content, CancellationToken cancellationToken)
+    private async Task<int?> GetViewsHeldAsync(VsphereServiceContent content, CancellationToken cancellationToken)
     {
         try
         {
@@ -178,13 +187,30 @@ public sealed partial class VsphereClient
                 cancellationToken).ConfigureAwait(false);
 
             var objects = PropertyCollectorParser.ParsePage(response).Objects;
-            var raw = objects.Count > 0 && objects[0].Values.TryGetValue("viewList", out var v) ? v : null;
 
-            return PropertyCollectorParser.SplitValues(raw).Count;
+            if (objects.Count == 0)
+            {
+                return null;
+            }
+
+            var viewManager = objects[0];
+
+            // vCenter named it as unreadable rather than simply omitting it.
+            if (viewManager.Missing.Any(m => string.Equals(m.Path, "viewList", StringComparison.Ordinal)))
+            {
+                return null;
+            }
+
+            // Omitted from Values entirely is how the property collector sends
+            // an empty array (see ParseLatestPage's remarks) -- a real zero,
+            // not a failure to read.
+            return viewManager.Values.TryGetValue("viewList", out var raw)
+                ? PropertyCollectorParser.SplitValues(raw).Count
+                : 0;
         }
         catch (VsphereApiException)
         {
-            return 0;
+            return null;
         }
     }
 

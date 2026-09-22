@@ -254,9 +254,12 @@ public sealed record InventorySnapshot
     /// <summary>
     /// How many server-side views this read's own session held when it
     /// finished asking for them back — the <c>views_held</c> self-metric
-    /// (F4, ADR-0025 §3). Zero for a source that does not create views.
+    /// (F4, ADR-0025 §3). Zero for a source that does not create views; null
+    /// when a source that does create them could not read the count. A null
+    /// reading must not be mistaken for zero — see
+    /// <see cref="CollectorHealth.ViewsHeldMax"/>'s remarks.
     /// </summary>
-    public int ViewsHeld { get; init; }
+    public int? ViewsHeld { get; init; }
 }
 
 /// <summary>Metric samples from one source for one cycle.</summary>
@@ -416,7 +419,15 @@ public sealed record CollectorHealth
     /// last cycle (F4, ADR-0025 §3). Zero for a role that does not create
     /// views. Not an alert either way — package D's proof, not a threshold.
     /// </summary>
-    public int ViewsHeld { get; init; }
+    /// <remarks>
+    /// Null when the last cycle could not read the count at all — never
+    /// invented as zero. An unreadable list and an empty list are different
+    /// facts: this product's rule everywhere else is that not being allowed
+    /// to look is not an empty list, and collapsing the two here would let a
+    /// self-metric that never actually measured anything read as a clean
+    /// zero.
+    /// </remarks>
+    public int? ViewsHeld { get; init; }
 
     /// <summary>
     /// The highest <see cref="ViewsHeld"/> this process has seen since it
@@ -425,13 +436,20 @@ public sealed record CollectorHealth
     /// <remarks>
     /// Deliberately not carried forward from what was persisted: it answers
     /// "has cleanup regressed since this process came up", so a restart resets
-    /// it to zero rather than inheriting a number an earlier build left behind.
-    /// The store that persists this (<c>PostgresCollectorHealthStore</c>)
+    /// it to null rather than inheriting a number an earlier build left
+    /// behind. The store that persists this (<c>PostgresCollectorHealthStore</c>)
     /// never hydrates either this or <see cref="ViewsHeld"/> from the database
-    /// on startup for that reason; both simply start at zero and are written
+    /// on startup for that reason; both simply start null and are written
     /// fresh every cycle. It is still persisted every cycle, so a query an
     /// hour or a day later can prove "never above zero since restart" without
     /// this process having to be watched the whole time.
+    /// <para>
+    /// Null here means "never read successfully since this process started" —
+    /// not zero, and not carried down from an unreadable reading either: a
+    /// null <see cref="ViewsHeld"/> reading leaves this exactly where it was.
+    /// A monitoring tool that reported "0 views held, ever" while every read
+    /// had actually failed would be proving the wrong thing.
+    /// </para>
     /// </remarks>
-    public int ViewsHeldMax { get; init; }
+    public int? ViewsHeldMax { get; init; }
 }

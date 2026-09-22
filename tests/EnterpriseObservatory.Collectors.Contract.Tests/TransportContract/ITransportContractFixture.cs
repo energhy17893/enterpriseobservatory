@@ -70,7 +70,9 @@ public interface ITransportContractFixture
     /// <returns>
     /// How many views the session's own <c>ViewManager.viewList</c> reports
     /// once the cycle is over -- <c>views_held</c>, read the same way the
-    /// production code reads it. Zero is the proof; nonzero is the leak.
+    /// production code reads it. Zero is the proof; nonzero is the leak; null
+    /// means it could not be read at all, which must never be mistaken for
+    /// zero either.
     /// </returns>
-    Task<int> ViewsHeldAfterAFullCycleAsync(bool cancelDuringInventory);
+    Task<int?> ViewsHeldAfterAFullCycleAsync(bool cancelDuringInventory);
 }

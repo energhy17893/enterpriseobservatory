@@ -75,8 +75,11 @@ public sealed record VsphereInventoryPayload
     /// own view was given back — the <c>views_held</c> self-metric (F4,
     /// ADR-0025 §3). Read after cleanup, so a healthy collector reports the
     /// proof rather than merely a count taken before it destroyed anything.
+    /// Null when it could not be read at all; see
+    /// <see cref="VsphereClient.GetViewsHeldAsync(System.Threading.CancellationToken)"/>'s
+    /// remarks for why that is not the same as zero.
     /// </summary>
-    public int ViewsHeld { get; init; }
+    public int? ViewsHeld { get; init; }
 }
 
 /// <summary>Something the client could not read, in its own terms.</summary>

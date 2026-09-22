@@ -139,7 +139,7 @@ public sealed class VsphereTransportContractFixture : ITransportContractFixture
         return server.Logins - loginsBeforeExpiry;
     }
 
-    public async Task<int> ViewsHeldAfterAFullCycleAsync(bool cancelDuringInventory)
+    public async Task<int?> ViewsHeldAfterAFullCycleAsync(bool cancelDuringInventory)
     {
         var server = new FullCycleServer();
         var (client, channel) = Connect(server);
