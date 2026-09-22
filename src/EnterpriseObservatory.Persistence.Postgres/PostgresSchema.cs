@@ -584,11 +584,11 @@ internal static class PostgresSchema
 
         // --- 12: reserved for K2 -------------------------------------------
         //
-        // Held for the K2 package, which was designed against 12 and had not
-        // landed when 13 did. A no-op so the numbering is contiguous. K2
-        // replaces this entry in place when it merges -- which is only sound
-        // while no installation has run a build carrying the placeholder; once
-        // one has, K2 must take the next free number instead.
+        // Permanently empty. It was held for the K2 package, which had not
+        // landed when 13 did; the schema version is the length of this list,
+        // so the slot stays as a no-op to keep the numbering contiguous.
+        // Installations have run builds carrying it, so it must never be
+        // replaced in place -- K2 (and anything after it) appends after 13.
         """
         SELECT 1;
         """,
