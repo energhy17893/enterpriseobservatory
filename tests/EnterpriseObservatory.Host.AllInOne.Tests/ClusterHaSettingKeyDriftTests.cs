@@ -105,7 +105,7 @@ public class ClusterHaSettingKeyDriftTests
     /// The datastore-type setting key: a plain <c>"type"</c> literal in three
     /// places this batch is not free to edit into a shared constant --
     /// <c>VsphereInventorySource</c> (which writes it),
-    /// <c>MultipathSinglePointOfFailure</c> (which reads it to scope itself
+    /// <c>MultipathCheck</c> (which reads it to scope itself
     /// to VMFS) and <c>ReadModel</c> (which reads it for the entity page).
     /// Pinned to the same literal here so a change to any one of the three
     /// without the others fails a test instead of silently drifting.
@@ -131,7 +131,7 @@ public class ClusterHaSettingKeyDriftTests
             Marks = [IdentityMark.Create(IdentityMarkKind.StorageDeviceId, naa, "vc-1")],
         };
 
-        // MultipathSinglePointOfFailure only ever produces a finding for a
+        // MultipathCheck only ever produces a failing finding for a
         // device it considers VMFS -- reached exclusively through
         // Settings["type"]. Evaluating it over two hosts sharing this one
         // datastore's device, each with a single path, proves the rule is
@@ -141,9 +141,17 @@ public class ClusterHaSettingKeyDriftTests
         var host1 = HostWithOnePathTo(naa);
         var host2 = HostWithOnePathTo(naa);
 
-        var alerts = MultipathSinglePointOfFailure.Evaluate([datastore, host1, host2]);
+        var findings = Application.Compliance.ComplianceEvaluation.Evaluate(
+            Application.Compliance.ContinuityCatalogue.Build(Application.Compliance.ContinuityCatalogue.Production),
+            [datastore, host1, host2],
+            [],
+            DateTimeOffset.UtcNow,
+            checksById: Application.Compliance.ContinuityCatalogue.ChecksById(
+                Application.Compliance.ContinuityCatalogue.Production));
 
-        Assert.NotEmpty(alerts);
+        Assert.Contains(findings, f =>
+            f.ControlId == Application.Compliance.ContinuityControls.PathSingle &&
+            f.Verdict == Domain.Compliance.ComplianceVerdict.Failing);
     }
 
     private static Entity HostWithOnePathTo(string naa) =>

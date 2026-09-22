@@ -2,6 +2,7 @@ using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -1131,7 +1132,7 @@ public class ReadModelTests
     {
         var clusterId = new EntityId("vc-1:domain-c1");
         GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "false")));
-        GivenAlerts(RuleAlert(ClusterHighAvailability.RuleId, AlertSeverity.Critical, clusterId, "ha-disabled"));
+        GivenAlerts(RuleAlert(MovedContinuityRules.HighAvailability, AlertSeverity.Critical, clusterId, "ha-disabled"));
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
@@ -1145,7 +1146,7 @@ public class ReadModelTests
     {
         var clusterId = new EntityId("vc-1:domain-c1");
         GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Warning, clusterId));
+        GivenAlerts(RuleAlert(MovedContinuityRules.Drs, AlertSeverity.Warning, clusterId));
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
@@ -1172,7 +1173,7 @@ public class ReadModelTests
         });
         GivenAlerts(
             RuleAlert(StoragePathRedundancy.RuleId, AlertSeverity.Critical, hostId),
-            RuleAlert(MultipathSinglePointOfFailure.RuleId, AlertSeverity.Warning, hostId));
+            RuleAlert(MovedContinuityRules.Multipath, AlertSeverity.Warning, hostId));
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
@@ -1201,16 +1202,16 @@ public class ReadModelTests
     public void The_n_plus_one_rule_reads_generically_by_rule_id()
     {
         // Proves the report picks up N+1 the same generic way it picks up
-        // every other rule, from ClusterNPlusOne.RuleId, with no type of its
+        // every other rule, from MovedContinuityRules.NPlusOne, with no type of its
         // own to reference.
         var clusterId = new EntityId("vc-1:domain-c1");
         GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(RuleAlert(ClusterNPlusOne.RuleId, AlertSeverity.Warning, clusterId));
+        GivenAlerts(RuleAlert(MovedContinuityRules.NPlusOne, AlertSeverity.Warning, clusterId));
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
         Assert.Equal(1, row.NPlusOneWarningCount);
-        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule[ClusterNPlusOne.RuleId]);
+        Assert.Equal(1, Model().ContinuityReport().Summary.ByRule[MovedContinuityRules.NPlusOne]);
     }
 
     [Fact]
@@ -1227,7 +1228,7 @@ public class ReadModelTests
         {
             Fingerprint = AlertFingerprint.Create(
                 "platform", "Cluster N+1 history unreadable", "Configuration",
-                ClusterNPlusOne.RuleId, "cluster-n-plus-one-history-unreadable"),
+                MovedContinuityRules.NPlusOne, "cluster-n-plus-one-history-unreadable"),
             Severity = AlertSeverity.Warning,
             State = AlertLifecycleState.Open,
             Title = "Cluster N+1 history unreadable",
@@ -1263,7 +1264,7 @@ public class ReadModelTests
         GivenEntities(Cluster("vc-1:domain-c1"));
 
         var failure = Assert.Single(
-            GuardedRule.Run(ClusterHighAvailability.RuleId, () => throw new InvalidOperationException("boom")));
+            GuardedRule.Run(MovedContinuityRules.HighAvailability, () => throw new InvalidOperationException("boom")));
 
         GivenAlerts(new AlertInstance
         {
@@ -1284,7 +1285,7 @@ public class ReadModelTests
             IsDerived = true,
         });
 
-        Assert.Equal(0, Model().ContinuityReport().Summary.ByRule[ClusterHighAvailability.RuleId]);
+        Assert.Equal(0, Model().ContinuityReport().Summary.ByRule[MovedContinuityRules.HighAvailability]);
     }
 
     [Fact]
@@ -1300,7 +1301,7 @@ public class ReadModelTests
         {
             Fingerprint = AlertFingerprint.Create(
                 "vc-1", "DRS rule 'cluster-n-plus-one' violated", "Configuration",
-                $"{clusterId.Value}/cluster-n-plus-one", DrsRuleViolations.RuleId),
+                $"{clusterId.Value}/cluster-n-plus-one", MovedContinuityRules.Drs),
             Severity = AlertSeverity.Warning,
             State = AlertLifecycleState.Open,
             Title = "DRS rule 'cluster-n-plus-one' violated",
@@ -1332,7 +1333,7 @@ public class ReadModelTests
         GivenEntities(
             Cluster("vc-1:domain-c1") with { DisplayName = "Quiet" },
             Cluster("vc-1:domain-c2") with { DisplayName = "Loud" });
-        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Critical, loud));
+        GivenAlerts(RuleAlert(MovedContinuityRules.Drs, AlertSeverity.Critical, loud));
 
         var summary = Model().ContinuityReport().Summary;
 
@@ -1354,7 +1355,7 @@ public class ReadModelTests
     {
         var clusterId = new EntityId("vc-1:domain-c1");
         GivenEntities(Cluster("vc-1:domain-c1"));
-        GivenAlerts(RuleAlert(DrsRuleViolations.RuleId, AlertSeverity.Critical, clusterId) with
+        GivenAlerts(RuleAlert(MovedContinuityRules.Drs, AlertSeverity.Critical, clusterId) with
         {
             IsConfirmed = false,
         });

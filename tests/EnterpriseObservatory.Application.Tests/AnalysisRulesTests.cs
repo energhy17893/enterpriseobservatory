@@ -75,16 +75,23 @@ public class AnalysisRulesTests
             new HashSet<string>(StringComparer.Ordinal)
             {
                 StoragePathRedundancy.RuleId,
-                MultipathSinglePointOfFailure.RuleId,
-                DrsRuleViolations.RuleId,
                 RemoteLogging.RuleId,
-                ClusterHighAvailability.RuleId,
                 EventAlerts.RuleId,
                 DatastoreTimeToFull.RuleId,
-                ClusterNPlusOne.RuleId,
                 CollectionCoverage.RuleId,
             },
             new HashSet<string>(ids, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void The_m8_continuity_rules_are_findings_now_not_alarms()
+    {
+        // ADR-0024 / K2: HA, DRS, multipath and N+1 are eo-continuity checks.
+        var ids = AnalysisRules.All.Select(r => r.RuleId).ToList();
+
+        Assert.All(
+            Compliance.MovedContinuityRules.RuleIds,
+            moved => Assert.DoesNotContain(moved, ids));
     }
 
     [Fact]

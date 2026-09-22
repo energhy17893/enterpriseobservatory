@@ -1,6 +1,7 @@
 using EnterpriseObservatory.Api.Contracts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -417,11 +418,11 @@ public sealed class ReadModel(
     /// </summary>
     private static class ContinuityRuleIds
     {
-        public const string Ha = ClusterHighAvailability.RuleId;
-        public const string Drs = DrsRuleViolations.RuleId;
-        public const string Multipath = MultipathSinglePointOfFailure.RuleId;
+        public const string Ha = MovedContinuityRules.HighAvailability;
+        public const string Drs = MovedContinuityRules.Drs;
+        public const string Multipath = MovedContinuityRules.Multipath;
         public const string StoragePath = StoragePathRedundancy.RuleId;
-        public const string NPlusOne = ClusterNPlusOne.RuleId;
+        public const string NPlusOne = MovedContinuityRules.NPlusOne;
     }
 
     /// <summary>
