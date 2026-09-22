@@ -1,9 +1,10 @@
-import { useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useState, type FormEvent } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { ago, cn, type StatusName } from '@/lib/ui'
+import { basisLabel } from '@/lib/basis'
 import type {
   AuthStateView,
   ComplianceControlView,
@@ -82,7 +83,9 @@ function countOf(counts: FindingCountsView, state: FindingState): number {
  * non-compliant), or excepted until a date.
  */
 export function Compliance({ identity }: { identity: AuthStateView }) {
-  const [open, setOpen] = useState<string | null>(null)
+  // A report links here as /compliance#<controlId>: that control opens.
+  const { hash } = useLocation()
+  const [open, setOpen] = useState<string | null>(hash ? decodeURIComponent(hash.slice(1)) : null)
   const [showUnevaluated, setShowUnevaluated] = useState(false)
 
   const summary = useQuery({
@@ -90,6 +93,11 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
     queryFn: api.compliance,
     refetchInterval: 60_000,
   })
+
+  const loaded = summary.data !== undefined
+  useEffect(() => {
+    if (hash && loaded) document.getElementById(decodeURIComponent(hash.slice(1)))?.scrollIntoView()
+  }, [hash, loaded])
 
   const canAct = identity.role === 'Operator' || identity.role === 'Administrator'
 
@@ -214,7 +222,7 @@ function ControlRow({
   canAct: boolean
 }) {
   return (
-    <div>
+    <div id={control.controlId} className="scroll-mt-4">
       <button
         type="button"
         onClick={onToggle}
@@ -229,6 +237,13 @@ function ControlRow({
           <div className="mt-0.5 text-sm font-medium">{control.title}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">
             <Identifier>{control.parameter}</Identifier> — baseline {control.baselineValue}
+          </div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            {control.source}
+            {' · basis: '}
+            {control.source === 'Broadcom SCG' && !control.citation
+              ? 'the guide itself'
+              : basisLabel(control.citation)}
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap gap-1.5">
