@@ -122,6 +122,7 @@ public partial class ReadModelTests
         // A missing key reads as "no answer" in a client; a zero reads as
         // "none", which is what we mean.
         GivenEntities(Host("h1", HealthState.Healthy));
+        GivenCollectors(Health("vc-1", CollectorRole.Inventory, T0));
 
         var overview = Model().Overview();
 

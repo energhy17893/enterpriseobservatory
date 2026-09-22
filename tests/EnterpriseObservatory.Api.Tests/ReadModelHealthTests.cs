@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Health;
 using EnterpriseObservatory.Domain;
@@ -18,6 +19,7 @@ public partial class ReadModelTests
     {
         GivenEntities(Host("h1", HealthState.Healthy), Host("h2", HealthState.Warning));
         GivenAlerts(Alert("a", AlertSeverity.Critical) with { Entity = new EntityId("h1") });
+        GivenCollectors(Health("vc-1", CollectorRole.Inventory, T0));
 
         var items = Model().Entities().Items;
 
@@ -25,10 +27,10 @@ public partial class ReadModelTests
         Assert.Equal(HealthState.Critical, h1.Health);
         Assert.Equal(HealthBasis.Alerts, h1.HealthBasis);
 
-        // No alerts: the collector value, unchanged.
+        // No alerts, source reporting: Healthy, never the collector's own value.
         var h2 = items.Single(e => e.Id == "h2");
-        Assert.Equal(HealthState.Warning, h2.Health);
-        Assert.Equal(HealthBasis.Collector, h2.HealthBasis);
+        Assert.Equal(HealthState.Healthy, h2.Health);
+        Assert.Equal(HealthBasis.NoAlertsSourceReporting, h2.HealthBasis);
 
         // Worst first, by the derived colour.
         Assert.Equal("h1", items[0].Id);
@@ -39,10 +41,48 @@ public partial class ReadModelTests
     {
         GivenEntities(Host("h1", HealthState.Healthy), Host("h2", HealthState.Healthy));
         GivenAlerts(Alert("a", AlertSeverity.Critical) with { Entity = new EntityId("h1") });
+        GivenCollectors(Health("vc-1", CollectorRole.Inventory, T0));
 
         var critical = Assert.Single(Model().Entities(health: HealthState.Critical).Items);
         Assert.Equal("h1", critical.Id);
         Assert.Equal("h2", Assert.Single(Model().Entities(health: HealthState.Healthy).Items).Id);
+    }
+
+    [Fact]
+    public void No_alerts_and_the_source_reporting_is_healthy()
+    {
+        // The collector's own value (Critical) is not consulted at all.
+        GivenEntities(Host("h1", HealthState.Critical));
+        GivenCollectors(Health("vc-1", CollectorRole.Inventory, T0));
+
+        var entity = Model().Entity("h1")!.Entity;
+
+        Assert.Equal(HealthState.Healthy, entity.Health);
+        Assert.Equal(HealthBasis.NoAlertsSourceReporting, entity.HealthBasis);
+    }
+
+    [Fact]
+    public void No_alerts_and_the_source_silent_is_unknown()
+    {
+        // No CollectorHealth record for vc-1: nobody looked at it this cycle.
+        GivenEntities(Host("h1", HealthState.Healthy));
+
+        var entity = Model().Entity("h1")!.Entity;
+
+        Assert.Equal(HealthState.Unknown, entity.Health);
+        Assert.Equal(HealthBasis.NoAlertsSourceSilent, entity.HealthBasis);
+    }
+
+    [Fact]
+    public void A_vanished_entity_is_unknown_even_when_its_source_is_reporting()
+    {
+        GivenEntities(Host("h1", HealthState.Healthy) with { ObservationState = ObservationState.Vanished });
+        GivenCollectors(Health("vc-1", CollectorRole.Inventory, T0));
+
+        var view = Assert.Single(Model().Entities(includeVanished: true).Items);
+
+        Assert.Equal(HealthState.Unknown, view.Health);
+        Assert.Equal(HealthBasis.NotObserved, view.HealthBasis);
     }
 
     [Fact]
@@ -86,11 +126,12 @@ public partial class ReadModelTests
         // the compliance screen, not in the entity's colour.
         GivenEntities(Host("h1", HealthState.Healthy));
         GivenFindings(Finding(ContinuityControls.HaEnabled, new EntityId("h1"), ComplianceVerdict.Failing));
+        GivenCollectors(Health("vc-1", CollectorRole.Inventory, T0));
 
         var entity = Model().Entity("h1")!.Entity;
 
         Assert.Equal(HealthState.Healthy, entity.Health);
-        Assert.Equal(HealthBasis.Collector, entity.HealthBasis);
+        Assert.Equal(HealthBasis.NoAlertsSourceReporting, entity.HealthBasis);
     }
 
     [Fact]
@@ -100,6 +141,7 @@ public partial class ReadModelTests
         GivenAlerts(
             Alert("a", AlertSeverity.Critical) with { Entity = new EntityId("h1"), StaleSinceUtc = T0.AddHours(-1) },
             Alert("b", AlertSeverity.Warning) with { Entity = new EntityId("h2"), State = AlertLifecycleState.Unknown });
+        GivenCollectors(Health("vc-1", CollectorRole.Inventory, T0));
 
         var overview = Model().Overview();
 
@@ -121,6 +163,7 @@ public partial class ReadModelTests
             ObservedAtUtc = T0,
         });
         GivenAlerts(Alert("a", AlertSeverity.Warning) with { Entity = new EntityId("h2") });
+        GivenCollectors(Health("vc-1", CollectorRole.Inventory, T0));
 
         var edge = Assert.Single(Model().Entity("h1")!.Relationships);
 
