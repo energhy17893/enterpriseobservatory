@@ -4,12 +4,15 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
-import { ago, cn, healthStatus } from '@/lib/ui'
+import { ago, cn, healthBasisShort, healthStatus } from '@/lib/ui'
 import type { EntityView } from '@/api/types'
 
 const KINDS = ['', 'EsxiHost', 'VirtualMachine', 'Datastore', 'Cluster'] as const
 
-const ROW_HEIGHT = 44
+// 52, not 44: a grey (Unknown) row needs a second, short line saying why
+// (source silent / only unknown alerts / not observed) -- K3, a grey entity
+// must not read as "just a different colour of green".
+const ROW_HEIGHT = 52
 
 /**
  * The entity explorer: tier 1 of ADR-0007.
@@ -152,9 +155,29 @@ function EntityTable({ rows }: { rows: EntityView[] }) {
                     )}
                   </div>
                   <Identifier>{entity.kind}</Identifier>
-                  <div className="flex flex-wrap items-center gap-1">
-                    <StatusBadge status={healthStatus(entity.health)}>{entity.health}</StatusBadge>
-                    {entity.healthIsStale && <StatusBadge status="Unknown">stale</StatusBadge>}
+                  <div className="flex min-w-0 flex-col justify-center gap-0.5">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <StatusBadge status={healthStatus(entity.health)}>{entity.health}</StatusBadge>
+                      {entity.healthIsStale && <StatusBadge status="Unknown">stale</StatusBadge>}
+                    </div>
+                    {/*
+                      K3: grey must say why, and a stale colour must say since
+                      when -- both in words short enough for a table row. A
+                      stale wins the line when both apply: "since" is the more
+                      actionable fact once the colour itself is explained by
+                      the badge text above.
+                    */}
+                    {entity.healthIsStale ? (
+                      <span className="truncate text-[11px] text-muted-foreground">
+                        since {ago(entity.healthStaleSinceUtc)}
+                      </span>
+                    ) : (
+                      healthBasisShort(entity.healthBasis) && (
+                        <span className="truncate text-[11px] text-muted-foreground">
+                          {healthBasisShort(entity.healthBasis)}
+                        </span>
+                      )
+                    )}
                   </div>
                   <div className="text-right tabular">{entity.alertCount || ''}</div>
                   <div className="text-right text-xs text-muted-foreground">

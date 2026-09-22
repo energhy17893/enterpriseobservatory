@@ -263,8 +263,8 @@ export const api = {
   compliance: () => get<ComplianceView>('/api/compliance'),
   complianceFindings: (query: { control?: string; entity?: string; state?: FindingState } = {}) =>
     get<ComplianceFindingView[]>('/api/compliance/findings', query),
-  acceptFinding: (controlId: string, entityId: string, reason: string) =>
-    post<ComplianceFindingView>('/api/compliance/accept', { controlId, entityId, reason }),
+  acceptFinding: (controlId: string, entityId: string, subject: string, reason: string) =>
+    post<ComplianceFindingView>('/api/compliance/accept', { controlId, entityId, subject, reason }),
   addComplianceException: (command: AddExceptionCommand) =>
     post<ComplianceExceptionView>('/api/compliance/exceptions', command),
   removeComplianceException: (id: string) =>
