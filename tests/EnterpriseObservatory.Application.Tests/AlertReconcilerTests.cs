@@ -73,6 +73,43 @@ public class AlertReconcilerTests
     }
 
     [Fact]
+    public void A_newly_confirmed_alert_appends_one_transition()
+    {
+        // Package D's write-path guardrail: a fresh, confirmed alert writes
+        // exactly the one "Raised" row its own history gained this cycle.
+        var result = Run([Psu()]);
+
+        Assert.Equal(1, result.TransitionsAppended);
+    }
+
+    [Fact]
+    public void An_unconfirmed_alert_appends_no_transition()
+    {
+        // A warning needs two consecutive hits to confirm (HysteresisPolicy
+        // default). AppendHistory never writes for an alert nobody has been
+        // shown yet (PostgresAlertStateStore); the count this reconciler
+        // reports must agree, or the metric would claim writes that never
+        // happen.
+        var result = Run([Psu(AlertSeverity.Warning)]);
+
+        Assert.False(Assert.Single(result.Instances).IsConfirmed);
+        Assert.Equal(0, result.TransitionsAppended);
+    }
+
+    [Fact]
+    public void A_cycle_with_nothing_new_appends_no_further_transitions()
+    {
+        // The same confirmed alert seen again, unchanged, must not keep
+        // appending — a runaway write path is exactly what this counter is
+        // for catching, so it must read zero on a quiet cycle.
+        var first = Run([Psu()]);
+
+        var second = Run([Psu()], previous: first, now: Cycle(1));
+
+        Assert.Equal(0, second.TransitionsAppended);
+    }
+
+    [Fact]
     public void Info_alerts_are_dropped_before_they_reach_the_lifecycle()
     {
         // Dropped centrally so that a new alert source cannot forget to.
@@ -499,6 +536,30 @@ public class AlertReconcilerTests
         var instance = Assert.Single(r.Instances);
         Assert.Equal(AlertLifecycleState.Open, instance.State);
         Assert.Equal(UnknownReason.InputStale, instance.StaleReason);
+
+        // Package D's age-bucket hit counter (ADR-0026 §Z3): this cycle's one
+        // clamped verdict must show up in the metrics view, not just in the
+        // instance itself.
+        Assert.Equal(1, r.AgeClampedToUnknown);
+    }
+
+    [Fact]
+    public void A_verdict_clamped_by_a_silent_source_does_not_count_as_an_age_clamp()
+    {
+        // Package D's counter is specifically the age rule (Z3), not "any
+        // Unknown": a source that stopped reporting is a different problem
+        // with a different fix, and conflating the two in one number would
+        // make the age-clamp counter lie about which one is happening.
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        r = Rules(
+            r,
+            Cycle(1),
+            [Gone(Psu(), Cycle(1)) with { Resolution = ResolutionPolicy.Immediate }],
+            sources: Answered("vc-2"));
+
+        Assert.Equal(UnknownReason.SourceSilent, Assert.Single(r.Instances).StaleReason);
+        Assert.Equal(0, r.AgeClampedToUnknown);
     }
 
     [Fact]

@@ -30,10 +30,14 @@ public sealed class MonitoringWorker(
     IEntityGraphStore graph,
     IAlertStateStore alerts,
     IObservationStore series,
+    IOperationalMetricsStore selfMetrics,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
     private readonly IObservationStore _series = series ?? throw new ArgumentNullException(nameof(series));
+
+    private readonly IOperationalMetricsStore _selfMetrics =
+        selfMetrics ?? throw new ArgumentNullException(nameof(selfMetrics));
 
     private readonly ComplianceService _compliance =
         compliance ?? throw new ArgumentNullException(nameof(compliance));
@@ -73,6 +77,14 @@ public sealed class MonitoringWorker(
                 HostLog.InventoryCycle(
                     _logger, result.ActiveEntities, result.VanishedEntities, result.Visible.Count);
 
+                _selfMetrics.RecordInventory(new CycleMetricsSnapshot
+                {
+                    AtUtc = result.AtUtc,
+                    Duration = result.CycleDuration,
+                    TransitionsAppended = result.TransitionsAppended,
+                    AgeClampedToUnknown = result.AgeClampedToUnknown,
+                });
+
                 WarnAboutSilence(result);
 
                 EvaluateCompliance(result.ReportingSources);
@@ -86,9 +98,14 @@ public sealed class MonitoringWorker(
                 // one inventory interval. A source cut off keeps its mark.
                 //
                 // Only the vCenters whose inventory just answered are asked.
-                // This read has no breaker of its own, and without that it
-                // kept presenting a rejected password after the inventory
-                // breaker had already stopped doing so.
+                // The read now has its own breaker and its own collector_health
+                // row (F1, CollectorRole.Events): a rejected login backs off on
+                // its own count rather than riding inventory's, one strike
+                // rather than several consecutive failures before it stops
+                // asking. What is still borrowed from the inventory cycle is
+                // the verdict on which sources are worth asking at all — an
+                // events read is never attempted for a source inventory did
+                // not just hear from.
                 var events = await _events
                     .RunAsync(_sources.Events, result.ReportingSources, _options.EventReadDeadline, token)
                     .ConfigureAwait(false);
@@ -117,6 +134,14 @@ public sealed class MonitoringWorker(
                     .ConfigureAwait(false);
 
                 HostLog.ObservationCycle(_logger, result.Observations.Count, result.Visible.Count);
+
+                _selfMetrics.RecordObservation(new CycleMetricsSnapshot
+                {
+                    AtUtc = result.AtUtc,
+                    Duration = result.CycleDuration,
+                    TransitionsAppended = result.TransitionsAppended,
+                    AgeClampedToUnknown = result.AgeClampedToUnknown,
+                });
 
                 if (result.StorageFailure is { } failure)
                 {

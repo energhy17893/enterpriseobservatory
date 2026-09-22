@@ -483,6 +483,51 @@ public sealed record OverviewView
     public DateTimeOffset? OldestSuccessfulReadUtc { get; init; }
 }
 
+/// <summary>One role's most recent cycle, for <see cref="SelfMetricsView"/>.</summary>
+public sealed record CycleMetricsView
+{
+    public DateTimeOffset? AtUtc { get; init; }
+
+    public double DurationSeconds { get; init; }
+
+    /// <summary><c>alert_history</c> rows this cycle appended.</summary>
+    public int TransitionsAppended { get; init; }
+
+    /// <summary>
+    /// Verdicts this cycle clamped to Unknown by the age rule (ADR-0026 §Z3)
+    /// rather than by a source going silent.
+    /// </summary>
+    public int AgeClampedToUnknown { get; init; }
+}
+
+/// <summary>
+/// The runner's self-monitoring numbers (Package D — docs/feature-roadmap.md
+/// "D — Öz-izleme"), for the internal overview screen's own-health card.
+/// </summary>
+/// <remarks>
+/// Everything here already exists elsewhere in the product: this is a
+/// surface, not a new measurement, except the cycle duration Stopwatch and
+/// the two counters <see cref="EnterpriseObservatory.Application.Alerts.AlertReconciliationResult"/>
+/// now carries. Self-metrics that belong to the collector runner itself
+/// (kept sessions, clock skew, dropped queued samples) are F6's, not this
+/// view's — see the roadmap's wave-2 note.
+/// </remarks>
+public sealed record SelfMetricsView
+{
+    public required DateTimeOffset GeneratedAtUtc { get; init; }
+
+    public required CycleMetricsView Inventory { get; init; }
+
+    public required CycleMetricsView Observation { get; init; }
+
+    /// <summary>Alerts without fresh evidence for as long as raw retention (#85).</summary>
+    public int UnknownAlerts { get; init; }
+
+    public int OpenGaps { get; init; }
+
+    public int UnrecoverableGaps { get; init; }
+}
+
 /// <summary>One counter available for an entity.</summary>
 public sealed record SeriesOptionView
 {

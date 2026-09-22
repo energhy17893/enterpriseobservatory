@@ -45,6 +45,12 @@ public static class ObservatoryApi
         api.MapGet("/overview", (ReadModel model) => model.Overview())
             .WithName("GetOverview");
 
+        // The runner's own health, for the overview screen's own-health card
+        // (Package D). Authenticated like everything else here — unlike
+        // /health, which an external monitor must reach without an account.
+        api.MapGet("/metrics", (ReadModel model) => model.SelfMetrics())
+            .WithName("GetSelfMetrics");
+
         api.MapGet("/alerts", (
                 ReadModel model,
                 AlertSeverity? severity,

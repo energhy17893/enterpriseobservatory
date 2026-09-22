@@ -247,6 +247,9 @@ public class VsphereCollectionGapTests
                 _gaps[i] = gap;
             }
         }
+
+        public IReadOnlyDictionary<CollectionGapState, int> CountsByState() =>
+            _gaps.GroupBy(g => g.State).ToDictionary(g => g.Key, g => g.Count());
     }
 
     /// <summary>A vCenter whose hosts sample every 20 s and keep an hour.</summary>
