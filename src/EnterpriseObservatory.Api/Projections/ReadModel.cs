@@ -3,6 +3,7 @@ using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
+using EnterpriseObservatory.Application.Health;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 using EnterpriseObservatory.Domain.Compliance;
@@ -34,13 +35,37 @@ public sealed class ReadModel(
     IObservationStore observations,
     MonitoringOptions options,
     IClock clock,
-    IComplianceStore? compliance = null)
+    IComplianceStore? compliance = null,
+    IReadOnlyList<ContinuityCheck>? continuityChecks = null,
+    ICollectionGapStore? gaps = null,
+    IOperationalMetricsStore? selfMetrics = null)
 {
     /// <summary>
     /// Where the continuity findings live (ADR-0024); null reads as "never
     /// evaluated", which the continuity report says rather than showing zeros.
     /// </summary>
     private readonly IComplianceStore? _compliance = compliance;
+
+    /// <summary>
+    /// The continuity catalogue the report is placed by: production's unless a
+    /// caller registers its own. The report reads it, never a list of ids.
+    /// </summary>
+    private readonly IReadOnlyList<ContinuityCheck> _continuityChecks =
+        continuityChecks ?? ContinuityCatalogue.Production;
+
+    /// <summary>
+    /// Where source-level gap records live; null reads as "no gaps recorded"
+    /// (Package D's metrics view). Optional for the same reason
+    /// <see cref="_compliance"/> is: existing tests construct this model
+    /// without it.
+    /// </summary>
+    private readonly ICollectionGapStore? _gaps = gaps;
+
+    /// <summary>
+    /// The runner's own last-cycle numbers; null reads as "nothing measured
+    /// yet" (Package D's metrics view).
+    /// </summary>
+    private readonly IOperationalMetricsStore? _selfMetrics = selfMetrics;
 
     private readonly IEntityGraphStore _graphs = graphs ?? throw new ArgumentNullException(nameof(graphs));
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
@@ -86,8 +111,10 @@ public sealed class ReadModel(
         var visible = Visible();
         var health = _collectors.Current;
 
-        var byHealth = graph.Active
-            .GroupBy(e => e.EffectiveHealth)
+        var derived = EntityHealth.DeriveAll(graph.Active, _alerts.All, ReportingSources());
+
+        var byHealth = derived.Values
+            .GroupBy(d => d.Health)
             .ToDictionary(g => g.Key.ToString(), g => g.Count());
 
         // Every state appears, including the ones with no members. A missing
@@ -109,6 +136,7 @@ public sealed class ReadModel(
             StaleOpenAlerts = visible.Count(a => a.IsStale),
             UnknownAlerts = _alerts.All.Count(a => a.IsConfirmed && a.State == AlertLifecycleState.Unknown),
             EntitiesByHealth = byHealth,
+            EntitiesWithStaleHealth = derived.Values.Count(d => d.IsStale),
             VanishedEntities = graph.Vanished.Count(),
             FailingCollectors = health.Count(c => c.Health != HealthState.Healthy),
             OldestSuccessfulReadUtc = health.Count == 0
@@ -116,6 +144,35 @@ public sealed class ReadModel(
                 : health.Min(c => c.LastSuccessUtc),
         };
     }
+
+    // --- self-metrics (Package D) ------------------------------------------
+
+    /// <summary>
+    /// The runner's own last-cycle numbers, for the overview screen's own-health
+    /// card. See <see cref="SelfMetricsView"/> for what is and is not here.
+    /// </summary>
+    public SelfMetricsView SelfMetrics()
+    {
+        var gapCounts = _gaps?.CountsByState() ?? new Dictionary<CollectionGapState, int>();
+
+        return new SelfMetricsView
+        {
+            GeneratedAtUtc = _clock.UtcNow,
+            Inventory = ToView(_selfMetrics?.Inventory),
+            Observation = ToView(_selfMetrics?.Observation),
+            UnknownAlerts = _alerts.All.Count(a => a.IsConfirmed && a.State == AlertLifecycleState.Unknown),
+            OpenGaps = gapCounts.GetValueOrDefault(CollectionGapState.Open),
+            UnrecoverableGaps = gapCounts.GetValueOrDefault(CollectionGapState.Unrecoverable),
+        };
+    }
+
+    private static CycleMetricsView ToView(CycleMetricsSnapshot? snapshot) => new()
+    {
+        AtUtc = snapshot?.AtUtc,
+        DurationSeconds = snapshot?.Duration.TotalSeconds ?? 0,
+        TransitionsAppended = snapshot?.TransitionsAppended ?? 0,
+        AgeClampedToUnknown = snapshot?.AgeClampedToUnknown ?? 0,
+    };
 
     // --- alerts -----------------------------------------------------------
 
@@ -447,30 +504,60 @@ public sealed class ReadModel(
     private static bool IsHa(string controlId) =>
         controlId.StartsWith("eo-cont.ha-", StringComparison.Ordinal);
 
-    private static bool IsStoragePath(string controlId) =>
-        controlId.StartsWith("eo-cont.path-", StringComparison.Ordinal);
-
-    private static bool IsNPlusOne(string controlId) =>
-        controlId.StartsWith("eo-cont.n-plus-one-", StringComparison.Ordinal);
+    /// <summary>
+    /// Where a control's findings sit in the report, read from the entity kind
+    /// its check applies to -- the only thing the report knows about a control.
+    /// </summary>
+    private static ContinuityReportScope ScopeOf(EntityKind kind) => kind switch
+    {
+        EntityKind.VCenter => ContinuityReportScope.VCenter,
+        EntityKind.Cluster => ContinuityReportScope.Cluster,
+        _ => ContinuityReportScope.Entity,
+    };
 
     /// <summary>
-    /// One row per live cluster: its HA scorecard (M8.1), DRS rules (M8.3) and
-    /// N+1 (M8.2) findings, and the multipath findings (M8.6) of the hosts
-    /// under it — each counted by finding state.
+    /// The continuity report (M8.10), placed by the catalogue (K3): a vCenter
+    /// section, one row per live cluster, and one summary row per control that
+    /// applies to hosts, VMs or datastores.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Read from the <c>eo-continuity</c> findings (ADR-0024), never
     /// recomputed: the same rows the compliance screen shows. A finding is
-    /// counted in its state — failing, accepted, excepted, not evaluated,
-    /// passing — and a stale one also in <see cref="ContinuityStateCounts.Stale"/>,
+    /// counted in its state -- failing, accepted, excepted, not evaluated,
+    /// passing -- and a stale one also in <see cref="ContinuityStateCounts.Stale"/>,
     /// the way the compliance summary counts it. Zero is only "all clear"
     /// when the checks have run: until then the summary says so.
+    /// </para>
+    /// <para>
+    /// No control id appears here. Each control is placed by its check's
+    /// <see cref="IComplianceCheck.AppliesTo"/>, and a finding under a cluster
+    /// reaches it through the graph's containment edges, so a control added to
+    /// the catalogue grows the report without a change to this method.
+    /// </para>
     /// </remarks>
     public ContinuityReportView ContinuityReport()
     {
         var graph = _graphs.Current;
         var now = _clock.UtcNow;
         var (findings, exceptions) = Continuity();
+
+        var controls = _continuityChecks
+            .Select(c => new ContinuityControlInfo
+            {
+                ControlId = c.Control.ControlId,
+                Title = c.Control.Title,
+                Citation = c.Control.Source,
+                AppliesTo = c.Check.AppliesTo,
+                Scope = ScopeOf(c.Check.AppliesTo),
+            })
+            .ToList();
+
+        var clusterControls = controls.Where(c => c.Scope == ContinuityReportScope.Cluster).ToList();
+        var vCenterControls = controls.Where(c => c.Scope == ContinuityReportScope.VCenter).ToList();
+        var entityControls = controls.Where(c => c.Scope == ContinuityReportScope.Entity).ToList();
+
+        var byEntity = findings.ToLookup(f => f.Entity);
 
         var clusters = graph.Entities.Values
             .Where(e => e.Kind == EntityKind.Cluster && e.ObservationState != ObservationState.Vanished)
@@ -482,15 +569,39 @@ public sealed class ReadModel(
         // read as "not collected", not as "every cluster passed".
         var haInputsCollected = clusters.Any(HasHaSettings);
 
+        // The findings of entity-level controls, by the cluster they sit under.
+        var entityControlIds = entityControls.Select(c => c.ControlId).ToHashSet(StringComparer.Ordinal);
+        var clusterOf = ContainingClusters(graph);
+        var underCluster = findings
+            .Where(f => entityControlIds.Contains(f.ControlId))
+            .Select(f => (Finding: f, Cluster: clusterOf(f.Entity)))
+            .Where(x => x.Cluster is not null)
+            .ToLookup(x => x.Cluster!.Value, x => x.Finding);
+
         var rows = clusters
-            .Select(c => ToContinuityRow(c, graph, findings, exceptions, now))
+            .Select(c => ToContinuityRow(c, graph, clusterControls, byEntity[c.Id], underCluster[c.Id], exceptions, now))
+            .ToList();
+
+        var vCenters = graph.Entities.Values
+            .Where(e => e.Kind == EntityKind.VCenter && e.ObservationState != ObservationState.Vanished)
+            .OrderBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Select(v => ToVCenterSection(v, vCenterControls, byEntity[v.Id], exceptions, now))
+            .ToList();
+
+        var byControl = findings.ToLookup(f => f.ControlId, StringComparer.Ordinal);
+
+        var controlRows = entityControls
+            .Select(c => ToControlRow(c, graph, byControl[c.ControlId], exceptions, now))
             .ToList();
 
         return new ContinuityReportView
         {
             GeneratedAtUtc = now,
             Summary = SummarizeContinuity(rows, findings, exceptions, now, haInputsCollected),
+            Controls = controls,
+            VCenters = vCenters,
             Rows = rows,
+            ControlRows = controlRows,
         };
     }
 
@@ -540,28 +651,46 @@ public sealed class ReadModel(
         };
     }
 
-    private static ContinuityReportRow ToContinuityRow(
-        Entity cluster,
-        EntityGraph graph,
-        IReadOnlyList<ComplianceFinding> findings,
-        IReadOnlyList<ComplianceWaiver> exceptions,
-        DateTimeOffset now)
-    {
-        var onCluster = findings.Where(f => f.Entity == cluster.Id).ToList();
-        var hostIds = HostsOf(graph, cluster.Id);
-        var storagePath = findings.Where(f => IsStoragePath(f.ControlId) && hostIds.Contains(f.Entity)).ToList();
+    /// <summary>A failing, accepted or excepted finding: non-compliant, whoever owns it.</summary>
+    private static bool IsAffected(ComplianceFinding finding, IReadOnlyList<ComplianceWaiver> exceptions, DateTimeOffset now) =>
+        finding.StateAt(exceptions, now) is FindingState.Failing or FindingState.Accepted or FindingState.Excepted;
 
-        var affectedHosts = storagePath
-            .Where(f => f.StateAt(exceptions, now) is FindingState.Failing or FindingState.Accepted or FindingState.Excepted)
-            .Select(f => graph.Entities.TryGetValue(f.Entity, out var host) ? host.DisplayName : f.EntityName)
+    private static string NameOf(EntityGraph graph, ComplianceFinding finding) =>
+        graph.Entities.TryGetValue(finding.Entity, out var entity) ? entity.DisplayName : finding.EntityName;
+
+    /// <summary>The distinct names, ordered, at most <see cref="ContinuityControlRow.MaxNamesListed"/>, and how many more.</summary>
+    private static (IReadOnlyList<string> Names, int More) Listed(IEnumerable<string> names)
+    {
+        var all = names
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var ha = Count(onCluster.Where(f => IsHa(f.ControlId)), exceptions, now);
-        var drs = Count(onCluster.Where(f => f.ControlId == ContinuityControls.DrsRule), exceptions, now);
-        var path = Count(storagePath, exceptions, now);
-        var nPlusOne = Count(onCluster.Where(f => IsNPlusOne(f.ControlId)), exceptions, now);
+        return (
+            [.. all.Take(ContinuityControlRow.MaxNamesListed)],
+            Math.Max(0, all.Count - ContinuityControlRow.MaxNamesListed));
+    }
+
+    private static ContinuityReportRow ToContinuityRow(
+        Entity cluster,
+        EntityGraph graph,
+        IReadOnlyList<ContinuityControlInfo> clusterControls,
+        IEnumerable<ComplianceFinding> onCluster,
+        IEnumerable<ComplianceFinding> under,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var own = onCluster.ToLookup(f => f.ControlId, StringComparer.Ordinal);
+        var controls = clusterControls
+            .Select(c => new ContinuityControlCounts { ControlId = c.ControlId, Counts = Count(own[c.ControlId], exceptions, now) })
+            .ToList();
+
+        var contained = under.ToList();
+        var (names, more) = Listed(contained.Where(f => IsAffected(f, exceptions, now)).Select(f => NameOf(graph, f)));
+
+        var clusterControlIds = clusterControls.Select(c => c.ControlId).ToHashSet(StringComparer.Ordinal);
+        var totals = Count(
+            onCluster.Where(f => clusterControlIds.Contains(f.ControlId)).Concat(contained), exceptions, now);
 
         return new ContinuityReportRow
         {
@@ -569,34 +698,150 @@ public sealed class ReadModel(
             ClusterName = cluster.DisplayName,
             Source = cluster.SourceInstanceId,
             HaSettingsCollected = HasHaSettings(cluster),
-            Ha = ha,
-            Drs = drs,
-            StoragePath = path,
-            StoragePathAffectedHosts = affectedHosts,
-            NPlusOne = nPlusOne,
-            HasFailing = ha.Failing + drs.Failing + path.Failing + nPlusOne.Failing > 0,
+            Controls = controls,
+            Contained = Count(contained, exceptions, now),
+            ContainedAffectedNames = names,
+            ContainedAffectedMore = more,
+            Totals = totals,
+            HasFailing = totals.Failing > 0,
+        };
+    }
+
+    private ContinuityVCenterSection ToVCenterSection(
+        Entity vCenter,
+        IReadOnlyList<ContinuityControlInfo> vCenterControls,
+        IEnumerable<ComplianceFinding> onVCenter,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var ids = vCenterControls.Select(c => c.ControlId).ToList();
+        var own = onVCenter.Where(f => ids.Contains(f.ControlId, StringComparer.Ordinal)).ToList();
+        var byControl = own.ToLookup(f => f.ControlId, StringComparer.Ordinal);
+
+        return new ContinuityVCenterSection
+        {
+            VCenterId = vCenter.Id.Value,
+            VCenterName = vCenter.DisplayName,
+            Source = vCenter.SourceInstanceId,
+            Controls =
+            [
+                .. vCenterControls.Select(c => new ContinuityControlCounts
+                {
+                    ControlId = c.ControlId,
+                    Counts = Count(byControl[c.ControlId], exceptions, now),
+                }),
+            ],
+            Findings =
+            [
+                .. own
+                    .OrderBy(f => ids.IndexOf(f.ControlId))
+                    .ThenBy(f => f.Subject, StringComparer.Ordinal)
+                    .Select(f => ToView(f, exceptions, now)),
+            ],
+            // The alarms vCenter raised on itself: a root-folder alarm is
+            // filed on the vCenter entity by the collector (#84).
+            Alarms =
+            [
+                .. Visible()
+                    .Where(a => a.Entity == vCenter.Id)
+                    .OrderByDescending(a => a.Severity)
+                    .ThenBy(a => a.FirstSeenUtc)
+                    .Select(a => new ContinuityAlarmView
+                    {
+                        Title = a.Title,
+                        Severity = a.Severity,
+                        State = a.State,
+                        IsStale = a.IsStale,
+                        FirstSeenUtc = a.FirstSeenUtc,
+                    }),
+            ],
+        };
+    }
+
+    private static ContinuityControlRow ToControlRow(
+        ContinuityControlInfo control,
+        EntityGraph graph,
+        IEnumerable<ComplianceFinding> findings,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var all = findings.ToList();
+        var (names, more) = Listed(
+            all.Where(f => f.StateAt(exceptions, now) == FindingState.Failing).Select(f => NameOf(graph, f)));
+
+        return new ContinuityControlRow
+        {
+            ControlId = control.ControlId,
+            Title = control.Title,
+            Citation = control.Citation,
+            AppliesTo = control.AppliesTo,
+            Counts = Count(all, exceptions, now),
+            FailingNames = names,
+            MoreFailing = more,
         };
     }
 
     /// <summary>
-    /// Every host <c>PartOf</c> this cluster -- the same edge the inventory
-    /// collector writes; see <c>VsphereInventorySource</c>.
+    /// The cluster an entity sits under, by the containment edges the
+    /// inventory collector writes: a host <c>PartOf</c> its cluster, a VM
+    /// <c>RunsOn</c> its host. Null when it is under none (a datastore, a
+    /// standalone host).
     /// </summary>
-    private static HashSet<EntityId> HostsOf(EntityGraph graph, EntityId clusterId) =>
-    [
-        .. graph.Relationships
-            .Where(r => r.Kind == RelationshipKind.PartOf && r.To == clusterId)
-            .Select(r => r.From),
-    ];
+    private static Func<EntityId, EntityId?> ContainingClusters(EntityGraph graph)
+    {
+        var parents = graph.Relationships
+            .Where(r => r.Kind is RelationshipKind.PartOf or RelationshipKind.RunsOn)
+            .ToLookup(r => r.From, r => r.To);
 
-    private static ContinuityReportSummary SummarizeContinuity(
+        var memo = new Dictionary<EntityId, EntityId?>();
+
+        return start =>
+        {
+            if (memo.TryGetValue(start, out var known))
+            {
+                return known;
+            }
+
+            // Breadth-first up the edges; the visited set keeps a bad edge
+            // from looping, since RunsOn is not checked acyclic with PartOf.
+            var visited = new HashSet<EntityId> { start };
+            var frontier = new Queue<EntityId>(parents[start]);
+            EntityId? found = null;
+
+            while (frontier.Count > 0)
+            {
+                var next = frontier.Dequeue();
+
+                if (!visited.Add(next))
+                {
+                    continue;
+                }
+
+                if (graph.Entities.TryGetValue(next, out var entity) && entity.Kind == EntityKind.Cluster)
+                {
+                    found = next;
+                    break;
+                }
+
+                foreach (var parent in parents[next])
+                {
+                    frontier.Enqueue(parent);
+                }
+            }
+
+            memo[start] = found;
+            return found;
+        };
+    }
+
+    private ContinuityReportSummary SummarizeContinuity(
         List<ContinuityReportRow> rows,
         IReadOnlyList<ComplianceFinding> findings,
         IReadOnlyList<ComplianceWaiver> exceptions,
         DateTimeOffset now,
         bool haInputsCollected)
     {
-        var byControl = ContinuityCatalogue.Production
+        var byControl = _continuityChecks
             .Select(c => c.Control.ControlId)
             .ToDictionary(
                 id => id,
@@ -636,12 +881,12 @@ public sealed class ReadModel(
     }
 
     /// <summary>A continuity finding as a card or a report shows it.</summary>
-    private static ContinuityFindingView ToView(
+    private ContinuityFindingView ToView(
         ComplianceFinding finding,
         IReadOnlyList<ComplianceWaiver> exceptions,
         DateTimeOffset now)
     {
-        var control = ContinuityCatalogue.Production
+        var control = _continuityChecks
             .FirstOrDefault(c => c.Control.ControlId == finding.ControlId)?.Control;
 
         return new ContinuityFindingView
@@ -676,20 +921,21 @@ public sealed class ReadModel(
     {
         var graph = _graphs.Current;
         var counts = AlertCountsByEntity();
+        var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All, ReportingSources());
 
         var matching = graph.Entities.Values
             .Where(e => includeVanished || e.ObservationState != ObservationState.Vanished)
             .Where(e => kind is null || e.Kind == kind)
-            .Where(e => health is null || e.EffectiveHealth == health)
+            .Where(e => health is null || derived[e.Id].Health == health)
             .Where(e => source is null || string.Equals(e.SourceInstanceId, source, StringComparison.Ordinal))
             .Where(e => search is null ||
                 e.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase))
             // Worst first: the explorer is also a triage surface.
-            .OrderByDescending(e => e.EffectiveHealth)
+            .OrderByDescending(e => derived[e.Id].Health)
             .ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return Paged(matching, offset, limit, e => ToView(e, counts));
+        return Paged(matching, offset, limit, e => ToView(e, counts, derived[e.Id]));
     }
 
     /// <summary>One entity with its edges and its alerts (tier 2 of ADR-0007).</summary>
@@ -704,6 +950,7 @@ public sealed class ReadModel(
         }
 
         var counts = AlertCountsByEntity();
+        var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All, ReportingSources());
 
         var entityAlerts =
         (IReadOnlyList<AlertView>)
@@ -716,7 +963,7 @@ public sealed class ReadModel(
 
         return new EntityDetailView
         {
-            Entity = ToView(entity, counts),
+            Entity = ToView(entity, counts, derived[entityId]),
             Marks =
             [
                 .. entity.Marks.Select(m => new IdentityMarkView
@@ -726,7 +973,7 @@ public sealed class ReadModel(
                     Source = m.Source,
                 }),
             ],
-            Relationships = RelationshipsOf(graph, entityId),
+            Relationships = RelationshipsOf(graph, entityId, derived),
             Alerts = entityAlerts,
             TimeToFull = entity.Kind == EntityKind.Datastore ? TimeToFull(entityId) : null,
             HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity) : null,
@@ -785,7 +1032,7 @@ public sealed class ReadModel(
     {
         var (findings, exceptions) = Continuity();
         var now = _clock.UtcNow;
-        var order = ContinuityCatalogue.Production.Select(c => c.Control.ControlId).ToList();
+        var order = _continuityChecks.Select(c => c.Control.ControlId).ToList();
 
         return
         [
@@ -1189,6 +1436,24 @@ public sealed class ReadModel(
             .GroupBy(a => a.Entity!.Value)
             .ToDictionary(g => g.Key, g => g.Count());
 
+    /// <summary>
+    /// The source instance ids that answered in the latest collection cycle,
+    /// for entities with no counting alert (<see cref="EntityHealth"/>).
+    /// </summary>
+    /// <remarks>
+    /// Inventory is the collector role that populates the entity graph, so
+    /// only it says whether an entity's source answered. A record whose
+    /// health is not Unknown means the last attempt succeeded — the runner
+    /// (<see cref="Application.Collection.SourceRunner"/>) sets Unknown on
+    /// every failed or backed-off attempt and only Healthy/Warning on a
+    /// success — so this is already the persisted "did it answer" signal
+    /// (<see cref="ICollectorHealthStore"/>), not a new one.
+    /// </remarks>
+    private HashSet<string> ReportingSources() =>
+        [.. _collectors.Current
+            .Where(h => h.Role == Application.Collection.CollectorRole.Inventory && h.Health != HealthState.Unknown)
+            .Select(h => h.InstanceId)];
+
     private static bool Matches(AlertInstance alert, string? search) =>
         search is null ||
         alert.Title.Contains(search, StringComparison.OrdinalIgnoreCase) ||
@@ -1247,12 +1512,15 @@ public sealed class ReadModel(
         };
     }
 
-    private static EntityView ToView(Entity entity, Dictionary<EntityId, int> alertCounts) => new()
+    private static EntityView ToView(Entity entity, Dictionary<EntityId, int> alertCounts, DerivedHealth health) => new()
     {
         Id = entity.Id.Value,
         Kind = entity.Kind,
         DisplayName = entity.DisplayName,
-        Health = entity.EffectiveHealth,
+        Health = health.Health,
+        HealthBasis = health.Basis,
+        HealthIsStale = health.IsStale,
+        HealthStaleSinceUtc = health.StaleSinceUtc,
         ObservationState = entity.ObservationState,
         Source = entity.SourceInstanceId,
         LastSeenUtc = entity.LastSeenUtc,
@@ -1269,7 +1537,10 @@ public sealed class ReadModel(
     /// index depends on which traversals turn out to matter and we have not
     /// measured that yet.
     /// </remarks>
-    private static List<RelationshipView> RelationshipsOf(EntityGraph graph, EntityId id)
+    private static List<RelationshipView> RelationshipsOf(
+        EntityGraph graph,
+        EntityId id,
+        Dictionary<EntityId, DerivedHealth> health)
     {
         var views = new List<RelationshipView>();
 
@@ -1296,7 +1567,7 @@ public sealed class ReadModel(
                 OtherId = otherId.Value,
                 OtherName = other.DisplayName,
                 OtherKind = other.Kind,
-                OtherHealth = other.EffectiveHealth,
+                OtherHealth = health[otherId].Health,
             });
         }
 

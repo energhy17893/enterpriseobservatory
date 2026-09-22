@@ -171,9 +171,49 @@ public sealed class ReportRenderer(ReadModel model, IClock clock, ComplianceServ
             $"Clusters with a failing finding: {s.ClustersWithFailingCount.ToString(CultureInfo.InvariantCulture)}",
         };
 
-        foreach (var (control, counts) in s.ByControl.Where(c => c.Value.Failing + c.Value.Accepted + c.Value.Excepted > 0))
+        // Same shape as the page and the CSV: vCenter, clusters, then one line
+        // per host/VM/datastore control -- never one line per entity.
+        foreach (var vCenter in report.VCenters)
         {
-            bodyLines.Add($"  {control}: {Describe(counts)}");
+            bodyLines.Add(string.Empty);
+            bodyLines.Add($"vCenter {vCenter.VCenterName}:");
+
+            foreach (var control in vCenter.Controls)
+            {
+                bodyLines.Add($"  {control.ControlId}: {Describe(control.Counts)}");
+            }
+
+            foreach (var alarm in vCenter.Alarms)
+            {
+                bodyLines.Add($"  alarm: {alarm.Title} ({alarm.Severity}, {alarm.State}{(alarm.IsStale ? ", stale" : string.Empty)})");
+            }
+        }
+
+        if (s.ClustersWithFailingCount > 0)
+        {
+            bodyLines.Add(string.Empty);
+            bodyLines.Add($"Clusters with a failing finding: {string.Join(", ", s.ClustersWithFailingNames)}");
+        }
+
+        if (report.ControlRows.Count > 0)
+        {
+            bodyLines.Add(string.Empty);
+            bodyLines.Add("Hosts, virtual machines and datastores, by control:");
+        }
+
+        foreach (var row in report.ControlRows)
+        {
+            var line = string.Create(
+                CultureInfo.InvariantCulture,
+                $"  {row.ControlId}: {row.Counts.Failing} failing / {row.Counts.Passing} passing");
+
+            if (row.FailingNames.Count > 0)
+            {
+                line += "; failing: " + string.Join(", ", row.FailingNames) +
+                    (row.MoreFailing > 0 ? string.Create(CultureInfo.InvariantCulture, $", +{row.MoreFailing}") : string.Empty);
+            }
+
+            bodyLines.Add(line);
         }
 
         if (s.Note is { } note)
@@ -189,7 +229,7 @@ public sealed class ReportRenderer(ReadModel model, IClock clock, ComplianceServ
         {
             Subject = $"Enterprise Observatory — continuity report {report.GeneratedAtUtc:yyyy-MM-dd}",
             BodyText = string.Join("\n", bodyLines),
-            Attachments = [Csv($"continuity-{stamp}.csv", ContinuityReportCsv.Write(report.Rows))],
+            Attachments = [Csv($"continuity-{stamp}.csv", ContinuityReportCsv.Write(report))],
         };
     }
 

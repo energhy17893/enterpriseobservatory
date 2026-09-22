@@ -94,6 +94,25 @@ public static class InventoryVerdicts
 
     /// <summary>Datastore: hosts that have it mounted (M8.4: one pins its VMs).</summary>
     public const string MountedHostCount = "mountedHosts";
+
+    /// <summary>
+    /// VM: <c>true</c> when its <c>customValue</c> and the custom field
+    /// definitions were both read (M8.8). Absent means "not read", which is
+    /// not "no backup attribute".
+    /// </summary>
+    public const string BackupRead = "backup.read";
+
+    /// <summary>VM: the name of the last-backup custom attribute the time came from.</summary>
+    public const string BackupField = "backup.field";
+
+    /// <summary>VM: that attribute's value as the backup product wrote it.</summary>
+    public const string BackupValue = "backup.value";
+
+    /// <summary>VM: the value read as a time, ISO-8601 UTC; absent when it did not read.</summary>
+    public const string BackupLastUtc = "backup.lastUtc";
+
+    /// <summary>VM: the clock the value was read in, since it carries no offset.</summary>
+    public const string BackupTimeBasis = "backup.timeBasis";
 }
 
 /// <summary>Reads <see cref="InventoryVerdicts"/> out of one retrieved object.</summary>

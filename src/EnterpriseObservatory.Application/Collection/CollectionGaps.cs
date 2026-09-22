@@ -98,6 +98,17 @@ public interface ICollectionGapStore
     /// Writes a gap's progress. Never moves it back and never reopens a closed one.
     /// </summary>
     void Update(CollectionGap gap);
+
+    /// <summary>
+    /// How many gaps, across every source, are in each state right now.
+    /// </summary>
+    /// <remarks>
+    /// For the health endpoint (Package D): an operator who was blind for four
+    /// hours needs to see that in one place, not per source. Rows are never
+    /// deleted (see the remarks on this interface), so the unrecoverable count
+    /// is the running total of history nothing can fill — not just today's.
+    /// </remarks>
+    IReadOnlyDictionary<CollectionGapState, int> CountsByState();
 }
 
 /// <summary>Series a collector writes about itself rather than about the estate.</summary>

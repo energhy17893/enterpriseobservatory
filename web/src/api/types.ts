@@ -215,6 +215,29 @@ export interface OverviewView {
   oldestSuccessfulReadUtc: string | null
 }
 
+/** One role's most recent monitoring cycle (Package D). */
+export interface CycleMetricsView {
+  atUtc: string | null
+  durationSeconds: number
+  /** `alert_history` rows this cycle appended. */
+  transitionsAppended: number
+  /** Verdicts clamped to Unknown by the age rule (ADR-0026 §Z3) this cycle. */
+  ageClampedToUnknown: number
+}
+
+/**
+ * The runner's own self-monitoring numbers, for the overview's own-health
+ * card. See `/api/metrics`.
+ */
+export interface SelfMetricsView {
+  generatedAtUtc: string
+  inventory: CycleMetricsView
+  observation: CycleMetricsView
+  unknownAlerts: number
+  openGaps: number
+  unrecoverableGaps: number
+}
+
 export type SeriesResolution = 'Raw' | 'FiveMinutes' | 'OneHour'
 
 export type RollupType =
@@ -527,8 +550,10 @@ export interface ComplianceControlView {
   installationDefault: string
   baselineValue: string
   assessment: string
-  /** Citable basis of the expectation/threshold, or 'product policy'; empty for vendor-guide controls. */
-  source?: string
+  /** The catalogue the control comes from: 'Broadcom SCG' or 'eo-continuity'. Not the citation. */
+  source: string
+  /** What the expectation/threshold rests on, shown as "basis:"; empty for vendor-guide controls (see lib/basis). */
+  citation: string
   /** False when this product cannot judge the control at all. */
   evaluated: boolean
   notEvaluatedReason: string | null
@@ -552,6 +577,8 @@ export interface ComplianceExceptionView {
 }
 
 export interface ComplianceView {
+  /** The source of the catalogue the header names; each control carries its own. */
+  source: string
   catalogueName: string
   catalogueRelease: string
   catalogueProblem: string | null
@@ -741,6 +768,24 @@ export interface ContinuityStateCounts {
   stale: number
 }
 
+/** Where a control's findings sit in the report, from the entity kind its check applies to. */
+export type ContinuityReportScope = 'VCenter' | 'Cluster' | 'Entity'
+
+/** One control of the eo-continuity catalogue as the report names it. */
+export interface ContinuityControlInfo {
+  controlId: string
+  title: string
+  /** What the expectation rests on; shown as "basis:", never hidden -- see lib/basis. */
+  citation: string
+  appliesTo: EntityKind
+  scope: ContinuityReportScope
+}
+
+export interface ContinuityControlCounts {
+  controlId: string
+  counts: ContinuityStateCounts
+}
+
 /** One cluster's continuity posture, from the eo-continuity findings (ADR-0024). */
 export interface ContinuityReportRow {
   clusterId: string
@@ -748,14 +793,45 @@ export interface ContinuityReportRow {
   source: string
   /** Whether this cluster's own inventory carried a dasConfig.* setting -- whether HA was actually read. */
   haSettingsCollected: boolean
-  ha: ContinuityStateCounts
-  drs: ContinuityStateCounts
-  /** The eo-cont.path-* findings of the hosts under this cluster. */
-  storagePath: ContinuityStateCounts
-  /** Hosts under this cluster with a failing, accepted or excepted path finding, by name. */
-  storagePathAffectedHosts: string[]
-  nPlusOne: ContinuityStateCounts
+  /** Every cluster-level control, in catalogue order. */
+  controls: ContinuityControlCounts[]
+  /** Findings of hosts, VMs and datastores under this cluster (containment edges). */
+  contained: ContinuityStateCounts
+  /** Entities under it with a failing, accepted or excepted finding: at most ten. */
+  containedAffectedNames: string[]
+  containedAffectedMore: number
+  totals: ContinuityStateCounts
   hasFailing: boolean
+}
+
+/** One host/VM/datastore control, summarised on one row -- never one row per entity. */
+export interface ContinuityControlRow {
+  controlId: string
+  title: string
+  citation: string
+  appliesTo: EntityKind
+  counts: ContinuityStateCounts
+  /** At most ten failing entities by name; the rest are counted in moreFailing. */
+  failingNames: string[]
+  moreFailing: number
+}
+
+export interface ContinuityAlarmView {
+  title: string
+  severity: AlertSeverity
+  state: AlertLifecycleState
+  isStale: boolean
+  firstSeenUtc: string
+}
+
+/** One vCenter: its own controls (certificate) and the alarms raised on it. */
+export interface ContinuityVCenterSection {
+  vCenterId: string
+  vCenterName: string
+  source: string
+  controls: ContinuityControlCounts[]
+  findings: ContinuityFindingView[]
+  alarms: ContinuityAlarmView[]
 }
 
 export interface ContinuityReportSummary {
@@ -776,9 +852,12 @@ export interface ContinuityReportSummary {
 export interface ContinuityReportView {
   generatedAtUtc: string
   summary: ContinuityReportSummary
+  /** Every catalogue control, in catalogue order, with where it sits. */
+  controls: ContinuityControlInfo[]
+  vCenters: ContinuityVCenterSection[]
   rows: ContinuityReportRow[]
+  controlRows: ContinuityControlRow[]
 }
-
 export interface AddExceptionCommand {
   controlId: string
   /** Null for every entity the control applies to. */

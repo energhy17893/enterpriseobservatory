@@ -39,4 +39,19 @@ public static class InventoryVerdictKeys
 
     /// <summary>Host or vCenter: the certificate's SHA-256 fingerprint, upper-case hex.</summary>
     public const string CertificateSha256 = "certificate.sha256";
+
+    /// <summary>VM: <c>true</c> when its custom attributes and their definitions were read (M8.8).</summary>
+    public const string BackupRead = "backup.read";
+
+    /// <summary>VM: the name of the custom attribute the last backup time was read from.</summary>
+    public const string BackupField = "backup.field";
+
+    /// <summary>VM: that attribute's value, as the backup product wrote it.</summary>
+    public const string BackupValue = "backup.value";
+
+    /// <summary>VM: the value read as a time, ISO-8601 UTC; absent when it could not be read.</summary>
+    public const string BackupLastUtc = "backup.lastUtc";
+
+    /// <summary>VM: which clock the value was read in (it carries no offset of its own).</summary>
+    public const string BackupTimeBasis = "backup.timeBasis";
 }
