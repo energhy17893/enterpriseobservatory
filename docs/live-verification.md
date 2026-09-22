@@ -370,6 +370,25 @@ Yeniden oynatma SQL'i canlı veritabanında koşulmadan önce compaction'ın
 okuma compaction'ı zaman aşımına düşürebiliyor (22 Eylül'de 4 kez oldu).
 Yayım sonrası 24 saatte çalkalanma yeniden sayılacak (hedef: volume başına ≤1/gün
 ortalama; 1 volume'ün çalkalanmaya devam etmesi kabul edilebilir).
+## 12. Migrasyon 15 (F2): çift sütun bildirimi ve kapının yakalaması
+
+22 Eylül 2026. F2'nin `collector_health.skipped_cycles` sütunu **iki yerde** bildirilmişti:
+tablonun `CREATE TABLE`'ında ve migrasyon 15'in `ALTER TABLE`'ında. Taze veritabanında
+create sütunu yaratıyor, ardından migrasyon `42701: column "skipped_cycles" already exists`
+ile düşüyordu — 132 PostgreSQL testi kırmızı. **Her yeni kurulumda ürün açılmazdı.**
+
+Kural (zaten kodda, yazıya geçiyor): bir migrasyonun eklediği sütun temel `CREATE TABLE`'da
+TEKRARLANMAZ — `alert_instance` da `stale_reason`/`consecutive_absent`'i aynı şekilde
+listelemez. Ek olarak: geri sarma yardımcısı (`RewindTo13`) yeni sütunu düşürmeli, yoksa
+migrasyon tekrar oynatılamaz.
+
+**Ajan bunu göremezdi:** kendi ortamında `EO_TEST_PG_PASSWORD` yok, 134 test atlandı ve
+raporunda bunu açıkça yazdı. **Şema değiştiren her PR'da tek kanıt yerel kapıdır, ajan
+raporu değil.** Literal şema sabiti (`Assert.Equal(15, Version())`, `PostgresSchema.Current`
+DEĞİL) bu yüzden var: migrasyon eklemek birinin elle onaylaması gereken bir olay olsun diye.
+
+Yayım: pg_dump önce alındı (182 MB), canlıda `schema_version` 14 → 15 sorunsuz uygulandı,
+`skipped_cycles` üç rol için de 0.
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
 
 ### Gecikme 1 ms altında görünmüyor
@@ -590,5 +609,6 @@ Dürüstlük gereği: aşağıdakiler **çalışıyor diye bilinmiyor.**
 - **Yetkisi kısıtlı hesap.** Bağlantı `gentel@vsphere.local` ile kuruldu.
   Salt-okunur bir servis hesabının hangi özellikleri okuyamadığı ölçülmedi —
   `missingSet` yolu kodda var ve test edildi, canlıda tetiklenmedi.
+
 
 
