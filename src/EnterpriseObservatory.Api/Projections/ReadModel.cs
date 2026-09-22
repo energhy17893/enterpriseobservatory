@@ -5,6 +5,7 @@ using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
+using EnterpriseObservatory.Domain.Compliance;
 
 namespace EnterpriseObservatory.Api.Projections;
 
@@ -32,8 +33,15 @@ public sealed class ReadModel(
     ICoverageStore coverage,
     IObservationStore observations,
     MonitoringOptions options,
-    IClock clock)
+    IClock clock,
+    IComplianceStore? compliance = null)
 {
+    /// <summary>
+    /// Where the continuity findings live (ADR-0024); null reads as "never
+    /// evaluated", which the continuity report says rather than showing zeros.
+    /// </summary>
+    private readonly IComplianceStore? _compliance = compliance;
+
     private readonly IEntityGraphStore _graphs = graphs ?? throw new ArgumentNullException(nameof(graphs));
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
 
@@ -410,35 +418,47 @@ public sealed class ReadModel(
 
     // --- continuity report (M8.10) -----------------------------------------
 
-    /// <summary>
-    /// The five rule ids this report reads, by the same <c>RuleId</c> constant
-    /// every rule file bakes into its own fingerprints' check-id component.
-    /// There is no separate "which rule produced this" field on an alert --
-    /// see <see cref="HasRule"/> for why that is enough.
-    /// </summary>
-    private static class ContinuityRuleIds
+    /// <summary>The continuity findings as stored, with the exceptions that decide their state.</summary>
+    private (IReadOnlyList<ComplianceFinding> Findings, IReadOnlyList<ComplianceWaiver> Exceptions) Continuity()
     {
-        public const string Ha = MovedContinuityRules.HighAvailability;
-        public const string Drs = MovedContinuityRules.Drs;
-        public const string Multipath = MovedContinuityRules.Multipath;
-        public const string StoragePath = StoragePathRedundancy.RuleId;
-        public const string NPlusOne = MovedContinuityRules.NPlusOne;
+        if (_compliance is null)
+        {
+            return ([], []);
+        }
+
+        return (
+            [.. _compliance.Findings.Where(f =>
+                string.Equals(f.CatalogueRelease, ContinuityCatalogue.Release, StringComparison.Ordinal))],
+            _compliance.Exceptions);
     }
 
+    private static bool IsHa(string controlId) =>
+        controlId.StartsWith("eo-cont.ha-", StringComparison.Ordinal);
+
+    private static bool IsStoragePath(string controlId) =>
+        controlId.StartsWith("eo-cont.path-", StringComparison.Ordinal);
+
+    private static bool IsNPlusOne(string controlId) =>
+        controlId.StartsWith("eo-cont.n-plus-one-", StringComparison.Ordinal);
+
     /// <summary>
-    /// One row per live cluster: its HA scorecard (M8.1) and DRS compliance
-    /// (M8.3) findings, the storage-path redundancy findings of the hosts
-    /// under it, and the N+1 what-if capacity check.
+    /// One row per live cluster: its HA scorecard (M8.1), DRS rules (M8.3) and
+    /// N+1 (M8.2) findings, and the multipath findings (M8.6) of the hosts
+    /// under it — each counted by finding state.
     /// </summary>
     /// <remarks>
-    /// Nothing here recomputes a verdict -- every count is read from the same
-    /// visible alert list the inbox, the entity page's HA scorecard and the
-    /// alert report already agree on. See ADR-0007 §1.
+    /// Read from the <c>eo-continuity</c> findings (ADR-0024), never
+    /// recomputed: the same rows the compliance screen shows. A finding is
+    /// counted in its state — failing, accepted, excepted, not evaluated,
+    /// passing — and a stale one also in <see cref="ContinuityStateCounts.Stale"/>,
+    /// the way the compliance summary counts it. Zero is only "all clear"
+    /// when the checks have run: until then the summary says so.
     /// </remarks>
     public ContinuityReportView ContinuityReport()
     {
         var graph = _graphs.Current;
-        var visible = Visible();
+        var now = _clock.UtcNow;
+        var (findings, exceptions) = Continuity();
 
         var clusters = graph.Entities.Values
             .Where(e => e.Kind == EntityKind.Cluster && e.ObservationState != ObservationState.Vanished)
@@ -446,29 +466,25 @@ public sealed class ReadModel(
             .ToList();
 
         // Whether HA configuration has ever actually been read for this
-        // estate, judged across every cluster rather than per-cluster: a
-        // fresh install where the inventory collector has not reached
-        // ClusterComputeResource yet must read as "not collected", not as
-        // "every cluster passed".
+        // estate: a fresh install that has not reached the clusters yet must
+        // read as "not collected", not as "every cluster passed".
         var haInputsCollected = clusters.Any(HasHaSettings);
 
         var rows = clusters
-            .Select(c => ToContinuityRow(c, graph, visible))
+            .Select(c => ToContinuityRow(c, graph, findings, exceptions, now))
             .ToList();
 
         return new ContinuityReportView
         {
-            GeneratedAtUtc = _clock.UtcNow,
-            Summary = SummarizeContinuity(rows, visible, haInputsCollected),
+            GeneratedAtUtc = now,
+            Summary = SummarizeContinuity(rows, findings, exceptions, now, haInputsCollected),
             Rows = rows,
         };
     }
 
     /// <summary>
     /// The common prefix every HA setting key is filed under, taken from the
-    /// policy's own <see cref="ClusterHighAvailabilityPolicy.EnabledSetting"/>
-    /// rather than restated as a literal, so a renamed prefix cannot make this
-    /// check and the policy disagree about what "collected" means.
+    /// policy's own <see cref="ClusterHighAvailabilityPolicy.EnabledSetting"/>.
     /// </summary>
     private static readonly string HaSettingPrefix =
         ClusterHighAvailabilityPolicy.Default.EnabledSetting[
@@ -477,33 +493,63 @@ public sealed class ReadModel(
     private static bool HasHaSettings(Entity cluster) =>
         cluster.Settings.Keys.Any(k => k.StartsWith(HaSettingPrefix, StringComparison.Ordinal));
 
-    private static ContinuityReportRow ToContinuityRow(
-        Entity cluster, EntityGraph graph, IReadOnlyList<AlertInstance> visible)
+    private static ContinuityStateCounts Count(
+        IEnumerable<ComplianceFinding> findings,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
     {
-        var onCluster = visible.Where(a => a.Entity == cluster.Id).ToList();
-        var ha = onCluster.Where(a => HasRule(a, ContinuityRuleIds.Ha)).ToList();
-        var drs = onCluster.Where(a => HasRule(a, ContinuityRuleIds.Drs)).ToList();
-        var nPlusOne = onCluster.Where(a => HasRule(a, ContinuityRuleIds.NPlusOne)).ToList();
+        int failing = 0, accepted = 0, excepted = 0, notEvaluated = 0, passing = 0, stale = 0;
 
+        foreach (var finding in findings)
+        {
+            switch (finding.StateAt(exceptions, now))
+            {
+                case FindingState.Failing: failing++; break;
+                case FindingState.Accepted: accepted++; break;
+                case FindingState.Excepted: excepted++; break;
+                case FindingState.NotEvaluated: notEvaluated++; break;
+                case FindingState.Passing: passing++; break;
+            }
+
+            if (finding.Stale)
+            {
+                stale++;
+            }
+        }
+
+        return new ContinuityStateCounts
+        {
+            Failing = failing,
+            Accepted = accepted,
+            Excepted = excepted,
+            NotEvaluated = notEvaluated,
+            Passing = passing,
+            Stale = stale,
+        };
+    }
+
+    private static ContinuityReportRow ToContinuityRow(
+        Entity cluster,
+        EntityGraph graph,
+        IReadOnlyList<ComplianceFinding> findings,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var onCluster = findings.Where(f => f.Entity == cluster.Id).ToList();
         var hostIds = HostsOf(graph, cluster.Id);
-
-        var storagePath = visible
-            .Where(a => a.Entity is { } id && hostIds.Contains(id))
-            .Where(a => HasRule(a, ContinuityRuleIds.Multipath) || HasRule(a, ContinuityRuleIds.StoragePath))
-            .ToList();
+        var storagePath = findings.Where(f => IsStoragePath(f.ControlId) && hostIds.Contains(f.Entity)).ToList();
 
         var affectedHosts = storagePath
-            .Select(a => a.Entity is { } id && graph.Entities.TryGetValue(id, out var host)
-                ? host.DisplayName
-                : null)
-            .OfType<string>()
+            .Where(f => f.StateAt(exceptions, now) is FindingState.Failing or FindingState.Accepted or FindingState.Excepted)
+            .Select(f => graph.Entities.TryGetValue(f.Entity, out var host) ? host.DisplayName : f.EntityName)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var hasCritical =
-            ha.Concat(drs).Concat(storagePath).Concat(nPlusOne)
-                .Any(a => a.Severity == AlertSeverity.Critical);
+        var ha = Count(onCluster.Where(f => IsHa(f.ControlId)), exceptions, now);
+        var drs = Count(onCluster.Where(f => f.ControlId == ContinuityControls.DrsRule), exceptions, now);
+        var path = Count(storagePath, exceptions, now);
+        var nPlusOne = Count(onCluster.Where(f => IsNPlusOne(f.ControlId)), exceptions, now);
 
         return new ContinuityReportRow
         {
@@ -511,16 +557,12 @@ public sealed class ReadModel(
             ClusterName = cluster.DisplayName,
             Source = cluster.SourceInstanceId,
             HaSettingsCollected = HasHaSettings(cluster),
-            HaCriticalCount = ha.Count(a => a.Severity == AlertSeverity.Critical),
-            HaWarningCount = ha.Count(a => a.Severity == AlertSeverity.Warning),
-            DrsCriticalCount = drs.Count(a => a.Severity == AlertSeverity.Critical),
-            DrsWarningCount = drs.Count(a => a.Severity == AlertSeverity.Warning),
-            StoragePathCriticalCount = storagePath.Count(a => a.Severity == AlertSeverity.Critical),
-            StoragePathWarningCount = storagePath.Count(a => a.Severity == AlertSeverity.Warning),
+            Ha = ha,
+            Drs = drs,
+            StoragePath = path,
             StoragePathAffectedHosts = affectedHosts,
-            NPlusOneCriticalCount = nPlusOne.Count(a => a.Severity == AlertSeverity.Critical),
-            NPlusOneWarningCount = nPlusOne.Count(a => a.Severity == AlertSeverity.Warning),
-            HasCritical = hasCritical,
+            NPlusOne = nPlusOne,
+            HasFailing = ha.Failing + drs.Failing + path.Failing + nPlusOne.Failing > 0,
         };
     }
 
@@ -535,97 +577,76 @@ public sealed class ReadModel(
             .Select(r => r.From),
     ];
 
-    /// <summary>
-    /// Whether one rule produced this alert.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// There is no <c>RuleId</c> field on an alert: <see cref="AlertFingerprint.Create"/>
-    /// folds it into the check-id part of the fingerprint instead (the fifth,
-    /// last <c>|</c>-separated segment of <see cref="AlertFingerprint.Value"/>),
-    /// and every rule file passes its own <c>RuleId</c> constant there --
-    /// either bare (<c>DrsRuleViolations</c>, <c>MultipathSinglePointOfFailure</c>,
-    /// <c>StoragePathRedundancy</c>, <c>ClusterNPlusOne</c>'s main finding) or as
-    /// a prefix of a per-finding key (<c>ClusterHighAvailability</c>'s
-    /// <c>"{RuleId}-{findingKey}"</c>, <c>ClusterNPlusOne</c>'s own
-    /// "history unreadable" check).
-    /// </para>
-    /// <para>
-    /// Matching against the whole fingerprint, as a plain substring search,
-    /// was wrong: it also matched <see cref="GuardedRule"/>'s own failure
-    /// alert (whose check-id segment is the constant <c>"analysis-rule-failed"</c>,
-    /// but whose object-name segment carries the failed rule's id) and any
-    /// alert whose title or object name happened to contain another rule's id
-    /// -- for example a user-named DRS rule. Segmenting on <c>|</c> and
-    /// comparing only the check-id part avoids both, and excluding
-    /// <c>"analysis-rule-failed"</c> outright is a second, explicit guard
-    /// against the one segment shape every rule shares.
-    /// </para>
-    /// </remarks>
-    private static bool HasRule(AlertInstance alert, string ruleId) =>
-        HasRule(alert.Fingerprint.Value, ruleId);
-
-    /// <summary>Same check as the other overload, from an already-projected view.</summary>
-    private static bool HasRule(AlertView alert, string ruleId) =>
-        HasRule(alert.Fingerprint, ruleId);
-
-    private static bool HasRule(string fingerprintValue, string ruleId)
-    {
-        var segments = fingerprintValue.Split('|');
-
-        if (segments.Length != 5)
-        {
-            return false;
-        }
-
-        var checkId = segments[4];
-
-        if (string.Equals(checkId, "analysis-rule-failed", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        return string.Equals(checkId, ruleId, StringComparison.Ordinal) ||
-            checkId.StartsWith(ruleId + "-", StringComparison.Ordinal);
-    }
-
     private static ContinuityReportSummary SummarizeContinuity(
-        List<ContinuityReportRow> rows, IReadOnlyList<AlertInstance> visible, bool haInputsCollected)
+        List<ContinuityReportRow> rows,
+        IReadOnlyList<ComplianceFinding> findings,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now,
+        bool haInputsCollected)
     {
-        var byRule = new Dictionary<string, int>(StringComparer.Ordinal)
+        var byControl = ContinuityCatalogue.Production
+            .Select(c => c.Control.ControlId)
+            .ToDictionary(
+                id => id,
+                id => Count(findings.Where(f => f.ControlId == id), exceptions, now),
+                StringComparer.Ordinal);
+
+        var failing = rows.Where(r => r.HasFailing).ToList();
+        var evaluated = findings.Count > 0;
+
+        var notes = new List<string>();
+
+        if (!evaluated)
         {
-            [ContinuityRuleIds.Ha] = visible.Count(a => HasRule(a, ContinuityRuleIds.Ha)),
-            [ContinuityRuleIds.Drs] = visible.Count(a => HasRule(a, ContinuityRuleIds.Drs)),
-            [ContinuityRuleIds.Multipath] = visible.Count(a => HasRule(a, ContinuityRuleIds.Multipath)),
-            [ContinuityRuleIds.StoragePath] = visible.Count(a => HasRule(a, ContinuityRuleIds.StoragePath)),
-            [ContinuityRuleIds.NPlusOne] = visible.Count(a => HasRule(a, ContinuityRuleIds.NPlusOne)),
-        };
-
-        var continuityAlerts = visible.Where(a => byRule.Keys.Any(id => HasRule(a, id))).ToList();
-
-        var bySeverity = continuityAlerts.GroupBy(a => a.Severity.ToString())
-            .ToDictionary(g => g.Key, g => g.Count());
-
-        foreach (var value in Enum.GetValues<AlertSeverity>())
-        {
-            bySeverity.TryAdd(value.ToString(), 0);
+            notes.Add(
+                "The continuity checks have not been evaluated yet, so a zero here means nothing was " +
+                "looked at, not that everything passed.");
         }
 
-        var critical = rows.Where(r => r.HasCritical).ToList();
+        if (!haInputsCollected)
+        {
+            notes.Add(
+                "Cluster HA/DRS configuration has not been read yet (not collected by this version, not " +
+                "yet read since startup, or not permitted for the service account) -- see Coverage.");
+        }
 
         return new ContinuityReportSummary
         {
             TotalClusters = rows.Count,
-            ByRule = byRule,
-            BySeverity = bySeverity,
-            ClustersWithCriticalCount = critical.Count,
-            ClustersWithCriticalNames = [.. critical.Select(r => r.ClusterName)],
+            Evaluated = evaluated,
+            ByControl = byControl,
+            Totals = Count(findings, exceptions, now),
+            ClustersWithFailingCount = failing.Count,
+            ClustersWithFailingNames = [.. failing.Select(r => r.ClusterName)],
             HaInputsCollected = haInputsCollected,
-            Note = haInputsCollected
-                ? null
-                : "Cluster HA/DRS configuration has not been read yet (not collected by this " +
-                  "version, not yet read since startup, or not permitted for the service account) " +
-                  "-- see Coverage.",
+            Note = notes.Count == 0 ? null : string.Join(" ", notes),
+        };
+    }
+
+    /// <summary>A continuity finding as a card or a report shows it.</summary>
+    private static ContinuityFindingView ToView(
+        ComplianceFinding finding,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var control = ContinuityCatalogue.Production
+            .FirstOrDefault(c => c.Control.ControlId == finding.ControlId)?.Control;
+
+        return new ContinuityFindingView
+        {
+            ControlId = finding.ControlId,
+            Title = control?.Title ?? finding.ControlId,
+            Source = control?.Source ?? string.Empty,
+            Subject = finding.Subject,
+            SubjectLabel = finding.SubjectLabel,
+            State = finding.StateAt(exceptions, now),
+            Stale = finding.Stale,
+            Expected = finding.Expected,
+            Observed = finding.Observed,
+            Reason = finding.Reason,
+            AcceptedBy = finding.Acceptance?.By,
+            AcceptedReason = finding.Acceptance?.Reason,
+            LastEvaluatedUtc = finding.LastEvaluatedUtc,
         };
     }
 
@@ -696,7 +717,7 @@ public sealed class ReadModel(
             Relationships = RelationshipsOf(graph, entityId),
             Alerts = entityAlerts,
             TimeToFull = entity.Kind == EntityKind.Datastore ? TimeToFull(entityId) : null,
-            HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity, entityAlerts) : null,
+            HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity) : null,
             ClusterFailover = entity.Kind == EntityKind.Cluster ? ClusterFailover(entity, graph) : null,
         };
     }
@@ -704,15 +725,14 @@ public sealed class ReadModel(
     /// <summary>
     /// The HA scorecard, read from the same <c>Entity.Settings</c> the
     /// collector filed under <c>ClusterHighAvailabilityPolicy</c>'s keys and
-    /// the same alerts the entity's own list already carries.
+    /// the cluster's <c>eo-cont.ha-*</c> continuity findings.
     /// </summary>
     /// <remarks>
-    /// Filtered, never recomputed -- ADR-0007 §1, same as
-    /// <see cref="EntityDetailView.Alerts"/> itself. The setting keys are read
+    /// Filtered, never recomputed -- ADR-0007 §1. The setting keys are read
     /// from the rule's own default policy rather than restated here, so the
     /// two can never drift apart: see <see cref="ClusterHighAvailabilityPolicy"/>.
     /// </remarks>
-    private static HaScorecardView HaScorecard(Entity cluster, IReadOnlyList<AlertView> entityAlerts)
+    private HaScorecardView HaScorecard(Entity cluster)
     {
         var rules = ClusterHighAvailabilityPolicy.Default;
         var settings = cluster.Settings;
@@ -742,11 +762,26 @@ public sealed class ReadModel(
             HeartbeatDatastoreCandidatePolicy =
                 settings.GetValueOrDefault(rules.HeartbeatDatastoreCandidatePolicySetting),
             RedundantNetworkWarningSilenced = Bool(settings, rules.IgnoreRedundantNetworkWarningSetting),
-            // Not Category == "Configuration": that also catches other rules'
-            // alerts filed under the same category (RemoteLogging, for one),
-            // which do not belong on this cluster's HA scorecard.
-            Findings = [.. entityAlerts.Where(a => HasRule(a, ContinuityRuleIds.Ha))],
+            // The cluster's eo-cont.ha-* findings in every state, from the
+            // same store the compliance screen reads (ADR-0024).
+            Findings = HaFindings(cluster.Id),
         };
+    }
+
+    /// <summary>The cluster's HA continuity findings, in catalogue order.</summary>
+    private IReadOnlyList<ContinuityFindingView> HaFindings(EntityId cluster)
+    {
+        var (findings, exceptions) = Continuity();
+        var now = _clock.UtcNow;
+        var order = ContinuityCatalogue.Production.Select(c => c.Control.ControlId).ToList();
+
+        return
+        [
+            .. findings
+                .Where(f => f.Entity == cluster && IsHa(f.ControlId))
+                .OrderBy(f => order.IndexOf(f.ControlId))
+                .Select(f => ToView(f, exceptions, now)),
+        ];
     }
 
     private static bool? Bool(IReadOnlyDictionary<string, string> settings, string key) =>

@@ -443,6 +443,30 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public void The_continuity_report_reads_the_findings_the_registered_service_wrote()
+    {
+        // K2: the read model is wired to the compliance store, so the report
+        // and the HA scorecard read continuity findings, not alarms.
+        var compliance = _host.Services.GetRequiredService<ComplianceService>();
+        compliance.Evaluate(
+        [
+            new Domain.Entity
+            {
+                Id = new Domain.EntityId("vc-1:domain-c9"),
+                Kind = Domain.EntityKind.Cluster,
+                DisplayName = "k2-smoke",
+                LastSeenUtc = DateTimeOffset.UtcNow,
+                SourceInstanceId = "vc-1",
+            },
+        ]);
+
+        var report = _host.Services.GetRequiredService<Api.Projections.ReadModel>().ContinuityReport();
+
+        Assert.True(report.Summary.Evaluated);
+        Assert.True(report.Summary.ByControl[ContinuityControls.HaEnabled].NotEvaluated >= 1);
+    }
+
+    [Fact]
     public async Task An_operator_can_accept_a_failing_finding_and_it_is_attributed()
     {
         // Evaluated through the real service the host registered, over a

@@ -268,11 +268,45 @@ public sealed record HaScorecardView
     public bool? RedundantNetworkWarningSilenced { get; init; }
 
     /// <summary>
-    /// The open findings from the HA scorecard rule, filtered to this
-    /// cluster. Filtered, never recomputed -- same rule as
-    /// <see cref="EntityDetailView.Alerts"/>.
+    /// This cluster's <c>eo-cont.ha-*</c> continuity findings in every state,
+    /// passing and not evaluated included (ADR-0024). Empty only when the
+    /// checks have not run yet.
     /// </summary>
-    public required IReadOnlyList<AlertView> Findings { get; init; }
+    public required IReadOnlyList<ContinuityFindingView> Findings { get; init; }
+}
+
+/// <summary>One continuity finding as a card or a report shows it.</summary>
+public sealed record ContinuityFindingView
+{
+    public required string ControlId { get; init; }
+
+    public required string Title { get; init; }
+
+    /// <summary>The citable basis of the control's expectation, or "product policy".</summary>
+    public string Source { get; init; } = string.Empty;
+
+    /// <summary>What on the entity it is about; empty for the entity itself.</summary>
+    public string Subject { get; init; } = string.Empty;
+
+    public string? SubjectLabel { get; init; }
+
+    public required FindingState State { get; init; }
+
+    /// <summary>The source did not report last cycle: the last verdict that could be reached.</summary>
+    public required bool Stale { get; init; }
+
+    public required string Expected { get; init; }
+
+    public string? Observed { get; init; }
+
+    /// <summary>Why it is not evaluated, when it is not.</summary>
+    public string? Reason { get; init; }
+
+    public string? AcceptedBy { get; init; }
+
+    public string? AcceptedReason { get; init; }
+
+    public required DateTimeOffset LastEvaluatedUtc { get; init; }
 }
 
 /// <summary>
@@ -1038,17 +1072,32 @@ public sealed record CapacityReportView
 
 // --- continuity report (M8.10) -------------------------------------------
 //
-// The fourth report: one row per cluster, its HA scorecard (M8.1) and DRS
-// rule compliance (M8.3) beside the storage-path redundancy of the hosts
-// under it, plus a placeholder column group for the N+1 capacity rule a
-// parallel change is still building. Nothing here recomputes a verdict --
-// every count is read from the same visible alert list the inbox and the
-// other three reports already agree on. See ReadModel.ContinuityReport.
+// The fourth report: one row per cluster -- its HA scorecard (M8.1), DRS
+// rules (M8.3) and N+1 (M8.2), and the multipath findings (M8.6) of the hosts
+// under it. Read from the eo-continuity findings (ADR-0024), the same rows
+// the compliance screen shows; nothing here recomputes a verdict. See
+// ReadModel.ContinuityReport.
 
 /// <summary>
-/// One cluster's continuity posture: HA, DRS, storage-path redundancy for
-/// its hosts, and the N+1 placeholder, all as counts by severity.
+/// Findings of one group counted by state. A stale finding is counted in its
+/// state and also in <see cref="Stale"/>, as the compliance summary counts it.
 /// </summary>
+public sealed record ContinuityStateCounts
+{
+    public int Failing { get; init; }
+
+    public int Accepted { get; init; }
+
+    public int Excepted { get; init; }
+
+    public int NotEvaluated { get; init; }
+
+    public int Passing { get; init; }
+
+    public int Stale { get; init; }
+}
+
+/// <summary>One cluster's continuity posture, by finding state per group.</summary>
 public sealed record ContinuityReportRow
 {
     public required string ClusterId { get; init; }
@@ -1064,53 +1113,53 @@ public sealed record ContinuityReportRow
     /// </summary>
     public required bool HaSettingsCollected { get; init; }
 
-    public required int HaCriticalCount { get; init; }
+    /// <summary>The cluster's <c>eo-cont.ha-*</c> findings.</summary>
+    public required ContinuityStateCounts Ha { get; init; }
 
-    public required int HaWarningCount { get; init; }
+    /// <summary>The cluster's <c>eo-cont.drs-rule</c> findings, one per rule.</summary>
+    public required ContinuityStateCounts Drs { get; init; }
 
-    public required int DrsCriticalCount { get; init; }
+    /// <summary>The <c>eo-cont.path-*</c> findings of the hosts under the cluster.</summary>
+    public required ContinuityStateCounts StoragePath { get; init; }
 
-    public required int DrsWarningCount { get; init; }
-
-    public required int StoragePathCriticalCount { get; init; }
-
-    public required int StoragePathWarningCount { get; init; }
-
-    /// <summary>Hosts under this cluster with a multipath or path-redundancy finding, by name.</summary>
+    /// <summary>Hosts under this cluster with a failing, accepted or excepted path finding, by name.</summary>
     public required IReadOnlyList<string> StoragePathAffectedHosts { get; init; }
 
-    /// <summary>N+1 capacity rule: a placeholder until that rule ships. Zero until then.</summary>
-    public required int NPlusOneCriticalCount { get; init; }
+    /// <summary>The cluster's <c>eo-cont.n-plus-one-*</c> findings.</summary>
+    public required ContinuityStateCounts NPlusOne { get; init; }
 
-    public required int NPlusOneWarningCount { get; init; }
-
-    /// <summary>Any Critical among the four groups above -- what the summary counts clusters by.</summary>
-    public required bool HasCritical { get; init; }
+    /// <summary>Any failing finding (not accepted, not excepted) in the four groups.</summary>
+    public required bool HasFailing { get; init; }
 }
 
-/// <summary>Counts by rule and by severity, and the input-not-collected note the rules cannot say for themselves.</summary>
+/// <summary>Counts by control and by state, and what the counts cannot say for themselves.</summary>
 public sealed record ContinuityReportSummary
 {
     public required int TotalClusters { get; init; }
 
-    /// <summary>Alert count per rule id -- cluster-ha-scorecard, drs-rule-violation, multipath-single-point-of-failure, storage-path-redundancy, n-plus-one.</summary>
-    public required IReadOnlyDictionary<string, int> ByRule { get; init; }
+    /// <summary>
+    /// Whether the continuity checks have written any finding. False means
+    /// zeros are "not looked at", not "all clear" -- see <see cref="Note"/>.
+    /// </summary>
+    public required bool Evaluated { get; init; }
 
-    public required IReadOnlyDictionary<string, int> BySeverity { get; init; }
+    /// <summary>Per <c>eo-cont.*</c> control, every control listed.</summary>
+    public required IReadOnlyDictionary<string, ContinuityStateCounts> ByControl { get; init; }
 
-    public required int ClustersWithCriticalCount { get; init; }
+    public required ContinuityStateCounts Totals { get; init; }
 
-    public required IReadOnlyList<string> ClustersWithCriticalNames { get; init; }
+    public required int ClustersWithFailingCount { get; init; }
+
+    public required IReadOnlyList<string> ClustersWithFailingNames { get; init; }
 
     /// <summary>
     /// Whether any cluster's inventory carried a <c>dasConfig.*</c> setting.
-    /// False means the HA/DRS collector wiring has not run against this
-    /// estate yet, so zero HA and DRS findings mean "not observed", not
-    /// "all clear" -- see <see cref="Note"/>.
+    /// False means the HA/DRS configuration has not been read on this estate
+    /// yet -- see <see cref="Note"/>.
     /// </summary>
     public required bool HaInputsCollected { get; init; }
 
-    /// <summary>Set only when <see cref="HaInputsCollected"/> is false.</summary>
+    /// <summary>Set when the checks have not run or HA/DRS inputs were never read.</summary>
     public string? Note { get; init; }
 }
 

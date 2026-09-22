@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
-import type { AlertSeverity, HealthState } from '@/api/types'
+import type { AlertSeverity, FindingState, HealthState } from '@/api/types'
 
 /** The shadcn/ui class helper, kept so generated components drop in unchanged. */
 export function cn(...inputs: ClassValue[]) {
@@ -68,6 +68,28 @@ export function severityStatus(severity: AlertSeverity): StatusName {
   return severity
 }
 
+/**
+ * A finding's state as a status name, the compliance screen's mapping:
+ * failing is a warning (not an outage), accepted and excepted are decisions
+ * on record, not evaluated is unknown -- never folded into passing.
+ */
+export function findingStatus(state: FindingState): StatusName {
+  switch (state) {
+    case 'Failing':
+      return 'Warning'
+    case 'Accepted':
+    case 'Excepted':
+      return 'Info'
+    case 'Passing':
+      return 'Healthy'
+    case 'NotEvaluated':
+      return 'Unknown'
+  }
+}
+
+export function findingLabel(state: FindingState): string {
+  return state === 'NotEvaluated' ? 'Not evaluated' : state
+}
 /**
  * How long ago something happened, in words.
  *
