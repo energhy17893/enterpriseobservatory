@@ -389,6 +389,42 @@ DEĞİL) bu yüzden var: migrasyon eklemek birinin elle onaylaması gereken bir 
 
 Yayım: pg_dump önce alındı (182 MB), canlıda `schema_version` 14 → 15 sorunsuz uygulandı,
 `skipped_cycles` üç rol için de 0.
+## 13. Zerto appliance değişimi: depolama kuralları gerçek gecikmede çalışıyor, örnek düşüşü operatör işi
+
+**Tarih:** 22 Eylül 2026, 19:49–19:59Z. **Yöntem:** salt-okunur psql; `sample`
+slot sayımı, `series`/`entity` fark kümesi, `source_event`.
+
+**Görünen:** slot başına örnek sayısı 19:50:20Z'de 8 826 → 8 811'e düştü ve
+19:58:40Z'de geri geldi. Aynı pencerede `peer-outliers` ve `storage-layer-split`
+altışar kez açılıp kapandı (`alert_history`'de 12 geçiş). F2 semaforu on dakika
+önce yayımlanmıştı; ilk şüphe okuma kırpma idi.
+
+**Neden (olay akışından, saniyesiyle):**
+
+| Zaman (Z) | Olay | Sonuç |
+|---|---|---|
+| 19:49:51 | `VirtualMachine.shutdownGuest` ZVMA (host .78) | — |
+| 19:50:22 | `VmPoweredOffEvent` ZVMA | 19:50:20 slotundan itibaren tam olarak ZVMA'nın 15 VM serisi yok — kapalı VM gerçek zamanlı sayaç üretmez |
+| 19:52:14 | `ResourcePool.ImportVAppLRO` — ZERTO-CLS OVF'ten host .77'ye kuruluyor | 19:55–19:58 `datastore.totalReadLatency.average` 21–60 ms (host .79 kaynaklı) — OVF içe aktarımının datastore'a yazması |
+| 19:58:08 | `VmPoweredOnEvent` ZERTO-CLS | 19:58:40'ta 8 826: yeni VM'in serileri eskisinin yerini aldı |
+
+**Sonuçlar:**
+- Örnek düşüşü ürün hatası değil; F2 şüphesi düştü. 15 eksik seri tek varlığa
+  ait ve varlık gerçekten kapalıydı.
+- **Depolama kuralları bu estate'te çalışıyor.** "Bilinen sınırlar"daki
+  "yapısal olarak ateşleyemez" cümlesi yanlıştı; doğrusu: milisaniye sayaçları
+  1 ms altını sıfıra kırpar, o yüzden **sessizlik = gecikme 1 ms altında**, ateşleme
+  = gerçek gecikme. 34–37 ms'lik olayda ürün host'u adlandırdı, aynı volume'ü
+  bağlayan 9 host'la karşılaştırdı, katmanı söyledi ve olay bitince kapattı.
+- **Tasarım açığı (yeni iş):** metrik kuralları bir turluk koşulla açılıp
+  kapanıyor; dört dakikada altı geçiş. Yalnız kör-nokta kuralının penceresi
+  var (§11). Referans ürünlerde kural başına kalıcılık süresi standart
+  (Prometheus `for`, vROps wait/cancel cycle); ADR-0026 üstüne ayrı iş olarak
+  yazılacak, K/P'nin ham örnekten yeniden oynatma yöntemiyle seçilecek.
+- **Estate gürültüsü, ürün dışı:** `vectra@vsphere.local` ~30 sn'de bir
+  `BadUsernameSessionEvent`; `solarwinds` sürekli login/logout;
+  `AlreadyAuthenticatedSessionEvent`. KB 336100'ün oturum baskısına katkı.
+
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
 
 ### Gecikme 1 ms altında görünmüyor
