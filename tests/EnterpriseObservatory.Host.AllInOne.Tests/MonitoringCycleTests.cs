@@ -1044,9 +1044,9 @@ public class MonitoringCycleTests : IDisposable
         {
             Behaviour = () => Batch("vc-1", _clock.UtcNow) with
             {
-                Observations = faulty
-                    ? [Fault("storagePath.busResets.summation", 1, "vmhba0:C0:T0:L1")]
-                    : [],
+                // The counter still arrives, reading zero: a counter that
+                // stops arriving is not a fault that cleared (ADR-0026).
+                Observations = [Fault("storagePath.busResets.summation", faulty ? 1 : 0, "vmhba0:C0:T0:L1")],
             },
         };
 
@@ -1122,7 +1122,13 @@ public class MonitoringCycleTests : IDisposable
         // this is not a scope that stopped resolving anything -- after the
         // rule's N fresh absences (ADR-0026), not on the first.
         reachable = true;
-        var clean = new FakeObservationSource("vc-1") { Behaviour = () => Batch("vc-1", _clock.UtcNow) };
+        var clean = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Fault("storagePath.busResets.summation", 0, "vmhba0:C0:T0:L1")],
+            },
+        };
         var n = new FaultCountersRule().Resolution.ConsecutiveAbsent;
         MonitoringCycleResult recovered = null!;
 

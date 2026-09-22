@@ -1,4 +1,4 @@
-﻿using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Analysis;
@@ -79,12 +79,7 @@ public static class FaultCounters
                 continue;
             }
 
-            var fingerprint = AlertFingerprint.Create(
-                observation.Source,
-                FaultTitle(value.CounterName),
-                Category,
-                $"{observation.Entity.Value}/{value.Instance}",
-                "fault-counter");
+            var fingerprint = FingerprintOf(observation);
 
             if (!seen.Add(fingerprint))
             {
@@ -105,6 +100,63 @@ public static class FaultCounters
 
         return alerts;
     }
+
+    /// <summary>
+    /// The same, in three values (ADR-0026): a device's counter that arrived
+    /// and read zero is absent; one that did not arrive gets no verdict, so an
+    /// alert on it is "not reported" and stays open. It used to resolve.
+    /// </summary>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations, DateTimeOffset evidenceAtUtc)
+    {
+        ArgumentNullException.ThrowIfNull(observations);
+
+        var raised = Evaluate(observations);
+        var present = raised.Select(a => a.Fingerprint).ToHashSet();
+
+        List<SubjectVerdict> verdicts =
+        [
+            .. raised.Select(a => new ConditionPresent
+            {
+                Covers = [a.Fingerprint],
+                Alerts = [a],
+                Entity = a.Entity,
+                EvidenceAtUtc = evidenceAtUtc,
+            }),
+        ];
+
+        foreach (var observation in observations)
+        {
+            var value = observation.Value;
+
+            if (!value.IsFaultCount || value.IsAggregateInstance || value.Raw > 0)
+            {
+                continue;
+            }
+
+            var fingerprint = FingerprintOf(observation);
+
+            if (present.Add(fingerprint))
+            {
+                verdicts.Add(new ConditionAbsent
+                {
+                    Covers = [fingerprint],
+                    Entity = observation.Entity,
+                    EvidenceAtUtc = evidenceAtUtc,
+                });
+            }
+        }
+
+        return verdicts;
+    }
+
+    private static AlertFingerprint FingerprintOf(Observation observation) =>
+        AlertFingerprint.Create(
+            observation.Source,
+            FaultTitle(observation.Value.CounterName),
+            Category,
+            $"{observation.Entity.Value}/{observation.Value.Instance}",
+            "fault-counter");
 
     /// <summary>
     /// Shown beside the alert and used to separate these from thresholds.

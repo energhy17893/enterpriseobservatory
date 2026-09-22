@@ -203,15 +203,61 @@ public static class MemoryPressure
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Observation> observations,
         EntityGraph graph,
-        MemoryPressurePolicy? policy = null)
+        MemoryPressurePolicy? policy = null) =>
+        [.. Judge(observations, graph, policy, [], DateTimeOffset.MinValue)
+            .OfType<ConditionPresent>()
+            .SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same verdicts in three values (ADR-0026): present, absent, or
+    /// unknown because an input did not arrive.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Absent needs all four rate counters read and none active. That is the
+    /// safe definition, and it is measured: all four arrive for hosts and VMs
+    /// on this estate (design note §5.9). A rate that did not arrive is
+    /// <see cref="UnknownReason.InputNotCollected"/>, never "no pressure". A
+    /// reading that is there still counts: one active rate is pressure whatever
+    /// the other three did.
+    /// </para>
+    /// <para>
+    /// The limit alert also needs the machine's sizing: an unread limit is
+    /// <see cref="UnknownReason.InputNotCollected"/> for it. A guest the host
+    /// verdict speaks for, or whose limit verdict fired, is
+    /// <see cref="AbsenceKind.Superseded"/>. A held alert whose entity sent no
+    /// rate at all this cycle is <see cref="UnknownReason.InputNotCollected"/>.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        EntityGraph graph,
+        MemoryPressurePolicy? policy,
+        IReadOnlyList<HeldAlert> held,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(observations);
         ArgumentNullException.ThrowIfNull(graph);
+        ArgumentNullException.ThrowIfNull(held);
 
         var rules = policy ?? MemoryPressurePolicy.Default;
 
         var rates = RatesOf(observations, rules);
-        var alerts = new List<AlertDefinition>();
+        var verdicts = new List<SubjectVerdict>();
+
+        SubjectVerdict Present(AlertDefinition alert) => new ConditionPresent
+        {
+            Covers = [alert.Fingerprint],
+            Alerts = [alert],
+            Entity = alert.Entity,
+            EvidenceAtUtc = evidenceAtUtc,
+        };
+
+        SubjectVerdict Absent(AlertFingerprint fingerprint, EntityId entity, AbsenceKind because = AbsenceKind.ConditionCleared) =>
+            new ConditionAbsent { Covers = [fingerprint], Entity = entity, EvidenceAtUtc = evidenceAtUtc, Because = because };
+
+        SubjectVerdict NotCollected(AlertFingerprint fingerprint, EntityId entity, string detail) =>
+            new Unknown { Covers = [fingerprint], Entity = entity, Reason = UnknownReason.InputNotCollected, Detail = detail };
 
         // Guests the host verdict spoke for. Everything else under pressure
         // is named on its own below, so a machine cannot fall between the two.
@@ -219,8 +265,17 @@ public static class MemoryPressure
 
         foreach (var (host, guests) in GuestsByHost(graph))
         {
-            if (!rates.TryGetValue(host, out var hostRates) || !UnderPressure(hostRates, rules))
+            if (!rates.TryGetValue(host, out var hostRates))
             {
+                continue;
+            }
+
+            if (!UnderPressure(hostRates, rules))
+            {
+                verdicts.Add(Missing(hostRates, rules) is { } missing
+                    ? NotCollected(HostFingerprint(host), host, missing)
+                    : Absent(HostFingerprint(host), host));
+
                 continue;
             }
 
@@ -231,29 +286,114 @@ public static class MemoryPressure
 
             if (measured.Count > 0 && pressured.Count < rules.MinimumPressuredGuests)
             {
+                // Read, and not the host: its guests say it is one or two of them.
+                verdicts.Add(Absent(HostFingerprint(host), host));
                 continue;
             }
 
-            alerts.Add(HostVerdict(host, hostRates, pressured.Count, measured.Count, rules));
+            verdicts.Add(Present(HostVerdict(host, hostRates, pressured.Count, measured.Count, rules)));
             covered.UnionWith(pressured);
         }
 
         foreach (var (entity, readings) in rates)
         {
-            if (covered.Contains(entity) ||
-                !IsLive(graph, entity, EntityKind.VirtualMachine) ||
-                !UnderPressure(readings, rules))
+            if (!IsLive(graph, entity, EntityKind.VirtualMachine))
             {
                 continue;
             }
 
-            alerts.Add(IsLimited(graph, entity)
-                ? LimitVerdict(entity, readings, graph.Entities[entity].Sizing!, rules)
-                : GuestVerdict(entity, readings, rules));
+            var sizing = graph.Entities[entity].Sizing;
+            var limitUnread = $"the memory limit of this machine was not read (no sizing in inventory)";
+
+            if (!UnderPressure(readings, rules))
+            {
+                if (Missing(readings, rules) is { } missing)
+                {
+                    verdicts.Add(NotCollected(GuestFingerprint(entity), entity, missing));
+                    verdicts.Add(NotCollected(LimitFingerprint(entity), entity, missing));
+                    continue;
+                }
+
+                verdicts.Add(Absent(GuestFingerprint(entity), entity));
+                verdicts.Add(sizing is null ? NotCollected(LimitFingerprint(entity), entity, limitUnread) : Absent(LimitFingerprint(entity), entity));
+                continue;
+            }
+
+            if (IsLimited(graph, entity))
+            {
+                verdicts.Add(Present(LimitVerdict(entity, readings, sizing!, rules)));
+                verdicts.Add(Absent(GuestFingerprint(entity), entity, AbsenceKind.Superseded));
+                continue;
+            }
+
+            verdicts.Add(covered.Contains(entity)
+                ? Absent(GuestFingerprint(entity), entity, AbsenceKind.Superseded)
+                : Present(GuestVerdict(entity, readings, rules)));
+            verdicts.Add(sizing is null ? NotCollected(LimitFingerprint(entity), entity, limitUnread) : Absent(LimitFingerprint(entity), entity));
         }
 
-        return alerts;
+        // A held alert whose entity sent no rate at all: not collected, which
+        // keeps it open and says why, rather than the bare "not reported".
+        var spoken = verdicts.SelectMany(v => v.Covers).ToHashSet();
+
+        foreach (var alert in held)
+        {
+            if (alert.Entity is { } entity && !rates.ContainsKey(entity) && !spoken.Contains(alert.Fingerprint))
+            {
+                verdicts.Add(NotCollected(alert.Fingerprint, entity,
+                    "none of the four memory rates (swap-in, swap-out, compression, decompression) arrived for it this cycle"));
+            }
+        }
+
+        return verdicts;
     }
+
+    /// <summary>The rate counters that did not arrive, in words; null when all four did.</summary>
+    private static string? Missing(Rates rates, MemoryPressurePolicy rules)
+    {
+        var missing = new List<string>();
+
+        if (rates.SwapIn is null)
+        {
+            missing.Add(rules.SwapInCounter);
+        }
+
+        if (rates.SwapOut is null)
+        {
+            missing.Add(rules.SwapOutCounter);
+        }
+
+        if (rates.Compression is null)
+        {
+            missing.Add(rules.CompressionCounter);
+        }
+
+        if (rates.Decompression is null)
+        {
+            missing.Add(rules.DecompressionCounter);
+        }
+
+        return missing.Count == 0
+            ? null
+            : $"{string.Join(", ", missing)} not in this cycle's batch; absence needs all four rates";
+    }
+
+    private static AlertFingerprint HostFingerprint(EntityId host) =>
+        // The host, and not which guests are suffering — they change from
+        // cycle to cycle while the host stays short, and a fingerprint
+        // carrying them would restart the history every time. The choice
+        // CpuContention makes for its host verdict.
+        AlertFingerprint.Create(Platform, HostTitle, Category, host.Value, "memory-host-pressure");
+
+    private static AlertFingerprint GuestFingerprint(EntityId guest) =>
+        // The machine alone, not its host: a guest that vMotions and keeps
+        // swapping took its problem with it. Constant across the four
+        // mechanisms, so a machine that moves from compression to swap is
+        // one getting worse, not two separate alerts.
+        AlertFingerprint.Create(Platform, GuestTitle, Category, guest.Value, "memory-guest-pressure");
+
+    private static AlertFingerprint LimitFingerprint(EntityId guest) =>
+        AlertFingerprint.Create(Platform, LimitTitle, SizingCategory, guest.Value, "memory-limit-pressure");
 
     /// <summary>The four rates for one entity. A missing one is absent, not zero.</summary>
     private sealed class Rates
@@ -305,12 +445,7 @@ public static class MemoryPressure
         EntityId host, Rates rates, int pressured, int measured, MemoryPressurePolicy rules) =>
         new()
         {
-            // The host, and not which guests are suffering — they change from
-            // cycle to cycle while the host stays short, and a fingerprint
-            // carrying them would restart the history every time. The choice
-            // CpuContention makes for its host verdict.
-            Fingerprint = AlertFingerprint.Create(
-                Platform, HostTitle, Category, host.Value, "memory-host-pressure"),
+            Fingerprint = HostFingerprint(host),
             Severity = AlertSeverity.Warning,
             Title = HostTitle,
             Description =
@@ -339,12 +474,7 @@ public static class MemoryPressure
     private static AlertDefinition GuestVerdict(EntityId guest, Rates rates, MemoryPressurePolicy rules) =>
         new()
         {
-            // The machine alone, not its host: a guest that vMotions and keeps
-            // swapping took its problem with it. Constant across the four
-            // mechanisms, so a machine that moves from compression to swap is
-            // one getting worse, not two separate alerts.
-            Fingerprint = AlertFingerprint.Create(
-                Platform, GuestTitle, Category, guest.Value, "memory-guest-pressure"),
+            Fingerprint = GuestFingerprint(guest),
             Severity = AlertSeverity.Warning,
             Title = GuestTitle,
             Description =
@@ -364,8 +494,7 @@ public static class MemoryPressure
         EntityId guest, Rates rates, EntitySizing sizing, MemoryPressurePolicy rules) =>
         new()
         {
-            Fingerprint = AlertFingerprint.Create(
-                Platform, LimitTitle, SizingCategory, guest.Value, "memory-limit-pressure"),
+            Fingerprint = LimitFingerprint(guest),
             Severity = AlertSeverity.Warning,
             Title = LimitTitle,
             Description =

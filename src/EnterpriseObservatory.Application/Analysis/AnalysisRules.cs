@@ -61,7 +61,7 @@ public sealed class FaultCountersRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, FaultCounters.Evaluate(context.Observations));
+        return FaultCounters.Judge(context.Observations, context.NowUtc);
     }
 }
 
@@ -119,8 +119,8 @@ public sealed class MemoryPressureRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, MemoryPressure.Evaluate(
-            context.Observations, context.Graph, context.Options.MemoryPressure));
+        return MemoryPressure.Judge(
+            context.Observations, context.Graph, context.Options.MemoryPressure, context.HeldBy(RuleId), context.NowUtc);
     }
 }
 
@@ -308,7 +308,7 @@ public sealed class RemoteLoggingRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, RemoteLogging.Evaluate([.. context.Graph.Active], context.Options.RemoteLogging));
+        return RemoteLogging.Judge([.. context.Graph.Active], context.Options.RemoteLogging, context.NowUtc);
     }
 }
 

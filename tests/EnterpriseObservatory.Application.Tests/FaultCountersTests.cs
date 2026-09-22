@@ -167,4 +167,29 @@ public class FaultCountersTests
     {
         Assert.Empty(FaultCounters.Evaluate([]));
     }
+
+    // --- three values (ADR-0026) -------------------------------------------
+
+    [Fact]
+    public void A_counter_that_arrived_and_read_zero_is_absent_and_one_that_did_not_arrive_gets_no_verdict()
+    {
+        // A missing sample used to resolve an open fault alert; now only a
+        // zero that was read does.
+        var raised = Assert.IsType<ConditionPresent>(Assert.Single(FaultCounters.Judge([Sample(2)], T0)));
+        var fingerprint = Assert.Single(raised.Alerts).Fingerprint;
+
+        var cleared = Assert.IsType<ConditionAbsent>(Assert.Single(FaultCounters.Judge([Sample(0)], T0)));
+        Assert.Equal([fingerprint], cleared.Covers);
+
+        var other = FaultCounters.Judge([Sample(0, instance: "vmhba1:C0:T0:L1")], T0);
+        Assert.DoesNotContain(other, v => v.Covers.Contains(fingerprint));
+    }
+
+    [Fact]
+    public void A_reading_above_zero_outweighs_a_zero_for_the_same_device()
+    {
+        var verdicts = FaultCounters.Judge([Sample(0), Sample(3)], T0);
+
+        Assert.IsType<ConditionPresent>(Assert.Single(verdicts));
+    }
 }
