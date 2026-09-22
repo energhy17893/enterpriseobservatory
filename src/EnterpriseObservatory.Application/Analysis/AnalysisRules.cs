@@ -338,8 +338,15 @@ public sealed class EventAlertsRule : IAnalysisRule
 
         var policy = context.Options.EventAlerts;
 
-        return TwoValuedVerdicts.From(context, RuleId, EventAlerts.Evaluate(
+        var verdicts = TwoValuedVerdicts.From(context, RuleId, EventAlerts.Evaluate(
             EventAlerts.Read(context.Events, context.NowUtc, policy), context.NowUtc, policy));
+
+        // No event is not no condition for a source whose events were not
+        // read up to now: its held alerts are unknown, not absent.
+        return EventReadFreshness.Hold(
+            verdicts,
+            context.Events,
+            EventReadFreshness.RequiredThrough(context.NowUtc, context.Options.InventoryInterval));
     }
 }
 
