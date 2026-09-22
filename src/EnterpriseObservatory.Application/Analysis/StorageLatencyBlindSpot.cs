@@ -124,6 +124,50 @@ public sealed record StorageLatencyBlindSpotPolicy
     /// </remarks>
     public int MinimumLatencyReadings { get; init; } = 3;
 
+    /// <summary>
+    /// K: how many judged cycles the verdict is taken over.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A window-ratio hysteresis rather than a count of consecutive cycles.
+    /// Measured on the live estate: 58 % of 262 historical clears were genuine
+    /// alternation — SIOC off, sub-millisecond latency clipped to zero, so a
+    /// working volume reads 1 ms and 0 ms by turns and the per-cycle rule
+    /// followed it faithfully. M-of-N consecutive would still flap at that
+    /// rate; a share over a window does not.
+    /// </para>
+    /// <para>
+    /// Only judged cycles enter the window — measured or blind. A quiet cycle,
+    /// too few readings or a missing counter stays Unknown as before and does
+    /// not move it. Until the window holds K judged cycles the rule says
+    /// NotJudgeable. One is the per-cycle rule.
+    /// </para>
+    /// <para>
+    /// Chosen from the replay
+    /// (<c>docs/measurements/blind-spot-hysteresis-replay.sql</c>), run on 1.99
+    /// days of live raw samples across 29 volumes and 91,592 judged cycles:
+    /// K = 1 (the rule before this hysteresis) flapped 385.3 alert flips a day
+    /// across 26 volumes; K = 30 cuts that to 5.5 flips a day across 2 volumes,
+    /// filling the window on 0.9 % of cycles and taking roughly 27 minutes to
+    /// open or resolve at the estate's measured rate of about 1.1 judged cycles
+    /// a minute per volume. Source: "Product policy, measured: 2 days of raw
+    /// samples, 29 volumes, 385 → 5.5 flaps/day (K=30, P=90, ~27 min)".
+    /// </para>
+    /// </remarks>
+    public int WindowCycles { get; init; } = 30;
+
+    /// <summary>
+    /// P: the share of the window's judged cycles that must be measurable for
+    /// the measurement to count as working, in percent.
+    /// </summary>
+    /// <remarks>
+    /// At or above it the volume is Absent; below it, Present. Chosen with K
+    /// from the same replay: P = 90 alongside K = 30 is the pair that took
+    /// flaps from 385.3 to 5.5 a day. Source: "Product policy, measured: 2 days
+    /// of raw samples, 29 volumes, 385 → 5.5 flaps/day (K=30, P=90, ~27 min)".
+    /// </remarks>
+    public double MinimumMeasurablePercent { get; init; } = 90d;
+
     public static StorageLatencyBlindSpotPolicy Default { get; } = new();
 }
 
@@ -300,7 +344,65 @@ public static class StorageLatencyBlindSpot
     public static IReadOnlyList<SubjectVerdict> Judge(
         IReadOnlyList<Observation> observations,
         StorageLatencyBlindSpotPolicy? policy,
-        DateTimeOffset evidenceAtUtc)
+        DateTimeOffset evidenceAtUtc) =>
+        Judge(observations, policy, evidenceAtUtc, static (_, cycle) => cycle);
+
+    /// <summary>
+    /// The same, with each volume's verdict taken over its last
+    /// <see cref="StorageLatencyBlindSpotPolicy.WindowCycles"/> judged cycles
+    /// rather than this one alone.
+    /// </summary>
+    /// <remarks>
+    /// This cycle's judgement is computed exactly as above. A measured or blind
+    /// cycle is added to the volume's window; anything Unknown is returned as
+    /// it is and leaves the window alone. With the window full the volume is
+    /// Absent when at least
+    /// <see cref="StorageLatencyBlindSpotPolicy.MinimumMeasurablePercent"/> of
+    /// it was measurable and Present otherwise; not yet full, it is
+    /// <see cref="UnknownReason.NotJudgeable"/>.
+    /// </remarks>
+    /// <param name="observations">This cycle's samples.</param>
+    /// <param name="policy">The resolutions and the window; <see cref="StorageLatencyBlindSpotPolicy.Default"/> when null.</param>
+    /// <param name="evidenceAtUtc">When those samples were taken.</param>
+    /// <param name="window">Each volume's recent judged cycles; updated in place.</param>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        StorageLatencyBlindSpotPolicy? policy,
+        DateTimeOffset evidenceAtUtc,
+        StorageLatencyBlindSpotWindow window)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+
+        var rules = policy ?? StorageLatencyBlindSpotPolicy.Default;
+        ArgumentOutOfRangeException.ThrowIfLessThan(rules.WindowCycles, 1, nameof(policy));
+
+        return Judge(observations, rules, evidenceAtUtc, (volume, cycle) =>
+        {
+            if (cycle.Kind == JudgementKind.Unknown)
+            {
+                return cycle;
+            }
+
+            var (measurable, held) = window.Record(volume, cycle.Kind == JudgementKind.Measured, rules.WindowCycles);
+
+            if (held < rules.WindowCycles)
+            {
+                return new(JudgementKind.Unknown, UnknownReason.NotJudgeable, string.Create(CultureInfo.InvariantCulture,
+                    $"{held} of the {rules.WindowCycles} judged cycles the verdict is taken over have been seen; " +
+                    $"{measurable} of them measurable"));
+            }
+
+            var working = measurable * 100d >= rules.MinimumMeasurablePercent * held;
+
+            return new(working ? JudgementKind.Measured : JudgementKind.Blind, Measurable: measurable, Window: held);
+        });
+    }
+
+    private static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        StorageLatencyBlindSpotPolicy? policy,
+        DateTimeOffset evidenceAtUtc,
+        Func<EntityId, Judgement, Judgement> overWindow)
     {
         ArgumentNullException.ThrowIfNull(observations);
 
@@ -322,7 +424,7 @@ public static class StorageLatencyBlindSpot
                 continue;
             }
 
-            judged.Add((volume.Key, Unmeasurable(volume, latency, rules)));
+            judged.Add((volume.Key, overWindow(volume.Key, Unmeasurable(volume, latency, rules))));
         }
 
         var blind = judged.Count(j => j.Judgement.Kind == JudgementKind.Blind);
@@ -338,7 +440,7 @@ public static class StorageLatencyBlindSpot
                     JudgementKind.Blind => (SubjectVerdict)new ConditionPresent
                     {
                         Covers = covers,
-                        Alerts = [Alert(j.Volume, blind, judged.Count)],
+                        Alerts = [Alert(j.Volume, blind, judged.Count, j.Judgement)],
                         Entity = j.Volume,
                         EvidenceAtUtc = evidenceAtUtc,
                     },
@@ -376,7 +478,16 @@ public static class StorageLatencyBlindSpot
         Unknown,
     }
 
-    private readonly record struct Judgement(JudgementKind Kind, UnknownReason Reason = default, string Detail = "");
+    /// <summary>
+    /// What was concluded; <see cref="Window"/> is zero for one cycle's
+    /// judgement and the number of judged cycles it was taken over otherwise.
+    /// </summary>
+    private readonly record struct Judgement(
+        JudgementKind Kind,
+        UnknownReason Reason = default,
+        string Detail = "",
+        int Measurable = 0,
+        int Window = 0);
 
     /// <summary>What can be said about this volume's measurement this cycle.</summary>
     private static Judgement Unmeasurable(
@@ -518,7 +629,7 @@ public static class StorageLatencyBlindSpot
         return highest;
     }
 
-    private static AlertDefinition Alert(EntityId volume, int blind, int considered) =>
+    private static AlertDefinition Alert(EntityId volume, int blind, int considered, Judgement judgement) =>
         new()
         {
             Fingerprint = FingerprintOf(volume),
@@ -530,7 +641,7 @@ public static class StorageLatencyBlindSpot
             // — it may be the fastest volume in the estate.
             Severity = AlertSeverity.Warning,
             Title = Title,
-            Description = Describe(blind, considered),
+            Description = Describe(blind, considered, judgement),
             Category = Category,
             Source = Platform,
             Entity = volume,
@@ -544,8 +655,15 @@ public static class StorageLatencyBlindSpot
             IsDerived = true,
         };
 
-    private static string Describe(int blind, int considered)
+    private static string Describe(int blind, int considered, Judgement judgement)
     {
+        // Over a window the claim is a share, not "every counter reads zero":
+        // some of those cycles may have measured, just too few of them.
+        var opening = judgement.Window > 0
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"This volume is carrying I/O and its latency counters keep reading zero —a latency was measurable in only {judgement.Measurable} of the last {judgement.Window} busy cycles — while ")
+            : "This volume is carrying I/O and every latency counter on it reads zero, while ";
+
         // How much of the estate is in this state, and therefore whether the
         // operator is looking at one volume's setting or at an estate that was
         // never configured. The whole argument for forty-one alerts instead of
@@ -557,7 +675,7 @@ public static class StorageLatencyBlindSpot
             : $"{blind} of the {considered} volume(s) measured this cycle are in this state.";
 
         return
-            "This volume is carrying I/O and every latency counter on it reads zero, while " +
+            opening +
             "Storage I/O Control reports no active time. That is not a fast volume: the " +
             "platform reports these counters in whole milliseconds, so anything below one " +
             "millisecond truncates to zero, and the one counter reported finely enough to " +
@@ -569,5 +687,88 @@ public static class StorageLatencyBlindSpot
             "product ships — slow from one host, slow from every host, and which layer is " +
             "the bottleneck — are structurally unable to fire on this volume, because all " +
             "three need a latency above zero to have anything to judge.";
+    }
+}
+
+/// <summary>
+/// Each volume's last judged cycles for <see cref="StorageLatencyBlindSpot"/>:
+/// whether the measurement worked in each.
+/// </summary>
+/// <remarks>
+/// <para>
+/// In memory, held by the rule's adapter, which lives as long as the process
+/// (<see cref="AnalysisRules.All"/>). It does not survive a restart, and that
+/// is accepted rather than engineered around: after a restart every volume's
+/// window is empty and the rule says NotJudgeable until K judged cycles have
+/// been seen again — roughly 27 minutes at K = 30 and the estate's measured
+/// rate of about 1.1 judged cycles a minute per volume. An alert already open
+/// stays open (and stale) meanwhile; nothing is resolved or raised on an
+/// empty window.
+/// </para>
+/// <para>
+/// Bounded twice: each volume keeps at most K entries, and past
+/// <see cref="MaxVolumes"/> volumes the whole thing is emptied rather than
+/// managed, which costs one refill and nothing else.
+/// </para>
+/// </remarks>
+public sealed class StorageLatencyBlindSpotWindow
+{
+    private readonly Dictionary<EntityId, Queue<bool>> _volumes = [];
+    private readonly Lock _gate = new();
+
+    public StorageLatencyBlindSpotWindow(int maxVolumes = 4096)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxVolumes, 1);
+        MaxVolumes = maxVolumes;
+    }
+
+    public int MaxVolumes { get; }
+
+    /// <summary>How many volumes have a window.</summary>
+    public int Count
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _volumes.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Adds one judged cycle to a volume's window and returns what the window
+    /// now holds.
+    /// </summary>
+    /// <param name="volume">The volume judged.</param>
+    /// <param name="measurable">Whether the measurement worked this cycle.</param>
+    /// <param name="capacity">K; older entries beyond it are dropped.</param>
+    /// <returns>How many of the held cycles were measurable, and how many are held.</returns>
+    public (int Measurable, int Held) Record(EntityId volume, bool measurable, int capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
+
+        lock (_gate)
+        {
+            if (!_volumes.TryGetValue(volume, out var cycles))
+            {
+                if (_volumes.Count >= MaxVolumes)
+                {
+                    _volumes.Clear();
+                }
+
+                cycles = new Queue<bool>(capacity);
+                _volumes[volume] = cycles;
+            }
+
+            cycles.Enqueue(measurable);
+
+            while (cycles.Count > capacity)
+            {
+                cycles.Dequeue();
+            }
+
+            return (cycles.Count(c => c), cycles.Count);
+        }
     }
 }

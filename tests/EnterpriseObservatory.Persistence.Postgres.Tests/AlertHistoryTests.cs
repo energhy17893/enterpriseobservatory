@@ -327,7 +327,12 @@ public sealed class AlertHistoryTests : IDisposable
                 Observations = BlindSpot(busy[i] ? 1638 : 0.2, now),
                 ReadGraph = () => EntityGraph.Empty,
                 NowUtc = now,
-                Options = new MonitoringOptions(),
+
+                // One-cycle windows: this is about quiet cycles, not the window.
+                Options = new MonitoringOptions
+                {
+                    StorageLatencyBlindSpot = StorageLatencyBlindSpotPolicy.Default with { WindowCycles = 1 },
+                },
                 Series = new PostgresObservationStore(_live.Database),
                 Events = new PostgresEventStore(_live.Database),
             });

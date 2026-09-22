@@ -21,7 +21,18 @@ namespace EnterpriseObservatory.Application.Analysis;
 /// </remarks>
 public static class AnalysisRules
 {
-    public static IReadOnlyList<IAnalysisRule> All { get; } =
+    public static IReadOnlyList<IAnalysisRule> All { get; } = Create();
+
+    /// <summary>
+    /// A fresh set of every rule, for an owner that runs them across cycles.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="All"/> is fine for asking which rules exist. A cycle runs its
+    /// own set, because one rule keeps state between cycles
+    /// (<see cref="StorageLatencyBlindSpotRule"/>) and that state belongs to
+    /// whoever runs it, not to every cycle in the process.
+    /// </remarks>
+    public static IReadOnlyList<IAnalysisRule> Create() =>
     [
         new FaultCountersRule(),
         new PeerOutliersRule(),
@@ -171,8 +182,18 @@ public sealed class SharedVolumeLatencyRule : IAnalysisRule
 }
 
 /// <summary>Adapts <see cref="StorageLatencyBlindSpot"/>.</summary>
+/// <remarks>
+/// The one adapter that holds state: each volume's window of judged cycles
+/// (<see cref="StorageLatencyBlindSpotWindow"/>), which lives as long as this
+/// instance — for the registered one, the process.
+/// </remarks>
 public sealed class StorageLatencyBlindSpotRule : IAnalysisRule
 {
+    private readonly StorageLatencyBlindSpotWindow _window;
+
+    public StorageLatencyBlindSpotRule(StorageLatencyBlindSpotWindow? window = null) =>
+        _window = window ?? new StorageLatencyBlindSpotWindow();
+
     public string RuleId => StorageLatencyBlindSpot.RuleId;
 
     public RuleScope Scope => RuleScope.Metric;
@@ -188,7 +209,7 @@ public sealed class StorageLatencyBlindSpotRule : IAnalysisRule
         ArgumentNullException.ThrowIfNull(context);
 
         return StorageLatencyBlindSpot.Judge(
-            context.Observations, context.Options.StorageLatencyBlindSpot, context.NowUtc);
+            context.Observations, context.Options.StorageLatencyBlindSpot, context.NowUtc, _window);
     }
 }
 

@@ -764,7 +764,12 @@ public class StorageLatencyBlindSpotTests
                 Observations = observations,
                 ReadGraph = () => EntityGraph.Empty,
                 NowUtc = T0.AddMinutes(minute),
-                Options = EnterpriseObservatory.Application.Monitoring.MonitoringOptions.Default,
+
+                // One-cycle windows: this is about quiet cycles, not the window.
+                Options = EnterpriseObservatory.Application.Monitoring.MonitoringOptions.Default with
+                {
+                    StorageLatencyBlindSpot = StorageLatencyBlindSpotPolicy.Default with { WindowCycles = 1 },
+                },
                 Series = new NoSeries(),
                 Events = new NoEvents(),
             };
@@ -785,6 +790,286 @@ public class StorageLatencyBlindSpotTests
         Assert.True(alert.IsStale);
         Assert.Equal(UnknownReason.NotJudgeable, alert.StaleReason);
         Assert.DoesNotContain(alert.History, t => t.Reason == AlertTransitionReason.ConditionCleared);
+    }
+
+    // --- window-ratio hysteresis ------------------------------------------
+
+    private static readonly StorageLatencyBlindSpotPolicy Window10At50 =
+        StorageLatencyBlindSpotPolicy.Default with { WindowCycles = 10, MinimumMeasurablePercent = 50 };
+
+    /// <summary>A busy cycle whose worst latency sits on the line: 1 ms, measurable.</summary>
+    private static List<Observation> OnTheLine() =>
+        [.. Blind(), From("esx02", 1, counter: Write)];
+
+    private static List<Observation> Quiet() =>
+        [.. Blind().Select(o => o.Value.CounterName == Iops ? o with { Value = o.Value with { Raw = 0 } } : o)];
+
+    private static SubjectVerdict Windowed(
+        StorageLatencyBlindSpotWindow window, IReadOnlyList<Observation> observations, int cycle,
+        StorageLatencyBlindSpotPolicy? policy = null) =>
+        Assert.Single(StorageLatencyBlindSpot.Judge(observations, policy ?? Window10At50, T0.AddSeconds(30 * cycle), window));
+
+    [Fact]
+    public void Latency_oscillating_around_the_line_stays_absent_when_the_measurable_share_is_above_p()
+    {
+        // The live estate: SIOC off, sub-millisecond latency clipped to zero,
+        // so a working volume alternates 1 ms and 0 ms. Per cycle the rule
+        // followed it faithfully and flapped; over a window two in three
+        // cycles are measurable, which is a working measurement.
+        var window = new StorageLatencyBlindSpotWindow();
+        var perCycle = new List<SubjectVerdict>();
+        var windowed = new List<SubjectVerdict>();
+
+        for (var cycle = 0; cycle < 60; cycle++)
+        {
+            var observations = cycle % 3 == 2 ? Blind() : OnTheLine();
+            perCycle.Add(JudgeOne(observations));
+            windowed.Add(Windowed(window, observations, cycle));
+        }
+
+        Assert.Contains(perCycle, v => v is ConditionPresent);
+        Assert.All(windowed.Take(9), v => Assert.Equal(UnknownReason.NotJudgeable, Assert.IsType<Unknown>(v).Reason));
+        Assert.All(windowed.Skip(9), v => Assert.IsType<ConditionAbsent>(v));
+    }
+
+    [Fact]
+    public void Sustained_zeros_turn_present_once_the_window_holds_too_few_measurable_cycles()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        for (var cycle = 0; cycle < 10; cycle++)
+        {
+            Windowed(window, OnTheLine(), cycle);
+        }
+
+        // Ten measurable cycles, then the volume goes blind. At P = 50 % it
+        // stays absent while five of the last ten were measurable, and turns
+        // present on the sixth blind cycle: 4 of 10.
+        var verdicts = Enumerable.Range(10, 20).Select(cycle => Windowed(window, Blind(), cycle)).ToList();
+
+        Assert.All(verdicts.Take(5), v => Assert.IsType<ConditionAbsent>(v));
+        Assert.All(verdicts.Skip(5), v => Assert.IsType<ConditionPresent>(v));
+
+        var alert = Assert.Single(Assert.IsType<ConditionPresent>(verdicts[^1]).Alerts);
+        Assert.Contains("0 of the last 10", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_unfilled_window_is_not_judgeable()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        Windowed(window, Blind(), 0);
+        Windowed(window, Blind(), 1);
+        var third = Assert.IsType<Unknown>(Windowed(window, Blind(), 2));
+
+        Assert.Equal(UnknownReason.NotJudgeable, third.Reason);
+        Assert.Contains("3 of the 10", third.Detail, StringComparison.Ordinal);
+        Assert.Equal([Fp()], third.Covers);
+    }
+
+    [Fact]
+    public void Quiet_cycles_do_not_enter_the_window()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        for (var cycle = 0; cycle < 9; cycle++)
+        {
+            Windowed(window, Blind(), cycle);
+        }
+
+        for (var cycle = 9; cycle < 20; cycle++)
+        {
+            var quiet = Assert.IsType<Unknown>(Windowed(window, Quiet(), cycle));
+            Assert.Contains("quiet cycle", quiet.Detail, StringComparison.Ordinal);
+        }
+
+        Assert.IsType<ConditionPresent>(Windowed(window, Blind(), 20));
+    }
+
+    [Fact]
+    public void Each_volume_has_its_own_window()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+        IReadOnlyList<SubjectVerdict> last = [];
+
+        for (var cycle = 0; cycle < 10; cycle++)
+        {
+            last = StorageLatencyBlindSpot.Judge(
+                [.. Blind("vc-1:ds-a"), .. OnTheLine().Select(o => o with { Entity = new EntityId("vc-1:ds-b") })],
+                Window10At50, T0.AddSeconds(30 * cycle), window);
+        }
+
+        Assert.IsType<ConditionPresent>(Assert.Single(last, v => v.Entity == new EntityId("vc-1:ds-a")));
+        Assert.IsType<ConditionAbsent>(Assert.Single(last, v => v.Entity == new EntityId("vc-1:ds-b")));
+    }
+
+    [Fact]
+    public void A_restart_starts_with_an_empty_window_and_keeps_the_open_alert_open_until_it_refills()
+    {
+        // The window is in memory. A restart empties it: the rule says
+        // NotJudgeable for K judged cycles, which keeps an open alert open
+        // (stale) rather than resolving it, and then judges again.
+        var options = EnterpriseObservatory.Application.Monitoring.MonitoringOptions.Default with
+        {
+            StorageLatencyBlindSpot = Window10At50,
+        };
+
+        RuleContext Context(int cycle) => new()
+        {
+            Observations = Blind(),
+            ReadGraph = () => EntityGraph.Empty,
+            NowUtc = T0.AddSeconds(30 * cycle),
+            Options = options,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+        };
+
+        var before = new StorageLatencyBlindSpotRule();
+
+        for (var cycle = 0; cycle < 9; cycle++)
+        {
+            before.Evaluate(Context(cycle));
+        }
+
+        Assert.IsType<ConditionPresent>(Assert.Single(before.Evaluate(Context(9))));
+
+        var after = new StorageLatencyBlindSpotRule();
+
+        for (var cycle = 10; cycle < 19; cycle++)
+        {
+            Assert.Equal(UnknownReason.NotJudgeable,
+                Assert.IsType<Unknown>(Assert.Single(after.Evaluate(Context(cycle)))).Reason);
+        }
+
+        Assert.IsType<ConditionPresent>(Assert.Single(after.Evaluate(Context(19))));
+    }
+
+    [Fact]
+    public void One_cycle_windows_are_the_per_cycle_rule()
+    {
+        var policy = StorageLatencyBlindSpotPolicy.Default with { WindowCycles = 1 };
+        var window = new StorageLatencyBlindSpotWindow();
+
+        Assert.IsType<ConditionPresent>(Windowed(window, Blind(), 0, policy));
+        Assert.IsType<ConditionAbsent>(Windowed(window, OnTheLine(), 1, policy));
+        Assert.IsType<ConditionPresent>(Windowed(window, Blind(), 2, policy));
+    }
+
+    // --- K = 30, P = 90 (the replay's choice) -------------------------------
+
+    /// <summary>
+    /// <see cref="StorageLatencyBlindSpotPolicy.Default"/>'s own K and P, pinned
+    /// directly rather than through a fixture: 385.3 alert flips a day cut to
+    /// 5.5 by the replay (<c>docs/measurements/blind-spot-hysteresis-replay.sql</c>),
+    /// on 2 days of live raw samples across 29 volumes.
+    /// </summary>
+    [Fact]
+    public void Thirty_and_ninety_are_the_shipped_defaults()
+    {
+        Assert.Equal(30, StorageLatencyBlindSpotPolicy.Default.WindowCycles);
+        Assert.Equal(90, StorageLatencyBlindSpotPolicy.Default.MinimumMeasurablePercent);
+    }
+
+    [Fact]
+    public void The_default_window_is_not_judgeable_until_it_holds_thirty_judged_cycles()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        for (var cycle = 0; cycle < 29; cycle++)
+        {
+            var unknown = Assert.IsType<Unknown>(
+                Windowed(window, OnTheLine(), cycle, StorageLatencyBlindSpotPolicy.Default));
+            Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        }
+    }
+
+    [Fact]
+    public void The_default_window_is_absent_at_exactly_ninety_percent_measurable()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        // Fill the window with thirty measurable cycles first.
+        for (var cycle = 0; cycle < 30; cycle++)
+        {
+            Windowed(window, OnTheLine(), cycle, StorageLatencyBlindSpotPolicy.Default);
+        }
+
+        // Three blind cycles keeps the last thirty at 27/30 = 90 %: still
+        // Absent, the boundary belongs to the working side.
+        for (var cycle = 30; cycle < 33; cycle++)
+        {
+            Assert.IsType<ConditionAbsent>(
+                Windowed(window, Blind(), cycle, StorageLatencyBlindSpotPolicy.Default));
+        }
+
+        // A fourth blind cycle drops the last thirty to 26/30, below 90 %:
+        // Present.
+        Assert.IsType<ConditionPresent>(
+            Windowed(window, Blind(), 33, StorageLatencyBlindSpotPolicy.Default));
+    }
+
+    [Fact]
+    public void The_default_window_neither_counts_nor_resets_on_a_quiet_cycle()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        // Twenty-nine measurable cycles, one short of the window.
+        for (var cycle = 0; cycle < 29; cycle++)
+        {
+            Windowed(window, OnTheLine(), cycle, StorageLatencyBlindSpotPolicy.Default);
+        }
+
+        // A run of quiet cycles: neither judged nor entered into the window,
+        // so the thirtieth judged cycle -- still the window's first fill --
+        // must not have been pushed further away by them.
+        for (var cycle = 29; cycle < 40; cycle++)
+        {
+            var quiet = Assert.IsType<Unknown>(
+                Windowed(window, Quiet(), cycle, StorageLatencyBlindSpotPolicy.Default));
+            Assert.Contains("quiet cycle", quiet.Detail, StringComparison.Ordinal);
+        }
+
+        Assert.IsType<ConditionAbsent>(
+            Windowed(window, OnTheLine(), 40, StorageLatencyBlindSpotPolicy.Default));
+    }
+
+    [Fact]
+    public void A_restart_empties_the_default_window_for_thirty_judged_cycles()
+    {
+        var options = EnterpriseObservatory.Application.Monitoring.MonitoringOptions.Default;
+
+        RuleContext Context(int cycle) => new()
+        {
+            Observations = Blind(),
+            ReadGraph = () => EntityGraph.Empty,
+            NowUtc = T0.AddSeconds(30 * cycle),
+            Options = options,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+        };
+
+        var before = new StorageLatencyBlindSpotRule();
+
+        for (var cycle = 0; cycle < 29; cycle++)
+        {
+            before.Evaluate(Context(cycle));
+        }
+
+        Assert.IsType<ConditionPresent>(Assert.Single(before.Evaluate(Context(29))));
+
+        // A fresh rule -- and so a fresh window -- is what a restart leaves
+        // behind. NotJudgeable for the next twenty-nine judged cycles, then
+        // Present again on the thirtieth, exactly as the first run was.
+        var after = new StorageLatencyBlindSpotRule();
+
+        for (var cycle = 30; cycle < 59; cycle++)
+        {
+            Assert.Equal(UnknownReason.NotJudgeable,
+                Assert.IsType<Unknown>(Assert.Single(after.Evaluate(Context(cycle)))).Reason);
+        }
+
+        Assert.IsType<ConditionPresent>(Assert.Single(after.Evaluate(Context(59))));
     }
 
     private sealed class NoSeries : EnterpriseObservatory.Application.Monitoring.ISeriesReader
