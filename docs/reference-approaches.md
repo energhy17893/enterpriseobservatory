@@ -902,6 +902,92 @@ yaş eşiği olmadan "aktif snapshot var"; zombie VMDK (vCheck kendi sürümün�
 Health'in test listesi ve vSAN olmayan kümelerde API'den okunup okunamadığı;
 RVTools eşik varsayılanları; CIS toplam kontrol sayısı ve SCG'ye göre farkı;
 Runecast.
+### 10.6 F4–F6 için derinleştirme — sunucu tarafı ömür, tampon birimi, öz-ölçü adları (22 Eylül 2026 akşamı)
+
+Üç brief'in referans parçası kaynak kod ve API referansı düzeyinde yeniden
+okundu; §10.2'nin ilkeleri değişmedi, üç yerde sayı ve ad kazandı.
+
+**F4 — sunucu tarafı nesnelerin ömrü (API referansı, verbatim):**
+
+| Nesne | Belgelenen ömür | Kaynak |
+|---|---|---|
+| ContainerView | "A view exists until you destroy it or until the end of the session." | [vim.view.View](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vim.view.View.html) |
+| Child PropertyCollector | "A PropertyCollector that was created by CreatePropertyCollector is automatically destroyed when the session on which it was created is closed." | [PropertyCollector](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vmodl.query.PropertyCollector.html) |
+| RetrievePropertiesEx token | yalnızca "same session, same PropertyCollector" bağı; oturum kapanışında ne olduğu **yazılmıyor** | [RetrieveResult](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vmodl.query.PropertyCollector.RetrieveResult.html) |
+| EventHistoryCollector | "Event collectors do not persist beyond the current client session." **Oturum başına limit var:** `EventManager.maxCollector`, aşınca `InvalidState` | [EventManager](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vim.event.EventManager.html) |
+| `ViewManager.viewList` | "a managed object reference to a view created by this ViewManager" — yetki **System.View**; salt-okunur hesapla okunur | [ViewManager](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/vim.view.ViewManager.html) |
+| `SessionManager.sessionList` | 6.7U3 aynası System.View der; güvenlik belgesi "Sessions.TerminateSession = View and stop sessions" der. **Canlıda ölçüldü (22 Eylül): bu hesapla NoPermission.** Belge çelişkisinde ölçüm kazandı | [Sessions privileges](https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/8-0/vsphere-security/defined-privileges/sessions-privileges.html) |
+
+govmomi: `property/wait.go` collector'ı `defer pc.Destroy(context.Background())`
+ile, iptal edilmiş bağlamda **arka plan bağlamıyla** yok eder — bizim taze
+token kuralımızın aynısı ([wait.go](https://raw.githubusercontent.com/vmware/govmomi/main/property/wait.go));
+`vim25/mo/retrieve.go` hata yolunda `CancelRetrievePropertiesEx`'i **hiç
+çağırmaz** ([retrieve.go](https://raw.githubusercontent.com/vmware/govmomi/main/vim25/mo/retrieve.go));
+`event/processor.go` `SetPageSize` hatasında yeni collector'ı sızdırır. OTel
+vcenterreceiver view'ı scrape bağlamıyla yok eder ve oturumu **kalıcı** tutar
+(`SessionIsActive` ile yoklar) ([client.go](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/vcenterreceiver/client.go)).
+mdatagen yaşam döngüsü testi iki şeyi ister: **Start'sız Shutdown** hatasız ve
+iki ardışık Start→Shutdown; çift Shutdown şablonda **yok**, yalnızca
+`component.go` sözleşmesinde metin olarak var ([şablon](https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/main/cmd/mdatagen/internal/templates/component_test.go.tmpl)).
+
+**Benimsenen (F4):** temizlik iki katmanlı — tur sonunda kayıtlı tutamaçlar taze
+token'la yok edilir; oturumun kapanması **belgelenmiş son çare**dir (view ve
+collector oturumla ölür; token için belge yok, biz iptal etmeye devam ederiz).
+Bitti kanıtı doğrudan: tur sonunda `viewList` = 0. `maxCollector` okunur ve
+olay okuyucusu onu aşmaz. E'ye "Start'sız Shutdown" vakası eklenir; çift
+Shutdown vakası da eklenir (sözleşme metni istiyor, şablon test etmiyor — biz
+ederiz). **Reddedilen:** OTel'in view'ı iptal edilmiş bağlamla yok etmesi
+(iptalde yok etme hiç çalışmaz).
+
+**F5 — tampon birimi ve sınırı (kaynak kod):**
+
+| Ürün | Birim | Varsayılan | Dolunca | Yaş sınırı | Kaynak |
+|---|---|---|---|---|---|
+| Telegraf `metric_buffer_limit` | metrik **sayısı** | 10 000 (`models/running_output.go`) | en eski ezilir, `write.metrics_dropped` | yok | [buffer_mem.go](https://raw.githubusercontent.com/influxdata/telegraf/master/models/buffer_mem.go) |
+| OTel `sending_queue` | `sizer`: requests / items / **bytes** | 1 000 request | `ErrQueueIsFull`, `enqueue_failed_*`; `block_on_overflow` seçeneği | yok | [README](https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/main/exporter/exporterhelper/README.md) |
+| OTel `memory_limiter` | süreç heap MiB | `spike` = %20 | soft limit üstünde veri **reddedilir**, GC zorlanır | — | [README](https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/main/processor/memorylimiterprocessor/README.md) |
+| Prometheus remote write | örnek/shard | 10 000 kapasite, 2 000/send | **bloklar**, WAL'dan okur; 2 saatten uzun kesintide WAL sıkıştırılır, veri kaybolur | `sample_age_limit` (0 = kapalı) | [remote_write](https://prometheus.io/docs/practices/remote_write/) |
+| Datadog forwarder | **bayt** | 15 MB payload ("gerçek bellek en çok 2,5 katı") | en eski/düşük öncelikli düşer, `transactions_dropped_count`; diskte %80 eşiği | 10 gün (disk dosyası) | [network](https://docs.datadoghq.com/agent/configuration/network/) |
+| Zabbix proxy | saat / bayt | `ProxyOfflineBuffer` 1 sa; `ProxyMemoryBufferSize` 0 (128K–2G) | eski veri atılır; hybrid'de diske geçer | `ProxyMemoryBufferAge` | [zabbix_proxy](https://www.zabbix.com/documentation/current/en/manual/appendix/config/zabbix_proxy) |
+
+Hiçbir ürün "süreç belleğinin %X'i" kuralı yayımlamıyor; hepsi mutlak sınır +
+formül (Prometheus: shard × (capacity + max_samples_per_send) < 2 MB/shard) ya
+da çarpan (Datadog 2,5×). Telegraf `inputs.vsphere` işaretini yalnızca bellekte
+tutar (`tsCache`, 4 sa TTL) ve `StatefulPlugin` arayüzünü **uygulamaz**; OTel
+vcenterreceiver hiç durum tutmaz (`MaxSample: 1`); Prometheus'un "son
+toplanan"ı WAL'dır.
+
+**Benimsenen (F5):** kuyruk **bayt** ile sınırlanır (Datadog/OTel `bytes`),
+sayı ölçülen satır genişliğinden türetilir; yaş ikincil sınır (Zabbix); dolunca
+en eski düşer ve sayılır (Telegraf/Datadog); disk taşması yok (ayrı karar).
+Öğrenilen durum bellekte, işaret depoda (bizim kararımız; Telegraf'ın yeniden
+başlatmada `MetricLookback`'e düşmesi tam da bizim #76'da yaşadığımız çift
+okuma). **Reddedilen:** Prometheus'un bloklaması (toplayıcı depoyu bekleyemez,
+turlar atlanır) ve OTel `block_on_overflow`.
+
+**F6 — öz-ölçü adları ve anlamı:**
+
+| Ürün | Ad / alan | Anlam | Kaynak |
+|---|---|---|---|
+| Prometheus | `up` | "1 if the instance is healthy"; **HTTP başarılı ama parse/append başarısızsa 0** (`scrape.go`: `if scrapeErr == nil { scrapeErr = appErr }`) | [jobs_instances](https://prometheus.io/docs/concepts/jobs_instances/), [scrape.go](https://github.com/prometheus/prometheus/blob/main/scrape/scrape.go) |
+| Prometheus | `scrape_duration_seconds`, `scrape_samples_scraped`, `scrape_series_added` | süre, örnek, yeni seri | aynı |
+| Telegraf | `internal_gather`: `gather_time_ns`, `metrics_gathered`, `errors`, `gather_timeouts` (girdi başına); `internal_agent`: `metrics_dropped` | girdi başına süre/sayı/hata/zaman aşımı | [running_input.go](https://raw.githubusercontent.com/influxdata/telegraf/master/models/running_input.go) |
+| OTel | `otelcol_scraper_scraped_metric_points` / `errored_metric_points`; `exporter_queue_size` / `queue_capacity`; `enqueue_failed_*` | okunan/okunamayan nokta; kuyruk | [scraperhelper metadata](https://github.com/open-telemetry/opentelemetry-collector/blob/main/scraper/scraperhelper/metadata.yaml) |
+| Datadog | `Stats`: `TotalRuns`, `TotalErrors`, `ExecutionTimes[32]`, `AverageExecutionTime`, `LastSuccessDate`, `LastError`, `LastDelay` | tur/hata/son 32 süre/son başarı/son hata/zamanlayıcı gecikmesi | [stats.go](https://github.com/DataDog/datadog-agent/blob/main/pkg/collector/check/stats/stats.go) |
+| Zabbix | host erişilebilirlik ikonu: yeşil / kırmızı / **gri (bilinmiyor)** / sarı (karışık); item "Not supported" durumu | üç değerli görünüm | [hosts](https://www.zabbix.com/documentation/current/en/manual/web_interface/frontend_sections/data_collection/hosts) |
+
+Saat farkı (toplayıcı ↔ kaynak) öz-ölçüsü **hiçbir üründe yok** (Telegraf
+`getServerTime`'ı pencere hesabında kullanır, yayımlamaz).
+
+**Benimsenen (F6):** `up` Prometheus anlamıyla (ayrıştırma/yazma hatası = 0);
+kaynak başına alan kümesi: cevap verdi mi, süre, okunan/okunamayan, atlanan
+tur, toplam tur/hata, son başarı, son hata metni, tazelik, tutulan oturum
+sayısı ("inandığımız"), saat farkı (bizim eklememiz); depo kuyruğu boyu/
+kapasitesi/düşen. Ekranda Zabbix'in dört rengi (gri = bilinmiyor ayrı).
+**Reddedilen:** Datadog'un son 32 süre halkası yerine tek "son süre" — halka
+alınır (bir tur değil eğilim gerekir). **Bulunamadı:** OTel vcenter ve Telegraf
+vsphere'de kaynak saatinin ölçü olarak yayımı; mdatagen'de çift Shutdown testi.
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:

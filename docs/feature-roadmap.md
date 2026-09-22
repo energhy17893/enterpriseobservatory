@@ -179,6 +179,110 @@ duyuru o ürünün o sürüm hattını hiç etkilemiyor olabilir; bulgu bu yüzd
 kimliklerini ve ürün ayrımını taşıyor mu. Taşımıyorsa KEV ile birleşim ürün adı
 ve tarih üzerinden kurulur ve M sayısı üst sınır olarak sunulur.
 
+### Üç şerit — 22 Eylül akşamı yeniden kesim
+
+Ertuğrul'un aynı akşam üç isteği: (1) iLO/Redfish ve SimpliVity sağlık
+kontrollerini **bir an önce canlıya**, canlı test atlanmadan; (2) uygunluk,
+best-practice, advisory ve sağlık kontrollerinin **ayrı bir "Duruş" sayfasında**
+incelenip raporlanması; (3) her adımdan önce **referans derinleştirmesi**, know-how
+boşluğu varsa araştırma. Kural: bunlar kritik yolu (F3 → F6 → M6.1) bozmaz;
+şeritler dosya paylaşmaz; her iş aynı döngüden geçer.
+
+#### Döngü — her iş için, sırası sabit
+
+| # | Adım | Kim | Kanıt |
+|---|---|---|---|
+| 1 | **Referans derinleştirme** — mekanizma için `reference-approaches.md` §10'da kaynak kod düzeyinde kayıt var mı; yoksa araştırma kolu, sonucu §10'a | planlama | §10'da satır + URL |
+| 2 | **Know-how boşluğu** — referansların çözmediği şey "ölçüm gerektirir" diye adlandırılır; ölçüm probe ile, ürün koduna dokunmadan | planlama → eROps | `docs/measurements/` dosyası |
+| 3 | **Üç parçalı brief** — referans + bizim kısıtlar (dosya:satır) + ölçülebilir bitti | planlama | eROps eksikse başlamaz, sorar |
+| 4 | **Uygulama + yerel kapı** — worktree; build, test, E sözleşme takımı; migrasyon varsa veritabanına karşı | eROps | kapı çıktısı PR'da |
+| 5 | **Canlıya alma** — HEAD kontrolü, şema değişiyorsa `pg_dump`, `C:\eo-run` yayımı | eROps | tek satır rapor |
+| 6 | **Canlı test** — brief'teki bitti ölçüsü psql ile; yeni vim25/Redfish yolu için önce `probe --shapes`; ilk 24 saat sayımı | planlama (psql) | `live-verification.md` |
+| 7 | **Hata giderme** — aynı brief'e ek, keşif değil; düzeltme 4–6'dan yeniden geçer | eROps | — |
+
+"Notu oku ve yap" bir brief değildir; 3. adımı atlayan iş 4'e girmez.
+
+#### Şerit 1 — Temel (kritik yol; eROps **seri**)
+
+F3 (HttpClient + oturum çalıştırıcıya) → `probe --views` ölçümü → F4 (temizlik
+kapsamı) → F5 (öğrenilen durum + depo kuyruğu) → F6 (öz-ölçüler) → G-TLS.
+Referans derinleştirmesi 22 Eylül akşamı yapıldı (§10.6); brief'lere giren
+kararlar:
+
+- **F4:** API referansı view, child PropertyCollector ve EventHistoryCollector'ın
+  **oturumla birlikte yok olduğunu** yazıyor; `ViewManager.viewList` `System.View`
+  ile okunur → F4'ün bitti kanıtı **doğrudan**: tur sonunda `viewList` = 0.
+  `EventManager.maxCollector` okunur ve aşılmaz. govmomi `CancelRetrievePropertiesEx`'i
+  hiç çağırmıyor; biz çağırıyoruz, kalır. `sessionList` bu hesapla okunamıyor
+  (canlıda ölçüldü: NoPermission) — oturum sayısı "tuttuğumuza inandığımız"dır.
+- **F5:** Telegraf tamponu **sayıyla** (10 000 metrik, en eski ezilir), OTel
+  kuyruğu istekle (1 000) ve `sizer: bytes` seçeneğiyle, `memory_limiter` ile
+  süreç belleğine bağlı. Karar: kuyruk **bayt bütçesiyle** sınırlanır (sayı
+  ölçülen satır genişliğinden türetilir), yaş 30 dk ikincil sınır, düşen sayılır
+  ve alarm olur. Bütçe: yayımdaki servisin ölçülen sabit RSS'inin üstüne eklenen
+  pay olarak eROps ölçer, brief'e sayı öyle girer. Telegraf işareti yalnız
+  bellekte tutuyor ve vsphere `StatefulPlugin` değil — bizim "işaret = depodaki
+  en yeni zaman" kararı korunur.
+- **F6:** Prometheus `up` anlamı benimsenir: HTTP cevap verdi ama **ayrıştırma
+  ya da yazma başarısızsa `up` = 0**. Alan kümesi Datadog `Stats` + Telegraf
+  `internal_gather`'ın kesişimi: toplam tur, toplam hata, son 32 süre, son
+  başarı, son hata metni, atlanan tur, üretilen/düşen. Saat farkını hiçbir
+  ürün öz-ölçü olarak vermiyor; bizimki kalır (`ClockSkewCounter` adı korunur).
+
+#### Şerit 2 — Donanım: iLO/Redfish + SimpliVity (M6; **hemen başlar**, F dosyalarına dokunmaz)
+
+| Adım | İş | Bağımlılık | Bitti = |
+|---|---|---|---|
+| M6.0 | **Referans + erişim.** Redfish (DMTF şemaları, HPE iLO 5/6 uyarlama belgesi, Telegraf `inputs.redfish`, `redfish_exporter`) ve SimpliVity REST API referans kolu → §10.7. Ertuğrul'dan: iLO'da yalnız *Login* yetkili salt-okunur kullanıcı, SimpliVity (OVC/vCenter) salt-okunur hesap — **ürün içinden anahtar halkasına** (ADR-0010, ADR-0015), dosyaya asla; estate'te iLO sürümü ve düğüm sayısı | — | §10.7 yazıldı; erişim var |
+| M6.0b | **Ölçüm probe'u** — `tools/EnterpriseObservatory.RedfishProbe` (`--simplivity` anahtarıyla): ürün koduna dokunmaz, F'yi beklemez. Şekiller `docs/measurements/redfish-shapes.md`, `simplivity-shapes.md`: PSU/fan yedekliliği alan adları, `MemoryMetrics`, `Drive`, `FirmwareInventory`, IML; SimpliVity host/küme/VM/yedek alanları, token ömrü, çağrı süreleri; **kimlik katlama anahtarı** (vim25 `hardware.systemInfo.uuid`/`serialNumber` ↔ Redfish `Systems/1` `UUID`/`SerialNumber` ↔ SimpliVity host `id`/`hypervisor_management_system`) | M6.0 erişim | her iLO ve OVC'de görülen ad ve sayı; görülmemiş yol toplayıcıya girmez |
+| M6.1 | **Toplayıcı** — ADR-0025'in "yazar yalnız okuma fonksiyonu yazar" örneği; **saf ayrıştırıcı ve eşleme** (JSON → gözlem/bulgu) F6'yı beklemeden worktree'de yazılır, çalıştırıcıya bağlanması F6'dan sonra; E takımı Redfish'te geçmeden birleşmez (T2.1) | F6 | ayrı kaynak olarak canlıda `up`, okunan/okunamayan |
+| M6.2 | Kimlik katlama — vSphere host ↔ iLO ↔ SimpliVity host tek varlık, çift sayım yok (ilke 3'ün ilk sınavı) | M6.0b anahtarı | host ekranında donanım; varlık sayısı artmaz |
+| M6-S | **SimpliVity sağlık aktarımı** — "önce aktar, sonra hesapla": host `state`, küme `arbiter_connected`, VM `ha_status`, yedek `state`/son yedek yaşı, kapasite → ADR-0024 ayrımıyla alarm (geçebilir) ya da bulgu (geçemez); Duruş sayfasında "satıcı aktarımı" kataloğu | M6.1 | canlıda ilk 24 saat: bulgu sayısı 200 VM tahminine karşı |
+| M6.3–M6.7 | mevcut tanımlar; M6.4 ECC/`FailurePredicted` **bulgudur** (kimse bir şey yapmadan geçmez), M6.6 güç/fan yedekliliği **alarmdır** (geçebilir) | M6.1 | — |
+
+Canlı test şeridin parçası: her yayımdan sonra 24 saat, kaynak başına `up`,
+okunamayan alt sistem sayısı (M6.3 kapsam boşluğu) ve bulgu sayısı psql ile
+sayılır; sapma brief'e ek olarak döner.
+
+#### Şerit 3 — Duruş sayfası (paket **P**; hemen başlar, K3 üstüne, F ile dosya paylaşmaz)
+
+Tasarım kararı: **yeni sayfa, yeni motor değil.** K1 motoru ve ADR-0024 yaşam
+döngüsü olduğu gibi kalır; eklenen şey katalog kayıt defteri ve katalog başına
+karne. Ayrı bir "advisory sayfası", "best-practice sayfası" açılmaz — hepsi tek
+Duruş sayfasında **katalog** boyutuyla ayrılır (ADR-0024 Alternatif D'nin reddi).
+
+- **Katalog kayıt defteri:** `Catalogue { Id, Ad, Sahip (Broadcom · ürün · CISA …),
+  Sürüm, Tür: Hesaplanan | Aktarılan | Besleme, Lisans }`. Kataloglar: Broadcom SCG
+  (M3), `eo-continuity` (M8), `eo-bestpractice` (M9.5 + performans best-practice;
+  "bugün cevaplanabilir" kova), `eo-lifecycle` (M9.3; M9.1 tablosu veri),
+  `advisories` (M9.2; VMSA + KEV beslemesi; bulgu build başına, konu = duyuru),
+  `eo-hardware` (M6.7 sapma, M6.4 bayraklar), `vendor-passthrough` (vSAN M9.7,
+  SimpliVity, iLO sağlık toplamı ve IML).
+- **Karne, katalog başına:** geçti / kaldı / kabul / istisna / **değerlendirilemedi**
+  + kapsam (kaç konu değerlendirilebildi). Oran yalnız değerlendirilebilenler
+  üzerinden ve "değerlendirilemedi" her zaman yanında; çok ateşleyen kontrol
+  sayısıyla tek bulgu (ilke 4).
+- **Rapor:** katalog başına yazdırılabilir sayfa (M5 mekanizması);
+  `ContinuityReport` jenerikleşir (K3 §0'daki sekiz temsil edilmeyen kontrol).
+- **Tarihçe:** günlük karne anlık görüntüsü (küçük tablo, migrasyon) → "geçen
+  haftadan bu yana +3 / −5".
+
+| PR | İçerik | Dokunur | Bitti = |
+|---|---|---|---|
+| P1 | kayıt defteri + Duruş rotası (Compliance rotasının yerine) + karneler | `Application/Compliance`, `Api/ComplianceApi`, `web/routes` | iki katalog karneli; SCG testleri değişmeden yeşil |
+| P2 | jenerik rapor + günlük karne tarihçesi | `ReadModel.ContinuityReport`, `reports/`, şema | 18 süreklilik kontrolünün 18'i raporda |
+| P3 | `eo-bestpractice` (M9.5) + `eo-lifecycle` (M9.3, M9.1 tablosu) | `Application/Compliance/*Controls.cs`, `catalogues/` | canlıda ateşleme sayısı §9.2 tahminine karşı |
+| P4 | `advisories` beslemesi (M9.2) | `catalogues/`, besleme yutucu | "bu build'den sonra N duyuru, M'si istismar ediliyor" |
+| P5 | `eo-hardware` + `vendor-passthrough` | M6 ile | Duruş sayfasında donanım kataloğu |
+
+**Paralellik:** Şerit 1 seri ve kritik; Şerit 2'nin M6.0/M6.0b'si ve Şerit 3'ün
+P1'i bugün başlar (üçü dosya paylaşmaz). M6.1 F6'yı bekler; P3 P1'i bekler.
+CI faturası dönünce hafta içi birleşenler bir kez CI'dan geçer.
+
+**Ertuğrul'dan gerekenler:** iLO ve SimpliVity salt-okunur erişimi (ürün
+içinden); ajanlara `EO_TEST_PG_PASSWORD` kararı (P2 ve F5'te migrasyon var);
+#100 için bir kez "Kabul et".
+
 ## ▶ T — Toplayıcı temeli *(sürüyor)*
 
 Feature değil, zemin. 21 Eylül 2026 denetimi (üç kol: taşıma/oturum, kaynaklar,
