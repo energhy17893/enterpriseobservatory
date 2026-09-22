@@ -60,4 +60,19 @@ public interface ITransportContractFixture
     /// </summary>
     /// <returns>How many times the transport signed in again after expiry.</returns>
     Task<int> ReauthenticationsWhenTwoConcurrentCallsNoticeExpiredSessionAsync();
+
+    /// <summary>
+    /// F4 (ADR-0025 §3): a full cycle -- inventory, a metrics call and an
+    /// event read, in that order -- gives back every server-side object it
+    /// held. <paramref name="cancelDuringInventory"/> cuts the inventory read
+    /// off mid-page rather than letting it finish normally.
+    /// </summary>
+    /// <returns>
+    /// How many views the session's own <c>ViewManager.viewList</c> reports
+    /// once the cycle is over -- <c>views_held</c>, read the same way the
+    /// production code reads it. Zero is the proof; nonzero is the leak; null
+    /// means it could not be read at all, which must never be mistaken for
+    /// zero either.
+    /// </returns>
+    Task<int?> ViewsHeldAfterAFullCycleAsync(bool cancelDuringInventory);
 }

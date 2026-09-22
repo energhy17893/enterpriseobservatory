@@ -36,6 +36,31 @@ public interface IInventorySource
     Task<InventorySnapshot> ReadAsync(CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// A server-side object a collector created — a view, a child property
+/// collector, a paging token — to be given back once the read that made it is
+/// over, however it ended.
+/// </summary>
+/// <remarks>
+/// <para>
+/// ADR-0025 §3: the collector creates these and registers them; giving them
+/// back — with a fresh, bounded token, never the read's own, which may already
+/// be cancelled — is not the collector's decision to skip. What the object
+/// actually is (a vim25 <c>ContainerView</c>, an <c>EventHistoryCollector</c>,
+/// a <c>RetrievePropertiesEx</c> token) stays inside the collector that made
+/// it (#80 §4); this is the only shape the rest of the product needs to know.
+/// </para>
+/// <para>
+/// Never throws. The caller that disposes a set of these cannot let one
+/// failure stop it from asking for the rest back, and a session ending is the
+/// documented last resort if this could not reach the server at all.
+/// </para>
+/// </remarks>
+public interface IServerHandle
+{
+    ValueTask DisposeAsync(CancellationToken freshToken);
+}
+
 /// <summary>Supplies metric samples.</summary>
 public interface IObservationSource
 {
@@ -225,6 +250,16 @@ public sealed record InventorySnapshot
     /// </para>
     /// </remarks>
     public IReadOnlyList<Observation> Observations { get; init; } = [];
+
+    /// <summary>
+    /// How many server-side views this read's own session held when it
+    /// finished asking for them back — the <c>views_held</c> self-metric
+    /// (F4, ADR-0025 §3). Zero for a source that does not create views; null
+    /// when a source that does create them could not read the count. A null
+    /// reading must not be mistaken for zero — see
+    /// <see cref="CollectorHealth.ViewsHeldMax"/>'s remarks.
+    /// </summary>
+    public int? ViewsHeld { get; init; }
 }
 
 /// <summary>Metric samples from one source for one cycle.</summary>
@@ -378,4 +413,43 @@ public sealed record CollectorHealth
     /// only in a log line.
     /// </remarks>
     public int SkippedCycles { get; init; }
+
+    /// <summary>
+    /// The server-side views this source's own session held at the end of its
+    /// last cycle (F4, ADR-0025 §3). Zero for a role that does not create
+    /// views. Not an alert either way — package D's proof, not a threshold.
+    /// </summary>
+    /// <remarks>
+    /// Null when the last cycle could not read the count at all — never
+    /// invented as zero. An unreadable list and an empty list are different
+    /// facts: this product's rule everywhere else is that not being allowed
+    /// to look is not an empty list, and collapsing the two here would let a
+    /// self-metric that never actually measured anything read as a clean
+    /// zero.
+    /// </remarks>
+    public int? ViewsHeld { get; init; }
+
+    /// <summary>
+    /// The highest <see cref="ViewsHeld"/> this process has seen since it
+    /// started.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not carried forward from what was persisted: it answers
+    /// "has cleanup regressed since this process came up", so a restart resets
+    /// it to null rather than inheriting a number an earlier build left
+    /// behind. The store that persists this (<c>PostgresCollectorHealthStore</c>)
+    /// never hydrates either this or <see cref="ViewsHeld"/> from the database
+    /// on startup for that reason; both simply start null and are written
+    /// fresh every cycle. It is still persisted every cycle, so a query an
+    /// hour or a day later can prove "never above zero since restart" without
+    /// this process having to be watched the whole time.
+    /// <para>
+    /// Null here means "never read successfully since this process started" —
+    /// not zero, and not carried down from an unreadable reading either: a
+    /// null <see cref="ViewsHeld"/> reading leaves this exactly where it was.
+    /// A monitoring tool that reported "0 views held, ever" while every read
+    /// had actually failed would be proving the wrong thing.
+    /// </para>
+    /// </remarks>
+    public int? ViewsHeldMax { get; init; }
 }

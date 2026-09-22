@@ -765,11 +765,13 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var failures = new List<VsphereReadFailure>();
 
+        var scope = new ServerHandleScope();
         var viewMoRef = await CreateViewAsync(content, cancellationToken).ConfigureAwait(false);
+        scope.Register(new VsphereViewHandle(this, viewMoRef));
 
         try
         {
-            var (objects, pages) = await RetrieveAllPagesAsync(content, viewMoRef, cancellationToken)
+            var (objects, pages) = await RetrieveAllPagesAsync(content, viewMoRef, scope, cancellationToken)
                 .ConfigureAwait(false);
 
             foreach (var missing in objects.SelectMany(o => o.Missing.Select(m => (o, m))))
@@ -797,7 +799,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             var backupFields = await ReadLastBackupFieldsAsync(content, failures, cancellationToken)
                 .ConfigureAwait(false);
 
-            return new VsphereInventoryPayload
+            var payload = new VsphereInventoryPayload
             {
                 VCenterName = string.IsNullOrWhiteSpace(content.Name) ? InstanceId : content.Name,
                 VCenterVerdicts = vCenterVerdicts,
@@ -819,12 +821,20 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 Coverage = MeasureCoverage(objects),
                 PagesRetrieved = pages,
             };
-        }
-        finally
-        {
+
             // Views are server-side resources with a session lifetime. Leaking
             // one per cycle would accumulate until the session is recycled.
-            await TryDestroyViewAsync(viewMoRef, cancellationToken).ConfigureAwait(false);
+            // Registered handles are given back before views_held is read, so
+            // the number reported is the proof (F4, ADR-0025 §3), not a count
+            // taken before this read's own view was destroyed.
+            await scope.DisposeAllAsync(CleanupGrace, cancellationToken).ConfigureAwait(false);
+
+            return payload with { ViewsHeld = await GetViewsHeldAsync(content, cancellationToken).ConfigureAwait(false) };
+        }
+        catch
+        {
+            await scope.DisposeAllAsync(CleanupGrace, cancellationToken).ConfigureAwait(false);
+            throw;
         }
     }
 
@@ -949,49 +959,18 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             : moRef;
     }
 
-    private Task TryDestroyViewAsync(string viewMoRef, CancellationToken cancellationToken) =>
-        TryCleanUpAsync(VsphereSoapRequests.DestroyView(viewMoRef), cancellationToken);
-
     /// <summary>
-    /// Gives a server-side object back, including when the read that made it
-    /// was cut off.
+    /// How long a give-back gets on a fresh token when the read's own was
+    /// already cancelled (F4, ADR-0025 §3).
     /// </summary>
     /// <remarks>
-    /// <para>
     /// Not the caller's token alone. A read is cut off by cancelling its token
-    /// — that is how the runner's timeout arrives — and cleanup sent on a
+    /// — that is how the runner's timeout arrives — and a give-back sent on a
     /// cancelled token throws before it sends anything. The view was the one
     /// place that did exactly that, so every inventory read that timed out
     /// left a view behind, on a session the metric loop keeps alive and so
     /// never recycles. A short grace is cheaper than the leak.
-    /// </para>
-    /// <para>
-    /// Never throws. The session ending collects whatever this could not, and
-    /// failing a read over a tidy-up would lose what the read did collect.
-    /// </para>
     /// </remarks>
-    private async Task TryCleanUpAsync(string request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var grace = new CancellationTokenSource(CleanupGrace);
-
-            await SendAsync(
-                request,
-                cancellationToken.IsCancellationRequested ? grace.Token : cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (VsphereApiException)
-        {
-        }
-        catch (HttpRequestException)
-        {
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
-
     private static readonly TimeSpan CleanupGrace = TimeSpan.FromSeconds(10);
 
     /// <summary>
@@ -1006,13 +985,15 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     private Task<(List<PropertyObject> Objects, int Pages)> RetrieveAllPagesAsync(
         VsphereServiceContent content,
         string viewMoRef,
+        ServerHandleScope scope,
         CancellationToken cancellationToken) =>
-        RetrieveAllPagesAsync(content, viewMoRef, InventoryProperties, cancellationToken);
+        RetrieveAllPagesAsync(content, viewMoRef, InventoryProperties, scope, cancellationToken);
 
     private async Task<(List<PropertyObject> Objects, int Pages)> RetrieveAllPagesAsync(
         VsphereServiceContent content,
         string viewMoRef,
         IReadOnlyDictionary<string, IReadOnlyList<string>> properties,
+        ServerHandleScope scope,
         CancellationToken cancellationToken,
         Action<int>? onReply = null)
     {
@@ -1054,12 +1035,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         finally
         {
             // Only reached with a token when the walk stopped early: cut off,
-            // faulted, or handed a page it could not read.
+            // faulted, or handed a page it could not read. Registered, not
+            // sent here directly -- the caller's scope gives it back with
+            // everything else it holds (F4, ADR-0025 §3).
             if (!string.IsNullOrEmpty(open))
             {
-                await TryCleanUpAsync(
-                    VsphereSoapRequests.CancelRetrievePropertiesEx(content.PropertyCollector, open),
-                    cancellationToken).ConfigureAwait(false);
+                scope.Register(new VsphereContinuationTokenHandle(this, content.PropertyCollector, open));
             }
         }
 
@@ -1424,11 +1405,13 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     public async Task<IReadOnlyList<string>> DescribeInventoryShapeAsync(CancellationToken cancellationToken)
     {
         var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var scope = new ServerHandleScope();
         var viewMoRef = await CreateViewAsync(content, cancellationToken).ConfigureAwait(false);
+        scope.Register(new VsphereViewHandle(this, viewMoRef));
 
         try
         {
-            var (objects, _) = await RetrieveAllPagesAsync(content, viewMoRef, cancellationToken)
+            var (objects, _) = await RetrieveAllPagesAsync(content, viewMoRef, scope, cancellationToken)
                 .ConfigureAwait(false);
 
             var lines = new List<string>();
@@ -1537,7 +1520,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         }
         finally
         {
-            await TryDestroyViewAsync(viewMoRef, cancellationToken).ConfigureAwait(false);
+            await scope.DisposeAllAsync(CleanupGrace, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -2014,6 +1997,17 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 "vCenter did not offer an event manager, so its events cannot be read.");
         }
 
+        // EventManager.maxCollector (F4, ADR-0025 §3, docs/reference-approaches.md
+        // §10.6): read and respected. We only ever hold one child collector at a
+        // time -- created here, given back below -- so any limit of at least one
+        // is always honoured; the guard exists so a limit of zero fails with a
+        // clear reason instead of an InvalidState fault from CreateCollectorForEvents.
+        if (await GetMaxEventCollectorsAsync(content, eventManager, cancellationToken).ConfigureAwait(false) is 0)
+        {
+            return EventRead.CouldNotAsk(
+                "vCenter's EventManager.maxCollector is 0; no event collector can be created.");
+        }
+
         var begin = since is null ? nowUtc - FirstEventLookBack : since.CreatedAtUtc - EventWindowOverlap;
 
         var created = await SendAsync(
@@ -2022,6 +2016,9 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
 
         var collector = VsphereEventParser.ParseCollector(created)
             ?? throw new VsphereApiException("vCenter did not return an event collector.");
+
+        var scope = new ServerHandleScope();
+        scope.Register(new VsphereEventCollectorHandle(this, collector));
 
         try
         {
@@ -2083,12 +2080,36 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         }
         finally
         {
-            await TryDestroyCollectorAsync(collector, cancellationToken).ConfigureAwait(false);
+            await scope.DisposeAllAsync(CleanupGrace, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private Task TryDestroyCollectorAsync(string collector, CancellationToken cancellationToken) =>
-        TryCleanUpAsync(VsphereSoapRequests.DestroyCollector(collector), cancellationToken);
+    /// <summary>
+    /// <c>EventManager.maxCollector</c>, or null when it could not be read.
+    /// </summary>
+    private async Task<int?> GetMaxEventCollectorsAsync(
+        VsphereServiceContent content, string eventManager, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await SendAsync(
+                VsphereSoapRequests.RetrieveObjectProperties(
+                    content.PropertyCollector, "EventManager", [eventManager], ["maxCollector"]),
+                cancellationToken).ConfigureAwait(false);
+
+            var objects = PropertyCollectorParser.ParsePage(response).Objects;
+
+            return objects.Count > 0
+                && objects[0].Values.TryGetValue("maxCollector", out var raw)
+                && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var max)
+                ? max
+                : null;
+        }
+        catch (VsphereApiException)
+        {
+            return null;
+        }
+    }
 
     // --- session (F3: owned by VsphereSessionChannel, not this client) ----
 
@@ -2112,8 +2133,15 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// generation check for. This client no longer has a session field, a
     /// login method or a lock; it only relays the generation it saw.
     /// </para>
+    /// <para>
+    /// Internal rather than private: the <c>IServerHandle</c> implementations
+    /// in <c>VsphereServerHandles.cs</c> give a view, a child collector or a
+    /// paging token back through this same channel, so the register/dispose
+    /// contract (ADR-0025 §3) sends exactly what a call inside this class
+    /// always did.
+    /// </para>
     /// </remarks>
-    private async Task<string> SendAsync(
+    internal async Task<string> SendAsync(
         string body,
         CancellationToken cancellationToken,
         VsphereCallContext context = VsphereCallContext.General)

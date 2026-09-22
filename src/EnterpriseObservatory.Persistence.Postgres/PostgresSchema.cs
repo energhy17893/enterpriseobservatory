@@ -801,6 +801,22 @@ internal static class PostgresSchema
         """
         ALTER TABLE collector_health ADD COLUMN skipped_cycles integer NOT NULL DEFAULT 0;
         """,
+
+        // Migration 16 (F4, ADR-0025 §3): the cleanup promise as a number.
+        // views_held is the last cycle's count of this session's own
+        // ViewManager.viewList; views_held_max is the highest either column
+        // has ever reported since the process now writing it started -- never
+        // hydrated back from here (CollectorHealth.ViewsHeldMax's remarks),
+        // so a restart resets it to NULL rather than inheriting a number an
+        // earlier build left behind. Nullable, not defaulted to zero: a cycle
+        // that could not read the count at all writes NULL, and "not allowed
+        // to look" must never be stored the same way as "read and found none"
+        // -- collapsing the two would let views_held_max = 0 after 24 hours
+        // prove nothing was ever measured.
+        """
+        ALTER TABLE collector_health ADD COLUMN views_held integer NULL;
+        ALTER TABLE collector_health ADD COLUMN views_held_max integer NULL;
+        """,
     ];
 
     public static int Current => Migrations.Length;

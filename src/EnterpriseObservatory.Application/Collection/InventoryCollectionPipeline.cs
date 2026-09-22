@@ -71,7 +71,8 @@ public sealed class InventoryCollectionPipeline
                 SourceRunner.Existing(priorHealth, source.InstanceId, CollectorRole.Inventory),
                 policy,
                 gate,
-                cancellationToken))).ConfigureAwait(false);
+                cancellationToken,
+                viewsHeld: static snapshot => snapshot.ViewsHeld))).ConfigureAwait(false);
 
         return new CollectionCycleResult
         {

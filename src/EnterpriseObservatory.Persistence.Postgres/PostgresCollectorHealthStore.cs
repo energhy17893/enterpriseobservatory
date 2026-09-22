@@ -100,9 +100,10 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                 INSERT INTO collector_health (
                     instance_id, role, health, last_success_utc,
                     consecutive_failures, is_backing_off, last_failure_detail,
-                    last_attempt_utc, last_failure_kind, skipped_cycles)
+                    last_attempt_utc, last_failure_kind, skipped_cycles,
+                    views_held, views_held_max)
                 VALUES (@instance, @role, @health, @success, @failures, @backing, @detail,
-                        @attempt, @kind, @skipped)
+                        @attempt, @kind, @skipped, @views, @viewsMax)
                 ON CONFLICT (instance_id, role) DO UPDATE SET
                     health = EXCLUDED.health,
                     last_success_utc = EXCLUDED.last_success_utc,
@@ -111,7 +112,9 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                     last_failure_detail = EXCLUDED.last_failure_detail,
                     last_attempt_utc = EXCLUDED.last_attempt_utc,
                     last_failure_kind = EXCLUDED.last_failure_kind,
-                    skipped_cycles = EXCLUDED.skipped_cycles;
+                    skipped_cycles = EXCLUDED.skipped_cycles,
+                    views_held = EXCLUDED.views_held,
+                    views_held_max = EXCLUDED.views_held_max;
                 """);
 
             foreach (var entry in health)
@@ -127,6 +130,8 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                 command.BindTime("@attempt", entry.LastAttemptUtc);
                 command.Bind("@kind", entry.LastFailureKind?.ToString());
                 command.Bind("@skipped", entry.SkippedCycles);
+                command.Bind("@views", entry.ViewsHeld);
+                command.Bind("@viewsMax", entry.ViewsHeldMax);
                 command.ExecuteNonQuery();
             }
 
@@ -172,6 +177,17 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
         }
     }
 
+    /// <remarks>
+    /// <c>views_held</c> and <c>views_held_max</c> are deliberately not
+    /// selected here. Both default to zero on <see cref="CollectorHealth"/>,
+    /// and <c>views_held_max</c> in particular must: it answers "since this
+    /// process started", so hydrating it from what an earlier process left on
+    /// disk would understate a regression this process introduces. Both are
+    /// written fresh by the first cycle either role runs; a role read only by
+    /// the other loop keeps whatever the last write for it happened to be
+    /// until that loop runs again, which is the same story
+    /// <c>skipped_cycles</c> and every other per-role figure already tell.
+    /// </remarks>
     private static Dictionary<(string, CollectorRole), CollectorHealth> Load(
         NpgsqlConnection connection)
     {

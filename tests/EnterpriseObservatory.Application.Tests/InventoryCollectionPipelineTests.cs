@@ -56,6 +56,73 @@ public class InventoryCollectionPipelineTests
         Assert.Empty(result.CollectionAlerts);
     }
 
+    // --- F4 (ADR-0025 §3): views_held / views_held_max must not turn an
+    // unreadable count into a zero one --------------------------------------
+
+    [Fact]
+    public async Task A_source_that_never_read_the_view_count_has_no_max_either()
+    {
+        var source = new FakeSource("vc-1")
+        {
+            Behaviour = _ => Task.FromResult(Ok("vc-1") with { ViewsHeld = null }),
+        };
+
+        var result = await Pipeline().RunAsync([source], [], Fast, CancellationToken.None);
+
+        Assert.Null(result.Health[0].ViewsHeld);
+        Assert.Null(result.Health[0].ViewsHeldMax);
+    }
+
+    [Fact]
+    public async Task An_unreadable_view_count_is_null_not_zero()
+    {
+        // Not being allowed to look is not an empty list anywhere else in this
+        // product, and views_held must follow the same rule: a read that
+        // could not see the ViewManager at all is not "zero views held".
+        var source = new FakeSource("vc-1")
+        {
+            Behaviour = _ => Task.FromResult(Ok("vc-1") with { ViewsHeld = null }),
+        };
+
+        var result = await Pipeline().RunAsync([source], [], Fast, CancellationToken.None);
+
+        Assert.False(result.Health[0].ViewsHeld == 0);
+        Assert.Null(result.Health[0].ViewsHeld);
+    }
+
+    [Fact]
+    public async Task A_genuinely_empty_view_list_reads_as_zero_distinct_from_unreadable()
+    {
+        var source = new FakeSource("vc-1")
+        {
+            Behaviour = _ => Task.FromResult(Ok("vc-1") with { ViewsHeld = 0 }),
+        };
+
+        var result = await Pipeline().RunAsync([source], [], Fast, CancellationToken.None);
+
+        Assert.Equal(0, result.Health[0].ViewsHeld);
+        Assert.Equal(0, result.Health[0].ViewsHeldMax);
+        Assert.NotNull(result.Health[0].ViewsHeld);
+    }
+
+    [Fact]
+    public async Task A_null_reading_after_a_high_water_mark_of_three_leaves_the_max_at_three()
+    {
+        var readings = new Queue<int?>([3, null]);
+        var source = new FakeSource("vc-1")
+        {
+            Behaviour = _ => Task.FromResult(Ok("vc-1") with { ViewsHeld = readings.Dequeue() }),
+        };
+
+        var first = await Pipeline().RunAsync([source], [], Fast, CancellationToken.None);
+        Assert.Equal(3, first.Health[0].ViewsHeldMax);
+
+        var second = await Pipeline().RunAsync([source], first.Health, Fast, CancellationToken.None);
+
+        Assert.Null(second.Health[0].ViewsHeld);
+        Assert.Equal(3, second.Health[0].ViewsHeldMax);
+    }
+
     [Fact]
     public async Task One_source_failing_does_not_stop_the_others()
     {
