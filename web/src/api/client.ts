@@ -6,6 +6,7 @@ import type {
   EntityView,
   OverviewView,
   Page,
+  SelfMetricsView,
   SeriesOptionView,
   SeriesView,
 } from './types'
@@ -203,6 +204,7 @@ export interface EntityQuery extends Query {
 
 export const api = {
   overview: () => get<OverviewView>('/api/overview'),
+  selfMetrics: () => get<SelfMetricsView>('/api/metrics'),
   alerts: (query: AlertQuery = {}) => get<Page<AlertView>>('/api/alerts', query),
   entities: (query: EntityQuery = {}) => get<Page<EntityView>>('/api/entities', query),
   entity: (id: string) => get<EntityDetailView>(`/api/entities/${encodeURIComponent(id)}`),

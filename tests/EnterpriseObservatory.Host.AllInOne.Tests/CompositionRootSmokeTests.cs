@@ -114,6 +114,21 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public async Task An_anonymous_caller_can_reach_health()
+    {
+        // /health exists so an external monitor can page on it without an
+        // account (Package D) — the opposite rule from every /api endpoint
+        // above. A fresh test host has no collector health rows, which reads
+        // as "nothing configured yet", not "down": see HealthAssessmentTests.
+        var response = await Client().GetAsync("/health");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Healthy", body.GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task The_sign_in_surface_is_reachable_without_a_session()
     {
         // The positive control for the test above. If the pipeline refused
@@ -170,6 +185,20 @@ public sealed class CompositionRootSmokeTests : IDisposable
         var client = await SignedIn(Client(), "viewer");
 
         var response = await client.GetAsync("/api/overview");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_viewer_can_read_the_self_metrics()
+    {
+        // The internal counterpart to /health (Package D): authenticated,
+        // reachable, and answering with zeros rather than an error before any
+        // cycle has run.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/metrics");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -885,6 +914,7 @@ internal sealed class ObservatoryHost : WebApplicationFactory<Program>
             Replace<IEntityGraphStore>(services, new InMemoryEntityGraphStore());
             Replace<IAlertStateStore>(services, new InMemoryAlertStateStore());
             Replace<ICollectorHealthStore>(services, new InMemoryCollectorHealthStore());
+            Replace<ICollectionGapStore>(services, new InMemoryCollectionGapStore());
             Replace<ICoverageStore>(services, new InMemoryCoverageStore());
             Replace<IEventStore>(services, new InMemoryEventStore());
             Replace<IObservationStore>(services, new InMemoryObservationStore());

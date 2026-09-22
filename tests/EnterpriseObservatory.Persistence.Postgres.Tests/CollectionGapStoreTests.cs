@@ -110,6 +110,30 @@ public class CollectionGapStoreTests : IDisposable
     }
 
     [SkippableFact]
+    public void Counts_by_state_span_every_source_for_the_health_endpoint()
+    {
+        RequireDatabase();
+
+        var store = new PostgresCollectionGapStore(_live.Database);
+
+        // One open gap each on two different sources, and one closed
+        // unrecoverable -- /health (Package D) reads the totals across all
+        // sources, not per source.
+        store.Open(Gap("vc-1", T0.AddMinutes(-30), T0.AddMinutes(-2)));
+        store.Open(Gap("vc-2", T0.AddMinutes(-30), T0.AddMinutes(-2)));
+
+        var lost = store.Open(Gap("vc-3", T0.AddMinutes(-90), T0.AddMinutes(-2)));
+        var expired = CollectionGaps.Expire(lost, T0.AddMinutes(-59), T0);
+        store.Update(expired);
+        store.Update(CollectionGaps.Advance(expired, T0.AddMinutes(-2), T0.AddMinutes(1)));
+
+        var counts = store.CountsByState();
+
+        Assert.Equal(2, counts[CollectionGapState.Open]);
+        Assert.Equal(1, counts[CollectionGapState.Unrecoverable]);
+    }
+
+    [SkippableFact]
     public void The_newest_stored_sample_of_each_entity_is_its_mark()
     {
         RequireDatabase();

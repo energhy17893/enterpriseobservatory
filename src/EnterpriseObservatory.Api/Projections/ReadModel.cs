@@ -36,7 +36,9 @@ public sealed class ReadModel(
     MonitoringOptions options,
     IClock clock,
     IComplianceStore? compliance = null,
-    IReadOnlyList<ContinuityCheck>? continuityChecks = null)
+    IReadOnlyList<ContinuityCheck>? continuityChecks = null,
+    ICollectionGapStore? gaps = null,
+    IOperationalMetricsStore? selfMetrics = null)
 {
     /// <summary>
     /// Where the continuity findings live (ADR-0024); null reads as "never
@@ -50,6 +52,20 @@ public sealed class ReadModel(
     /// </summary>
     private readonly IReadOnlyList<ContinuityCheck> _continuityChecks =
         continuityChecks ?? ContinuityCatalogue.Production;
+
+    /// <summary>
+    /// Where source-level gap records live; null reads as "no gaps recorded"
+    /// (Package D's metrics view). Optional for the same reason
+    /// <see cref="_compliance"/> is: existing tests construct this model
+    /// without it.
+    /// </summary>
+    private readonly ICollectionGapStore? _gaps = gaps;
+
+    /// <summary>
+    /// The runner's own last-cycle numbers; null reads as "nothing measured
+    /// yet" (Package D's metrics view).
+    /// </summary>
+    private readonly IOperationalMetricsStore? _selfMetrics = selfMetrics;
 
     private readonly IEntityGraphStore _graphs = graphs ?? throw new ArgumentNullException(nameof(graphs));
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
@@ -128,6 +144,35 @@ public sealed class ReadModel(
                 : health.Min(c => c.LastSuccessUtc),
         };
     }
+
+    // --- self-metrics (Package D) ------------------------------------------
+
+    /// <summary>
+    /// The runner's own last-cycle numbers, for the overview screen's own-health
+    /// card. See <see cref="SelfMetricsView"/> for what is and is not here.
+    /// </summary>
+    public SelfMetricsView SelfMetrics()
+    {
+        var gapCounts = _gaps?.CountsByState() ?? new Dictionary<CollectionGapState, int>();
+
+        return new SelfMetricsView
+        {
+            GeneratedAtUtc = _clock.UtcNow,
+            Inventory = ToView(_selfMetrics?.Inventory),
+            Observation = ToView(_selfMetrics?.Observation),
+            UnknownAlerts = _alerts.All.Count(a => a.IsConfirmed && a.State == AlertLifecycleState.Unknown),
+            OpenGaps = gapCounts.GetValueOrDefault(CollectionGapState.Open),
+            UnrecoverableGaps = gapCounts.GetValueOrDefault(CollectionGapState.Unrecoverable),
+        };
+    }
+
+    private static CycleMetricsView ToView(CycleMetricsSnapshot? snapshot) => new()
+    {
+        AtUtc = snapshot?.AtUtc,
+        DurationSeconds = snapshot?.Duration.TotalSeconds ?? 0,
+        TransitionsAppended = snapshot?.TransitionsAppended ?? 0,
+        AgeClampedToUnknown = snapshot?.AgeClampedToUnknown ?? 0,
+    };
 
     // --- alerts -----------------------------------------------------------
 
