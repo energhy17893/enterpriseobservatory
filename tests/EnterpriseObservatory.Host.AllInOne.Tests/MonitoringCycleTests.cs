@@ -1432,8 +1432,13 @@ public class MonitoringCycleTests : IDisposable
             },
         };
 
-        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
-        _clock.Advance(TimeSpan.FromSeconds(30));
+        // The blind spot is judged over a window of busy cycles, so run until
+        // it is full and one more for the Warning's second hit.
+        for (var i = 0; i < Options.StorageLatencyBlindSpot.WindowCycles; i++)
+        {
+            await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+            _clock.Advance(TimeSpan.FromSeconds(30));
+        }
 
         var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
 

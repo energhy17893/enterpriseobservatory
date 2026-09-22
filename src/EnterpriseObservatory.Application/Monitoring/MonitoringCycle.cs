@@ -144,6 +144,13 @@ public sealed class MonitoringCycle(
 
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
+    /// <summary>
+    /// This cycle's own rule instances, so a rule that keeps state across
+    /// cycles (<see cref="StorageLatencyBlindSpotRule"/>'s window) keeps it for
+    /// this cycle's lifetime — the process's, in the host — and no other.
+    /// </summary>
+    private readonly IReadOnlyList<IAnalysisRule> _rules = AnalysisRules.Create();
+
     /// <summary>Re-reads inventory and folds it into the graph.</summary>
     public async Task<MonitoringCycleResult> RunInventoryAsync(
         IReadOnlyList<IInventorySource> sources,
@@ -498,7 +505,7 @@ public sealed class MonitoringCycle(
         var evaluations = new List<RuleEvaluation>();
         var failures = new List<AlertDefinition>();
 
-        foreach (var rule in AnalysisRules.For(scope))
+        foreach (var rule in _rules.Where(r => r.Scope == scope))
         {
             var guarded = GuardedRule.Run(rule.RuleId, () => rule.Evaluate(context), HeldBy(rule.RuleId));
 
