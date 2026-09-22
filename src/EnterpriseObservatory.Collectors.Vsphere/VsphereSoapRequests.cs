@@ -36,6 +36,28 @@ public static class VsphereSoapRequests
             </vim25:RetrieveServiceContent>
         """);
 
+    /// <summary>Asks vCenter for its own clock (<c>ServiceInstance.CurrentTime</c>).</summary>
+    public static string CurrentTime() => Envelope("""
+            <vim25:CurrentTime>
+              <vim25:_this type="ServiceInstance">ServiceInstance</vim25:_this>
+            </vim25:CurrentTime>
+        """);
+
+    /// <summary>Reads a <c>CurrentTime</c> reply, as UTC.</summary>
+    /// <exception cref="System.Xml.XmlException">The reply is malformed.</exception>
+    /// <exception cref="FormatException">The reply carries no readable time.</exception>
+    public static DateTimeOffset ParseCurrentTime(string xml)
+    {
+        var text = VsphereXml.Parse(xml)
+            .Descendants()
+            .FirstOrDefault(e => e.Name.LocalName == "returnval")?.Value;
+
+        return DateTimeOffset.TryParse(
+            text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
+            ? parsed.ToUniversalTime()
+            : throw new FormatException($"vCenter's CurrentTime reply carried no readable time: '{text}'.");
+    }
+
     public static string Login(string sessionManagerMoRef, string username, string password) => Envelope($"""
             <vim25:Login>
               <vim25:_this type="SessionManager">{Escape(sessionManagerMoRef)}</vim25:_this>
@@ -187,6 +209,49 @@ public static class VsphereSoapRequests
                   <vim25:querySpec>
                     <vim25:entity type="{Escape(entityType)}">{Escape(moRef)}</vim25:entity>{range}
                     <vim25:maxSample>{maxSample.ToString(CultureInfo.InvariantCulture)}</vim25:maxSample>{metrics}
+                    <vim25:intervalId>{intervalSeconds.ToString(CultureInfo.InvariantCulture)}</vim25:intervalId>
+                    <vim25:format>normal</vim25:format>
+                  </vim25:querySpec>
+            """));
+
+        return Envelope($"""
+                <vim25:QueryPerf>
+                  <vim25:_this type="PerformanceManager">{Escape(perfManagerMoRef)}</vim25:_this>{specs}
+                </vim25:QueryPerf>
+            """);
+    }
+
+    /// <summary>Requests samples for a batch of entities, each over its own window.</summary>
+    /// <remarks>
+    /// No <c>maxSample</c>: the window alone decides what comes back. Given
+    /// both, vCenter keeps the newest samples and drops the oldest
+    /// (docs/measurements/queryperf-sample-window.md, m1) — which would quietly
+    /// cut the old end off a gap fill. <c>startTime</c> is exclusive and
+    /// <c>endTime</c> inclusive.
+    /// </remarks>
+    public static string QueryPerfWindows(
+        string perfManagerMoRef,
+        IReadOnlyList<PerfQueryTarget> targets,
+        string entityType,
+        IReadOnlyList<VsphereCounter> counters,
+        int intervalSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        ArgumentNullException.ThrowIfNull(counters);
+
+        var metrics = string.Concat(counters.Select(c => $"""
+
+                    <vim25:metricId><vim25:counterId>{c.Id.ToString(CultureInfo.InvariantCulture)}</vim25:counterId><vim25:instance>*</vim25:instance></vim25:metricId>
+            """));
+
+        // Schema order: entity, startTime?, endTime?, maxSample?, metricId*,
+        // intervalId?, format? — see QueryPerf.
+        var specs = string.Concat(targets.Select(t => $"""
+
+                  <vim25:querySpec>
+                    <vim25:entity type="{Escape(entityType)}">{Escape(t.MoRef)}</vim25:entity>
+                    <vim25:startTime>{t.StartExclusiveUtc.UtcDateTime.ToString("o", CultureInfo.InvariantCulture)}</vim25:startTime>
+                    <vim25:endTime>{t.EndInclusiveUtc.UtcDateTime.ToString("o", CultureInfo.InvariantCulture)}</vim25:endTime>{metrics}
                     <vim25:intervalId>{intervalSeconds.ToString(CultureInfo.InvariantCulture)}</vim25:intervalId>
                     <vim25:format>normal</vim25:format>
                   </vim25:querySpec>
