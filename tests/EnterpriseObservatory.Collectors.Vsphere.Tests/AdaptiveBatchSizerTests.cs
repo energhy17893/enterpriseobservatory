@@ -103,8 +103,8 @@ public class AdaptiveBatchSizerTests
     [InlineData("Too many metrics requested")]
     public void A_query_size_refusal_is_recognised(string message)
     {
-        // vCenter reports this as a generic fault whose message is the only
-        // distinguishing feature, so matching on text is unavoidable.
+        // The message fallback, used only when a fault names no specific type;
+        // the type itself is RestrictedByAdministrator (T1.3).
         Assert.True(AdaptiveBatchSizer.IsQuerySizeRefusal(message));
     }
 

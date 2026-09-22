@@ -16,6 +16,9 @@ public sealed record CollectionPolicy
     /// <remarks>
     /// The outer bound. A slow vendor must not be able to hold the whole cycle,
     /// because the cost of that is every other vendor's data going stale.
+    /// It is the whole budget for one source in one cycle, retries included.
+    /// The cycle derives it from the interval with <see cref="ForInterval"/>;
+    /// the 25 seconds here applies only to a policy never given one.
     /// </remarks>
     public TimeSpan SourceTimeout { get; init; } = TimeSpan.FromSeconds(25);
 
@@ -51,7 +54,54 @@ public sealed record CollectionPolicy
     /// </remarks>
     public int MaxConcurrency { get; init; } = 8;
 
+    /// <summary>
+    /// The share of a collection interval one source may spend being read.
+    /// </summary>
+    /// <remarks>
+    /// Less than the whole: the cycle still has to evaluate and store what was
+    /// read before the next one is due, and a read allowed the full interval
+    /// makes every slow cycle a late one.
+    /// </remarks>
+    public double IntervalShare { get; init; } = 0.8;
+
+    /// <summary>The least any source is given, however short its interval.</summary>
+    /// <remarks>ADR-0005 §5: derived from the poll interval, at least ten seconds.</remarks>
+    public TimeSpan MinimumSourceTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
     public static CollectionPolicy Default { get; } = new();
+
+    /// <summary>
+    /// This policy, with <see cref="SourceTimeout"/> derived from the interval
+    /// the source is read on.
+    /// </summary>
+    /// <remarks>
+    /// T1.1. The timeout used to be one constant, 25 seconds, for metrics read
+    /// every 30 seconds and inventory read every five minutes alike — the
+    /// inventory of a large estate had a twelfth of its interval to page
+    /// through everything. The cycle calls this once per pipeline with that
+    /// pipeline's own interval.
+    /// </remarks>
+    public CollectionPolicy ForInterval(TimeSpan interval)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(interval, TimeSpan.Zero);
+
+        var share = TimeSpan.FromTicks((long)(interval.Ticks * IntervalShare));
+
+        return this with { SourceTimeout = share > MinimumSourceTimeout ? share : MinimumSourceTimeout };
+    }
+
+    /// <summary>
+    /// How long before the timeout a source is asked to stop, so what it has
+    /// read can come back before the runner stops waiting for it.
+    /// </summary>
+    /// <remarks>
+    /// A tenth of the timeout. Before, the request to stop and the runner
+    /// giving up were the same instant, so a source that did stop and hand
+    /// back its partial read was discarded anyway — which is how a 2000-VM
+    /// read that needed 42 seconds against 25 stored nothing at all rather
+    /// than 25 seconds' worth.
+    /// </remarks>
+    public TimeSpan ReturnGrace => SourceTimeout / 10;
 
     /// <summary>Delay before attempt number <paramref name="attempt"/> (1-based).</summary>
     public TimeSpan RetryDelay(int attempt, double jitterFraction) =>
