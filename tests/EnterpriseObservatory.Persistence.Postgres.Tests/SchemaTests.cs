@@ -246,26 +246,8 @@ public class SchemaTests : IDisposable
 
         Assert.Equal(14, Version());
 
-        // The alert tables as migration 13 left them, spelled out: what an
-        // installation upgrading from 13 has on disk.
-        Execute("""
-            DROP TABLE alert_history;
-            DROP INDEX ix_alert_rule;
-            ALTER TABLE alert_instance
-                DROP COLUMN rule_id, DROP COLUMN evidence_at_utc, DROP COLUMN stale_since_utc,
-                DROP COLUMN stale_reason, DROP COLUMN stale_detail, DROP COLUMN consecutive_absent;
-            CREATE TABLE alert_transition (
-                fingerprint text        NOT NULL REFERENCES alert_instance (fingerprint) ON DELETE CASCADE,
-                ordinal     integer     NOT NULL,
-                from_state  text        NOT NULL,
-                to_state    text        NOT NULL,
-                reason      text        NOT NULL,
-                at_utc      timestamptz NOT NULL,
-                actor       text        NULL,
-                PRIMARY KEY (fingerprint, ordinal)
-            );
-            UPDATE schema_version SET version = 13;
-            """);
+        RewindTo13();
+
 
         // One open alert per check id every rule emits, plus the event table's
         // prefix, the four rules K2 retired, and direct producers.
@@ -339,6 +321,111 @@ public class SchemaTests : IDisposable
         Assert.Equal(2 * fingerprints.Count, Count("alert_history"));
     }
 
+    /// <summary>
+    /// Puts the alert tables back the way migration 13 left them and the
+    /// version at 13: what an installation upgrading from 13 has on disk.
+    /// </summary>
+    /// <param name="foreignKey">
+    /// The cascade from alert_instance, as 13 had it. Off to plant a
+    /// transition whose instance is gone, which the cascade made impossible
+    /// and migration 14 must still not assume.
+    /// </param>
+    /// <param name="primaryKey">
+    /// 13's key. Off to plant a duplicate, the one way the copy can come up
+    /// short and the guard must refuse the DROP.
+    /// </param>
+    private void RewindTo13(bool foreignKey = true, bool primaryKey = true) => Execute($"""
+        DROP TABLE alert_history;
+        DROP INDEX ix_alert_rule;
+        ALTER TABLE alert_instance
+            DROP COLUMN rule_id, DROP COLUMN evidence_at_utc, DROP COLUMN stale_since_utc,
+            DROP COLUMN stale_reason, DROP COLUMN stale_detail, DROP COLUMN consecutive_absent;
+        CREATE TABLE alert_transition (
+            fingerprint text        NOT NULL {(foreignKey ? "REFERENCES alert_instance (fingerprint) ON DELETE CASCADE" : "")},
+            ordinal     integer     NOT NULL,
+            from_state  text        NOT NULL,
+            to_state    text        NOT NULL,
+            reason      text        NOT NULL,
+            at_utc      timestamptz NOT NULL,
+            actor       text        NULL
+            {(primaryKey ? ", PRIMARY KEY (fingerprint, ordinal)" : "")}
+        );
+        UPDATE schema_version SET version = 13;
+        """);
+
+    [SkippableFact]
+    public void Migration_14_copies_a_transition_whose_instance_is_gone()
+    {
+        RequireDatabase();
+
+        RewindTo13(foreignKey: false);
+
+        var at = new DateTimeOffset(2026, 9, 21, 18, 10, 54, TimeSpan.Zero);
+        Execute(
+            """
+            INSERT INTO alert_transition VALUES
+                ('platform|gone|c|o|fault-counter', 0, 'Open', 'Open', 'Confirmed', @at, NULL),
+                ('platform|gone|c|o|fault-counter', 1, 'Open', 'Resolved', 'ConditionCleared', @at + interval '1 minute', NULL);
+            """,
+            ("@at", at));
+
+        _live.Restart();
+
+        Assert.Equal(14, Version());
+
+        // Evidence is never discarded for lacking an instance: both rows are
+        // there, in an episode dated by their first transition, and nothing is
+        // invented about the alert they belonged to.
+        Assert.Equal(2, Count("alert_history WHERE fingerprint = 'platform|gone|c|o|fault-counter'"));
+        Assert.Equal(2, Count(
+            "alert_history WHERE fingerprint = 'platform|gone|c|o|fault-counter' " +
+            $"AND episode_first_seen_utc = '{at:O}' AND title IS NULL AND severity IS NULL AND scope IS NULL"));
+
+        // Nor does it reach the report, which has nothing to show for it.
+        var store = new PostgresAlertStateStore(_live.Database);
+        Assert.Empty(store.All);
+        Assert.Empty(store.ResolvedBetween(at, at.AddHours(1)));
+    }
+
+    [SkippableFact]
+    public void Migration_14_refuses_to_drop_alert_transition_when_the_copy_is_short_and_changes_nothing()
+    {
+        RequireDatabase();
+
+        // The one way the copy can come up short: alert_transition without its
+        // key, holding the same step twice. The history keeps it once, so the
+        // guard sees fewer rows than it was given and raises before the DROP.
+        // It also stands for Ş2: a migration that fails partway, after its
+        // ALTERs, its CREATE TABLE and its INSERT have all run.
+        RewindTo13(foreignKey: false, primaryKey: false);
+
+        Execute("""
+            INSERT INTO alert_transition VALUES
+                ('platform|dup|c|o|fault-counter', 0, 'Open', 'Open', 'Confirmed', now(), NULL),
+                ('platform|dup|c|o|fault-counter', 0, 'Open', 'Open', 'Confirmed', now(), NULL);
+            """);
+
+        var failure = Assert.Throws<PostgresException>(() => _live.Restart());
+        Assert.Equal("P0001", failure.SqlState);
+        Assert.Contains("not dropping it", failure.MessageText, StringComparison.Ordinal);
+
+        // One transaction with the version bump: nothing of 14 is left behind.
+        Assert.Equal(13, _live.ReadRaw(c => Scalar(c, "SELECT version FROM schema_version")));
+        Assert.Equal(2, _live.ReadRaw(c => Scalar(c, "SELECT count(*) FROM alert_transition")));
+        Assert.Equal(0, _live.ReadRaw(c => Scalar(c,
+            "SELECT count(*) FROM information_schema.tables " +
+            "WHERE table_schema = current_schema() AND table_name = 'alert_history'")));
+        Assert.Equal(0, _live.ReadRaw(c => Scalar(c,
+            "SELECT count(*) FROM information_schema.columns " +
+            "WHERE table_schema = current_schema() AND table_name = 'alert_instance' AND column_name = 'rule_id'")));
+    }
+
+    private static long Scalar(NpgsqlConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    }
     private void Execute(string sql, params (string Name, object Value)[] parameters) =>
         _live.Database.Write(connection =>
         {
