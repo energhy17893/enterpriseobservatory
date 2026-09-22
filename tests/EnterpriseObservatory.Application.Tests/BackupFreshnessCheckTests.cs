@@ -53,8 +53,8 @@ public class BackupFreshnessCheckTests
 
         Assert.Equal("Virtual Machine", control.Component);
         Assert.StartsWith("Product policy", control.Source, StringComparison.Ordinal);
-        Assert.Contains("24", control.Source, StringComparison.Ordinal);
-        Assert.Equal(TimeSpan.FromHours(24), BackupFreshnessCheck.DefaultRpo);
+        Assert.Equal("Product policy, measured: 10 of 23 gaps 24–30 h (daily schedule), limit = daily + 12 h", control.Source);
+        Assert.Equal(TimeSpan.FromHours(36), BackupFreshnessCheck.DefaultRpo);
     }
 
     [Fact]
@@ -68,20 +68,20 @@ public class BackupFreshnessCheckTests
         Assert.Contains("5 hours ago", finding.Observed, StringComparison.Ordinal);
         Assert.Contains("Last Backup", finding.Observed, StringComparison.Ordinal);
         Assert.Contains("UTC+03:00", finding.Observed, StringComparison.Ordinal);
-        Assert.Contains("24 hours", finding.Expected, StringComparison.Ordinal);
+        Assert.Contains("36 hours", finding.Expected, StringComparison.Ordinal);
     }
 
     [Fact]
     public void A_backup_older_than_the_rpo_fails_with_its_age()
     {
-        var hours = BackedUp("vc-1:vm-1", T0.AddHours(-30));
+        var hours = BackedUp("vc-1:vm-1", T0.AddHours(-40));
         var days = BackedUp("vc-1:vm-2", T0.AddDays(-40));
 
         var findings = Evaluate([hours, days]);
 
         var late = Of(findings, hours);
         Assert.Equal(ComplianceVerdict.Failing, late.Verdict);
-        Assert.Contains("30 hours ago", late.Observed, StringComparison.Ordinal);
+        Assert.Contains("40 hours ago", late.Observed, StringComparison.Ordinal);
 
         var stale = Of(findings, days);
         Assert.Equal(ComplianceVerdict.Failing, stale.Verdict);
@@ -91,13 +91,22 @@ public class BackupFreshnessCheckTests
     [Fact]
     public void Exactly_the_rpo_passes_and_one_minute_more_fails()
     {
-        var at = BackedUp("vc-1:at", T0.AddHours(-24));
-        var beyond = BackedUp("vc-1:beyond", T0.AddHours(-24).AddMinutes(-1));
+        var at = BackedUp("vc-1:at", T0.AddHours(-36));
+        var beyond = BackedUp("vc-1:beyond", T0.AddHours(-36).AddMinutes(-1));
 
         var findings = Evaluate([at, beyond]);
 
         Assert.Equal(ComplianceVerdict.Passing, Of(findings, at).Verdict);
         Assert.Equal(ComplianceVerdict.Failing, Of(findings, beyond).Verdict);
+    }
+
+    [Fact]
+    public void A_daily_backup_that_ran_late_still_passes()
+    {
+        // Live: 10 of 23 gaps between successive backups were 24-30 h.
+        var vm = BackedUp("vc-1:vm-1", T0.AddHours(-30));
+
+        Assert.Equal(ComplianceVerdict.Passing, Of(Evaluate([vm]), vm).Verdict);
     }
 
     [Fact]

@@ -172,8 +172,9 @@ internal static partial class BackupFields
             .OfType<string>()
             .Select(s => now - DateTimeOffset.Parse(s, CultureInfo.InvariantCulture))
             .ToList();
-        Console.WriteLine($"  within 24 h {judged.Count(a => a <= TimeSpan.FromHours(24) && a >= TimeSpan.FromMinutes(-15))}, " +
-                          $"older {judged.Count(a => a > TimeSpan.FromHours(24))}, " +
+        var rpo = EnterpriseObservatory.Application.Compliance.BackupFreshnessCheck.DefaultRpo;
+        Console.WriteLine($"  within {rpo.TotalHours:0} h (the RPO) {judged.Count(a => a <= rpo && a >= TimeSpan.FromMinutes(-15))}, " +
+                          $"older {judged.Count(a => a > rpo)}, of the passing ones older than a day {judged.Count(a => a > TimeSpan.FromHours(24) && a <= rpo)}, " +
                           $"future {judged.Count(a => a < TimeSpan.FromMinutes(-15))}");
 
         // Vendor independence: some products write the VM's Notes instead.

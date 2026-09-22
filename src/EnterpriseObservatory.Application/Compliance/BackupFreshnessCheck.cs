@@ -32,8 +32,16 @@ namespace EnterpriseObservatory.Application.Compliance;
 /// </remarks>
 public sealed class BackupFreshnessCheck(TimeSpan? rpo = null) : IComplianceCheck
 {
-    /// <summary>Product policy: a VM should have a backup no older than a day.</summary>
-    public static readonly TimeSpan DefaultRpo = TimeSpan.FromHours(24);
+    /// <summary>
+    /// Product policy: a daily schedule plus 12 hours of slack.
+    /// </summary>
+    /// <remarks>
+    /// Chosen from live gaps, not from the schedule alone
+    /// (docs/measurements/backup-freshness-shapes.md): of 23 measured gaps
+    /// between a VM's successive backups, 10 were 24–30 h and none longer. A
+    /// limit at the schedule itself would turn healthy machines Failing every night.
+    /// </remarks>
+    public static readonly TimeSpan DefaultRpo = TimeSpan.FromHours(36);
 
     /// <summary>How far in the future a backup time may be before it is not believed.</summary>
     public static readonly TimeSpan FutureTolerance = TimeSpan.FromMinutes(15);

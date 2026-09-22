@@ -136,8 +136,7 @@ public static class ContinuityControls
         Check(CertVCenter, "vCenter", "The vCenter certificate is not expired or about to expire",
             CertificateThreshold, new CertificateExpiryCheck(EntityKind.VCenter)),
         Check(BackupFreshness, "Virtual Machine", "The last backup is within the RPO",
-            "Product policy: RPO 24 hours, one estate-wide default (VM tags and folders are not collected); " +
-            "read from the backup product's own last-backup custom attribute",
+            "Product policy, measured: 10 of 23 gaps 24–30 h (daily schedule), limit = daily + 12 h",
             new BackupFreshnessCheck()),
     ];
 
