@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
-import type { AlertSeverity, FindingState, HealthState } from '@/api/types'
+import type { AlertSeverity, FindingState, HealthBasis, HealthState } from '@/api/types'
 
 /** The shadcn/ui class helper, kept so generated components drop in unchanged. */
 export function cn(...inputs: ClassValue[]) {
@@ -66,6 +66,28 @@ export function healthStatus(health: HealthState): StatusName {
 
 export function severityStatus(severity: AlertSeverity): StatusName {
   return severity
+}
+
+/**
+ * K3: a human sentence for `EntityView.healthBasis` -- why the badge says what
+ * it says, not only what colour it is. Kept short enough for a row; the two
+ * "no alert" cases and the two "no answer" cases read differently on purpose
+ * (ADR-0018/ADR-0026): a quiet, reporting source is healthy; a silent one is
+ * Unknown even with zero alerts, because absence of evidence is not evidence.
+ */
+export function healthBasisLabel(basis: HealthBasis): string {
+  switch (basis) {
+    case 'NoAlertsSourceReporting':
+      return 'no alert, source reporting'
+    case 'NoAlertsSourceSilent':
+      return 'no alert, but source went silent'
+    case 'Alerts':
+      return 'from its own alerts'
+    case 'UnknownAlerts':
+      return 'only Unknown alerts against it'
+    case 'NotObserved':
+      return 'never observed'
+  }
 }
 
 /**

@@ -32,6 +32,17 @@ const STATE_LABEL: Record<FindingState, string> = {
 
 const ORDER: FindingState[] = ['Failing', 'Accepted', 'Excepted', 'Passing', 'NotEvaluated']
 
+/**
+ * K3 §1.1: the catalogue a control comes from, as a first-class, always-
+ * visible dimension -- distinct from `control.citation` ("basis:", what the
+ * expectation rests on). Fixed order: SCG is the audit-standard catalogue,
+ * eo-continuity is the product's own, listed second. Values match
+ * `ComplianceSources` on the server exactly.
+ */
+const SOURCES = ['Broadcom SCG', 'eo-continuity'] as const
+const SOURCE_FILTERS = ['All', ...SOURCES] as const
+type SourceFilter = (typeof SOURCE_FILTERS)[number]
+
 /** The server refuses longer; see ComplianceService. */
 const MAX_REASON = 2000
 const MAX_OWNER = 200
@@ -87,6 +98,7 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
   const { hash } = useLocation()
   const [open, setOpen] = useState<string | null>(hash ? decodeURIComponent(hash.slice(1)) : null)
   const [showUnevaluated, setShowUnevaluated] = useState(false)
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('All')
 
   const summary = useQuery({
     queryKey: ['compliance'],
@@ -154,26 +166,39 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
         </Card>
       )}
 
-      <section className="space-y-2">
-        <h2 className="text-sm font-medium">
-          Evaluated controls <span className="text-muted-foreground">({evaluated.length})</span>
-        </h2>
-        {evaluated.length === 0 ? (
-          <Empty>This build evaluates none of the catalogue's controls.</Empty>
-        ) : (
-          <Card className="divide-y divide-border">
-            {evaluated.map((control) => (
-              <ControlRow
-                key={control.controlId}
-                control={control}
-                open={open === control.controlId}
-                onToggle={() => setOpen(open === control.controlId ? null : control.controlId)}
-                canAct={canAct}
-              />
-            ))}
-          </Card>
-        )}
-      </section>
+      {/*
+        K3 §1.1: catalogue is a narrowing control, not a hidden toggle -- "All"
+        shows both sections by default. Two different things share the word
+        "source" here (see ControlRow): this chip row is the catalogue, never
+        the citation.
+      */}
+      <div className="flex flex-wrap gap-2">
+        {SOURCE_FILTERS.map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setSourceFilter(value)}
+            aria-pressed={sourceFilter === value}
+            className={cn(
+              'rounded-md border border-border px-3 py-1 text-sm',
+              sourceFilter === value ? 'bg-primary text-primary-on' : 'text-muted-foreground',
+            )}
+          >
+            {value}
+          </button>
+        ))}
+      </div>
+
+      {SOURCES.filter((source) => sourceFilter === 'All' || sourceFilter === source).map((source) => (
+        <SourceSection
+          key={source}
+          source={source}
+          controls={evaluated.filter((c) => c.source === source)}
+          open={open}
+          onToggle={(id) => setOpen(open === id ? null : id)}
+          canAct={canAct}
+        />
+      ))}
 
       <Exceptions exceptions={data.exceptions} canAct={canAct} />
 
@@ -185,7 +210,9 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
           aria-expanded={showUnevaluated}
         >
           {showUnevaluated ? '▾' : '▸'} Not evaluated — no data collected{' '}
-          <span className="text-muted-foreground">({unevaluated.length})</span>
+          <span className="text-muted-foreground">
+            ({unevaluated.filter((c) => sourceFilter === 'All' || sourceFilter === c.source).length})
+          </span>
         </button>
         <div className="text-xs text-muted-foreground">
           These are not passing. This product does not yet read what they ask about, so it says
@@ -193,20 +220,79 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
         </div>
         {showUnevaluated && (
           <Card className="divide-y divide-border">
-            {unevaluated.map((control) => (
-              <div key={control.controlId} className="p-3 text-sm">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Identifier>{control.controlId}</Identifier>
-                  <span className="text-xs text-muted-foreground">{control.priority}</span>
+            {unevaluated
+              .filter((c) => sourceFilter === 'All' || sourceFilter === c.source)
+              .map((control) => (
+                <div key={control.controlId} className="p-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Identifier>{control.controlId}</Identifier>
+                    <span className="text-xs text-muted-foreground">{control.source}</span>
+                    <span className="text-xs text-muted-foreground">{control.priority}</span>
+                  </div>
+                  <div className="mt-0.5">{control.title}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">{control.notEvaluatedReason}</div>
                 </div>
-                <div className="mt-0.5">{control.title}</div>
-                <div className="mt-0.5 text-xs text-muted-foreground">{control.notEvaluatedReason}</div>
-              </div>
-            ))}
+              ))}
           </Card>
         )}
       </section>
     </div>
+  )
+}
+
+/**
+ * K3 §1.1: one catalogue's section -- SCG and eo-continuity are kept visually
+ * apart (never a flat list with a source column) because a shared list blurs
+ * "Broadcom's document" back into "ours". Collapsible so an operator who only
+ * cares about one catalogue can fold the other away without the filter chips.
+ */
+function SourceSection({
+  source,
+  controls,
+  open,
+  onToggle,
+  canAct,
+}: {
+  source: string
+  controls: ComplianceControlView[]
+  open: string | null
+  onToggle: (controlId: string) => void
+  canAct: boolean
+}) {
+  const [expanded, setExpanded] = useState(true)
+  const failing = controls.reduce((n, c) => n + c.counts.failing + c.counts.notEvaluated, 0)
+
+  return (
+    <section className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        className="flex items-center gap-2 text-sm font-medium hover:underline"
+      >
+        {expanded ? '▾' : '▸'} {source}{' '}
+        <span className="text-muted-foreground">
+          ({controls.length} control{controls.length === 1 ? '' : 's'}
+          {failing > 0 ? `, ${failing} failing or not evaluated` : ''})
+        </span>
+      </button>
+      {expanded &&
+        (controls.length === 0 ? (
+          <Empty>This build evaluates no {source} control.</Empty>
+        ) : (
+          <Card className="divide-y divide-border">
+            {controls.map((control) => (
+              <ControlRow
+                key={control.controlId}
+                control={control}
+                open={open === control.controlId}
+                onToggle={() => onToggle(control.controlId)}
+                canAct={canAct}
+              />
+            ))}
+          </Card>
+        ))}
+    </section>
   )
 }
 
@@ -260,11 +346,26 @@ function ControlRow({
   )
 }
 
+/**
+ * K3 §1.2: the default finding list per control shows Failing and
+ * NotEvaluated rows (Accepted/Excepted sit with Failing -- still
+ * non-compliant, ADR-0024). Passing is not hidden, but collapsed to a single
+ * count with a disclosure, so a control passing on hundreds of subjects (the
+ * estate's own path-single: 290 of 290) does not bury the handful of live
+ * failures under green rows an operator has learned to stop reading
+ * (ADR-0024's rationale for keeping findings out of the alert inbox, applied
+ * to this screen's own volume).
+ */
 function Findings({ control, canAct }: { control: ComplianceControlView; canAct: boolean }) {
+  const [showPassing, setShowPassing] = useState(false)
+
   const findings = useQuery({
     queryKey: ['compliance', 'findings', control.controlId],
     queryFn: () => api.complianceFindings({ control: control.controlId }),
   })
+
+  const passing = findings.data?.filter((f) => f.state === 'Passing') ?? []
+  const rest = findings.data?.filter((f) => f.state !== 'Passing') ?? []
 
   return (
     <div className="space-y-3 border-t border-border bg-page p-3">
@@ -284,11 +385,35 @@ function Findings({ control, canAct }: { control: ComplianceControlView; canAct:
         (findings.data.length === 0 ? (
           <Empty>No hosts have been evaluated against this control yet.</Empty>
         ) : (
-          <Card className="divide-y divide-border">
-            {findings.data.map((finding) => (
-              <FindingRow key={finding.entityId} finding={finding} canAct={canAct} />
-            ))}
-          </Card>
+          <>
+            {rest.length === 0 ? (
+              <Empty>Nothing failing or unevaluated for this control.</Empty>
+            ) : (
+              <Card className="divide-y divide-border">
+                {rest.map((finding) => (
+                  <FindingRow key={`${finding.entityId}-${finding.controlId}`} finding={finding} canAct={canAct} />
+                ))}
+              </Card>
+            )}
+            {passing.length > 0 && (
+              <div className="text-xs text-muted-foreground">
+                <button type="button" onClick={() => setShowPassing(!showPassing)} className="hover:underline">
+                  {showPassing ? '▾' : '▸'} {passing.length} passed
+                </button>
+                {showPassing && (
+                  <Card className="mt-2 divide-y divide-border">
+                    {passing.map((finding) => (
+                      <FindingRow
+                        key={`${finding.entityId}-${finding.controlId}`}
+                        finding={finding}
+                        canAct={canAct}
+                      />
+                    ))}
+                  </Card>
+                )}
+              </div>
+            )}
+          </>
         ))}
     </div>
   )
