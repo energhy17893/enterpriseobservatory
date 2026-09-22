@@ -494,3 +494,71 @@ ORDER BY verdict NULLS LAST;   -- the NULL row is the total
 **Result:** *to be filled in from the live run.* Rows 1 and 5 together are the transitions
 that would have been `NotJudgeable`. Row 5 alone is the "quiet" answer. Rows 2 and 3 are real
 absences, which still resolve at N = 2.
+
+### 7.1 Measured after #83: `Raised` rows, and what counts as history
+
+After #83 the live `alert_history` held **307 `Raised` rows in 43 minutes** for the blind
+spot's fingerprints, with only 4 `ConditionCleared` and 2 `ConditionReturned`. Many of them were
+`Open → Open, Raised`. The mechanism was that a quiet cycle made the rule call the volume
+absent. An unconfirmed (Pending) alert that is absent is forgotten, and the next busy cycle
+raised it again as a **new episode** with its own `Raised` row at ordinal 0. Three changes
+close it:
+
+1. The quiet cycle is `NotJudgeable` (above). An Unknown verdict keeps a Pending alert with
+   its hit count unchanged, so it is no longer forgotten.
+2. **An unconfirmed alert writes no durable history.** Nobody saw it. Its opening row is
+   written when it is confirmed, and one forgotten before then writes nothing. The flap tables
+   still record that it was unstable.
+3. **A history row is a transition.** That means an episode's opening, a state change
+   (`from_state ≠ to_state`), or an operator action. Same-state system events
+   (`EvidenceLost`, `EvidenceReturned` while still open, `SeverityDecreased`) are no longer
+   recorded. What they said stays on the instance: `stale_since_utc`, `stale_reason`,
+   `stale_detail`, and the pending "improved" notification. `EvidenceExpired` (→ Unknown) and
+   `EvidenceReturned` from the Unknown state are state changes and are kept. Because the
+   in-memory history and the stored history are the same list, a restart cannot shift the
+   ordinal the next row is written at.
+
+Check after deploy (read-only). The expected result is `raised ≤ new_fingerprints`:
+
+```sql
+SELECT count(*) FILTER (WHERE reason = 'Raised')                          AS raised,
+       count(DISTINCT fingerprint) FILTER (WHERE ordinal = 0)             AS new_fingerprints,
+       count(*) FILTER (WHERE from_state = to_state AND actor IS NULL
+                          AND ordinal > 0)                               AS same_state_rows
+FROM alert_history
+WHERE at_utc >= now() - interval '1 hour'
+  AND (rule_id = 'storage-latency-blind-spot' OR fingerprint LIKE '%|storage-latency-blind-spot');
+```
+
+### 7.2 What else this PR changed, rule by rule
+
+| Rule / path | Before | Now |
+|---|---|---|
+| `storage-latency-blind-spot` | quiet cycle → Absent | quiet (< 1 op/s) or < 3 readings → `NotJudgeable`; missing load or SIOC counter → `InputNotCollected`; SIOC active → Absent whatever the load |
+| `memory-pressure` | a missing rate read as "no pressure" | Absent only when all four rates arrived and are calm. A missing rate → `InputNotCollected` (naming the counters). Unread sizing → `InputNotCollected` for the limit alert. A guest covered by the host verdict or by its limit verdict → `Absent(Superseded)`. A held alert whose entity sent no rate → `InputNotCollected` |
+| `fault-counters` | a missing sample resolved | Absent only on a zero that was read; a missing sample gets no verdict (`NotReported`) |
+| `remote-logging` | an unread setting resolved | an unread `Syslog.global.logHost` → `InputNotCollected` |
+| `collection-coverage` | a silent source's alerts resolved (they have no entity, so the clamp could not reach them) | a held alert of a source with no snapshot → `SourceSilent`, said by the rule. A property nobody was asked about → `NotJudgeable` |
+| `datastore-time-to-full` | `AlreadyFull` resolved "filling"; refusals were absences | full (free ≤ 0 read this cycle, or `AlreadyFull`) → **Present Critical**. Too few points, too short a window, a step, or too little of the week read → `InsufficientSeries` with the refusal's words. Not filling, beyond the horizon, below the floor or no trend → Absent. Uncommitted `null` → `InputNotCollected`. A datastore not read this cycle → no verdict. A renamed datastore's old over-commit alert → `Absent(Superseded)`. History unreadable → Present, or Absent when every history was read |
+| N+1 check (compliance) and datastore time-to-full | span ≥ 7 days only | the shared `HistoryCoverage`: span ≥ 7 days **and** ≥ 80 % of the week's expected points read, at the series' tier (**product policy**). Below that the answer is not evaluated / `InsufficientSeries`, with "X% of the 7 days read, 80% needed" |
+| direct producers | "silence is its absence" | a producer signs `ProducersRun`. One that ran and did not see the condition resolves at N = 1. One that did not run leaves its alerts open and stale (`NotReported`). The cycle signs the collector runner (per configured source), each snapshot's own alerts, each store write actually attempted, the detail-level check per answered batch, and every guarded rule. Compaction signs its scope. Flap-derived alerts are the reconciler's own |
+| retirement | — | an entity marked vanished → `SubjectRemoved` (a present verdict still outranks it). An open alert of a rule registered nowhere → `RuleRetired`, once it has gone one cycle unreported (so that `ContinuityAlarmTransition` can still close K2's alarms as moved). Without the roster, nothing retires |
+| API | — | `AlertView.EvidenceAtUtc`, `IsStale`, `StaleSinceUtc`, `StaleReason`, `StaleDetail`. The overview's `FreshOpenAlerts`, `StaleOpenAlerts`, `UnknownAlerts`. `/alerts?state=Unknown` |
+
+No schema change. `AbsenceKind.RuleRetired` and the reason `RuleRetired` are text in
+`alert_history.reason`, which has no CHECK constraint.
+
+### 7.3 Deferred
+
+- **Grey health (ADR-0018 note).** Entity health is not yet derived from alerts in code:
+  `Entity.EffectiveHealth` still comes from the collector. "Stale Critical keeps it red with
+  'since'" and "Unknown → grey" need that derivation first.
+- **The other converted-mechanically rules.** `peer-outliers`, `cpu-contention`,
+  `storage-layer-split`, `shared-volume-latency`, `dropped-packets`, `storage-noisy-neighbour`,
+  `storage-path-redundancy` and `vcenter-events` still use `TwoValuedVerdicts`. Their §3 rows
+  (NotJudgeable below a load or peer floor, and so on) are the next PR.
+- **A removed vCenter's "Collector unreachable".** The runner signs only the configured
+  sources, so a source removed from the configuration leaves its alert stale, and then Unknown
+  after 2 days. Retiring it needs the configuration change to be an event.
+- **Purged entities** are not treated as vanished, because they look like "never in the
+  graph". An alert on one ends as Unknown after 2 days.
