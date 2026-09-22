@@ -128,7 +128,7 @@ special-casing for `eo-continuity`. The one real difference an operator will not
 controls are far more likely to carry a non-empty `Subject` (a DRS rule uuid, an HBA name, a device
 NAA) than SCG's (always `""`), which is why §6 below matters specifically for this catalogue.
 
-## 2. Health (ADR-0018 extension) — not implemented today, specified here
+## 2. Health (ADR-0018 extension) — shipped in #88 and #94 (22 September 2026); specified here, kept as the record
 
 **Stated plainly: entity health is not derived from alerts in code today.** `Entity.EffectiveHealth`
 reads the collector's own rollup. ADR-0018's rule ("a variable's health is the most severe alert
