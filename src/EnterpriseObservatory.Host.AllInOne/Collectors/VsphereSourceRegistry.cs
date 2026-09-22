@@ -511,7 +511,11 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             BaseAddress = options.BaseAddress,
         };
 
-        var client = new VsphereClient(http, options);
+        var client = new VsphereClient(http, options)
+        {
+            // M8.7: the vCenter certificate's expiry, by a handshake alone.
+            CertificateReader = new TlsEndpointCertificateReader(options.RequestTimeout),
+        };
 
         return new Built(
             shape,

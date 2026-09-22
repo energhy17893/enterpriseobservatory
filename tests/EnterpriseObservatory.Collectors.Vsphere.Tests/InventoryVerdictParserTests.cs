@@ -170,6 +170,27 @@ public class InventoryVerdictParserTests
     }
 
     [Fact]
+    public void Only_the_expiry_and_the_fingerprint_of_the_host_certificate_are_kept()
+    {
+        // M8.7: the certificate itself (DER or PEM) never leaves the parser.
+        var notAfter = new DateTimeOffset(2027, 3, 1, 12, 0, 0, TimeSpan.Zero);
+        using var key = RSA.Create(2048);
+        using var certificate = new CertificateRequest("CN=esx01", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
+            .CreateSelfSigned(notAfter.AddYears(-1), notAfter);
+        var bytes = string.Concat(certificate.RawData.Select(b =>
+            $"<byte>{unchecked((sbyte)b).ToString(CultureInfo.InvariantCulture)}</byte>"));
+
+        var verdicts = InventoryVerdictParser.Read(Single("HostSystem", "host-1",
+            $"<propSet><name>config.certificate</name><val xsi:type=\"ArrayOfByte\">{bytes}</val></propSet>"));
+
+        Assert.Equal(
+            [InventoryVerdicts.CertificateNotAfter, InventoryVerdicts.CertificateSha256],
+            verdicts.Keys.Where(k => k.StartsWith("certificate.", StringComparison.Ordinal)).Order(StringComparer.Ordinal));
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(certificate.RawData)), verdicts[InventoryVerdicts.CertificateSha256]);
+        Assert.All(verdicts.Values, v => Assert.True(v.Length < 100, "no value carries the certificate itself"));
+    }
+
+    [Fact]
     public void A_certificate_that_does_not_parse_leaves_no_expiry_rather_than_a_guess()
     {
         var verdicts = InventoryVerdictParser.Read(Single("HostSystem", "host-1",
@@ -479,5 +500,26 @@ public class InventoryVerdictSettingsTests
 
         Assert.Equal("1", SettingsOf("datastore-1")[InventoryVerdicts.MountedHostCount]);
         Assert.Equal("VMFS", SettingsOf("datastore-1")["type"]);
+    }
+
+    [Fact]
+    public async Task The_vcenter_entity_carries_its_endpoint_certificate()
+    {
+        var payload = new VsphereInventoryPayload
+        {
+            VCenterName = "vc01",
+            VCenterVerdicts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [InventoryVerdicts.CertificateNotAfter] = "2027-03-01T12:00:00.0000000+00:00",
+                [InventoryVerdicts.CertificateSha256] = "AB12",
+            },
+        };
+
+        var snapshot = await new VsphereInventorySource(new FakeApi(payload), new FixedClock())
+            .ReadAsync(CancellationToken.None);
+
+        var vCenter = snapshot.Entities.Single(e => e.Kind == EnterpriseObservatory.Domain.EntityKind.VCenter);
+        Assert.Equal("AB12", vCenter.Settings[InventoryVerdicts.CertificateSha256]);
+        Assert.Equal("2027-03-01T12:00:00.0000000+00:00", vCenter.Settings[InventoryVerdicts.CertificateNotAfter]);
     }
 }

@@ -27,6 +27,14 @@ public sealed record VsphereInventoryPayload
     /// <summary>The vCenter's own name, for the management-plane entity.</summary>
     public required string VCenterName { get; init; }
 
+    /// <summary>
+    /// The vCenter's own verdicts, keyed by <see cref="InventoryVerdicts"/>:
+    /// today its endpoint certificate's expiry and fingerprint (M8.7), read by
+    /// a TLS handshake. Empty when not read.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> VCenterVerdicts { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
     public IReadOnlyList<VsphereHost> Hosts { get; init; } = [];
 
     public IReadOnlyList<VsphereVirtualMachine> VirtualMachines { get; init; } = [];

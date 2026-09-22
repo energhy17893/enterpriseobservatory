@@ -54,8 +54,15 @@ public static class InventoryVerdicts
     /// </summary>
     public const string HardwareAlerting = "hardwareHealth.alerting";
 
-    /// <summary>Host: the ESXi certificate's notAfter, ISO-8601 UTC (M8.7).</summary>
+    /// <summary>Host or vCenter: the certificate's notAfter, ISO-8601 UTC (M8.7).</summary>
     public const string CertificateNotAfter = "certificate.notAfter";
+
+    /// <summary>
+    /// Host or vCenter: the certificate's SHA-256 fingerprint, upper-case hex
+    /// (M8.7). With <see cref="CertificateNotAfter"/>, all that is kept of a
+    /// certificate: the certificate itself is never stored.
+    /// </summary>
+    public const string CertificateSha256 = "certificate.sha256";
 
     /// <summary>VM: <c>runtime.connectionState</c> as vCenter words it.</summary>
     public const string ConnectionState = "connectionState";
@@ -266,15 +273,34 @@ public static class InventoryVerdictParser
 
             using var certificate = X509CertificateLoader.LoadCertificate(bytes);
 
-            verdicts[InventoryVerdicts.CertificateNotAfter] =
-                new DateTimeOffset(certificate.NotAfter.ToUniversalTime(), TimeSpan.Zero)
-                    .ToString("o", CultureInfo.InvariantCulture);
+            foreach (var (key, value) in CertificateVerdicts(certificate))
+            {
+                verdicts[key] = value;
+            }
         }
         catch (Exception ex) when (ex is FormatException or OverflowException or CryptographicException)
         {
             // Not a certificate this reader understands. No expiry is better
             // than a guessed one: a radar that invents dates is worse than none.
         }
+    }
+
+    /// <summary>
+    /// What is kept of a certificate: its expiry and its SHA-256 fingerprint,
+    /// never the certificate itself (M8.7). Shared by the host's
+    /// <c>config.certificate</c> and the vCenter endpoint's handshake.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> CertificateVerdicts(X509Certificate2 certificate)
+    {
+        ArgumentNullException.ThrowIfNull(certificate);
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [InventoryVerdicts.CertificateNotAfter] =
+                new DateTimeOffset(certificate.NotAfter.ToUniversalTime(), TimeSpan.Zero)
+                    .ToString("o", CultureInfo.InvariantCulture),
+            [InventoryVerdicts.CertificateSha256] = Convert.ToHexString(SHA256.HashData(certificate.RawData)),
+        };
     }
 
     private static void ReadCdroms(PropertyObject o, Dictionary<string, string> verdicts)

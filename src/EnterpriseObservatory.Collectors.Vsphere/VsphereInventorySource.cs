@@ -64,6 +64,9 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             Health = HealthState.Healthy,
             LastSeenUtc = now,
             Marks = [IdentityMark.Create(IdentityMarkKind.Fqdn, payload.VCenterName, InstanceId)],
+            // Its endpoint certificate's expiry and fingerprint (M8.7); empty
+            // when the handshake did not read one.
+            Settings = payload.VCenterVerdicts,
         };
         entities.Add(vCenter);
 

@@ -171,7 +171,8 @@ public class ComplianceEngineTests
     public void Production_registers_the_m8_continuity_checks()
     {
         // K2 moved the M8 rules in; see ContinuityChecksTests for each check.
-        Assert.Equal(12, ContinuityCatalogue.Production.Count);
+        // M8.4 and M8.7 added six; see MaintenanceAndExpiryChecksTests.
+        Assert.Equal(18, ContinuityCatalogue.Production.Count);
         Assert.All(
             ContinuityCatalogue.Build(ContinuityCatalogue.Production).Controls,
             c => Assert.StartsWith("eo-cont.", c.ControlId, StringComparison.Ordinal));
