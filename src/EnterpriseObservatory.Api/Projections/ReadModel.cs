@@ -3,6 +3,7 @@ using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Application.Monitoring;
+using EnterpriseObservatory.Application.Health;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 using EnterpriseObservatory.Domain.Compliance;
@@ -86,8 +87,10 @@ public sealed class ReadModel(
         var visible = Visible();
         var health = _collectors.Current;
 
-        var byHealth = graph.Active
-            .GroupBy(e => e.EffectiveHealth)
+        var derived = EntityHealth.DeriveAll(graph.Active, _alerts.All);
+
+        var byHealth = derived.Values
+            .GroupBy(d => d.Health)
             .ToDictionary(g => g.Key.ToString(), g => g.Count());
 
         // Every state appears, including the ones with no members. A missing
@@ -109,6 +112,7 @@ public sealed class ReadModel(
             StaleOpenAlerts = visible.Count(a => a.IsStale),
             UnknownAlerts = _alerts.All.Count(a => a.IsConfirmed && a.State == AlertLifecycleState.Unknown),
             EntitiesByHealth = byHealth,
+            EntitiesWithStaleHealth = derived.Values.Count(d => d.IsStale),
             VanishedEntities = graph.Vanished.Count(),
             FailingCollectors = health.Count(c => c.Health != HealthState.Healthy),
             OldestSuccessfulReadUtc = health.Count == 0
@@ -676,20 +680,21 @@ public sealed class ReadModel(
     {
         var graph = _graphs.Current;
         var counts = AlertCountsByEntity();
+        var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All);
 
         var matching = graph.Entities.Values
             .Where(e => includeVanished || e.ObservationState != ObservationState.Vanished)
             .Where(e => kind is null || e.Kind == kind)
-            .Where(e => health is null || e.EffectiveHealth == health)
+            .Where(e => health is null || derived[e.Id].Health == health)
             .Where(e => source is null || string.Equals(e.SourceInstanceId, source, StringComparison.Ordinal))
             .Where(e => search is null ||
                 e.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase))
             // Worst first: the explorer is also a triage surface.
-            .OrderByDescending(e => e.EffectiveHealth)
+            .OrderByDescending(e => derived[e.Id].Health)
             .ThenBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return Paged(matching, offset, limit, e => ToView(e, counts));
+        return Paged(matching, offset, limit, e => ToView(e, counts, derived[e.Id]));
     }
 
     /// <summary>One entity with its edges and its alerts (tier 2 of ADR-0007).</summary>
@@ -704,6 +709,7 @@ public sealed class ReadModel(
         }
 
         var counts = AlertCountsByEntity();
+        var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All);
 
         var entityAlerts =
         (IReadOnlyList<AlertView>)
@@ -716,7 +722,7 @@ public sealed class ReadModel(
 
         return new EntityDetailView
         {
-            Entity = ToView(entity, counts),
+            Entity = ToView(entity, counts, derived[entityId]),
             Marks =
             [
                 .. entity.Marks.Select(m => new IdentityMarkView
@@ -726,7 +732,7 @@ public sealed class ReadModel(
                     Source = m.Source,
                 }),
             ],
-            Relationships = RelationshipsOf(graph, entityId),
+            Relationships = RelationshipsOf(graph, entityId, derived),
             Alerts = entityAlerts,
             TimeToFull = entity.Kind == EntityKind.Datastore ? TimeToFull(entityId) : null,
             HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity) : null,
@@ -1247,12 +1253,15 @@ public sealed class ReadModel(
         };
     }
 
-    private static EntityView ToView(Entity entity, Dictionary<EntityId, int> alertCounts) => new()
+    private static EntityView ToView(Entity entity, Dictionary<EntityId, int> alertCounts, DerivedHealth health) => new()
     {
         Id = entity.Id.Value,
         Kind = entity.Kind,
         DisplayName = entity.DisplayName,
-        Health = entity.EffectiveHealth,
+        Health = health.Health,
+        HealthBasis = health.Basis,
+        HealthIsStale = health.IsStale,
+        HealthStaleSinceUtc = health.StaleSinceUtc,
         ObservationState = entity.ObservationState,
         Source = entity.SourceInstanceId,
         LastSeenUtc = entity.LastSeenUtc,
@@ -1269,7 +1278,10 @@ public sealed class ReadModel(
     /// index depends on which traversals turn out to matter and we have not
     /// measured that yet.
     /// </remarks>
-    private static List<RelationshipView> RelationshipsOf(EntityGraph graph, EntityId id)
+    private static List<RelationshipView> RelationshipsOf(
+        EntityGraph graph,
+        EntityId id,
+        Dictionary<EntityId, DerivedHealth> health)
     {
         var views = new List<RelationshipView>();
 
@@ -1296,7 +1308,7 @@ public sealed class ReadModel(
                 OtherId = otherId.Value,
                 OtherName = other.DisplayName,
                 OtherKind = other.Kind,
-                OtherHealth = other.EffectiveHealth,
+                OtherHealth = health[otherId].Health,
             });
         }
 
