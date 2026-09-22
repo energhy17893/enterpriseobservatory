@@ -46,9 +46,15 @@
 --   The replay assumes no product restart inside the window (a restart would
 --   empty the in-memory window: NotJudgeable for K judged cycles).
 --
--- True blind: a run of consecutive judged cycles with no measurable one, at
--- least 60 judged cycles (30 min of judgeable cycles) long. Quiet cycles in
--- between do not break it and do not count.
+-- True blind: a run of consecutive judged cycles with no measurable one,
+-- spanning at least 30 minutes of wall-clock time between its first and its
+-- last judged cycle. Quiet cycles in between do not break it and do not
+-- count. Measured on this estate, judged cycles land roughly 1.1 a minute per
+-- volume (most 30 s buckets are quiet, not judged), so a wall-clock threshold
+-- is used rather than a fixed judged-cycle count: a count built on the 30 s
+-- grid (60 cycles) assumes two judged cycles a minute and demands about twice
+-- the real elapsed time, which silently drops every true-blind stretch under
+-- roughly an hour and was why this section came back empty.
 --
 -- Output: one result set, sections in column "section" (see the end).
 
@@ -208,7 +214,7 @@ stretch AS (
     FROM blind_island
     WHERE m = 0
     GROUP BY volume, grp
-    HAVING count(*) >= 60                                                            -- 30 min of judgeable cycles
+    HAVING max(cycle_s) - min(cycle_s) + 30 >= 1800                                   -- >= 30 min wall-clock, not a cycle count
 ),
 stretch_state AS (
     SELECT st.volume, s.variant, st.start_s, st.end_s, st.cycles,
