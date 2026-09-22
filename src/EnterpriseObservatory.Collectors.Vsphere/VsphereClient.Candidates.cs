@@ -143,6 +143,10 @@ public sealed partial class VsphereClient
     public async Task<string> GetRootFolderAsync(CancellationToken cancellationToken) =>
         (await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).RootFolder;
 
+    /// <summary>The view manager's reference: what F4's cleanup is measured against.</summary>
+    public async Task<string> GetViewManagerAsync(CancellationToken cancellationToken) =>
+        (await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).ViewManager;
+
     /// <summary>The license manager's reference, or null when vCenter offers none.</summary>
     public async Task<string?> GetLicenseManagerAsync(CancellationToken cancellationToken) =>
         (await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).LicenseManager;
