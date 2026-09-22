@@ -220,6 +220,23 @@ public class ReadModelTests
     }
 
     [Fact]
+    public void The_report_includes_an_alert_resolved_inside_the_range_after_it_has_been_retired()
+    {
+        // The row goes the cycle after the alert resolves; the history stays
+        // (ADR-0026, migration 14). "Resolved in the window" is read from it.
+        var resolvedAt = T0.AddHours(-2);
+        var alert = Resolved("a", AlertSeverity.Warning, resolvedAt);
+        GivenAlerts(alert);
+        _alerts.Retire(alert.Fingerprint);
+        Assert.Empty(_alerts.All);
+
+        var report = Model().AlertsReport(fromUtc: T0.AddDays(-1), toUtc: T0);
+
+        var row = Assert.Single(report.Rows);
+        Assert.Equal(AlertLifecycleState.Resolved, row.State);
+    }
+
+    [Fact]
     public void The_report_excludes_an_alert_resolved_outside_the_range()
     {
         var resolvedAt = T0.AddDays(-30);
@@ -665,7 +682,11 @@ public class ReadModelTests
 
         public IReadOnlyList<AlertInstance> All => _instances;
 
-        public void Set(IEnumerable<AlertInstance> instances) => _instances = [.. instances];
+        public void Set(IEnumerable<AlertInstance> instances)
+        {
+            _instances = [.. instances];
+            _history.AddRange(_instances);
+        }
 
         public IReadOnlyList<AlertInstance> InstancesIn(string scope) =>
             [.. _instances.Where(i => i.Scope == scope)];
@@ -685,6 +706,27 @@ public class ReadModelTests
             throw new NotSupportedException("The read model never writes.");
 
         public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints) =>
+            throw new NotSupportedException("The read model never writes.");
+
+        /// <summary>What the durable history would hold: every instance ever set, retired or not.</summary>
+        private readonly List<AlertInstance> _history = [];
+
+        /// <summary>Takes an instance out of the store and leaves it in the history, as retiring does.</summary>
+        public void Retire(AlertFingerprint fingerprint) =>
+            _instances = [.. _instances.Where(i => i.Fingerprint != fingerprint)];
+
+        public IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc) =>
+        [
+            .. _history
+                .Concat(_instances)
+                .DistinctBy(i => (i.Fingerprint, i.FirstSeenUtc))
+                .Where(i => i.History.Count > 0 && i.History[^1].To == AlertLifecycleState.Resolved)
+                .Where(i => i.History.Any(t =>
+                    t.To == AlertLifecycleState.Resolved && t.From != AlertLifecycleState.Resolved &&
+                    t.AtUtc >= fromUtc && t.AtUtc <= toUtc)),
+        ];
+
+        public int PruneHistory(DateTimeOffset olderThanUtc) =>
             throw new NotSupportedException("The read model never writes.");
     }
 

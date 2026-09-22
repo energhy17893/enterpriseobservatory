@@ -297,7 +297,7 @@ public class DatastoreTimeToFullTests
             Events = new NoEvents(),
         };
 
-        var alert = Assert.Single(new DatastoreTimeToFullRule().Evaluate(context));
+        var alert = Assert.Single(Raised(new DatastoreTimeToFullRule().Evaluate(context)));
 
         var query = Assert.Single(series.Queries);
         Assert.Equal(Ds, query.Key.Entity);
@@ -316,6 +316,7 @@ public class DatastoreTimeToFullTests
         // reconciliation then resolved them all, unchecked.
         var other = new EntityId("vc-1:datastore-42");
         var series = new GrowingSeries { Failing = Ds };
+        var held = DatastoreTimeToFull.Fingerprints(new DatastoreCapacity(Ds, "vmfs01", "vc-1", 100 * Gb, 80 * Gb, null));
 
         var context = new RuleContext
         {
@@ -339,9 +340,11 @@ public class DatastoreTimeToFullTests
             Options = MonitoringOptions.Default,
             Series = series,
             Events = new NoEvents(),
+            HeldBy = _ => [.. held.Select(f => new HeldAlert(f, Ds))],
         };
 
-        var alerts = new DatastoreTimeToFullRule().Evaluate(context);
+        var verdicts = new DatastoreTimeToFullRule().Evaluate(context);
+        var alerts = Raised(verdicts);
 
         // The readable one is estimated as usual: 2 GB a day, 50 GB left.
         var filling = Assert.Single(alerts, a => a.Title == DatastoreTimeToFull.FillingTitle);
@@ -352,10 +355,12 @@ public class DatastoreTimeToFullTests
         Assert.Contains("'vmfs01'", failure.Description, StringComparison.Ordinal);
         Assert.Contains("TimeoutException", failure.Description, StringComparison.Ordinal);
 
-        // And the unreadable one's alerts are held open rather than resolved.
-        Assert.Equal(
-            DatastoreTimeToFull.Fingerprints(new DatastoreCapacity(Ds, "vmfs01", "vc-1", 100 * Gb, 80 * Gb, null)),
-            context.Unevaluated);
+        // And the unreadable one's alerts are held open rather than resolved:
+        // unknown because the rule failed for that datastore, never absent.
+        var unknown = verdicts.OfType<Unknown>().ToList();
+        Assert.Equal(held.ToHashSet(), unknown.SelectMany(u => u.Covers).ToHashSet());
+        Assert.All(unknown, u => Assert.Equal(UnknownReason.RuleFailed, u.Reason));
+        Assert.Empty(verdicts.OfType<ConditionAbsent>());
     }
 
     // --- the estimate is kept while its input stands still -----------------
@@ -490,4 +495,7 @@ public class DatastoreTimeToFullTests
         public IReadOnlyList<SourceEvent> OfTypes(
             IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
+
+    private static List<AlertDefinition> Raised(IReadOnlyList<SubjectVerdict> verdicts) =>
+        [.. verdicts.OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
 }

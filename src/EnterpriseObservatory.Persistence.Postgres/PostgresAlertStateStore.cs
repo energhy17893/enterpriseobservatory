@@ -120,10 +120,12 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
                 // brought with it.
                 var next = change(slice[index]);
 
+                var previous = slice[index];
+
                 _database.Write(connection =>
                 {
                     DeleteInstance(connection, fingerprint);
-                    WriteInstance(connection, scope, next);
+                    WriteInstance(connection, scope, next, previous);
                 });
 
                 slice[index] = next;
@@ -176,7 +178,7 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
                         var next = change(slice[index]);
 
                         DeleteInstance(connection, fingerprint);
-                        WriteInstance(connection, scope, next);
+                        WriteInstance(connection, scope, next, slice[index]);
 
                         pending.Add((slice, index, next));
 
@@ -206,6 +208,12 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
     {
         ArgumentNullException.ThrowIfNull(result);
 
+        // What this scope held before, so each instance appends only the
+        // transitions the history does not have yet.
+        var previous = _instances.TryGetValue(scope, out var slice)
+            ? slice.ToDictionary(i => i.Fingerprint)
+            : new Dictionary<AlertFingerprint, AlertInstance>();
+
         _database.Write(connection =>
         {
             // One scope replaced wholesale, the others untouched. Wholesale
@@ -217,7 +225,7 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
 
             foreach (var instance in result.Instances)
             {
-                WriteInstance(connection, scope, instance);
+                WriteInstance(connection, scope, instance, previous.GetValueOrDefault(instance.Fingerprint));
             }
 
             foreach (var history in result.FlapHistories)
@@ -290,8 +298,8 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
 
     private static void DeleteInstance(NpgsqlConnection connection, AlertFingerprint fingerprint)
     {
-        // The transitions go with it by cascade, and are rewritten from the new
-        // instance's own history.
+        // The instance row only. Its history is in alert_history, which no
+        // delete of an instance touches (migration 14).
         using var command = Command(
             connection, "DELETE FROM alert_instance WHERE fingerprint = @fingerprint;");
 
@@ -301,7 +309,8 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
 
     private static void DeleteScope(NpgsqlConnection connection, string scope)
     {
-        // The transitions and cessations go with them by cascade.
+        // The cessations go with them by cascade. The alert history does not:
+        // it is appended to, never rewritten, and outlives the instances.
         using var command = Command(connection, """
             DELETE FROM alert_instance WHERE scope = @scope;
             DELETE FROM flap_history WHERE scope = @scope;
@@ -311,19 +320,25 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
         command.ExecuteNonQuery();
     }
 
+    /// <param name="previous">
+    /// The same instance as last written, or null. Its transitions are already
+    /// in the history, so only the ones after them are appended.
+    /// </param>
     private static void WriteInstance(
-        NpgsqlConnection connection, string scope, AlertInstance instance)
+        NpgsqlConnection connection, string scope, AlertInstance instance, AlertInstance? previous)
     {
         using (var command = Command(connection, """
             INSERT INTO alert_instance (
                 fingerprint, scope, severity, state, title, description, category, source,
                 entity_id, is_derived, consecutive_hits, is_confirmed, cleared_by_operator,
                 pending_notification, suppressed_by_window_id, first_seen_utc, last_seen_utc,
-                silenced_until_utc)
+                silenced_until_utc, rule_id, evidence_at_utc, stale_since_utc, stale_reason,
+                stale_detail, consecutive_absent)
             VALUES (
                 @fingerprint, @scope, @severity, @state, @title, @description, @category, @source,
                 @entity, @derived, @hits, @confirmed, @cleared,
-                @pending, @suppressed, @first, @last, @silenced);
+                @pending, @suppressed, @first, @last, @silenced, @rule, @evidence, @staleSince,
+                @staleReason, @staleDetail, @absent);
             """))
         {
             command.Bind("@fingerprint", instance.Fingerprint.Value);
@@ -349,28 +364,84 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
             command.BindTime("@first", instance.FirstSeenUtc);
             command.BindTime("@last", instance.LastSeenUtc);
             command.BindTime("@silenced", instance.SilencedUntilUtc);
+            command.Bind("@rule", instance.RuleId);
+            command.BindTime("@evidence", instance.EvidenceAtUtc);
+            command.BindTime("@staleSince", instance.StaleSinceUtc);
+            command.Bind("@staleReason", instance.StaleReason?.ToString());
+            command.Bind("@staleDetail", instance.StaleDetail);
+            command.Bind("@absent", instance.ConsecutiveAbsent);
             command.ExecuteNonQuery();
         }
 
-        using var transition = Command(connection, """
-            INSERT INTO alert_transition
-                (fingerprint, ordinal, from_state, to_state, reason, at_utc, actor)
-            VALUES (@fingerprint, @ordinal, @from, @to, @reason, @at, @actor);
+        AppendHistory(connection, scope, instance, previous);
+    }
+
+    /// <summary>
+    /// Appends the transitions this instance has that the history does not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Appended, never rewritten: the history is the one record that must
+    /// outlive the instance, so nothing that deletes or replaces an instance
+    /// row may touch it (ADR-0026, migration 14).
+    /// </para>
+    /// <para>
+    /// Keyed by the episode — the instance's first-seen time — as well as the
+    /// fingerprint and the position, because a fingerprint retired and later
+    /// raised again is a second life with a history of its own. The conflict
+    /// clause makes a repeated write of the same step a no-op rather than a
+    /// duplicate, which is what a write retried after a dropped connection is.
+    /// </para>
+    /// </remarks>
+    private static void AppendHistory(
+        NpgsqlConnection connection, string scope, AlertInstance instance, AlertInstance? previous)
+    {
+        var from = previous is not null && previous.FirstSeenUtc == instance.FirstSeenUtc
+            ? Math.Min(previous.History.Count, instance.History.Count)
+            : 0;
+
+        if (from >= instance.History.Count)
+        {
+            return;
+        }
+
+        using var command = Command(connection, """
+            INSERT INTO alert_history (
+                fingerprint, episode_first_seen_utc, ordinal, from_state, to_state, reason, at_utc,
+                actor, detail, rule_id, evidence_at_utc, scope, severity, title, category, source,
+                entity_id, is_derived, last_seen_utc)
+            VALUES (
+                @fingerprint, @episode, @ordinal, @from, @to, @reason, @at,
+                @actor, @detail, @rule, @evidence, @scope, @severity, @title, @category, @source,
+                @entity, @derived, @last)
+            ON CONFLICT (fingerprint, episode_first_seen_utc, ordinal) DO NOTHING;
             """);
 
-        for (var ordinal = 0; ordinal < instance.History.Count; ordinal++)
+        for (var ordinal = from; ordinal < instance.History.Count; ordinal++)
         {
             var step = instance.History[ordinal];
 
-            transition.Parameters.Clear();
-            transition.Bind("@fingerprint", instance.Fingerprint.Value);
-            transition.Bind("@ordinal", ordinal);
-            transition.Bind("@from", step.From.ToString());
-            transition.Bind("@to", step.To.ToString());
-            transition.Bind("@reason", step.Reason.ToString());
-            transition.BindTime("@at", step.AtUtc);
-            transition.Bind("@actor", step.Actor);
-            transition.ExecuteNonQuery();
+            command.Parameters.Clear();
+            command.Bind("@fingerprint", instance.Fingerprint.Value);
+            command.BindTime("@episode", instance.FirstSeenUtc);
+            command.Bind("@ordinal", ordinal);
+            command.Bind("@from", step.From.ToString());
+            command.Bind("@to", step.To.ToString());
+            command.Bind("@reason", step.Reason.ToString());
+            command.BindTime("@at", step.AtUtc);
+            command.Bind("@actor", step.Actor);
+            command.Bind("@detail", step.Detail);
+            command.Bind("@rule", instance.RuleId);
+            command.BindTime("@evidence", step.EvidenceAtUtc);
+            command.Bind("@scope", scope);
+            command.Bind("@severity", instance.Severity.ToString());
+            command.Bind("@title", instance.Title);
+            command.Bind("@category", instance.Category);
+            command.Bind("@source", instance.Source);
+            command.Bind("@entity", instance.Entity?.Value);
+            command.Bind("@derived", instance.IsDerived);
+            command.BindTime("@last", instance.LastSeenUtc);
+            command.ExecuteNonQuery();
         }
     }
 
@@ -404,6 +475,113 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
 
     // --- reading ----------------------------------------------------------
 
+    public IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc)
+    {
+        // From the history, not the cache: a resolved alert retires on the
+        // next cycle it is absent, and the report must still be able to say
+        // it was there (ADR-0026, migration 14).
+        return _database.Read(connection =>
+        {
+            using var command = Command(connection, """
+                WITH episode AS (
+                    SELECT DISTINCT fingerprint, episode_first_seen_utc
+                    FROM alert_history
+                    WHERE to_state = 'Resolved' AND from_state <> 'Resolved'
+                      AND at_utc >= @from AND at_utc <= @to
+                )
+                SELECT h.fingerprint, h.episode_first_seen_utc, h.from_state, h.to_state, h.reason,
+                       h.at_utc, h.actor, h.detail, h.evidence_at_utc, h.rule_id, h.scope,
+                       h.severity, h.title, h.category, h.source, h.entity_id, h.is_derived,
+                       h.last_seen_utc
+                FROM alert_history h
+                JOIN episode e
+                  ON e.fingerprint = h.fingerprint AND e.episode_first_seen_utc = h.episode_first_seen_utc
+                ORDER BY h.fingerprint, h.episode_first_seen_utc, h.ordinal;
+                """);
+            command.BindTime("@from", fromUtc);
+            command.BindTime("@to", toUtc);
+
+            using var reader = command.ExecuteReader();
+            var episodes = new List<AlertInstance>();
+            AlertInstance? current = null;
+            var steps = new List<AlertTransition>();
+
+            void Close()
+            {
+                // Still resolved at the end of its history: one that came back
+                // is open, and is reported as open, from the store.
+                if (current is not null && steps[^1].To == AlertLifecycleState.Resolved)
+                {
+                    episodes.Add(current with { History = [.. steps] });
+                }
+            }
+
+            while (reader.Read())
+            {
+                var fingerprint = AlertFingerprint.Restore(reader.GetString(0));
+                var episode = ReadTime(reader, 1);
+
+                if (current is null || current.Fingerprint != fingerprint || current.FirstSeenUtc != episode)
+                {
+                    Close();
+                    steps = [];
+                }
+
+                steps.Add(ReadTransition(reader, 2));
+
+                var entity = ReadTextOrNull(reader, 15);
+
+                // The newest row's view of the alert: what it was when it ended.
+                current = new AlertInstance
+                {
+                    Fingerprint = fingerprint,
+                    FirstSeenUtc = episode,
+                    State = ReadEnum<AlertLifecycleState>(reader, 3),
+                    RuleId = ReadTextOrNull(reader, 9),
+                    Scope = reader.GetString(10),
+                    Severity = ReadEnum<AlertSeverity>(reader, 11),
+                    Title = reader.GetString(12),
+                    Category = reader.GetString(13),
+                    Source = reader.GetString(14),
+                    Entity = entity is null ? null : new EntityId(entity),
+                    IsDerived = reader.GetBoolean(16),
+                    LastSeenUtc = ReadTime(reader, 17),
+                    ConsecutiveHits = 0,
+                    IsConfirmed = true,
+                    ClearedByOperator = steps.Any(s => s.Reason == AlertTransitionReason.OperatorCleared),
+                    PendingNotification = AlertNotificationKind.None,
+                };
+            }
+
+            Close();
+
+            return episodes;
+        });
+    }
+
+    public int PruneHistory(DateTimeOffset olderThanUtc)
+    {
+        lock (_gate)
+        {
+            // Only episodes that have ended: a live alert keeps every step of
+            // its history however old, because the instance is loaded from it.
+            return _database.Write(connection =>
+            {
+                using var command = Command(connection, """
+                    DELETE FROM alert_history h
+                    WHERE h.at_utc < @before
+                      AND NOT EXISTS (
+                          SELECT 1 FROM alert_instance a
+                          WHERE a.fingerprint = h.fingerprint
+                            AND a.first_seen_utc = h.episode_first_seen_utc);
+                    """);
+                command.BindTime("@before", olderThanUtc);
+
+                return command.ExecuteNonQuery();
+            });
+        }
+    }
+
     private static Dictionary<string, List<AlertInstance>> LoadInstances(NpgsqlConnection connection)
     {
         var transitions = LoadTransitions(connection);
@@ -413,7 +591,8 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
             SELECT fingerprint, scope, severity, state, title, description, category, source,
                    entity_id, is_derived, consecutive_hits, is_confirmed, cleared_by_operator,
                    pending_notification, suppressed_by_window_id, first_seen_utc, last_seen_utc,
-                   silenced_until_utc
+                   silenced_until_utc, rule_id, evidence_at_utc, stale_since_utc, stale_reason,
+                   stale_detail, consecutive_absent
             FROM alert_instance;
             """);
         using var reader = command.ExecuteReader();
@@ -444,6 +623,12 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
                 FirstSeenUtc = ReadTime(reader, 15),
                 LastSeenUtc = ReadTime(reader, 16),
                 SilencedUntilUtc = ReadTimeOrNull(reader, 17),
+                RuleId = ReadTextOrNull(reader, 18),
+                EvidenceAtUtc = ReadTime(reader, 19),
+                StaleSinceUtc = ReadTimeOrNull(reader, 20),
+                StaleReason = ReadEnumOrNull<UnknownReason>(reader, 21),
+                StaleDetail = ReadTextOrNull(reader, 22),
+                ConsecutiveAbsent = reader.GetInt32(23),
                 History = transitions.TryGetValue(fingerprint, out var own) ? own : [],
             };
 
@@ -464,10 +649,15 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
     {
         var transitions = new Dictionary<string, List<AlertTransition>>(StringComparer.Ordinal);
 
+        // The live episode of each stored instance, and only that one: earlier
+        // lives of the same fingerprint are history, not this alert's.
         using var command = Command(connection, """
-            SELECT fingerprint, from_state, to_state, reason, at_utc, actor
-            FROM alert_transition
-            ORDER BY fingerprint, ordinal;
+            SELECT h.fingerprint, h.from_state, h.to_state, h.reason, h.at_utc, h.actor, h.detail,
+                   h.evidence_at_utc
+            FROM alert_history h
+            JOIN alert_instance a
+              ON a.fingerprint = h.fingerprint AND a.first_seen_utc = h.episode_first_seen_utc
+            ORDER BY h.fingerprint, h.ordinal;
             """);
         using var reader = command.ExecuteReader();
 
@@ -481,18 +671,23 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
                 transitions[fingerprint] = own;
             }
 
-            own.Add(new AlertTransition
-            {
-                From = ReadEnum<AlertLifecycleState>(reader, 1),
-                To = ReadEnum<AlertLifecycleState>(reader, 2),
-                Reason = ReadEnum<AlertTransitionReason>(reader, 3),
-                AtUtc = ReadTime(reader, 4),
-                Actor = ReadTextOrNull(reader, 5),
-            });
+            own.Add(ReadTransition(reader, 1));
         }
 
         return transitions;
     }
+
+    /// <summary>One history row's transition, from <paramref name="first"/> on: from, to, reason, at, actor, detail, evidence.</summary>
+    private static AlertTransition ReadTransition(NpgsqlDataReader reader, int first) => new()
+    {
+        From = ReadEnum<AlertLifecycleState>(reader, first),
+        To = ReadEnum<AlertLifecycleState>(reader, first + 1),
+        Reason = ReadEnum<AlertTransitionReason>(reader, first + 2),
+        AtUtc = ReadTime(reader, first + 3),
+        Actor = ReadTextOrNull(reader, first + 4),
+        Detail = ReadTextOrNull(reader, first + 5),
+        EvidenceAtUtc = ReadTimeOrNull(reader, first + 6),
+    };
 
     private static Dictionary<string, List<FlapHistory>> LoadFlaps(NpgsqlConnection connection)
     {

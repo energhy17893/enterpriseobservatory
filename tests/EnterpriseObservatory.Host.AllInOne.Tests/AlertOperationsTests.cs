@@ -318,6 +318,9 @@ public class AlertOperationsTests
                         Stored = stored,
                         FlapHistories = flaps,
                         NowUtc = T0.AddMinutes(i),
+                        Evaluations = [],
+                        Sources = EvidenceSources.None,
+                        RawRetention = TimeSpan.FromDays(2),
                     }));
             }
             else
@@ -385,6 +388,9 @@ public class AlertOperationsTests
                 Stored = stored,
                 FlapHistories = flaps,
                 NowUtc = now,
+                Evaluations = [],
+                Sources = EvidenceSources.None,
+                RawRetention = TimeSpan.FromDays(2),
             }));
 
     private void Given(params AlertInstance[] instances) =>

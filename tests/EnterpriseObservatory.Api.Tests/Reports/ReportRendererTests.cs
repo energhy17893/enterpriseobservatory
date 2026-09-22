@@ -233,7 +233,11 @@ public class ReportRendererTests
 
         public IReadOnlyList<AlertInstance> All => _instances;
 
-        public void Set(IEnumerable<AlertInstance> instances) => _instances = [.. instances];
+        public void Set(IEnumerable<AlertInstance> instances)
+        {
+            _instances = [.. instances];
+            _history.AddRange(_instances);
+        }
 
         public IReadOnlyList<AlertInstance> InstancesIn(string scope) =>
             [.. _instances.Where(i => i.Scope == scope)];
@@ -253,6 +257,27 @@ public class ReportRendererTests
             throw new NotSupportedException("The read model never writes.");
 
         public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints) =>
+            throw new NotSupportedException("The read model never writes.");
+
+        /// <summary>What the durable history would hold: every instance ever set, retired or not.</summary>
+        private readonly List<AlertInstance> _history = [];
+
+        /// <summary>Takes an instance out of the store and leaves it in the history, as retiring does.</summary>
+        public void Retire(AlertFingerprint fingerprint) =>
+            _instances = [.. _instances.Where(i => i.Fingerprint != fingerprint)];
+
+        public IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc) =>
+        [
+            .. _history
+                .Concat(_instances)
+                .DistinctBy(i => (i.Fingerprint, i.FirstSeenUtc))
+                .Where(i => i.History.Count > 0 && i.History[^1].To == AlertLifecycleState.Resolved)
+                .Where(i => i.History.Any(t =>
+                    t.To == AlertLifecycleState.Resolved && t.From != AlertLifecycleState.Resolved &&
+                    t.AtUtc >= fromUtc && t.AtUtc <= toUtc)),
+        ];
+
+        public int PruneHistory(DateTimeOffset olderThanUtc) =>
             throw new NotSupportedException("The read model never writes.");
     }
 
