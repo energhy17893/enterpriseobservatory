@@ -28,6 +28,9 @@ public static class InventoryVerdictKeys
     /// <summary>Cluster: the current EVC mode key, when EVC is on.</summary>
     public const string EvcModeKey = "evc.modeKey";
 
+    /// <summary>Host: <c>summary.maxEVCModeKey</c>, the newest EVC mode its CPU can run.</summary>
+    public const string HostMaxEvcModeKey = "evc.maxModeKey";
+
     /// <summary>Datastore: how many hosts have it mounted.</summary>
     public const string MountedHostCount = "mountedHosts";
 

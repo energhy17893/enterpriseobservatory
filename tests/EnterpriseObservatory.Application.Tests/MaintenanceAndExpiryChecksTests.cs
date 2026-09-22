@@ -222,24 +222,94 @@ public class MaintenanceAndExpiryChecksTests
 
     // --- EVC ---------------------------------------------------------------------
 
-    [Fact]
-    public void Evc_on_passes_and_evc_off_is_not_evaluated_because_host_cpu_generations_are_not_collected()
+    private static Entity Cluster(string id, bool? evc, string? mode = null)
     {
-        var on = Make(EntityKind.Cluster, "vc-1:c-on", (InventoryVerdictKeys.EvcEnabled, "true"), (InventoryVerdictKeys.EvcModeKey, "intel-cascadelake"));
-        var off = Make(EntityKind.Cluster, "vc-1:c-off", (InventoryVerdictKeys.EvcEnabled, "false"));
-        var unread = Make(EntityKind.Cluster, "vc-1:c-unread");
+        var settings = new List<(string, string)>();
+        if (evc is { } on)
+        {
+            settings.Add((InventoryVerdictKeys.EvcEnabled, on ? "true" : "false"));
+        }
 
-        var findings = Evaluate([on, off, unread]);
+        if (mode is not null)
+        {
+            settings.Add((InventoryVerdictKeys.EvcModeKey, mode));
+        }
 
-        var passing = One(findings, MaintEvc, on);
-        Assert.Equal(ComplianceVerdict.Passing, passing.Verdict);
-        Assert.Contains("intel-cascadelake", passing.Observed, StringComparison.Ordinal);
+        return Make(EntityKind.Cluster, id, [.. settings]);
+    }
 
-        var notEvaluated = One(findings, MaintEvc, off);
-        Assert.Equal(ComplianceVerdict.NotEvaluated, notEvaluated.Verdict);
-        Assert.Contains("maxEVCModeKey", notEvaluated.Reason, StringComparison.Ordinal);
+    private static Entity EvcHost(string id, string? maxMode) =>
+        maxMode is null
+            ? Make(EntityKind.EsxiHost, id)
+            : Make(EntityKind.EsxiHost, id, (InventoryVerdictKeys.HostMaxEvcModeKey, maxMode));
 
-        Assert.Equal(ComplianceVerdict.NotEvaluated, One(findings, MaintEvc, unread).Verdict);
+    private static ComplianceFinding EvcOf(Entity cluster, params Entity[] hosts) =>
+        One(Evaluate([cluster, .. hosts], [.. hosts.Select(h => Edge(h, cluster, RelationshipKind.PartOf))]),
+            MaintEvc, cluster);
+
+    [Fact]
+    public void Evc_on_passes_and_an_unread_cluster_summary_is_not_evaluated()
+    {
+        var on = EvcOf(Cluster("vc-1:c-on", evc: true, mode: "intel-cascadelake"),
+            EvcHost("vc-1:h1", "intel-icelake"), EvcHost("vc-1:h2", "intel-cascadelake"));
+        Assert.Equal(ComplianceVerdict.Passing, on.Verdict);
+        Assert.Contains("intel-cascadelake", on.Observed, StringComparison.Ordinal);
+
+        var unread = EvcOf(Cluster("vc-1:c-unread", evc: null), EvcHost("vc-1:h3", "intel-icelake"));
+        Assert.Equal(ComplianceVerdict.NotEvaluated, unread.Verdict);
+    }
+
+    [Fact]
+    public void Evc_off_with_every_host_the_same_cpu_generation_passes_and_says_why()
+    {
+        var finding = EvcOf(Cluster("vc-1:c-off", evc: false),
+            EvcHost("vc-1:h1", "intel-icelake"), EvcHost("vc-1:h2", "intel-icelake"));
+
+        Assert.Equal(ComplianceVerdict.Passing, finding.Verdict);
+        Assert.Contains("EVC off", finding.Observed, StringComparison.Ordinal);
+        Assert.Contains("all 2 hosts", finding.Observed, StringComparison.Ordinal);
+        Assert.Contains("intel-icelake", finding.Observed, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Evc_off_with_hosts_of_different_cpu_generations_fails_and_names_them()
+    {
+        var finding = EvcOf(Cluster("vc-1:c-mixed", evc: false),
+            EvcHost("vc-1:h1", "intel-icelake"), EvcHost("vc-1:h2", "intel-icelake"),
+            EvcHost("vc-1:h3", "intel-cascadelake"));
+
+        Assert.Equal(ComplianceVerdict.Failing, finding.Verdict);
+        Assert.Contains("intel-cascadelake: vc-1:h3", finding.Observed, StringComparison.Ordinal);
+        Assert.Contains("intel-icelake: vc-1:h1, vc-1:h2", finding.Observed, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Evc_off_with_a_host_unread_is_not_evaluated_unless_the_read_ones_already_differ()
+    {
+        var unknown = EvcOf(Cluster("vc-1:c-part", evc: false),
+            EvcHost("vc-1:h1", "intel-icelake"), EvcHost("vc-1:h2", maxMode: null));
+        Assert.Equal(ComplianceVerdict.NotEvaluated, unknown.Verdict);
+        Assert.Contains("maxEVCModeKey", unknown.Reason, StringComparison.Ordinal);
+        Assert.Contains("vc-1:h2", unknown.Reason, StringComparison.Ordinal);
+
+        var differs = EvcOf(Cluster("vc-1:c-part2", evc: false),
+            EvcHost("vc-1:h4", "intel-icelake"), EvcHost("vc-1:h5", "amd-zen3"), EvcHost("vc-1:h6", maxMode: null));
+        Assert.Equal(ComplianceVerdict.Failing, differs.Verdict);
+    }
+
+    [Fact]
+    public void Evc_off_on_a_cluster_of_one_host_or_none_passes_and_a_vanished_host_is_left_out()
+    {
+        var single = EvcOf(Cluster("vc-1:c-one", evc: false), EvcHost("vc-1:h1", "intel-icelake"));
+        Assert.Equal(ComplianceVerdict.Passing, single.Verdict);
+
+        var empty = EvcOf(Cluster("vc-1:c-empty", evc: false));
+        Assert.Equal(ComplianceVerdict.Passing, empty.Verdict);
+
+        var gone = EvcHost("vc-1:h9", "amd-zen3") with { ObservationState = ObservationState.Vanished };
+        var withGone = EvcOf(Cluster("vc-1:c-gone", evc: false),
+            EvcHost("vc-1:h7", "intel-icelake"), EvcHost("vc-1:h8", "intel-icelake"), gone);
+        Assert.Equal(ComplianceVerdict.Passing, withGone.Verdict);
     }
 
     // --- certificates --------------------------------------------------------------

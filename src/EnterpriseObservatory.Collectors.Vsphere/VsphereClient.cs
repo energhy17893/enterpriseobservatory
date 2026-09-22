@@ -643,6 +643,14 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             // refused to the read-only role (NoPermission, measured); this is
             // ~55 KB a host.
             InventoryVerdictParser.CertificatePath,
+
+            // Collection PR 2 (docs/measurements/collection-pr2-shapes.md):
+            // the host's newest possible EVC mode, ~0.2 KB a host, so the EVC
+            // check can tell an EVC-off cluster of one CPU generation from one
+            // of several. A sub-path is safe here: HostSystem.summary is
+            // declared as the concrete HostListSummary, and the path was read
+            // alone live on 10 of 10 hosts without a fault.
+            InventoryVerdictParser.HostMaxEvcModePath,
         ],
         ["VirtualMachine"] =
         [
@@ -755,8 +763,11 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 });
             }
 
+            var rootAlarms = await ReadRootFolderAlarmStatesAsync(
+                content, failures, cancellationToken).ConfigureAwait(false);
+
             var alarms = await ReadTriggeredAlarmsAsync(
-                content, objects, failures, cancellationToken).ConfigureAwait(false);
+                content, objects, rootAlarms, failures, cancellationToken).ConfigureAwait(false);
 
             // Built once from every host, because a shared volume is mounted on
             // many and any one of them can say which device it sits on.
@@ -768,6 +779,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             {
                 VCenterName = string.IsNullOrWhiteSpace(content.Name) ? InstanceId : content.Name,
                 VCenterVerdicts = vCenterVerdicts,
+                RootFolderMoRef = content.RootFolder,
                 Hosts = [.. objects.Where(o => o.Type == "HostSystem").Select(ToHost)],
                 VirtualMachines = [.. objects.Where(o => o.Type == "VirtualMachine").Select(ToVirtualMachine)],
                 Clusters = [.. objects.Where(o => o.Type == "ClusterComputeResource").Select(ToCluster)],
@@ -974,14 +986,16 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     private async Task<IReadOnlyList<VsphereTriggeredAlarm>> ReadTriggeredAlarmsAsync(
         VsphereServiceContent content,
         IReadOnlyList<PropertyObject> objects,
+        IReadOnlyList<PropertyNode> rootStates,
         List<VsphereReadFailure> failures,
         CancellationToken cancellationToken)
     {
         var byKey = new Dictionary<string, VsphereTriggeredAlarm>(StringComparer.Ordinal);
 
         foreach (var state in objects
-            .Where(o => o.Structures.ContainsKey("triggeredAlarmState"))
-            .SelectMany(o => o.Structures["triggeredAlarmState"]))
+            .Where(o => o.Structures.ContainsKey(TriggeredAlarmStatePath))
+            .SelectMany(o => o.Structures[TriggeredAlarmStatePath])
+            .Concat(rootStates))
         {
             var key = state.TextOf("key");
             var entity = state.TextOf("entity");
@@ -1031,6 +1045,74 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 ? a with { AlarmName = definition.Name, AlarmDescription = definition.Description }
                 : a),
         ];
+    }
+
+    private const string TriggeredAlarmStatePath = "triggeredAlarmState";
+
+    /// <summary>
+    /// Reads the root folder's triggered alarms, in a call of its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Collection PR 2. The container view holds what is <em>below</em> the
+    /// root folder, never the folder itself, so an alarm vCenter raises on
+    /// the whole vCenter — its own licence expiry, for one — was never read.
+    /// Measured live (docs/measurements/collection-pr2-shapes.md): the root
+    /// carried 4 alarm states, 3 raised on the folder itself and one on a
+    /// host whose own list carried the same key; the root also carries every
+    /// alarm the four collected types carry, because vCenter propagates an
+    /// alarm up the tree. Keying on vCenter's key keeps each once.
+    /// </para>
+    /// <para>
+    /// A separate call rather than a second object spec in the inventory
+    /// retrieval, so that a refusal here costs these alarms and nothing
+    /// else: in the inventory retrieval one fault fails all of it. A refusal
+    /// is recorded and survived, like the alarm definitions below.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<PropertyNode>> ReadRootFolderAlarmStatesAsync(
+        VsphereServiceContent content,
+        List<VsphereReadFailure> failures,
+        CancellationToken cancellationToken)
+    {
+        const string target = "root folder: triggeredAlarmState";
+
+        try
+        {
+            var response = await SendAsync(
+                VsphereSoapRequests.RetrieveObjectProperties(
+                    content.PropertyCollector, "Folder", [content.RootFolder], [TriggeredAlarmStatePath]),
+                cancellationToken).ConfigureAwait(false);
+
+            var root = PropertyCollectorParser.ParsePage(response).Objects;
+
+            foreach (var missing in root.SelectMany(o => o.Missing))
+            {
+                failures.Add(new VsphereReadFailure
+                {
+                    Target = target,
+                    Detail = missing.FaultType.Length == 0 ? "unreadable" : missing.FaultType,
+                    IsPermissionDenied = missing.IsPermissionDenied,
+                });
+            }
+
+            return
+            [
+                .. root.SelectMany(o =>
+                    o.Structures.TryGetValue(TriggeredAlarmStatePath, out var states) ? states : []),
+            ];
+        }
+        catch (VsphereApiException ex)
+        {
+            failures.Add(new VsphereReadFailure
+            {
+                Target = target,
+                Detail = $"alarms raised on the vCenter as a whole are not reported: {ex.Message}",
+                IsPermissionDenied = ex.Kind == VsphereFaultKind.NoPermission,
+            });
+
+            return [];
+        }
     }
 
     /// <summary>Reads the names behind a set of alarm references.</summary>

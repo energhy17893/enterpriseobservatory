@@ -140,6 +140,10 @@ public sealed partial class VsphereClient
         }
     }
 
+    /// <summary>The root folder's reference: where vCenter-scoped alarms are raised.</summary>
+    public async Task<string> GetRootFolderAsync(CancellationToken cancellationToken) =>
+        (await EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).RootFolder;
+
     /// <summary>The license manager's reference, or null when vCenter offers none.</summary>
     public async Task<string?> GetLicenseManagerAsync(CancellationToken cancellationToken) =>
         (await EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).LicenseManager;

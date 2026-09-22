@@ -43,6 +43,13 @@ public sealed record VsphereInventoryPayload
 
     public IReadOnlyList<VsphereDatastore> Datastores { get; init; } = [];
 
+    /// <summary>
+    /// The root folder's reference. An alarm raised on it is raised on the
+    /// vCenter as a whole — its licence expiry, for one — and belongs to the
+    /// vCenter entity. Null when not known.
+    /// </summary>
+    public string? RootFolderMoRef { get; init; }
+
     /// <summary>Alarms vCenter itself currently has raised.</summary>
     public IReadOnlyList<VsphereTriggeredAlarm> TriggeredAlarms { get; init; } = [];
 

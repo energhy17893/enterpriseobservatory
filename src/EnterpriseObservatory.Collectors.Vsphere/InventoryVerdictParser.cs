@@ -82,6 +82,13 @@ public static class InventoryVerdicts
     /// <summary>Cluster: the current EVC mode key, when EVC is enabled.</summary>
     public const string EvcModeKey = "evc.modeKey";
 
+    /// <summary>
+    /// Host: <c>summary.maxEVCModeKey</c>, the newest EVC mode its CPU can
+    /// run, as vCenter words it (collection PR 2). Absent when not read — a
+    /// disconnected host does not report one.
+    /// </summary>
+    public const string HostMaxEvcModeKey = "evc.maxModeKey";
+
     /// <summary>Datastore: <c>summary.maintenanceMode</c> as vCenter words it.</summary>
     public const string MaintenanceMode = "maintenanceMode";
 
@@ -106,6 +113,13 @@ public static class InventoryVerdictParser
     /// </summary>
     public const string ClusterSummaryPath = "summary";
 
+    /// <summary>
+    /// A sub-path of <c>HostSystem.summary</c>, which is declared as
+    /// <c>HostListSummary</c> — a concrete type, unlike the cluster's — and
+    /// accepted live on 10 of 10 hosts (docs/measurements/collection-pr2-shapes.md).
+    /// </summary>
+    public const string HostMaxEvcModePath = "summary.maxEVCModeKey";
+
     public const string MaintenanceModePath = "summary.maintenanceMode";
     public const string DatastoreHostPath = "host";
 
@@ -124,6 +138,7 @@ public static class InventoryVerdictParser
             case "HostSystem":
                 ReadHardwareHealth(o, verdicts);
                 ReadCertificate(o, verdicts);
+                CopyValue(o, HostMaxEvcModePath, InventoryVerdicts.HostMaxEvcModeKey, verdicts);
                 break;
 
             case "VirtualMachine":

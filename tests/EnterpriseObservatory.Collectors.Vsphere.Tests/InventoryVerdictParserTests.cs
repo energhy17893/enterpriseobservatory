@@ -324,6 +324,28 @@ public class InventoryVerdictParserTests
         Assert.False(verdicts.ContainsKey(InventoryVerdicts.EvcEnabled));
     }
 
+    // --- host maximum EVC mode (collection PR 2) ------------------------------------
+
+    [Fact]
+    public void A_host_carries_its_maximum_EVC_mode_as_vCenter_words_it()
+    {
+        // Measured: summary.maxEVCModeKey read as a plain value on 10 of 10
+        // live hosts (docs/measurements/collection-pr2-shapes.md).
+        var verdicts = InventoryVerdictParser.Read(Single("HostSystem", "host-1", """
+            <propSet><name>summary.maxEVCModeKey</name><val xsi:type="xsd:string">intel-icelake</val></propSet>
+            """));
+
+        Assert.Equal("intel-icelake", verdicts[InventoryVerdicts.HostMaxEvcModeKey]);
+    }
+
+    [Fact]
+    public void A_host_whose_maximum_EVC_mode_was_not_read_says_nothing_about_it()
+    {
+        var verdicts = InventoryVerdictParser.Read(Single("HostSystem", "host-1", string.Empty));
+
+        Assert.False(verdicts.ContainsKey(InventoryVerdicts.HostMaxEvcModeKey));
+    }
+
     // --- datastore -----------------------------------------------------------------
 
     private static string Mount(string host, bool mounted) => $"""
@@ -360,6 +382,7 @@ public class InventoryVerdictParserTests
     [InlineData("HostSystem", "configIssue")]
     [InlineData("HostSystem", "runtime.healthSystemRuntime")]
     [InlineData("HostSystem", "config.certificate")]
+    [InlineData("HostSystem", "summary.maxEVCModeKey")]
     [InlineData("VirtualMachine", "configIssue")]
     [InlineData("VirtualMachine", "runtime.connectionState")]
     [InlineData("VirtualMachine", "runtime.consolidationNeeded")]
@@ -405,6 +428,7 @@ public class InventoryVerdictParserTests
         Assert.False(Expected("HostSystem", "configIssue"));
         Assert.False(Expected("HostSystem", "runtime.healthSystemRuntime"));
         Assert.False(Expected("HostSystem", "config.certificate"));
+        Assert.False(Expected("HostSystem", "summary.maxEVCModeKey"));
         Assert.False(Expected("Datastore", "summary.maintenanceMode"));
         Assert.False(Expected("Datastore", "host"));
     }

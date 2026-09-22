@@ -21,6 +21,7 @@ public class InventoryVerdictKeyDriftTests
         { InventoryVerdictKeys.ConsolidationNeeded, InventoryVerdicts.ConsolidationNeeded },
         { InventoryVerdictKeys.EvcEnabled, InventoryVerdicts.EvcEnabled },
         { InventoryVerdictKeys.EvcModeKey, InventoryVerdicts.EvcModeKey },
+        { InventoryVerdictKeys.HostMaxEvcModeKey, InventoryVerdicts.HostMaxEvcModeKey },
         { InventoryVerdictKeys.MountedHostCount, InventoryVerdicts.MountedHostCount },
         { InventoryVerdictKeys.CertificateNotAfter, InventoryVerdicts.CertificateNotAfter },
         { InventoryVerdictKeys.CertificateSha256, InventoryVerdicts.CertificateSha256 },
