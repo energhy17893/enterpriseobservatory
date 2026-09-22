@@ -1,5 +1,7 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -434,5 +436,138 @@ public class EventAlertsTests
             Since = createdSinceUtc;
             return [];
         }
+    }
+
+    // --- three values (ADR-0026) --------------------------------------------
+
+    private static SubjectVerdict JudgeOne(params SourceEvent[] events) =>
+        Assert.Single(EventAlerts.Judge(events, T0, []));
+
+    [Fact]
+    public void An_open_condition_is_present()
+    {
+        var present = Assert.IsType<ConditionPresent>(JudgeOne(
+            Event(1, "DasHostFailedEvent", host: Esx01, cluster: Prod)));
+
+        Assert.Equal(new EntityId("vc-1:host-1"), present.Entity);
+        Assert.Equal(T0.AddMinutes(-10), present.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void A_documented_clear_at_least_as_new_as_the_report_is_absent()
+    {
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne(
+            Event(1, "esx.problem.net.redundancy.lost", T0.AddMinutes(-10), host: Esx01),
+            Event(2, "esx.clear.net.redundancy.restored", T0.AddMinutes(-5), host: Esx01)));
+
+        Assert.Equal(AbsenceKind.ConditionCleared, absent.Because);
+        Assert.Equal(T0.AddMinutes(-5), absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void A_condition_with_no_documented_clear_expires_as_an_absence()
+    {
+        var ttl = EventAlertPolicy.DefaultTimeToLive;
+
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne(
+            Event(1, "DasHostFailedEvent", T0 - ttl, host: Esx01)));
+
+        Assert.Equal(AbsenceKind.Expired, absent.Because);
+    }
+
+    [Fact]
+    public void A_condition_with_a_documented_clear_that_never_arrived_is_insufficient_series_not_absent()
+    {
+        var ttl = EventAlertPolicy.DefaultTimeToLive;
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(
+            Event(1, "esx.problem.net.redundancy.lost", T0 - ttl, host: Esx01)));
+
+        Assert.Equal(UnknownReason.InsufficientSeries, unknown.Reason);
+        Assert.Contains("never arrived", unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_stale_source_keeps_the_alert_open_and_a_fresh_absence_then_resolves_it()
+    {
+        // N = 1 for this rule, so there is no count to reset -- the point is
+        // narrower: a stale source's silence must not be read as a clear, and
+        // the alert must survive it untouched.
+        var rule = new EventAlertsRule();
+        var reader = new SteppingReader();
+
+        reader.Watermark = ReadThrough("vc-1", T0.AddMinutes(-4));
+        reader.Events = [Event(1, "esx.problem.net.redundancy.lost", T0.AddMinutes(-10), host: Esx01)];
+
+        IReadOnlyList<AlertInstance> stored = Reconcile(rule, reader, stored: [], T0);
+        stored = Reconcile(rule, reader, stored, T0.AddMinutes(1)); // confirm (Warning, 2nd hit)
+
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(stored).State);
+
+        // The source goes silent: no more events reported and the watermark
+        // falls behind. The rule must not call this a clear.
+        reader.Events = [];
+        reader.Watermark = ReadThrough("vc-1", T0.AddHours(-2));
+        stored = Reconcile(rule, reader, stored, T0.AddMinutes(2));
+
+        var stale = Assert.Single(stored);
+        Assert.Equal(AlertLifecycleState.Open, stale.State);
+        Assert.True(stale.IsStale);
+        Assert.Equal(UnknownReason.SourceSilent, stale.StaleReason);
+
+        // The source catches up: a fresh absence, and N = 1 resolves it.
+        reader.Watermark = ReadThrough("vc-1", T0.AddMinutes(3));
+        stored = Reconcile(rule, reader, stored, T0.AddMinutes(3));
+
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
+    }
+
+    private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
+        TRule rule, IEventReader events, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        where TRule : IAnalysisRule
+    {
+        var context = new RuleContext
+        {
+            ReadGraph = () => EntityGraph.Empty,
+            NowUtc = nowUtc,
+            Options = MonitoringOptions.Default,
+            Series = new NoSeries(),
+            Events = events,
+            HeldBy = ruleId => ruleId == rule.RuleId
+                ? [.. stored.Where(i => i.RuleId == ruleId).Select(i => new HeldAlert(i.Fingerprint, i.Entity))]
+                : [],
+        };
+
+        return AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = "inventory",
+            Stored = stored,
+            NowUtc = nowUtc,
+            Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+            Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+            RawRetention = TimeSpan.FromDays(2),
+        }).Instances;
+    }
+
+    private sealed class SteppingReader : IEventReader
+    {
+        public IReadOnlyList<SourceEvent> Events { get; set; } = [];
+
+        public EventReadWatermark? Watermark { get; set; }
+
+        public IReadOnlyList<EventReadWatermark> ReadWatermarks => Watermark is { } w ? [w] : [];
+
+        public IReadOnlyList<SourceEvent> OfTypes(IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) =>
+            [.. Events.Where(e => typeIds.Contains(e.TypeId, StringComparer.OrdinalIgnoreCase) && e.CreatedAtUtc >= createdSinceUtc)];
+    }
+
+    private static EventReadWatermark ReadThrough(string source, DateTimeOffset at) =>
+        new() { SourceInstanceId = source, ReadThroughUtc = at };
+
+    private sealed class NoSeries : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query) => new() { Key = query.Key, Resolution = SeriesResolution.Raw };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
     }
 }

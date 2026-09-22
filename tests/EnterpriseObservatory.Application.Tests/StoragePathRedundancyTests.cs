@@ -1,4 +1,6 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
+using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -427,5 +429,142 @@ public class StoragePathRedundancyTests
     public void Evaluate_rejects_a_null_estate_rather_than_reporting_an_empty_one()
     {
         Assert.Throws<ArgumentNullException>(() => StoragePathRedundancy.Evaluate(null!));
+    }
+
+    // --- three values (ADR-0026) --------------------------------------------
+
+    private static AlertFingerprint Fp(string title, string device = Naa, string source = "vc-1") =>
+        AlertFingerprint.Create(source, title, StoragePathRedundancy.Category, $"{Host}/{device}", StoragePathRedundancy.RuleId);
+
+    private static SubjectVerdict JudgeOne(Entity host, IReadOnlyList<HeldAlert>? held = null) =>
+        Assert.Single(StoragePathRedundancy.Judge([host], null, held ?? [], T0));
+
+    [Fact]
+    public void A_dead_path_beside_a_working_one_is_present_and_covers_both_fingerprints()
+    {
+        var present = Assert.IsType<ConditionPresent>(JudgeOne(HostWith(
+            Path("active"), Path("dead", name: "vmhba1:C0:T0:L1", adapter: "vmhba1"))));
+
+        Assert.Equal([Fp(LostTitle), Fp(DownTitle)], present.Covers);
+        Assert.Equal(LostTitle, Assert.Single(present.Alerts).Title);
+        Assert.Equal(new EntityId(Host), present.Entity);
+    }
+
+    [Fact]
+    public void A_device_with_every_path_working_is_absent()
+    {
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne(HostWith(
+            Path("active"), Path("active", name: "vmhba1:C0:T0:L1"))));
+
+        Assert.Equal(T0, absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void A_host_in_maintenance_is_not_judgeable_for_its_held_alerts()
+    {
+        var held = new HeldAlert(Fp(LostTitle), new EntityId(Host));
+        var maintenance = HostWith(Path("active"), Path("dead", name: "vmhba1:C0:T0:L1")) with
+        {
+            ObservationState = ObservationState.InMaintenance,
+        };
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(maintenance, [held]));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        Assert.Equal([held.Fingerprint], unknown.Covers);
+    }
+
+    [Fact]
+    public void An_empty_path_table_is_not_collected_for_its_held_alerts()
+    {
+        var held = new HeldAlert(Fp(LostTitle), new EntityId(Host));
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(HostWith(), [held]));
+
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+    }
+
+    [Fact]
+    public void A_device_gone_from_a_freshly_read_table_is_removed_not_fixed()
+    {
+        // The device the held alert names is no longer in the (non-empty)
+        // table this cycle read: it is genuinely gone, not healthy again.
+        var goneDevice = "naa.gone";
+        var held = new HeldAlert(Fp(LostTitle, goneDevice), new EntityId(Host));
+
+        var verdicts = StoragePathRedundancy.Judge(
+            [HostWith(Path("active"), Path("active", name: "vmhba1:C0:T0:L1"))], null, [held], T0);
+
+        var absent = Assert.IsType<ConditionAbsent>(Assert.Single(verdicts, v => v.Covers.Contains(held.Fingerprint)));
+        Assert.Equal(AbsenceKind.SubjectRemoved, absent.Because);
+        Assert.Equal([held.Fingerprint], absent.Covers);
+    }
+
+    [Fact]
+    public void A_quiet_run_keeps_the_alert_open_across_the_rules_n_and_an_unknown_resets_the_count()
+    {
+        var rule = new StoragePathRedundancyRule();
+        var raised = HostWith(Path("active"), Path("dead", name: "vmhba1:C0:T0:L1"));
+        var absent = HostWith(Path("active"), Path("active", name: "vmhba1:C0:T0:L1"));
+        var maintenance = raised with { ObservationState = ObservationState.InMaintenance };
+
+        // N = 2 for this rule (design note §3): raise, confirm, one fresh
+        // absence (1/2), an unknown cycle that must reset the count rather
+        // than resolve, then one more fresh absence (1/2 again, not 2/2).
+        IReadOnlyList<AlertInstance> stored = [];
+        List<Entity> cycles = [raised, raised, absent, maintenance, absent];
+
+        for (var minute = 0; minute < cycles.Count; minute++)
+        {
+            stored = Reconcile(rule, cycles[minute], stored, T0.AddMinutes(minute));
+        }
+
+        var alert = Assert.Single(stored, i => i.Title == LostTitle);
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.Equal(1, alert.ConsecutiveAbsent);
+
+        stored = Reconcile(rule, absent, stored, T0.AddMinutes(cycles.Count));
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
+    }
+
+    private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
+        TRule rule, Entity host, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        where TRule : IAnalysisRule
+    {
+        var graph = EntityGraph.Empty with { Entities = new Dictionary<EntityId, Entity> { [host.Id] = host } };
+        var context = new RuleContext
+        {
+            ReadGraph = () => graph,
+            NowUtc = nowUtc,
+            Options = MonitoringOptions.Default,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+            HeldBy = ruleId => ruleId == rule.RuleId
+                ? [.. stored.Where(i => i.RuleId == ruleId).Select(i => new HeldAlert(i.Fingerprint, i.Entity))]
+                : [],
+        };
+
+        return AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = "inventory",
+            Stored = stored,
+            NowUtc = nowUtc,
+            Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+            Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+            RawRetention = TimeSpan.FromDays(2),
+        }).Instances;
+    }
+
+    private sealed class NoSeries : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query) => new() { Key = query.Key, Resolution = SeriesResolution.Raw };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    private sealed class NoEvents : EnterpriseObservatory.Application.Collection.IEventReader
+    {
+        public IReadOnlyList<EnterpriseObservatory.Application.Collection.SourceEvent> OfTypes(
+            IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 }

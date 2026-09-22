@@ -1,5 +1,8 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
+using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Tests;
 
@@ -1150,5 +1153,248 @@ public class CpuContentionTests
             CpuContentionPolicy.Default with { ReadyCounter = "hv.cpu.wait" });
 
         Assert.Equal(new EntityId("vc-1:vm-9"), Assert.Single(alerts).Entity);
+    }
+
+    // --- three values (ADR-0026) --------------------------------------------
+
+    private static IReadOnlyList<SubjectVerdict> JudgeAll(
+        List<Observation> observations, EntityGraph graph, CpuContentionPolicy? policy = null) =>
+        CpuContention.Judge(observations, graph, policy, T0);
+
+    private static SubjectVerdict HostVerdict(IReadOnlyList<SubjectVerdict> verdicts) =>
+        Assert.Single(verdicts, v => v.Entity == new EntityId(Host));
+
+    private static IReadOnlyList<SubjectVerdict> For(IReadOnlyList<SubjectVerdict> verdicts, string guest) =>
+        [.. verdicts.Where(v => v.Entity == new EntityId(guest))];
+
+    [Fact]
+    public void The_host_verdict_is_present_when_saturated()
+    {
+        var host = HostVerdict(JudgeAll(
+            [HostBusy(92), .. Quiet(), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-10", 25)],
+            Estate(Guests(10))));
+
+        Assert.IsType<ConditionPresent>(host);
+        Assert.Equal(T0, ((ConditionPresent)host).EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void The_host_verdict_is_absent_when_not_saturated()
+    {
+        var host = HostVerdict(JudgeAll(
+            [HostBusy(40), .. Quiet(), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-10", 25)],
+            Estate(Guests(10))));
+
+        Assert.IsType<ConditionAbsent>(host);
+    }
+
+    [Fact]
+    public void The_host_verdict_is_not_collected_when_usage_did_not_arrive()
+    {
+        var host = HostVerdict(JudgeAll(
+            [.. Quiet(), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-10", 25)],
+            Estate(Guests(10))));
+
+        var unknown = Assert.IsType<Unknown>(host);
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+        Assert.Contains(Usage, unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_victim_verdict_is_present_when_it_stands_out()
+    {
+        var victim = Assert.Single(For(
+            JudgeAll([.. Quiet(1), Wait("vc-1:vm-9", 30)], Estate(Guests(9))), "vc-1:vm-9"),
+            v => v is ConditionPresent);
+
+        var present = Assert.IsType<ConditionPresent>(victim);
+        Assert.Equal(CpuContention.Category, present.Alerts[0].Category);
+    }
+
+    [Fact]
+    public void A_victim_verdict_is_absent_when_waiting_but_not_an_outlier()
+    {
+        var victim = Assert.Single(For(
+            JudgeAll([.. Quiet(5), Wait("vc-1:vm-9", 12)], Estate(Guests(9))), "vc-1:vm-9"),
+            v => v.Entity == new EntityId("vc-1:vm-9") && v is ConditionAbsent or ConditionPresent);
+
+        Assert.IsType<ConditionAbsent>(victim);
+    }
+
+    [Fact]
+    public void A_victim_verdict_is_not_judgeable_with_fewer_than_three_measured_siblings()
+    {
+        var verdicts = JudgeAll(
+            [Wait("vc-1:vm-1", 1), Wait("vc-1:vm-2", 60)],
+            Estate("vc-1:vm-1", "vc-1:vm-2"));
+
+        var vm2 = Assert.Single(For(verdicts, "vc-1:vm-2"), v => v is Unknown u && u.Reason == UnknownReason.NotJudgeable);
+        var unknown = Assert.IsType<Unknown>(vm2);
+        Assert.Contains("measured sibling", unknown.Detail, StringComparison.Ordinal);
+
+        // Below the ready floor, so its victim verdict is not even a
+        // candidate: an ordinary absence, not "could not judge".
+        Assert.Contains(For(verdicts, "vc-1:vm-1"), v => v is ConditionAbsent);
+    }
+
+    [Fact]
+    public void An_unreadable_vcpu_count_is_not_collected_for_victim_limit_and_width()
+    {
+        var graph = Widths(("vc-1:vm-1", null));
+
+        var verdicts = For(JudgeAll([Wait("vc-1:vm-1", 50)], graph), "vc-1:vm-1");
+
+        Assert.Equal(3, verdicts.Count);
+        Assert.All(verdicts, v =>
+        {
+            var unknown = Assert.IsType<Unknown>(v);
+            Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+            Assert.Contains("vCPU count", unknown.Detail, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void A_victim_superseded_by_its_own_limit_is_absent_and_the_limit_is_present()
+    {
+        var verdicts = JudgeAll(
+            [Wait("vc-1:vm-1", 60, Ready), Wait("vc-1:vm-1", 5, MaxLimited)],
+            Estate("vc-1:vm-1"));
+
+        var forGuest = For(verdicts, "vc-1:vm-1");
+        var victim = Assert.Single(forGuest, v => v is ConditionAbsent absent && absent.Because == AbsenceKind.Superseded);
+        Assert.Equal(AbsenceKind.Superseded, Assert.IsType<ConditionAbsent>(victim).Because);
+
+        var limit = Assert.Single(forGuest, v => v is ConditionPresent);
+        Assert.Equal(CpuContention.SizingCategory, Assert.IsType<ConditionPresent>(limit).Alerts[0].Category);
+    }
+
+    [Fact]
+    public void A_victim_superseded_by_a_saturated_host_is_absent()
+    {
+        var verdicts = JudgeAll(
+            [HostBusy(92), .. Quiet(), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-10", 25)],
+            Estate(Guests(10)));
+
+        var victim = Assert.Single(For(verdicts, "vc-1:vm-9"), v => v is ConditionAbsent absent && absent.Because == AbsenceKind.Superseded);
+        Assert.Equal(AbsenceKind.Superseded, Assert.IsType<ConditionAbsent>(victim).Because);
+    }
+
+    [Fact]
+    public void A_limit_verdict_is_absent_below_the_limit_floor()
+    {
+        var limit = Assert.Single(For(
+            JudgeAll([Wait("vc-1:vm-1", 60, Ready), Wait("vc-1:vm-1", 0.5, MaxLimited)], Estate("vc-1:vm-1")),
+            "vc-1:vm-1"),
+            v => v is ConditionAbsent absent && absent.Because != AbsenceKind.Superseded);
+
+        Assert.IsType<ConditionAbsent>(limit);
+    }
+
+    [Fact]
+    public void A_limit_verdict_is_not_collected_when_maxlimited_did_not_arrive()
+    {
+        var verdicts = For(JudgeAll([Wait("vc-1:vm-1", 60, Ready)], Estate("vc-1:vm-1")), "vc-1:vm-1");
+
+        var limit = Assert.Single(verdicts, v => v is Unknown u && u.Detail.Contains(MaxLimited, StringComparison.Ordinal));
+        var unknown = Assert.IsType<Unknown>(limit);
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+    }
+
+    [Fact]
+    public void A_width_verdict_is_present_when_over_wide()
+    {
+        var verdicts = For(JudgeAll(
+            [Wait("vc-1:vm-1", 2, Ready), Wait("vc-1:vm-1", 8, CoStop)], Estate("vc-1:vm-1")), "vc-1:vm-1");
+
+        var width = Assert.Single(verdicts, v => v is ConditionPresent);
+        Assert.Equal(CpuContention.SizingCategory, Assert.IsType<ConditionPresent>(width).Alerts[0].Category);
+    }
+
+    [Fact]
+    public void A_width_verdict_is_not_collected_when_costop_did_not_arrive()
+    {
+        var verdicts = For(JudgeAll([Wait("vc-1:vm-1", 2, Ready)], Estate("vc-1:vm-1")), "vc-1:vm-1");
+
+        var width = Assert.Single(verdicts, v => v is Unknown);
+        var unknown = Assert.IsType<Unknown>(width);
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+        Assert.Contains(CoStop, unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_estate_width_unreadable_finding_is_present_and_absent()
+    {
+        var present = Assert.Single(
+            JudgeAll([Wait("vc-1:vm-1", 50), Wait("vc-1:vm-2", 50)], Widths(("vc-1:vm-1", 1), ("vc-1:vm-2", null))),
+            v => v.Entity is null);
+        Assert.IsType<ConditionPresent>(present);
+
+        var absent = Assert.Single(
+            JudgeAll([Wait("vc-1:vm-1", 50), Wait("vc-1:vm-2", 50)], Widths(("vc-1:vm-1", 1), ("vc-1:vm-2", 1))),
+            v => v.Entity is null);
+        Assert.IsType<ConditionAbsent>(absent);
+    }
+
+    [Fact]
+    public void A_quiet_run_keeps_the_host_alert_open_across_the_rules_n_and_an_unknown_resets_the_count()
+    {
+        var rule = new CpuContentionRule();
+        var graph = Estate(Guests(10));
+        List<Observation> raised = [HostBusy(92), .. Quiet(), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-10", 25)];
+        List<Observation> absent = [HostBusy(40), .. Quiet(), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-10", 25)];
+        List<Observation> unknown = [.. Quiet(), Wait("vc-1:vm-9", 30), Wait("vc-1:vm-10", 25)];
+
+        IReadOnlyList<AlertInstance> stored = [];
+        List<List<Observation>> cycles = [raised, raised, absent, unknown, absent, absent];
+
+        for (var minute = 0; minute < cycles.Count; minute++)
+        {
+            stored = Reconcile(rule, cycles[minute], graph, stored, T0.AddMinutes(minute));
+        }
+
+        var alert = Assert.Single(stored, i => i.Title == "Host is short of CPU");
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.Equal(2, alert.ConsecutiveAbsent);
+
+        stored = Reconcile(rule, absent, graph, stored, T0.AddMinutes(cycles.Count));
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open && i.Title == "Host is short of CPU");
+    }
+
+    private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
+        TRule rule, List<Observation> observations, EntityGraph graph, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        where TRule : IAnalysisRule
+    {
+        var context = new RuleContext
+        {
+            Observations = observations,
+            ReadGraph = () => graph,
+            NowUtc = nowUtc,
+            Options = MonitoringOptions.Default,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+        };
+
+        return AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = "observation",
+            Stored = stored,
+            NowUtc = nowUtc,
+            Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+            Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+            RawRetention = TimeSpan.FromDays(2),
+        }).Instances;
+    }
+
+    private sealed class NoSeries : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query) => new() { Key = query.Key, Resolution = SeriesResolution.Raw };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    private sealed class NoEvents : EnterpriseObservatory.Application.Collection.IEventReader
+    {
+        public IReadOnlyList<EnterpriseObservatory.Application.Collection.SourceEvent> OfTypes(
+            IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 }

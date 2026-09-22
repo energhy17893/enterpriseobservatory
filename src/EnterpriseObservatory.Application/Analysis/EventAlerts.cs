@@ -430,9 +430,44 @@ public static class EventAlerts
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<SourceEvent> events,
         DateTimeOffset nowUtc,
+        EventAlertPolicy? policy = null) =>
+        [.. Judge(events, nowUtc, [], policy).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same, in three values (ADR-0026): one verdict per condition,
+    /// subject and instance.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A clear at least as new as the report is <see cref="AbsenceKind.ConditionCleared"/>,
+    /// dated at the clear rather than at "now" — vCenter's own statement is
+    /// the evidence. The time to live running out on a condition with no
+    /// documented clear is <see cref="AbsenceKind.Expired"/>: an occurrence,
+    /// which is why the type still declares it two-valued. The time to live
+    /// running out on a condition that documents a clear and never saw one is
+    /// <see cref="UnknownReason.InsufficientSeries"/> — the clear may simply
+    /// not have arrived yet, and the difference between "it ended quietly"
+    /// and "we stopped hearing about it" is exactly what this ADR exists to
+    /// keep separate.
+    /// </para>
+    /// <para>
+    /// A held alert with no event at all in this cycle's batch — no report, no
+    /// clear, nothing that aged past its time to live — gets an ordinary
+    /// <see cref="ConditionAbsent"/>, exactly as a rule with no memory should:
+    /// nothing here says it is wrong. <see cref="EventReadFreshness"/> is what
+    /// turns that into <see cref="UnknownReason.SourceSilent"/> for a source
+    /// whose events are not known to have been read through — the rule itself
+    /// does not read watermarks.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<SourceEvent> events,
+        DateTimeOffset nowUtc,
+        IReadOnlyList<HeldAlert> held,
         EventAlertPolicy? policy = null)
     {
         ArgumentNullException.ThrowIfNull(events);
+        ArgumentNullException.ThrowIfNull(held);
 
         var conditions = (policy ?? EventAlertPolicy.Default).Conditions;
         var (raises, clears) = Index(conditions);
@@ -483,7 +518,7 @@ public static class EventAlerts
             }
         }
 
-        var alerts = new List<AlertDefinition>();
+        var verdicts = new List<SubjectVerdict>();
 
         foreach (var (key, track) in tracks)
         {
@@ -492,23 +527,76 @@ public static class EventAlerts
                 continue;
             }
 
+            var fingerprint = FingerprintFor(key, track.Condition);
+            var entity = EntityFor(key);
+
             // A clear at least as new as the report ends it. "At least": vCenter
             // stamps to the second, and a clear in the same second as its
             // problem is a recovery, not a new failure.
             if (track.LastClear is { } clear && !IsNewer(raise, clear))
             {
+                verdicts.Add(new ConditionAbsent
+                {
+                    Covers = [fingerprint],
+                    Entity = entity,
+                    EvidenceAtUtc = clear.CreatedAtUtc,
+                });
+
                 continue;
             }
 
             if (nowUtc - raise.CreatedAtUtc >= track.Condition.TimeToLive)
             {
+                verdicts.Add(track.Condition.ClearedBy.Count == 0
+                    ? new ConditionAbsent
+                    {
+                        Covers = [fingerprint],
+                        Entity = entity,
+                        EvidenceAtUtc = nowUtc,
+                        Because = AbsenceKind.Expired,
+                    }
+                    : new Unknown
+                    {
+                        Covers = [fingerprint],
+                        Entity = entity,
+                        Reason = UnknownReason.InsufficientSeries,
+                        Detail = $"'{string.Join(" or ", track.Condition.ClearedBy)}' never arrived for this " +
+                                 $"subject, and the {Hours(track.Condition.TimeToLive)} time to live on the last " +
+                                 $"report ({raise.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)} UTC) has run out",
+                    });
+
                 continue;
             }
 
-            alerts.Add(Alert(key, track, raise));
+            verdicts.Add(new ConditionPresent
+            {
+                Covers = [fingerprint],
+                Alerts = [Alert(key, track, raise)],
+                Entity = entity,
+                EvidenceAtUtc = raise.CreatedAtUtc,
+            });
         }
 
-        return alerts;
+        // A held alert with nothing at all in this cycle's batch about it:
+        // an ordinary absence, exactly as a rule with no memory should say.
+        // EventReadFreshness is what turns this into "unknown" for a source
+        // that is not known to be read through.
+        var spoken = verdicts.SelectMany(v => v.Covers).ToHashSet();
+
+        foreach (var alert in held)
+        {
+            if (!spoken.Contains(alert.Fingerprint))
+            {
+                verdicts.Add(new ConditionAbsent
+                {
+                    Covers = [alert.Fingerprint],
+                    Entity = alert.Entity,
+                    EvidenceAtUtc = nowUtc,
+                });
+            }
+        }
+
+        return verdicts;
     }
 
     /// <summary>
@@ -592,17 +680,27 @@ public static class EventAlerts
         return preferred ?? e.ComputeResource;
     }
 
-    private static AlertDefinition Alert(TrackKey key, Track track, SourceEvent raise)
+    private static EntityId? EntityFor(TrackKey key) =>
+        key.MoRef is null ? (EntityId?)null : EntityId.For(key.Source, key.MoRef);
+
+    private static AlertFingerprint FingerprintFor(TrackKey key, EventCondition condition)
     {
-        var condition = track.Condition;
-        var entity = key.MoRef is null ? (EntityId?)null : EntityId.For(key.Source, key.MoRef);
+        var entity = EntityFor(key);
         var about = entity?.Value ?? key.Source;
         var objectName = key.Instance is null ? about : $"{about}/{key.Instance}";
 
+        return AlertFingerprint.Create(
+            Platform, condition.Title, condition.Category, objectName, $"{RuleId}:{condition.Id}");
+    }
+
+    private static AlertDefinition Alert(TrackKey key, Track track, SourceEvent raise)
+    {
+        var condition = track.Condition;
+        var entity = EntityFor(key);
+
         return new AlertDefinition
         {
-            Fingerprint = AlertFingerprint.Create(
-                Platform, condition.Title, condition.Category, objectName, $"{RuleId}:{condition.Id}"),
+            Fingerprint = FingerprintFor(key, condition),
             Severity = condition.Severity,
             Title = condition.Title,
             Description =

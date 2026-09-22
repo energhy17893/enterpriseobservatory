@@ -194,15 +194,80 @@ public static class StoragePathRedundancy
     /// </param>
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Entity> entities,
-        StoragePathRedundancyPolicy? policy = null)
+        StoragePathRedundancyPolicy? policy = null) =>
+        [.. Judge(entities, policy, [], DateTimeOffset.MinValue).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same, in three values (ADR-0026). One verdict per device, covering
+    /// both its fingerprints (lost, down) at once, exactly as
+    /// <see cref="StorageLayerSplit"/> covers its three.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A host in maintenance is <see cref="UnknownReason.NotJudgeable"/> for
+    /// every alert it holds: its paths may well be down and that is expected,
+    /// because maintenance is when somebody is moving the cables — but "may be
+    /// down" is not "is fixed". An empty path table is
+    /// <see cref="UnknownReason.InputNotCollected"/>: nothing here says
+    /// whether the host truly has no paths or the read simply failed. Both
+    /// used to resolve every alert the host held.
+    /// </para>
+    /// <para>
+    /// A device that held an alert and is no longer in a freshly read table is
+    /// <see cref="AbsenceKind.SubjectRemoved"/> (design note §2, Z2): allowed
+    /// only because the table just read is fresh, which is what
+    /// "freshly" means here — a host excluded above never reaches this branch.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Entity> entities,
+        StoragePathRedundancyPolicy? policy,
+        IReadOnlyList<HeldAlert> held,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(entities);
+        ArgumentNullException.ThrowIfNull(held);
 
         var rules = policy ?? StoragePathRedundancyPolicy.Default;
-        var alerts = new List<AlertDefinition>();
+        var verdicts = new List<SubjectVerdict>();
 
-        foreach (var host in entities.Where(Judgeable))
+        var heldByHost = held
+            .Where(h => h.Entity is not null)
+            .GroupBy(h => h.Entity!.Value)
+            .ToDictionary(g => g.Key, g => g.Select(h => h.Fingerprint).ToHashSet());
+
+        foreach (var host in entities.Where(e => e.Kind == EntityKind.EsxiHost))
         {
+            var heldHere = heldByHost.TryGetValue(host.Id, out var set) ? set : [];
+
+            if (host.ObservationState != ObservationState.Active)
+            {
+                // InMaintenance: a vanished host is not in `entities` at all
+                // (see the type's remarks on ObservationState.Active).
+                verdicts.AddRange(heldHere.Select(fp => (SubjectVerdict)new Unknown
+                {
+                    Covers = [fp],
+                    Entity = host.Id,
+                    Reason = UnknownReason.NotJudgeable,
+                    Detail = "this host is in maintenance; its paths may be down because somebody is moving cables",
+                }));
+
+                continue;
+            }
+
+            if (host.StoragePaths.Count == 0)
+            {
+                verdicts.AddRange(heldHere.Select(fp => (SubjectVerdict)new Unknown
+                {
+                    Covers = [fp],
+                    Entity = host.Id,
+                    Reason = UnknownReason.InputNotCollected,
+                    Detail = "the storage path table for this host came back empty this cycle",
+                }));
+
+                continue;
+            }
+
             // Grouped by the device rather than by the adapter, because
             // redundancy is a property of the route to a thing and not of the
             // card. DeviceKey is the fallback the domain carries for exactly
@@ -213,43 +278,76 @@ public static class StoragePathRedundancy
             // it is the last case in which to stop counting.
             var devices = host.StoragePaths
                 .Where(p => Identify(p).Length > 0)
-                .GroupBy(Identify, StringComparer.OrdinalIgnoreCase);
+                .GroupBy(Identify, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var seen = new HashSet<AlertFingerprint>();
 
             foreach (var device in devices)
             {
-                if (Verdict(host, device.Key, [.. device], rules) is { } found)
+                var lostFp = AlertFingerprint.Create(Attribution(host), LostTitle, Category, $"{host.Id.Value}/{device.Key}", RuleId);
+                var downFp = AlertFingerprint.Create(Attribution(host), DownTitle, Category, $"{host.Id.Value}/{device.Key}", RuleId);
+                seen.Add(lostFp);
+                seen.Add(downFp);
+
+                verdicts.Add(Judge(host, device.Key, [.. device], lostFp, downFp, rules, evidenceAtUtc));
+            }
+
+            // A device this host held an alert for and that is no longer in
+            // the table just read: gone rather than fixed.
+            foreach (var fp in heldHere)
+            {
+                if (!seen.Contains(fp))
                 {
-                    alerts.Add(found);
+                    verdicts.Add(new ConditionAbsent
+                    {
+                        Covers = [fp],
+                        Entity = host.Id,
+                        EvidenceAtUtc = evidenceAtUtc,
+                        Because = AbsenceKind.SubjectRemoved,
+                    });
                 }
             }
         }
 
-        return alerts;
+        return verdicts;
     }
 
-    /// <summary>
-    /// An entity whose path table this rule is entitled to judge.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The kind is checked rather than relied upon. Nothing but a host carries
-    /// paths today, but a future collector hanging a path table off an array
-    /// or a switch would otherwise be folded silently into a rule whose every
-    /// sentence is written about a host.
-    /// </para>
-    /// <para>
-    /// Only <see cref="ObservationState.Active"/>. A vanished host's table is
-    /// the last one we saw rather than the current one, and re-reporting it
-    /// would have the product making claims about an estate it can no longer
-    /// see — principle 1's failure exactly. A host in maintenance is excluded
-    /// for the opposite reason: its paths may well be down and that is
-    /// expected, because maintenance is when somebody is moving the cables.
-    /// </para>
-    /// </remarks>
-    private static bool Judgeable(Entity entity) =>
-        entity.Kind == EntityKind.EsxiHost &&
-        entity.ObservationState == ObservationState.Active &&
-        entity.StoragePaths.Count > 0;
+    private static SubjectVerdict Judge(
+        Entity host,
+        string device,
+        IReadOnlyList<StoragePath> paths,
+        AlertFingerprint lostFp,
+        AlertFingerprint downFp,
+        StoragePathRedundancyPolicy rules,
+        DateTimeOffset evidenceAtUtc)
+    {
+        IReadOnlyList<AlertFingerprint> covers = [lostFp, downFp];
+        var failed = paths.Where(p => Matches(p, rules.FailedStates)).ToList();
+
+        if (failed.Count == 0)
+        {
+            return new ConditionAbsent { Covers = covers, Entity = host.Id, EvidenceAtUtc = evidenceAtUtc };
+        }
+
+        var working = paths.Count(p => Matches(p, rules.WorkingStates));
+
+        return working == 0
+            ? new ConditionPresent
+            {
+                Covers = covers,
+                Alerts = [Alert(host, device, DownTitle, AlertSeverity.Critical, DescribeDown(device, failed))],
+                Entity = host.Id,
+                EvidenceAtUtc = evidenceAtUtc,
+            }
+            : new ConditionPresent
+            {
+                Covers = covers,
+                Alerts = [Alert(host, device, LostTitle, AlertSeverity.Warning, DescribeLost(device, failed, working, paths.Count))],
+                Entity = host.Id,
+                EvidenceAtUtc = evidenceAtUtc,
+            };
+    }
 
     /// <summary>
     /// What to call the device a path leads to, or nothing when it cannot be named.
@@ -264,39 +362,6 @@ public static class StoragePathRedundancy
     /// </remarks>
     private static string Identify(StoragePath path) =>
         path.StorageDeviceId.Length > 0 ? path.StorageDeviceId : path.DeviceKey;
-
-    /// <summary>
-    /// What this host's routes to one device add up to.
-    /// </summary>
-    /// <remarks>
-    /// Failed is tried first and the two branches are exclusive, so a device
-    /// produces at most one verdict. Both need at least one failed path: a
-    /// device with no failure reported is not this rule's business whatever
-    /// its paths say, which is what keeps every correctly configured
-    /// single-path device and every device whose states came back unknown
-    /// entirely silent.
-    /// </remarks>
-    private static AlertDefinition? Verdict(
-        Entity host,
-        string device,
-        IReadOnlyList<StoragePath> paths,
-        StoragePathRedundancyPolicy rules)
-    {
-        var failed = paths.Where(p => Matches(p, rules.FailedStates)).ToList();
-
-        if (failed.Count == 0)
-        {
-            return null;
-        }
-
-        var working = paths.Count(p => Matches(p, rules.WorkingStates));
-
-        return working == 0
-            ? Alert(host, device, DownTitle, AlertSeverity.Critical, DescribeDown(device, failed))
-            : Alert(
-                host, device, LostTitle, AlertSeverity.Warning,
-                DescribeLost(device, failed, working, paths.Count));
-    }
 
     private static bool Matches(StoragePath path, IReadOnlyList<string> states) =>
         states.Contains(path.State, StringComparer.OrdinalIgnoreCase);

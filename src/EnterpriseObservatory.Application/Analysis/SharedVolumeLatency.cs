@@ -1,4 +1,5 @@
-﻿using EnterpriseObservatory.Domain;
+﻿using System.Globalization;
+using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Analysis;
@@ -173,12 +174,27 @@ public static class SharedVolumeLatency
 
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Observation> observations,
-        SharedVolumePolicy? policy = null)
+        SharedVolumePolicy? policy = null) =>
+        [.. Judge(observations, policy, DateTimeOffset.MinValue).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same, in three values (ADR-0026). Fewer than
+    /// <see cref="SharedVolumePolicy.MinimumMountingHosts"/> hosts, or a load
+    /// too far outside the band this rule can read a latency against, is
+    /// <see cref="UnknownReason.NotJudgeable"/>: neither an idle volume's
+    /// honest zero nor a busy one <see cref="StorageNoisyNeighbour"/> may
+    /// speak about is "healthy". Not unanimous, or explained by one host
+    /// standing out (then <see cref="PeerOutliers"/> speaks), is a genuine
+    /// absence.
+    /// </summary>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        SharedVolumePolicy? policy,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(observations);
 
         var rules = policy ?? SharedVolumePolicy.Default;
-        var alerts = new List<AlertDefinition>();
 
         var load = LoadPerVolume(observations);
         var busyAbove = Stats.FlooredMultiple(
@@ -190,15 +206,7 @@ public static class SharedVolumeLatency
             .Where(o => o.Value.InstanceIsVantagePoint && Readings.IsMilliseconds(o.Value.Unit))
             .GroupBy(o => (o.Entity, o.Value.CounterName));
 
-        foreach (var group in groups)
-        {
-            if (Unanimous(group, rules, load, busyAbove) is { } found)
-            {
-                alerts.Add(found);
-            }
-        }
-
-        return alerts;
+        return [.. groups.Select(group => Unanimous(group, rules, load, busyAbove, evidenceAtUtc))];
     }
 
     /// <summary>
@@ -247,73 +255,113 @@ public static class SharedVolumeLatency
         return load;
     }
 
-    private static AlertDefinition? Unanimous(
+    private static SubjectVerdict Unanimous(
         IEnumerable<Observation> readings,
         SharedVolumePolicy rules,
         Dictionary<EntityId, double> load,
-        double busyAbove)
+        double busyAbove,
+        DateTimeOffset evidenceAtUtc)
     {
         var ordered = readings.OrderByDescending(o => o.Value.Raw).ToList();
+        var worst = ordered[0];
+
+        // The volume and the counter, and not the worst host — the same
+        // choice PeerOutliers makes, arrived at from the opposite direction.
+        // There the worst host may change while the volume stays the sick
+        // one; here there is no worst host to speak of, because the finding
+        // is that they all agree. Naming one would invent a protagonist the
+        // alert is specifically denying.
+        IReadOnlyList<AlertFingerprint> covers =
+        [
+            AlertFingerprint.Create(worst.Source, Title, Category, $"{worst.Entity.Value}/{worst.Value.CounterName}", "shared-volume"),
+        ];
 
         if (ordered.Count < rules.MinimumMountingHosts)
         {
-            return null;
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = worst.Entity,
+                Reason = UnknownReason.NotJudgeable,
+                Detail = string.Create(CultureInfo.InvariantCulture,
+                    $"{ordered.Count} host(s) mount this volume this cycle; " +
+                    $"{rules.MinimumMountingHosts} are needed before 'every host' means anything"),
+            };
         }
 
         var floor = rules.Peers.MinimumMilliseconds;
         var elevated = ordered.Count(o => o.Value.Raw >= floor);
-
-        if (elevated < rules.MinimumElevatedShare * ordered.Count)
-        {
-            return null;
-        }
 
         // The exclusion, computed exactly as PeerOutliers computes it: the
         // worst against the median of everyone else, that median floored at
         // one. Where it would fire, this does not. Sharing the arithmetic and
         // the policy value is what makes "never both" a property of the code
         // rather than a promise in a comment.
-        var worst = ordered[0];
         var peers = ordered.Skip(1).Select(o => o.Value.Raw).ToList();
         var peerMedian = Stats.Median(peers);
+        var oneHostStandsOut = worst.Value.Raw >= Stats.FlooredMultiple(rules.Peers.Multiple, peerMedian, 1d);
 
-        if (worst.Value.Raw >= Stats.FlooredMultiple(rules.Peers.Multiple, peerMedian, 1d))
+        if (elevated < rules.MinimumElevatedShare * ordered.Count || oneHostStandsOut)
         {
-            return null;
+            return new ConditionAbsent
+            {
+                Covers = covers,
+                Entity = worst.Entity,
+                EvidenceAtUtc = evidenceAtUtc,
+            };
         }
 
         // Slow, or busy. The qualifier rather than a fourth alert: high
         // latency at high load is not a fault to report, it is an alert to
-        // withhold, and only something that can subtract can do that.
+        // withhold, and neither an idle zero nor a busy volume is a verdict
+        // this rule can reach — only something that can subtract could once,
+        // and this is the honest word for what subtracting meant.
         var measured = load.TryGetValue(worst.Entity, out var operations);
 
         if (measured && operations < rules.MinimumOperationsPerSecond)
         {
-            return null;
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = worst.Entity,
+                Reason = UnknownReason.NotJudgeable,
+                Detail = string.Create(CultureInfo.InvariantCulture,
+                    $"{operations:0.##} operations a second across the mounting hosts, below the " +
+                    $"{rules.MinimumOperationsPerSecond:0.##} that makes a latency average mean anything"),
+            };
         }
 
         if (measured && operations > busyAbove)
         {
-            return null;
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = worst.Entity,
+                Reason = UnknownReason.NotJudgeable,
+                Detail = string.Create(CultureInfo.InvariantCulture,
+                    $"{operations:0.##} operations a second, above {busyAbove:0.##}: this volume is busy " +
+                    $"rather than slow, and '{StorageNoisyNeighbour.RuleId}' may speak instead"),
+            };
         }
 
-        return new AlertDefinition
+        return new ConditionPresent
         {
-            // The volume and the counter, and not the worst host — the same
-            // choice PeerOutliers makes, arrived at from the opposite
-            // direction. There the worst host may change while the volume
-            // stays the sick one; here there is no worst host to speak of,
-            // because the finding is that they all agree. Naming one would
-            // invent a protagonist the alert is specifically denying.
-            Fingerprint = AlertFingerprint.Create(
-                worst.Source, Title, Category,
-                $"{worst.Entity.Value}/{worst.Value.CounterName}", "shared-volume"),
-            Severity = AlertSeverity.Warning,
-            Title = Title,
-            Description = Describe(worst, ordered, measured ? operations : null),
-            Category = Category,
-            Source = worst.Source,
+            Covers = covers,
+            Alerts =
+            [
+                new AlertDefinition
+                {
+                    Fingerprint = covers[0],
+                    Severity = AlertSeverity.Warning,
+                    Title = Title,
+                    Description = Describe(worst, ordered, measured ? operations : null),
+                    Category = Category,
+                    Source = worst.Source,
+                    Entity = worst.Entity,
+                },
+            ],
             Entity = worst.Entity,
+            EvidenceAtUtc = evidenceAtUtc,
         };
     }
 

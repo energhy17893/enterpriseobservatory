@@ -1,6 +1,8 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Tests;
 
@@ -430,6 +432,159 @@ public class StorageNoisyNeighbourTests
 
         Assert.Null(StorageNoisyNeighbour.TypicalRateFrom(new RecordingStore(), T0)(key));
         Assert.Null(StorageNoisyNeighbour.TypicalRateFrom(new RecordingStore(exists: false), T0)(key));
+    }
+
+    // --- three values (ADR-0026) --------------------------------------------
+
+    private static SubjectVerdict JudgeOne(
+        List<Observation> observations,
+        EntityGraph? graph = null,
+        Func<SeriesKey, double?>? history = null,
+        StorageNoisyNeighbourPolicy? policy = null) =>
+        Assert.Single(StorageNoisyNeighbour.Judge(observations, graph ?? Graph(), history ?? Usual(100), policy, T0));
+
+    [Fact]
+    public void A_slow_volume_whose_load_rose_is_present()
+    {
+        var present = Assert.IsType<ConditionPresent>(JudgeOne(Firing()));
+
+        Assert.Equal(new EntityId(Volume), present.Entity);
+        Assert.Equal(T0, present.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void A_machine_under_the_multiple_of_its_neighbours_is_absent()
+    {
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne(Firing(loud: 199.99)));
+
+        Assert.Equal(T0, absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void Too_few_measured_residents_is_not_judgeable()
+    {
+        var graph = Graph([Loud, "vc-1:vm-2", "vc-1:vm-3"]);
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(Firing(), graph));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+    }
+
+    [Fact]
+    public void A_missing_load_counter_is_not_collected()
+    {
+        List<Observation> withoutLoad = [.. Latency(9), Machine(Loud, 1000), .. Quiet.Select(v => Machine(v, 50))];
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(withoutLoad));
+
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+    }
+
+    [Fact]
+    public void Unknown_history_is_insufficient_series_rather_than_absent()
+    {
+        var unknown = Assert.IsType<Unknown>(JudgeOne(Firing(), history: NoHistory));
+
+        Assert.Equal(UnknownReason.InsufficientSeries, unknown.Reason);
+    }
+
+    [Fact]
+    public void A_baseline_read_that_throws_fails_only_this_volume()
+    {
+        Func<SeriesKey, double?> exploding = _ => throw new InvalidOperationException("read");
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(Firing(), history: exploding));
+
+        Assert.Equal(UnknownReason.RuleFailed, unknown.Reason);
+        Assert.Contains("threw", unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_quiet_run_keeps_the_alert_open_across_the_rules_n_and_an_unknown_resets_the_count()
+    {
+        var rule = new StorageNoisyNeighbourRule();
+        var graph = Graph();
+        var raised = Firing();
+        var absent = Firing(loud: 199.99);
+        var unknown = Firing(); // history explodes this cycle: RuleFailed
+        Func<SeriesKey, double?> history = Usual(100);
+        Func<SeriesKey, double?> exploding = _ => throw new InvalidOperationException("read");
+
+        IReadOnlyList<AlertInstance> stored = [];
+        (List<Observation> Observations, Func<SeriesKey, double?> History)[] cycles =
+        [
+            (raised, history), (raised, history),
+            (absent, history),
+            (unknown, exploding),
+            (absent, history), (absent, history),
+        ];
+
+        for (var minute = 0; minute < cycles.Length; minute++)
+        {
+            stored = Reconcile(rule, cycles[minute].Observations, graph, cycles[minute].History, stored, T0.AddMinutes(minute));
+        }
+
+        var alert = Assert.Single(stored);
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.Equal(2, alert.ConsecutiveAbsent);
+
+        stored = Reconcile(rule, absent, graph, history, stored, T0.AddMinutes(cycles.Length));
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
+    }
+
+    private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
+        TRule rule,
+        List<Observation> observations,
+        EntityGraph graph,
+        Func<SeriesKey, double?> history,
+        IReadOnlyList<AlertInstance> stored,
+        DateTimeOffset nowUtc)
+        where TRule : IAnalysisRule
+    {
+        var context = new RuleContext
+        {
+            Observations = observations,
+            ReadGraph = () => graph,
+            NowUtc = nowUtc,
+            Options = MonitoringOptions.Default,
+            Series = new StubSeries(history),
+            Events = new NoEvents(),
+        };
+
+        return AlertReconciler.Reconcile(
+            new AlertReconciliationRequest
+            {
+                Scope = "observation",
+                Stored = stored,
+                NowUtc = nowUtc,
+                Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+                Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+                RawRetention = TimeSpan.FromDays(2),
+            }).Instances;
+    }
+
+    private sealed class StubSeries(Func<SeriesKey, double?> history) : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query)
+        {
+            var value = history(query.Key);
+
+            return new SeriesResult
+            {
+                Key = query.Key,
+                Resolution = query.Resolution ?? SeriesResolution.FiveMinutes,
+                Points = value is { } v ? [new AggregatedSample { StartUtc = query.FromUtc, Min = v, Max = v, Sum = v, Count = 1, Last = v }] : [],
+                Exists = value is not null,
+            };
+        }
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    private sealed class NoEvents : EnterpriseObservatory.Application.Collection.IEventReader
+    {
+        public IReadOnlyList<EnterpriseObservatory.Application.Collection.SourceEvent> OfTypes(
+            IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 
     private sealed class RecordingStore(params AggregatedSample[] points) : IObservationStore

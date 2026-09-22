@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
@@ -237,27 +238,53 @@ public static class StorageNoisyNeighbour
         IReadOnlyList<Observation> observations,
         EntityGraph graph,
         Func<SeriesKey, double?> typicalRate,
-        StorageNoisyNeighbourPolicy? policy = null)
+        StorageNoisyNeighbourPolicy? policy = null) =>
+        [.. Judge(observations, graph, typicalRate, policy, DateTimeOffset.MinValue).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// The same, in three values (ADR-0026).
+    /// </summary>
+    /// <remarks>
+    /// Fewer than <see cref="StorageNoisyNeighbourPolicy.MinimumPeers"/> + 1
+    /// measured residents is <see cref="UnknownReason.NotJudgeable"/> — a
+    /// median needs a population, exactly as <see cref="PeerOutliers"/> and
+    /// <see cref="SharedVolumeLatency"/> already say. A missing load counter is
+    /// <see cref="UnknownReason.InputNotCollected"/>, and a baseline that has
+    /// not accumulated yet is <see cref="UnknownReason.InsufficientSeries"/> —
+    /// neither is "the load did not rise". A baseline read that throws is
+    /// <see cref="UnknownReason.RuleFailed"/> for that volume alone, guarded
+    /// per volume as <see cref="DatastoreTimeToFull"/> guards its own history
+    /// read, rather than for the whole rule. A volume with no latency reading
+    /// at all this cycle gets no verdict: nothing here names it, and it is
+    /// left to whichever rule reads latency to say why.
+    /// </remarks>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        EntityGraph graph,
+        Func<SeriesKey, double?> typicalRate,
+        StorageNoisyNeighbourPolicy? policy,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(observations);
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(typicalRate);
 
         var rules = policy ?? StorageNoisyNeighbourPolicy.Default;
-        var alerts = new List<AlertDefinition>();
 
         var rates = MachineRates(observations, graph, rules);
         var (residents, spanning) = Residents(graph);
 
+        var verdicts = new List<SubjectVerdict>();
+
         foreach (var volume in observations.GroupBy(o => o.Entity))
         {
-            if (Judge(volume, graph, rates, residents, spanning, typicalRate, rules) is { } found)
+            if (Judge(volume, graph, rates, residents, spanning, typicalRate, rules, evidenceAtUtc) is { } verdict)
             {
-                alerts.Add(found);
+                verdicts.Add(verdict);
             }
         }
 
-        return alerts;
+        return verdicts;
     }
 
     /// <summary>
@@ -315,23 +342,45 @@ public static class StorageNoisyNeighbour
         };
     }
 
-    private static AlertDefinition? Judge(
+    private static SubjectVerdict? Judge(
         IGrouping<EntityId, Observation> volume,
         EntityGraph graph,
         Dictionary<EntityId, double> rates,
         Dictionary<EntityId, List<EntityId>> residents,
         Dictionary<EntityId, int> spanning,
         Func<SeriesKey, double?> typicalRate,
-        StorageNoisyNeighbourPolicy rules)
+        StorageNoisyNeighbourPolicy rules,
+        DateTimeOffset evidenceAtUtc)
     {
+        var latencyReadings = volume
+            .Where(o => o.Value.InstanceIsVantagePoint && Readings.IsMilliseconds(o.Value.Unit))
+            .ToList();
+
+        // Nothing to say: left to whichever rule reads latency (PeerOutliers,
+        // SharedVolumeLatency, StorageLatencyBlindSpot) to say why.
+        if (latencyReadings.Count == 0)
+        {
+            return null;
+        }
+
+        IReadOnlyList<AlertFingerprint> covers =
+        [
+            // The volume and nothing else. Which machines are loudest may
+            // change from one cycle to the next while the volume stays the
+            // slow one; a fingerprint carrying their names would close one
+            // alert and open another for what the operator sees as a single
+            // incident. The names are in the description, which is updated.
+            AlertFingerprint.Create(latencyReadings[0].Source, Title, Category, volume.Key.Value, "storage-noisy-neighbour"),
+        ];
+
         // Slow from every host that reads it, on at least one counter. One
         // host alone being slow is that host's path and PeerOutliers' finding,
         // and no machine's workload explains a cable.
-        var slowest = SlowCounter(volume, rules);
+        var slowest = SlowCounter(latencyReadings, rules);
 
         if (slowest is null)
         {
-            return null;
+            return new ConditionAbsent { Covers = covers, Entity = volume.Key, EvidenceAtUtc = evidenceAtUtc };
         }
 
         // Only machines we actually measured. A powered-off machine reports
@@ -343,7 +392,15 @@ public static class StorageNoisyNeighbour
 
         if (measured.Count < rules.MinimumPeers + 1)
         {
-            return null;
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = volume.Key,
+                Reason = UnknownReason.NotJudgeable,
+                Detail = string.Create(CultureInfo.InvariantCulture,
+                    $"{measured.Count} machine(s) stored only on this volume were measured this cycle; " +
+                    $"{rules.MinimumPeers + 1} are needed before a median means anything"),
+            };
         }
 
         var culprits = new List<(EntityId Machine, double Rate, double PeerMedian)>();
@@ -367,7 +424,7 @@ public static class StorageNoisyNeighbour
 
         if (culprits.Count == 0)
         {
-            return null;
+            return new ConditionAbsent { Covers = covers, Entity = volume.Key, EvidenceAtUtc = evidenceAtUtc };
         }
 
         // The suppressor, last because it is the only step that reads
@@ -376,7 +433,13 @@ public static class StorageNoisyNeighbour
 
         if (load.Count == 0)
         {
-            return null;
+            return new Unknown
+            {
+                Covers = covers,
+                Entity = volume.Key,
+                Reason = UnknownReason.InputNotCollected,
+                Detail = "no load counter (operations a second from a mounting host) arrived for this volume this cycle",
+            };
         }
 
         double typical = 0;
@@ -384,45 +447,75 @@ public static class StorageNoisyNeighbour
         foreach (var reading in load)
         {
             var key = new SeriesKey(reading.Entity, reading.Value.CounterName, reading.Value.Instance);
+            double? usual;
+
+            // Guarded per volume, as DatastoreTimeToFull guards its own
+            // history read: a baseline query that throws must not cost every
+            // other volume's verdict, and must not resolve this volume's
+            // alerts either.
+            try
+            {
+                usual = typicalRate(key);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                return new Unknown
+                {
+                    Covers = covers,
+                    Entity = volume.Key,
+                    Reason = UnknownReason.RuleFailed,
+                    Detail = $"reading the usual load for '{key.Counter}' on '{key.Instance}' threw: {ex.Message}",
+                };
+            }
 
             // One unknown series makes the whole baseline unknown. Summing
             // the known ones would understate "usual" — a host added this
             // morning has no history — and an understated baseline is exactly
             // what makes load look as though it rose.
-            if (typicalRate(key) is not { } usual)
+            if (usual is not { } known)
             {
-                return null;
+                return new Unknown
+                {
+                    Covers = covers,
+                    Entity = volume.Key,
+                    Reason = UnknownReason.InsufficientSeries,
+                    Detail = $"no baseline history for '{key.Counter}' on '{key.Instance}' over the lookback " +
+                             "window; load cannot be shown to have risen without one",
+                };
             }
 
-            typical += usual;
+            typical += known;
         }
 
         var current = load.Sum(o => o.Value.Raw);
 
         if (current < Stats.FlooredMultiple(rules.RiseMultiple, typical, 1d))
         {
-            return null;
+            return new ConditionAbsent { Covers = covers, Entity = volume.Key, EvidenceAtUtc = evidenceAtUtc };
         }
 
         var witness = slowest;
 
-        return new AlertDefinition
+        return new ConditionPresent
         {
-            // The volume and nothing else. Which machines are loudest may
-            // change from one cycle to the next while the volume stays the
-            // slow one; a fingerprint carrying their names would close one
-            // alert and open another for what the operator sees as a single
-            // incident. The names are in the description, which is updated.
-            Fingerprint = AlertFingerprint.Create(
-                witness.Source, Title, Category, volume.Key.Value, "storage-noisy-neighbour"),
-            Severity = AlertSeverity.Warning,
-            Title = Title,
-            Description = Describe(
-                volume.Key, graph, witness, culprits, measured.Count,
-                spanning.GetValueOrDefault(volume.Key), current, typical),
-            Category = Category,
-            Source = witness.Source,
+            Covers = covers,
+            Alerts =
+            [
+                new AlertDefinition
+                {
+                    Fingerprint = covers[0],
+                    Severity = AlertSeverity.Warning,
+                    Title = Title,
+                    Description = Describe(
+                        volume.Key, graph, witness, culprits, measured.Count,
+                        spanning.GetValueOrDefault(volume.Key), current, typical),
+                    Category = Category,
+                    Source = witness.Source,
+                    Entity = volume.Key,
+                },
+            ],
             Entity = volume.Key,
+            EvidenceAtUtc = evidenceAtUtc,
         };
     }
 

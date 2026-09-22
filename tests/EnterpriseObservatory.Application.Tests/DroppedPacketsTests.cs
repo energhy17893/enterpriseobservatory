@@ -1,4 +1,6 @@
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
+using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -258,5 +260,108 @@ public class DroppedPacketsTests
         Assert.Equal(first, worse);
         Assert.NotEqual(first, tx);
         Assert.NotEqual(first, other);
+    }
+
+    // --- three values (ADR-0026) --------------------------------------------
+
+    private static SubjectVerdict JudgeOne(IReadOnlyList<Observation> observations) =>
+        Assert.Single(DroppedPackets.Judge(observations, null, T0));
+
+    [Fact]
+    public void A_high_drop_ratio_is_present()
+    {
+        var present = Assert.IsType<ConditionPresent>(JudgeOne(Received(10_000, 500)));
+
+        Assert.Equal(new EntityId(Vm), present.Entity);
+        Assert.Equal(T0, present.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void A_low_drop_ratio_on_a_busy_link_is_absent()
+    {
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne(Received(10_000, 50)));
+
+        Assert.Equal(T0, absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void A_missing_packet_counter_is_not_collected()
+    {
+        var unknown = Assert.IsType<Unknown>(JudgeOne([Count("net.droppedRx.summation", 5_000)]));
+
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+        Assert.Contains("net.packetsRx.summation", unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Traffic_below_the_floor_is_not_judgeable_rather_than_absent()
+    {
+        // 33% of three packets used to be silent (absent); it is not evidence
+        // either way, and must not resolve an open alert.
+        var unknown = Assert.IsType<Unknown>(JudgeOne(Received(2, 1)));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+    }
+
+    [Fact]
+    public void A_quiet_run_keeps_the_alert_open_across_the_rules_n_and_an_unknown_resets_the_count()
+    {
+        var rule = new DroppedPacketsRule();
+        var raised = Received(10_000, 500);
+        var absent = Received(10_000, 50);
+        var unknown = Received(2, 1);
+
+        IReadOnlyList<AlertInstance> stored = [];
+        List<Observation[]> cycles = [raised, raised, absent, unknown, absent, absent];
+
+        for (var minute = 0; minute < cycles.Count; minute++)
+        {
+            stored = Reconcile(rule, cycles[minute], stored, T0.AddMinutes(minute));
+        }
+
+        var alert = Assert.Single(stored);
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.Equal(2, alert.ConsecutiveAbsent);
+
+        stored = Reconcile(rule, absent, stored, T0.AddMinutes(cycles.Count));
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
+    }
+
+    private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
+        TRule rule, IReadOnlyList<Observation> observations, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        where TRule : IAnalysisRule
+    {
+        var context = new RuleContext
+        {
+            Observations = observations,
+            ReadGraph = () => EntityGraph.Empty,
+            NowUtc = nowUtc,
+            Options = MonitoringOptions.Default,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+        };
+
+        return AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = "observation",
+            Stored = stored,
+            NowUtc = nowUtc,
+            Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+            Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+            RawRetention = TimeSpan.FromDays(2),
+        }).Instances;
+    }
+
+    private sealed class NoSeries : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query) => new() { Key = query.Key, Resolution = SeriesResolution.Raw };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    private sealed class NoEvents : EnterpriseObservatory.Application.Collection.IEventReader
+    {
+        public IReadOnlyList<EnterpriseObservatory.Application.Collection.SourceEvent> OfTypes(
+            IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 }

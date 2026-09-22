@@ -1,5 +1,8 @@
-﻿using EnterpriseObservatory.Application.Analysis;
+﻿using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Analysis;
+using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Tests;
 
@@ -433,5 +436,128 @@ public class SharedVolumeLatencyTests
     public void Nothing_at_all_produces_nothing()
     {
         Assert.Empty(SharedVolumeLatency.Evaluate([]));
+        Assert.Empty(SharedVolumeLatency.Judge([], null, T0));
+    }
+
+    // --- three values (ADR-0026) --------------------------------------------
+
+    private static SubjectVerdict JudgeOne(IReadOnlyList<Observation> observations, SharedVolumePolicy? policy = null) =>
+        Assert.Single(SharedVolumeLatency.Judge(observations, policy, T0));
+
+    [Fact]
+    public void A_volume_slow_everywhere_is_present()
+    {
+        var present = Assert.IsType<ConditionPresent>(JudgeOne(Unanimous()));
+
+        Assert.Equal(new EntityId(Volume), present.Entity);
+        Assert.Equal(T0, present.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void One_host_standing_out_is_absent_rather_than_silent()
+    {
+        // Left to PeerOutliers: a genuine absence for this rule, not "we could
+        // not tell".
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne(
+            [From("esx01", 5), From("esx02", 5), From("esx03", 5), From("esx04", 5), From("esx05", 60), Load(100)]));
+
+        Assert.Equal(T0, absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void Fewer_than_three_mounting_hosts_is_not_judgeable()
+    {
+        var unknown = Assert.IsType<Unknown>(JudgeOne([From("esx01", 40), Load(100)]));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        Assert.Contains("1 host(s)", unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_idle_volume_is_not_judgeable_rather_than_absent()
+    {
+        var unknown = Assert.IsType<Unknown>(JudgeOne([.. AllHosts(20), Load(5)]));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        Assert.Contains("below the", unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_busy_volume_is_not_judgeable_rather_than_absent()
+    {
+        List<Observation> readings =
+        [
+            .. AllHosts(20), Load(5000),
+            Load(50, "vc-1:ds-a"), Load(50, "vc-1:ds-b"),
+            Load(50, "vc-1:ds-c"), Load(50, "vc-1:ds-d"),
+        ];
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(readings));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        Assert.Contains(StorageNoisyNeighbour.RuleId, unknown.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_quiet_run_keeps_the_alert_open_across_the_rules_n_and_an_unknown_resets_the_count()
+    {
+        var rule = new SharedVolumeLatencyRule();
+        List<Observation> raised = Unanimous();
+        List<Observation> absent =
+        [From("esx01", 5), From("esx02", 5), From("esx03", 5), From("esx04", 5), From("esx05", 60), Load(100)];
+        List<Observation> unknown = [From("esx01", 40), Load(100)];
+
+        IReadOnlyList<AlertInstance> stored = [];
+        List<List<Observation>> cycles = [raised, raised, absent, unknown, absent, absent];
+
+        for (var minute = 0; minute < cycles.Count; minute++)
+        {
+            stored = Reconcile(rule, cycles[minute], stored, T0.AddMinutes(minute));
+        }
+
+        var alert = Assert.Single(stored);
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.Equal(2, alert.ConsecutiveAbsent);
+
+        stored = Reconcile(rule, absent, stored, T0.AddMinutes(cycles.Count));
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
+    }
+
+    private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
+        TRule rule, IReadOnlyList<Observation> observations, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        where TRule : IAnalysisRule
+    {
+        var context = new RuleContext
+        {
+            Observations = observations,
+            ReadGraph = () => EntityGraph.Empty,
+            NowUtc = nowUtc,
+            Options = MonitoringOptions.Default,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+        };
+
+        return AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = "observation",
+            Stored = stored,
+            NowUtc = nowUtc,
+            Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+            Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+            RawRetention = TimeSpan.FromDays(2),
+        }).Instances;
+    }
+
+    private sealed class NoSeries : ISeriesReader
+    {
+        public SeriesResult Query(SeriesQuery query) => new() { Key = query.Key, Resolution = SeriesResolution.Raw };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    private sealed class NoEvents : EnterpriseObservatory.Application.Collection.IEventReader
+    {
+        public IReadOnlyList<EnterpriseObservatory.Application.Collection.SourceEvent> OfTypes(
+            IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 }
