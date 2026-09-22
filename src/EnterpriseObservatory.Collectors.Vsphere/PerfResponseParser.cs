@@ -43,6 +43,20 @@ public sealed record PerfEntitySamples
     /// </para>
     /// </remarks>
     public IReadOnlyList<PerfSampleSet> Earlier { get; init; } = [];
+
+    /// <summary>
+    /// The sample times, oldest first, at which some series of this reply had
+    /// no reading yet.
+    /// </summary>
+    /// <remarks>
+    /// vCenter lists a real-time slot in <c>sampleInfo</c> before every value
+    /// for it is in, and returns -1 for the rest until they are: measured on
+    /// 22 September 2026 with the probe's late-samples mode, sometimes for a
+    /// whole host at once, and every such value was filled a few seconds
+    /// later. A reader that moves past such a slot never sees those values,
+    /// so it has to know which slots to ask for again.
+    /// </remarks>
+    public IReadOnlyList<DateTimeOffset> Unfilled { get; init; } = [];
 }
 
 /// <summary>One entity's values at one sample time.</summary>
@@ -168,9 +182,14 @@ public static class PerfResponseParser
             results.Add(new PerfEntitySamples
             {
                 EntityMoRef = entity.Trim(),
-                Values = Aggregate([.. allSeries.Select(s => s.Latest(times.Count)).OfType<CounterValue>()]),
+                Values = Aggregate(
+                    [.. allSeries.Select(s => s.Latest(times.Count)).OfType<CounterValue>()],
+                    times.Count > 0 ? UnfilledAt(allSeries, times.Count - 1, times.Count) : []),
                 SampledAtUtc = times.Count > 0 ? times[^1] : null,
                 Earlier = ReadEarlier(allSeries, times),
+                Unfilled = [.. Enumerable.Range(0, times.Count)
+                    .Where(slot => UnfilledAt(allSeries, slot, times.Count).Count > 0)
+                    .Select(slot => times[slot])],
             });
         }
 
@@ -212,7 +231,7 @@ public static class PerfResponseParser
     /// to CPU, which reports per core.
     /// </para>
     /// </remarks>
-    private static List<CounterValue> Aggregate(List<CounterValue> values)
+    private static List<CounterValue> Aggregate(List<CounterValue> values, HashSet<string> unfilled)
     {
         var result = new List<CounterValue>();
 
@@ -246,6 +265,17 @@ public static class PerfResponseParser
             if (aggregate.CounterName is not null)
             {
                 result.Add(aggregate);
+                continue;
+            }
+
+            // Not combined while a series of this counter is still unfilled
+            // (see PerfEntitySamples.Unfilled): a total or a worst case over
+            // some of the devices — or over the devices because vCenter's own
+            // aggregate is the one missing — is a different number under the
+            // same name, and being first it is the one the store would keep.
+            // The slot is read again once filled and the whole figure written.
+            if (unfilled.Contains(group.Key))
+            {
                 continue;
             }
 
@@ -289,12 +319,28 @@ public static class PerfResponseParser
 
             if (values.Count > 0)
             {
-                earlier.Add(new PerfSampleSet { SampledAtUtc = times[slot], Values = Aggregate(values) });
+                earlier.Add(new PerfSampleSet
+                {
+                    SampledAtUtc = times[slot],
+                    Values = Aggregate(values, UnfilledAt(allSeries, slot, times.Count)),
+                });
             }
         }
 
         return earlier;
     }
+
+    /// <summary>The counters with a series that has no reading at this slot yet.</summary>
+    /// <remarks>
+    /// Only series lined up with the sample times: a shorter one says nothing
+    /// about any slot (see <see cref="SeriesPoints.Latest"/>).
+    /// </remarks>
+    private static HashSet<string> UnfilledAt(List<SeriesPoints> allSeries, int slot, int sampleTimes) =>
+    [
+        .. allSeries
+            .Where(s => s.Points.Count == sampleTimes && s.At(slot) is null)
+            .Select(s => s.Shape.CounterName),
+    ];
 
     /// <summary>One series as it arrived: what it measures, and a point per slot.</summary>
     private sealed record SeriesPoints(CounterValue Shape, string WireUnit, IReadOnlyList<double?> Points)
