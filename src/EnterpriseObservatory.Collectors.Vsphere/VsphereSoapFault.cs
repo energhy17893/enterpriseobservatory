@@ -205,15 +205,15 @@ public static class VsphereSoapFaultReader
             return VsphereFaultKind.InvalidName;
         }
 
-        // The query-size refusal has no dedicated fault type; vCenter reports it
-        // as a generic RuntimeFault whose message is the only clue, so matching
-        // on text is unavoidable. It is only attempted for a performance query,
-        // because that is the only place the reading is meaningful — a live
-        // vCenter returns "'config.vpxd.stats.maxQueryMetrics' is invalid or
-        // exceeds the maximum number of characters permitted" for an unset
+        // The query-size refusal: its documented text (Broadcom KB 301449) or
+        // the RestrictedByAdministrator type; see
+        // AdaptiveBatchSizer.IsQuerySizeRefusal. Only for a performance
+        // query, because that is the only place the reading is meaningful — a
+        // live vCenter returns "'config.vpxd.stats.maxQueryMetrics' is invalid
+        // or exceeds the maximum number of characters permitted" for an unset
         // option, and a context-free match read that as a size refusal.
         if (context == VsphereCallContext.PerformanceQuery &&
-            AdaptiveBatchSizer.IsQuerySizeRefusal(message))
+            AdaptiveBatchSizer.IsQuerySizeRefusal(faultType, message))
         {
             return VsphereFaultKind.QuerySizeRefused;
         }

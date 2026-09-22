@@ -164,6 +164,45 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         }
     }
 
+    /// <summary>
+    /// Why <see cref="GetMaxQueryMetricsAsync"/> returned null, in one line, without the value.
+    /// </summary>
+    /// <remarks>
+    /// For the read-only probe only. The collector treats every unreadable
+    /// case the same (fall back to 256); an operator deciding whether to grant
+    /// a privilege or set the option needs to know which case it is.
+    /// </remarks>
+    public async Task<string> DiagnoseMaxQueryMetricsAsync(CancellationToken cancellationToken)
+    {
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+
+        if (content.SettingManager is not { } settingManager)
+        {
+            return "no OptionManager (setting) in ServiceContent";
+        }
+
+        try
+        {
+            var response = await SendAsync(
+                VsphereSoapRequests.QueryMaxQueryMetrics(settingManager), cancellationToken)
+                .ConfigureAwait(false);
+
+            var value = VsphereXml.Parse(response)
+                .Descendants()
+                .FirstOrDefault(e => e.Name.LocalName == "value")?.Value;
+
+            return value is null
+                ? "not present (empty result)"
+                : int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)
+                    ? "present and readable (value withheld)"
+                    : "present but not an integer";
+        }
+        catch (VsphereApiException ex)
+        {
+            return $"fault {ex.Kind}";
+        }
+    }
+
     public async Task<IReadOnlyList<string>> GetAvailableCounterKeysAsync(
         string entityMoRef,
         VsphereEntityType entityType,
@@ -283,6 +322,41 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
 
         return PerfResponseParser.ParseSamples(
             response, byId, TimeSpan.FromSeconds(intervalSeconds));
+    }
+
+    /// <summary>
+    /// A performance query with the sample count and window chosen by the
+    /// caller, returning the raw reply beside the parsed samples.
+    /// </summary>
+    /// <remarks>
+    /// For the read-only probe's measurements only (how <c>maxSample</c>
+    /// interacts with a window, and how large a long real-time read is). The
+    /// collector's own reads go through <see cref="QueryPerfAsync"/>, whose
+    /// shape is fixed on purpose.
+    /// </remarks>
+    public async Task<(string Body, IReadOnlyList<PerfEntitySamples> Samples)> QueryPerfForMeasurementAsync(
+        IReadOnlyList<string> entityMoRefs,
+        VsphereEntityType entityType,
+        IReadOnlyList<VsphereCounter> counters,
+        int maxSample,
+        (DateTimeOffset From, DateTimeOffset To)? window,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(entityMoRefs);
+        ArgumentNullException.ThrowIfNull(counters);
+
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var intervalSeconds = VsphereIntervals.IntervalSecondsFor(entityType);
+
+        var response = await SendAsync(
+            VsphereSoapRequests.QueryPerf(
+                content.PerformanceManager, entityMoRefs, entityType.ToString(),
+                counters, intervalSeconds, maxSample, window),
+            cancellationToken,
+            VsphereCallContext.PerformanceQuery).ConfigureAwait(false);
+
+        return (response, PerfResponseParser.ParseSamples(
+            response, counters.ToDictionary(c => c.Id), TimeSpan.FromSeconds(intervalSeconds)));
     }
 
     // --- IVsphereInventoryApi ---------------------------------------------

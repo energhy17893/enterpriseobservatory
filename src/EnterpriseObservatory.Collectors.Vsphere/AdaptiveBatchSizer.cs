@@ -36,20 +36,31 @@ public sealed class AdaptiveBatchSizer
     private const double SafetyFactor = 0.8;
 
     private readonly int _counterCount;
-
-    public AdaptiveBatchSizer(int? serverMaxQueryMetrics, int counterCount)
+    /// <param name="remembered">
+    /// A size this session already found the server accepts, from
+    /// <see cref="LearnedBatchSizes"/>. It caps the start and never raises it:
+    /// what was learnt is that larger was refused, not that larger is safe.
+    /// </param>
+    public AdaptiveBatchSizer(int? serverMaxQueryMetrics, int counterCount, int? remembered = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(counterCount);
 
         _counterCount = counterCount;
-        Current = Initial(serverMaxQueryMetrics, counterCount);
+        Planned = Initial(serverMaxQueryMetrics, counterCount);
+        Current = remembered is > 0 and var known ? Math.Min(known, Planned) : Planned;
     }
 
     /// <summary>Entities per query right now.</summary>
     public int Current { get; private set; }
 
+    /// <summary>What the server's stated limit alone would have allowed.</summary>
+    public int Planned { get; }
+
     /// <summary>Whether the size has been reduced because the server refused a query.</summary>
     public bool WasReduced { get; private set; }
+
+    /// <summary>Whether this read is running below the planned size, for whatever reason.</summary>
+    public bool IsBelowPlan => Current < Planned;
 
     /// <summary>
     /// Halves the batch after a refusal.
@@ -84,14 +95,43 @@ public sealed class AdaptiveBatchSizer
     }
 
     /// <summary>
-    /// Whether a server error is the query-size limit rather than something else.
+    /// Whether a fault is the query-size limit rather than something else.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// vCenter reports this as a generic fault whose message is the only
-    /// distinguishing feature, so matching on text is unavoidable. It should
-    /// only be applied to a performance query — see
+    /// Two signals, either of which is enough (T1.3). The <b>primary</b> is
+    /// the text: Broadcom KB 301449 documents what a client receives when
+    /// <c>config.vpxd.stats.maxQueryMetrics</c> is exceeded — "Request
+    /// processing is restricted by administrator" — and it is matched under
+    /// whatever fault type carries it. The <b>secondary</b> is the type
+    /// <c>RestrictedByAdministrator</c> (in the SOAP detail as
+    /// <c>RestrictedByAdministratorFault</c>), which the name of that message
+    /// suggests; no source documents it and no live refusal has been seen, so
+    /// it is not verified. It still catches a localised server whose wording
+    /// differs. (vpxd logs the other side: "The query size of N metrics
+    /// exceeded the vpxd.stats.maxQueryMetrics limit of 256 metrics".)
+    /// </para>
+    /// <para>
+    /// It should only be applied to a performance query — see
     /// <see cref="VsphereCallContext"/>.
+    /// </para>
+    /// </remarks>
+    public static bool IsQuerySizeRefusal(string faultType, string? serverMessage)
+    {
+        ArgumentNullException.ThrowIfNull(faultType);
+
+        return IsQuerySizeRefusal(serverMessage) ||
+               faultType.Contains(RefusalFaultType, StringComparison.OrdinalIgnoreCase);
+    }
+    /// <summary>The vim25 fault vCenter answers an oversized performance query with.</summary>
+    public const string RefusalFaultType = "RestrictedByAdministrator";
+
+    /// <summary>
+    /// Whether a server message reads like the query-size limit.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The primary signal; see the two-argument overload.
     /// </para>
     /// <para>
     /// The patterns are deliberately narrow. An earlier version also matched
@@ -127,4 +167,52 @@ public sealed class AdaptiveBatchSizer
     public override string ToString() =>
         string.Create(CultureInfo.InvariantCulture,
             $"{Current} entities x {_counterCount} counters{(WasReduced ? " (reduced)" : string.Empty)}");
+}
+
+/// <summary>
+/// Batch sizes the server has accepted after refusing larger ones, for the
+/// life of one source (ADR-0005 §2, T1.2).
+/// </summary>
+/// <remarks>
+/// <para>
+/// Without it every cycle started at the planned size and was refused on the
+/// way down again: two wasted queries a cycle at a hidden limit of 64, and the
+/// same "reduced" report written as if it were news.
+/// </para>
+/// <para>
+/// Keyed by counter count as well as type, because the size is entities per
+/// query and the limit is on metrics: a cycle asking for fewer counters (a
+/// statistics level changed, a counter went missing) has a different answer
+/// and relearns it rather than inheriting a wrong one.
+/// </para>
+/// <para>
+/// In memory only, like the probe's reputation beside it: a restart reads the
+/// connection again, and a limit an administrator raised yesterday should not
+/// still be second-guessed today. Locked because an abandoned read can still
+/// be inside the source when the next one starts; see
+/// <c>VsphereObservationSource</c>.
+/// </para>
+/// </remarks>
+public sealed class LearnedBatchSizes
+{
+    private readonly Lock _padlock = new();
+    private readonly Dictionary<(VsphereEntityType, int), int> _sizes = [];
+
+    public int? For(VsphereEntityType entityType, int counterCount)
+    {
+        lock (_padlock)
+        {
+            return _sizes.TryGetValue((entityType, counterCount), out var size) ? size : null;
+        }
+    }
+
+    public void Remember(VsphereEntityType entityType, int counterCount, int size)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(size);
+
+        lock (_padlock)
+        {
+            _sizes[(entityType, counterCount)] = size;
+        }
+    }
 }

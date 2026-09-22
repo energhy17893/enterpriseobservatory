@@ -1,5 +1,7 @@
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Host.AllInOne.Configuration;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
 
@@ -19,7 +21,8 @@ public class CollectionOptionsTests
         var fromConfig = new CollectionOptions().ToPolicy();
         var builtIn = CollectionPolicy.Default;
 
-        Assert.Equal(builtIn.SourceTimeout, fromConfig.SourceTimeout);
+        Assert.Equal(builtIn.IntervalShare, fromConfig.IntervalShare);
+        Assert.Equal(builtIn.MinimumSourceTimeout, fromConfig.MinimumSourceTimeout);
         Assert.Equal(builtIn.MaxRetries, fromConfig.MaxRetries);
         Assert.Equal(builtIn.RetryBaseDelay, fromConfig.RetryBaseDelay);
         Assert.Equal(builtIn.CircuitBreakerThreshold, fromConfig.CircuitBreakerThreshold);
@@ -29,12 +32,83 @@ public class CollectionOptionsTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(-1)]
-    public void A_non_positive_source_timeout_is_refused(int seconds)
+    [InlineData(-0.1)]
+    [InlineData(1.01)]
+    public void An_interval_share_outside_zero_to_one_is_refused(double share)
     {
-        var options = new CollectionOptions { SourceTimeoutSeconds = seconds };
+        // The share of the interval a read may spend: zero reads nothing,
+        // more than the whole makes every slow cycle a late one.
+        var options = new CollectionOptions { IntervalShare = share };
 
-        Assert.Contains(options.Validate(), p => p.Contains("SourceTimeoutSeconds", StringComparison.Ordinal));
+        Assert.Contains(options.Validate(), p => p.Contains("IntervalShare", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_whole_interval_is_an_allowed_share()
+    {
+        Assert.Empty(new CollectionOptions { IntervalShare = 1 }.Validate());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(0.5)]
+    [InlineData(-3)]
+    public void A_minimum_timeout_below_one_second_is_refused(double seconds)
+    {
+        var options = new CollectionOptions { MinimumSourceTimeoutSeconds = seconds };
+
+        Assert.Contains(
+            options.Validate(), p => p.Contains("MinimumSourceTimeoutSeconds", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_retired_fixed_timeout_key_refuses_to_start_and_names_its_replacements()
+    {
+        // The timeout is derived from the interval now (T1.1). A fixed value
+        // left in a config file would be silently ignored, and an operator who
+        // set it would believe it was in force.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Collection:SourceTimeoutSeconds"] = "40" })
+            .Build();
+
+        var problem = Assert.Single(CollectionOptions.RetiredKeyProblems(configuration));
+        Assert.Contains("Collection:SourceTimeoutSeconds", problem, StringComparison.Ordinal);
+        Assert.Contains("Collection:IntervalShare", problem, StringComparison.Ordinal);
+        Assert.Contains("Collection:MinimumSourceTimeoutSeconds", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_real_host_refuses_to_start_with_the_retired_key()
+    {
+        // Program.cs itself, not the helper: the refusal only protects anyone
+        // if the composition root asks for it.
+        using var host = new ObservatoryHost();
+        using var withOldKey = host.WithWebHostBuilder(b => b.UseSetting("Collection:SourceTimeoutSeconds", "25"));
+
+        var refused = Assert.ThrowsAny<Exception>(() => withOldKey.CreateClient());
+
+        Assert.Contains("Collection:SourceTimeoutSeconds", refused.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Collection:IntervalShare", refused.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Configuration_without_the_retired_key_has_no_retired_key_problem()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Collection:MaxRetries"] = "3" })
+            .Build();
+
+        Assert.Empty(CollectionOptions.RetiredKeyProblems(configuration));
+    }
+
+    [Fact]
+    public void The_shipped_appsettings_does_not_carry_the_retired_key()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: false)
+            .Build();
+
+        Assert.Empty(CollectionOptions.RetiredKeyProblems(configuration));
     }
 
     [Fact]
@@ -85,7 +159,8 @@ public class CollectionOptionsTests
     {
         var options = new CollectionOptions
         {
-            SourceTimeoutSeconds = 0,
+            IntervalShare = 0,
+            MinimumSourceTimeoutSeconds = 0,
             MaxRetries = -1,
             RetryBaseDelaySeconds = 0,
             CircuitBreakerThreshold = 0,
@@ -93,7 +168,7 @@ public class CollectionOptionsTests
             MaxConcurrency = 0,
         };
 
-        Assert.Equal(6, options.Validate().Count);
+        Assert.Equal(7, options.Validate().Count);
     }
 
     [Fact]
@@ -101,7 +176,8 @@ public class CollectionOptionsTests
     {
         var options = new CollectionOptions
         {
-            SourceTimeoutSeconds = 40,
+            IntervalShare = 0.5,
+            MinimumSourceTimeoutSeconds = 15,
             MaxRetries = 4,
             RetryBaseDelaySeconds = 2,
             CircuitBreakerThreshold = 3,
@@ -113,7 +189,8 @@ public class CollectionOptionsTests
 
         var policy = options.ToPolicy();
 
-        Assert.Equal(TimeSpan.FromSeconds(40), policy.SourceTimeout);
+        Assert.Equal(0.5, policy.IntervalShare);
+        Assert.Equal(TimeSpan.FromSeconds(15), policy.MinimumSourceTimeout);
         Assert.Equal(4, policy.MaxRetries);
         Assert.Equal(TimeSpan.FromSeconds(2), policy.RetryBaseDelay);
         Assert.Equal(3, policy.CircuitBreakerThreshold);

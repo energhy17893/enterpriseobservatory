@@ -130,7 +130,11 @@ public sealed class MonitoringCycle(
         var now = _clock.UtcNow;
 
         var cycle = await _inventory
-            .RunAsync(sources, _healthStore.Current, options.Collection, cancellationToken)
+            .RunAsync(
+                sources,
+                _healthStore.Current,
+                options.Collection.ForInterval(options.InventoryInterval),
+                cancellationToken)
             .ConfigureAwait(false);
 
         // Guarded per write, and named per cycle: the two cycles merge health
@@ -268,7 +272,11 @@ public sealed class MonitoringCycle(
         var now = _clock.UtcNow;
 
         var cycle = await _observations
-            .RunAsync(sources, _healthStore.Current, options.Collection, cancellationToken)
+            .RunAsync(
+                sources,
+                _healthStore.Current,
+                options.Collection.ForInterval(options.ObservationInterval),
+                cancellationToken)
             .ConfigureAwait(false);
 
         // Every source has already been read and the samples are in memory. A
