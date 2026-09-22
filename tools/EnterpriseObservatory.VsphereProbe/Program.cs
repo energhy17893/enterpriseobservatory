@@ -203,8 +203,19 @@ try
         return 0;
     }
 
+    // Collection PR 1's gate: every candidate path and call, each read alone,
+    // before any of them enters the collector's request list.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --candidates
+    if (args.Contains("--candidates", StringComparer.OrdinalIgnoreCase))
+    {
+        await EnterpriseObservatory.VsphereProbe.Candidates.RunAsync(
+            client, baseAddress, user, password, insecure, cancellation.Token);
+        return 0;
+    }
+
     Section("Connection");
-    Console.WriteLine($"  endpoint                 {Show(baseAddress.Host, mask)}");
+    Console.WriteLine($"  endpoint                {Show(baseAddress.Host, mask)}");
     Console.WriteLine($"  certificate validation   {(insecure ? "RELAXED (self-signed accepted)" : "enforced")}");
 
     var catalog = await client.GetCounterCatalogAsync(cancellation.Token);
