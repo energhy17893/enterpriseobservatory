@@ -131,6 +131,27 @@ public class VsphereSessionCleanupTests
         await channel.LogoutAsync(CancellationToken.None);
     }
 
+    [Fact]
+    public async Task A_session_the_vcenter_already_expired_is_logged_out_without_complaint()
+    {
+        // Without a keepalive timer (F3's decision), an idle connection's
+        // session can be collected by vCenter before we close it. Shutdown
+        // then meets NotAuthenticated on Logout, which is the server agreeing
+        // the session is gone -- the outcome being asked for, not a failure to
+        // report to a caller who is already leaving.
+        var (client, channel, server) = Connect(new ScriptedVcenter());
+        await client.RetrieveInventoryAsync(CancellationToken.None);
+        server.SessionAlreadyExpired = true;
+
+        await channel.LogoutAsync(CancellationToken.None);
+
+        Assert.Equal(1, server.Calls.Count(c => c == "Logout"));
+
+        // And it does not sign back in to say goodbye.
+        await channel.LogoutAsync(CancellationToken.None);
+        Assert.Equal(1, server.Calls.Count(c => c == "Login"));
+    }
+
     /// <summary>A vCenter that knows only the calls an inventory read makes.</summary>
     internal sealed class ScriptedVcenter : HttpMessageHandler
     {
@@ -147,6 +168,9 @@ public class VsphereSessionCleanupTests
         public bool FirstPageHasMore { get; init; }
 
         public bool Unreachable { get; set; }
+
+        /// <summary>vCenter collected the session before we closed it.</summary>
+        public bool SessionAlreadyExpired { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
@@ -187,7 +211,9 @@ public class VsphereSessionCleanupTests
                 case "DestroyView":
                     return Ok("<DestroyViewResponse xmlns=\"urn:vim25\" />");
                 case "Logout":
-                    return Ok("<LogoutResponse xmlns=\"urn:vim25\" />");
+                    return SessionAlreadyExpired
+                        ? NotAuthenticated()
+                        : Ok("<LogoutResponse xmlns=\"urn:vim25\" />");
                 default:
                     throw new InvalidOperationException($"Unscripted call {method}.");
             }
@@ -222,5 +248,22 @@ public class VsphereSessionCleanupTests
 
         private static HttpResponseMessage Ok(string xml) =>
             new(HttpStatusCode.OK) { Content = new StringContent(xml, Encoding.UTF8, "text/xml") };
+
+        /// <summary>What a vCenter says about a session it has already collected.</summary>
+        private static HttpResponseMessage NotAuthenticated() => new(HttpStatusCode.InternalServerError)
+        {
+            Content = new StringContent("""
+                <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+                  <soapenv:Body>
+                    <soapenv:Fault>
+                      <faultcode>ServerFaultCode</faultcode>
+                      <faultstring>The session is not authenticated.</faultstring>
+                      <detail><NotAuthenticatedFault xmlns="urn:vim25" xsi:type="NotAuthenticated" /></detail>
+                    </soapenv:Fault>
+                  </soapenv:Body>
+                </soapenv:Envelope>
+                """, Encoding.UTF8, "text/xml"),
+        };
     }
 }
