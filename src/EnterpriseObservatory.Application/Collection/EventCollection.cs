@@ -1,3 +1,5 @@
+using EnterpriseObservatory.Application.Monitoring;
+
 namespace EnterpriseObservatory.Application.Collection;
 
 /// <summary>
@@ -269,8 +271,16 @@ public sealed record EventCollectionResult
 /// caller is the inventory loop, and an event read that could not reach a
 /// vCenter must not be logged as the inventory cycle failing.
 /// </para>
+/// <para>
+/// Each read goes through <see cref="SourceRunner"/> in the
+/// <see cref="CollectorRole.Events"/> role (F1, ADR-0025 §1): the same breaker,
+/// one-strike rule for a rejected login, hard timeout and health record as
+/// inventory and observation. Before, it called the source directly with only
+/// a cooperative deadline, and a read that ignored the token held the
+/// inventory loop.
+/// </para>
 /// </remarks>
-public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
+public sealed class EventCollectionPipeline
 {
     /// <summary>
     /// How long events are kept. <strong>This product's choice</strong>, not a
@@ -340,8 +350,47 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
         ];
     }
 
-    private readonly IEventStore _store = store ?? throw new ArgumentNullException(nameof(store));
-    private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+    private readonly IEventStore _store;
+    private readonly IClock _clock;
+    private readonly ICollectorHealthStore _health;
+    private readonly CollectionPolicy _policy;
+    private readonly TimeSpan _defaultDeadline;
+    private readonly SourceRunner _runner;
+    private readonly TimeProvider _time;
+
+    /// <summary>
+    /// A pipeline that keeps its sources' event health in memory, under the
+    /// default collection policy.
+    /// </summary>
+    public EventCollectionPipeline(IEventStore store, IClock clock, TimeProvider? timeProvider = null)
+        : this(store, clock, new LocalHealth(), MonitoringOptions.Default, timeProvider)
+    {
+    }
+
+    /// <summary>
+    /// A pipeline that carries each source's event health, one
+    /// <see cref="CollectorRole.Events"/> row per source, in
+    /// <paramref name="health"/> from one cycle to the next.
+    /// </summary>
+    public EventCollectionPipeline(
+        IEventStore store,
+        IClock clock,
+        ICollectorHealthStore health,
+        MonitoringOptions options,
+        TimeProvider? timeProvider = null)
+    {
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        _health = health ?? throw new ArgumentNullException(nameof(health));
+        ArgumentNullException.ThrowIfNull(options);
+
+        // Not retried within the cycle, as before F1: the event read never
+        // was, and the next cycle asks again from the same mark.
+        _policy = options.Collection with { MaxRetries = 0 };
+        _defaultDeadline = options.EventReadDeadline;
+        _time = timeProvider ?? TimeProvider.System;
+        _runner = new SourceRunner(_clock, _time);
+    }
 
     public Task<EventCollectionResult> RunAsync(
         IReadOnlyList<IEventSource> sources,
@@ -376,21 +425,19 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This read does not go through <c>SourceRunner</c>, so on its own it has
-    /// no breaker and no one-strike rule: a vCenter that rejected the password
-    /// was held off for inventory after a single failure and then presented
-    /// with the same password by this read, every cycle, indefinitely. That is
-    /// the account lockout <see cref="CollectionFailures"/> describes, reached
-    /// by the one path that was not guarded.
+    /// Before F1 this read did not go through <c>SourceRunner</c>, so a vCenter
+    /// that rejected the password was held off for inventory after a single
+    /// failure and then presented with the same password by this read, every
+    /// cycle. The read now has its own breaker and one-strike rule.
     /// </para>
     /// <para>
-    /// It borrows a verdict rather than growing a third breaker. Events are
-    /// read straight after inventory, from the same address, in the same
-    /// session, with the same credential; whether that vCenter is worth asking
-    /// right now is a question the inventory read has just answered. A source
-    /// it could not read — refused, unreachable, or being backed off from — is
-    /// not asked here either. Its cursor does not move, so nothing is lost:
-    /// the window is read once the source answers again.
+    /// The inventory verdict is still borrowed on top of it (F note §7.1,
+    /// decided in §8): events are read straight after inventory, from the same
+    /// address, in the same session, with the same credential, so a vCenter
+    /// whose inventory could not be read this cycle — refused, unreachable, or
+    /// backed off from — is not asked here either. Its cursor does not move,
+    /// so nothing is lost. The borrowing is removed in a follow-up once the
+    /// events health row has been seen in production.
     /// </para>
     /// <para>
     /// Null asks everyone, for callers with no inventory read to go by.
@@ -409,24 +456,30 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
             "not asked for events: this cycle's inventory read of the same vCenter did not " +
             "succeed; its position was kept and the window is read once it answers again";
 
-        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (deadline != Timeout.InfiniteTimeSpan)
-        {
-            budget.CancelAfter(deadline);
-        }
+        // One bound for the whole pass, as before; each source is given what
+        // is left of it as its runner timeout. A pass without a deadline of
+        // its own is still bounded: the runner has no "forever".
+        var bound = deadline == Timeout.InfiniteTimeSpan ? _defaultDeadline : deadline;
+        var passStart = _time.GetTimestamp();
 
+        // One at a time, as before F1: the gate keeps the sequential order.
+        using var gate = new SemaphoreSlim(1, 1);
+
+        var prior = PriorHealth();
+        var health = new List<CollectorHealth>();
         var cursors = _store.Cursors.ToDictionary(c => c.SourceInstanceId, StringComparer.Ordinal);
         var recorded = 0;
         var failures = new List<(string, string)>();
         var gaps = new List<string>();
-        var outOfTime = $"the event read did not finish within {deadline.TotalSeconds:0} s; " +
+        var outOfTime = $"the event read did not finish within {bound.TotalSeconds:0} s; " +
                         "its position was kept and the next cycle reads from it again";
 
         foreach (var source in sources)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (budget.IsCancellationRequested)
+            var left = bound - _time.GetElapsedTime(passStart);
+            if (left <= TimeSpan.Zero)
             {
                 failures.Add((source.InstanceId, outOfTime));
                 continue;
@@ -437,49 +490,57 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
                 // Reported, never silent: "we did not look" must not be
                 // readable as "nothing happened".
                 failures.Add((source.InstanceId, notAsked));
-
-                try
-                {
-                    _store.RecordFailure(source.InstanceId, notAsked, _clock.UtcNow);
-                }
-#pragma warning disable CA1031 // Justified: as below — reported, not thrown into the loop.
-                catch (Exception)
-#pragma warning restore CA1031
-                {
-                }
-
+                TryRecordFailure(source.InstanceId, notAsked);
                 continue;
             }
 
             var since = cursors.TryGetValue(source.InstanceId, out var cursor) ? cursor.Mark : null;
+            var attempt = new Attempt();
 
-            EventRead read;
-            try
-            {
-                read = await source.ReadAsync(since, budget.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (OperationCanceledException) when (budget.IsCancellationRequested)
-            {
-                failures.Add((source.InstanceId, outOfTime));
-                continue;
-            }
-#pragma warning disable CA1031 // Justified: one vCenter's failure is recorded
-            // against it and must not stop the others or fail the inventory loop.
-            catch (Exception ex)
-#pragma warning restore CA1031
-            {
-                read = EventRead.CouldNotAsk(ex.Message);
-            }
+            var outcome = await _runner.RunAsync(
+                source.InstanceId,
+                CollectorRole.Events,
+                token => ReadOnceAsync(source, since, attempt, token),
+                static _ => [],
+                SourceRunner.Existing(prior, source.InstanceId, CollectorRole.Events),
+                _policy with { SourceTimeout = left },
+                gate,
+                cancellationToken).ConfigureAwait(false);
 
-            // A source that turned the deadline into "could not ask" was cut
-            // off, not refused: its cursor is left alone like any other.
-            if (read.Events is null && budget.IsCancellationRequested)
+            health.Add(outcome.Health);
+
+            if (outcome.Result is not { Events: { } events } read)
             {
-                failures.Add((source.InstanceId, outOfTime));
+                switch (attempt.Conclude())
+                {
+                    case AttemptState.NotStarted:
+                        {
+                            // The breaker is open. Said, and recorded against the
+                            // cursor, so the screen does not show an old list as
+                            // a current one.
+                            var detail =
+                                $"not asked for events: backing off after {outcome.Health.ConsecutiveFailures} " +
+                                $"consecutive failures; last failure: {outcome.Health.LastFailureDetail}";
+                            failures.Add((source.InstanceId, detail));
+                            TryRecordFailure(source.InstanceId, detail);
+                            break;
+                        }
+
+                    case AttemptState.Running or AttemptState.CutOff:
+                        // Abandoned, or stopped when asked: cut off, not
+                        // refused. The cursor is left alone like any other.
+                        failures.Add((source.InstanceId, outOfTime));
+                        break;
+
+                    default:
+                        {
+                            var detail = outcome.Health.LastFailureDetail ?? "the source could not be asked for events";
+                            failures.Add((source.InstanceId, detail));
+                            TryRecordFailure(source.InstanceId, detail);
+                            break;
+                        }
+                }
+
                 continue;
             }
 
@@ -487,14 +548,6 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
 
             try
             {
-                if (read.Events is not { } events)
-                {
-                    var detail = read.Detail ?? "the source could not be asked for events";
-                    _store.RecordFailure(source.InstanceId, detail, now);
-                    failures.Add((source.InstanceId, detail));
-                    continue;
-                }
-
                 var stamped = events.Select(e => e with { SourceInstanceId = source.InstanceId }).ToList();
                 _store.Record(source.InstanceId, stamped, read.Complete, now);
                 recorded += stamped.Count;
@@ -514,6 +567,19 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
             }
         }
 
+        if (health.Count > 0)
+        {
+            try
+            {
+                _health.Merge(health);
+            }
+#pragma warning disable CA1031 // Justified: as below — reported, not thrown into the loop.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                failures.Add(("health", "event read health could not be stored: " + ex.Message));
+            }
+        }
         var pruned = 0;
         try
         {
@@ -533,5 +599,153 @@ public sealed class EventCollectionPipeline(IEventStore store, IClock clock)
             Failures = failures,
             Gaps = gaps,
         };
+    }
+
+    /// <summary>Last cycle's event health, or none when the store cannot say.</summary>
+    /// <remarks>
+    /// None is the safe failure: every source is asked, as it would be on a
+    /// fresh installation, rather than the pass throwing into the inventory
+    /// loop.
+    /// </remarks>
+    private IReadOnlyList<CollectorHealth> PriorHealth()
+    {
+        try
+        {
+            return _health.Current;
+        }
+#pragma warning disable CA1031 // Justified: see remarks.
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return [];
+        }
+    }
+
+    private void TryRecordFailure(string sourceInstanceId, string detail)
+    {
+        try
+        {
+            _store.RecordFailure(sourceInstanceId, detail, _clock.UtcNow);
+        }
+#pragma warning disable CA1031 // Justified: reported, not thrown into the loop.
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+        }
+    }
+
+    /// <summary>
+    /// One read, shaped for the runner: "could not ask" becomes a failure the
+    /// runner counts, and a read cut off by the runner's deadline says so.
+    /// </summary>
+    /// <remarks>
+    /// A returned <see cref="EventRead.CouldNotAsk"/> is thrown as a plain,
+    /// retryable exception, so a vCenter whose event manager keeps failing is
+    /// counted towards the breaker instead of passing as a successful read. A
+    /// source's own <see cref="ICollectionFault"/> — a rejected login — is not
+    /// touched, so the runner's one-strike rule sees it.
+    /// </remarks>
+    private static async Task<EventRead> ReadOnceAsync(
+        IEventSource source, EventMark? since, Attempt attempt, CancellationToken cancellationToken)
+    {
+        attempt.Start();
+        try
+        {
+            EventRead read;
+            try
+            {
+                read = await source.ReadAsync(since, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                attempt.CutOff();
+                throw;
+            }
+
+            if (read.Events is null)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    // A source that turned the deadline into "could not ask"
+                    // was cut off, not refused.
+                    attempt.CutOff();
+                    throw new OperationCanceledException(cancellationToken);
+                }
+
+                throw new CouldNotAskException(read.Detail ?? "the source could not be asked for events");
+            }
+
+            return read;
+        }
+        finally
+        {
+            attempt.Finish();
+        }
+    }
+
+    private enum AttemptState
+    {
+        NotStarted,
+        Running,
+        Finished,
+        CutOff,
+        Abandoned,
+    }
+
+    /// <summary>How far one read got, as seen when the runner returned.</summary>
+    /// <remarks>
+    /// Needed because the runner reports every failure as health, and the
+    /// pipeline must still tell "backed off" (never started), "cut off by the
+    /// deadline" (keep the cursor untouched) and "failed" (record why) apart.
+    /// Interlocked because an abandoned read finishes on another thread.
+    /// </remarks>
+    private sealed class Attempt
+    {
+        private int _state;
+
+        public void Start() => Interlocked.Exchange(ref _state, (int)AttemptState.Running);
+
+        public void CutOff() => Interlocked.Exchange(ref _state, (int)AttemptState.CutOff);
+
+        public void Finish() =>
+            Interlocked.CompareExchange(ref _state, (int)AttemptState.Finished, (int)AttemptState.Running);
+
+        /// <summary>The state now; a read still running from here on is abandoned.</summary>
+        public AttemptState Conclude() =>
+            (AttemptState)Interlocked.CompareExchange(
+                ref _state, (int)AttemptState.Abandoned, (int)AttemptState.Running);
+    }
+
+    /// <summary>A source said it could not be asked.</summary>
+    /// <remarks>Unclassified on purpose, so it stays retryable: see <see cref="ReadOnceAsync"/>.</remarks>
+    private sealed class CouldNotAskException(string message) : Exception(message);
+
+    /// <summary>Event health held in memory, for a pipeline given no store.</summary>
+    private sealed class LocalHealth : ICollectorHealthStore
+    {
+        private readonly Lock _lock = new();
+        private readonly Dictionary<(string, CollectorRole), CollectorHealth> _rows = [];
+
+        public IReadOnlyList<CollectorHealth> Current
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return [.. _rows.Values];
+                }
+            }
+        }
+
+        public void Merge(IReadOnlyList<CollectorHealth> health)
+        {
+            lock (_lock)
+            {
+                foreach (var h in health)
+                {
+                    _rows[(h.InstanceId, h.Role)] = h;
+                }
+            }
+        }
     }
 }
