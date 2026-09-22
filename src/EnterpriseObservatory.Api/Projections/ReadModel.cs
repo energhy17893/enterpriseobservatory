@@ -1269,6 +1269,8 @@ public sealed class ReadModel(
                     Detail = f.Detail,
                 })],
                 SkippedCycles = c.SkippedCycles,
+                ViewsHeld = c.ViewsHeld,
+                ViewsHeldMax = c.ViewsHeldMax,
             }),
     ];
 

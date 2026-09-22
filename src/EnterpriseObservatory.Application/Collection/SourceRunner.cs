@@ -80,7 +80,8 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectorHealth prior,
         CollectionPolicy policy,
         SemaphoreSlim gate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<TResult, int>? viewsHeld = null)
         where TResult : class
     {
         var key = (instanceId, role);
@@ -126,6 +127,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
                             abandoned = true;
                             ForgetAbandoned(key, task);
                         },
+                        viewsHeld,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -175,6 +177,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectorHealth prior,
         CollectionPolicy policy,
         Action<Task> onAbandoned,
+        Func<TResult, int>? viewsHeld,
         CancellationToken cancellationToken)
         where TResult : class
     {
@@ -206,7 +209,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
 
                 return new SourceRunOutcome<TResult>(
                     result,
-                    Succeeded(prior, reportedFailures(result), _clock.UtcNow),
+                    Succeeded(prior, reportedFailures(result), viewsHeld?.Invoke(result) ?? 0, _clock.UtcNow),
                     []);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -445,9 +448,16 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
     private static CollectorHealth Succeeded(
         CollectorHealth prior,
         IReadOnlyList<CollectionFailure> failures,
+        int viewsHeld,
         DateTimeOffset now) =>
         prior with
         {
+            ViewsHeld = viewsHeld,
+
+            // Memory first (see CollectorHealth.ViewsHeldMax): prior is never
+            // hydrated from the database for this field, so this only ever
+            // grows across this process's own cycles.
+            ViewsHeldMax = Math.Max(prior.ViewsHeldMax, viewsHeld),
             // Reaching the source but not reading all of it is degraded, not
             // healthy. Anything named in failures is Unknown, never fine.
             Health = failures.Count == 0 ? HealthState.Healthy : HealthState.Warning,

@@ -73,4 +73,22 @@ public abstract class TransportContractTests<TFixture>
         Assert.Equal(
             1, await fixture.ReauthenticationsWhenTwoConcurrentCallsNoticeExpiredSessionAsync());
     }
+
+    // --- F4 (ADR-0025 §3): views_held is the proof, not just a test --------
+
+    [Fact]
+    public async Task No_views_are_held_after_a_full_inventory_metrics_and_event_cycle()
+    {
+        var fixture = new TFixture();
+
+        Assert.Equal(0, await fixture.ViewsHeldAfterAFullCycleAsync(cancelDuringInventory: false));
+    }
+
+    [Fact]
+    public async Task No_views_are_held_after_a_full_cycle_whose_inventory_read_was_cancelled_mid_cycle()
+    {
+        var fixture = new TFixture();
+
+        Assert.Equal(0, await fixture.ViewsHeldAfterAFullCycleAsync(cancelDuringInventory: true));
+    }
 }

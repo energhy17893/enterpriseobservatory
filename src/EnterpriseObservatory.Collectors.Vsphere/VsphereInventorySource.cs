@@ -87,6 +87,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
             Coverage = payload.Coverage,
             SnapshotFindings = snapshotFindings,
             Observations = observations,
+            ViewsHeld = payload.ViewsHeld,
         };
     }
 

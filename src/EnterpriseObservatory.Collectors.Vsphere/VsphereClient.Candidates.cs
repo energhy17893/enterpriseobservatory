@@ -57,6 +57,9 @@ public sealed partial class VsphereClient
             return new VsphereCandidateRead { Target = target, Fault = $"{ex.Kind}: {ex.Message}" };
         }
 
+        var scope = new ServerHandleScope();
+        scope.Register(new VsphereViewHandle(this, viewMoRef));
+
         try
         {
             var properties = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
@@ -65,7 +68,7 @@ public sealed partial class VsphereClient
             };
 
             var (objects, pages) = await RetrieveAllPagesAsync(
-                content, viewMoRef, properties, cancellationToken, n => characters += n)
+                content, viewMoRef, properties, scope, cancellationToken, n => characters += n)
                 .ConfigureAwait(false);
 
             return new VsphereCandidateRead
@@ -89,7 +92,7 @@ public sealed partial class VsphereClient
         }
         finally
         {
-            await TryDestroyViewAsync(viewMoRef, cancellationToken).ConfigureAwait(false);
+            await scope.DisposeAllAsync(CleanupGrace, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -150,6 +153,40 @@ public sealed partial class VsphereClient
     /// <summary>The custom fields manager's reference, or null when vCenter offers none.</summary>
     public async Task<string?> GetCustomFieldsManagerAsync(CancellationToken cancellationToken) =>
         (await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).CustomFieldsManager;
+
+    /// <summary>
+    /// How many views this session's own <c>ViewManager.viewList</c> currently
+    /// holds — the <c>views_held</c> self-metric (F4, ADR-0025 §3). Needs
+    /// <c>System.View</c>, which the read-only account already has; measured
+    /// live (<c>probe --from-store --views</c>) at about 23 ms. Zero when the
+    /// property could not be read, rather than throwing: a self-metric must
+    /// not fail the read it is reporting on.
+    /// </summary>
+    public async Task<int> GetViewsHeldAsync(CancellationToken cancellationToken)
+    {
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        return await GetViewsHeldAsync(content, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> GetViewsHeldAsync(VsphereServiceContent content, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await SendAsync(
+                VsphereSoapRequests.RetrieveObjectProperties(
+                    content.PropertyCollector, "ViewManager", [content.ViewManager], ["viewList"]),
+                cancellationToken).ConfigureAwait(false);
+
+            var objects = PropertyCollectorParser.ParsePage(response).Objects;
+            var raw = objects.Count > 0 && objects[0].Values.TryGetValue("viewList", out var v) ? v : null;
+
+            return PropertyCollectorParser.SplitValues(raw).Count;
+        }
+        catch (VsphereApiException)
+        {
+            return 0;
+        }
+    }
 
     /// <summary>
     /// Calls <c>QueryComplianceStatus</c> with no filter, for the probe: its

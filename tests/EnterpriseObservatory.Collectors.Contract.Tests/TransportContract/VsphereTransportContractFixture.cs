@@ -139,6 +139,35 @@ public sealed class VsphereTransportContractFixture : ITransportContractFixture
         return server.Logins - loginsBeforeExpiry;
     }
 
+    public async Task<int> ViewsHeldAfterAFullCycleAsync(bool cancelDuringInventory)
+    {
+        var server = new FullCycleServer();
+        var (client, channel) = Connect(server);
+        using var _ = channel;
+
+        if (cancelDuringInventory)
+        {
+            using var cutOff = new CancellationTokenSource();
+            server.OnInventoryFirstPage = cutOff.Cancel;
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => client.RetrieveInventoryAsync(cutOff.Token));
+        }
+        else
+        {
+            await client.RetrieveInventoryAsync(CancellationToken.None);
+        }
+
+        // A metrics call and an event read, the other two legs of a cycle
+        // (F4's brief: "inventory + perf + events"). Neither touches a view,
+        // but the event collector is the same kind of server-side object and
+        // belongs in the same proof.
+        await client.GetMaxQueryMetricsAsync(CancellationToken.None);
+        await client.ReadEventsAsync(since: null, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        return await client.GetViewsHeldAsync(CancellationToken.None);
+    }
+
     // --- shared wire fixtures -----------------------------------------
 
     private const string ServiceContent = """
@@ -410,5 +439,172 @@ public sealed class VsphereTransportContractFixture : ITransportContractFixture
                 </soapenv:Envelope>
                 """, Encoding.UTF8, "text/xml"),
         };
+    }
+
+    /// <summary>
+    /// A vCenter that answers a whole cycle -- inventory, a metrics call and
+    /// an event read -- and tracks every view and event collector it has
+    /// handed out, the way a real <c>ViewManager.viewList</c> and
+    /// <c>EventManager</c> would. <c>RetrievePropertiesEx</c> is dispatched by
+    /// which property was asked for, since the same method name carries the
+    /// inventory read, the <c>views_held</c> self-metric's own read and the
+    /// event collector's <c>latestPage</c> alike.
+    /// </summary>
+    private sealed class FullCycleServer : HttpMessageHandler
+    {
+        private readonly HashSet<string> _openViews = [];
+        private readonly HashSet<string> _openEventCollectors = [];
+        private int _nextView;
+        private int _nextCollector;
+
+        /// <summary>Runs once the inventory read's only page has been served.</summary>
+        public Action? OnInventoryFirstPage { get; set; }
+
+        private const string ServiceContentWithEventManager = """
+            <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+              <soapenv:Body>
+                <RetrieveServiceContentResponse xmlns="urn:vim25"><returnval>
+                  <rootFolder type="Folder">group-d1</rootFolder>
+                  <propertyCollector type="PropertyCollector">propertyCollector</propertyCollector>
+                  <viewManager type="ViewManager">ViewManager</viewManager>
+                  <about><name>vc-contract</name><apiVersion>8.0.3.0</apiVersion></about>
+                  <sessionManager type="SessionManager">SessionManager</sessionManager>
+                  <perfManager type="PerformanceManager">PerfMgr</perfManager>
+                  <eventManager type="EventManager">EventManager</eventManager>
+                </returnval></RetrieveServiceContentResponse>
+              </soapenv:Body>
+            </soapenv:Envelope>
+            """;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = await request.Content!.ReadAsStringAsync(CancellationToken.None);
+            var document = XDocument.Parse(body);
+            var method = await MethodOf(request);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            switch (method)
+            {
+                case "RetrieveServiceContent":
+                    return Ok(ServiceContentWithEventManager);
+
+                case "Login":
+                    return Ok(
+                        "<LoginResponse xmlns=\"urn:vim25\"><returnval><key>s</key></returnval></LoginResponse>");
+
+                case "QueryOptions":
+                    return Ok("""
+                        <QueryOptionsResponse xmlns="urn:vim25">
+                          <returnval><key>config.vpxd.stats.maxQueryMetrics</key><value>256</value></returnval>
+                        </QueryOptionsResponse>
+                        """);
+
+                case "CreateContainerView":
+                {
+                    var view = $"view-{++_nextView}";
+                    _openViews.Add(view);
+                    return Ok(
+                        $"<CreateContainerViewResponse xmlns=\"urn:vim25\"><returnval type=\"ContainerView\">{view}</returnval></CreateContainerViewResponse>");
+                }
+
+                case "DestroyView":
+                    _openViews.Remove(ThisMoRef(document));
+                    return Ok("<DestroyViewResponse xmlns=\"urn:vim25\" />");
+
+                case "CreateCollectorForEvents":
+                {
+                    var collector = $"event-collector-{++_nextCollector}";
+                    _openEventCollectors.Add(collector);
+                    return Ok(
+                        $"<CreateCollectorForEventsResponse xmlns=\"urn:vim25\"><returnval type=\"EventHistoryCollector\">{collector}</returnval></CreateCollectorForEventsResponse>");
+                }
+
+                case "SetCollectorPageSize":
+                    return Ok("<SetCollectorPageSizeResponse xmlns=\"urn:vim25\" />");
+
+                case "DestroyCollector":
+                    _openEventCollectors.Remove(ThisMoRef(document));
+                    return Ok("<DestroyCollectorResponse xmlns=\"urn:vim25\" />");
+
+                case "RetrievePropertiesEx":
+                    return Dispatch(document, cancellationToken);
+
+                default:
+                    throw new InvalidOperationException($"Unscripted call {method}.");
+            }
+        }
+
+        /// <summary>
+        /// One method name, four different questions: the inventory read
+        /// itself, <c>views_held</c>'s own <c>ViewManager.viewList</c> read,
+        /// <c>EventManager.maxCollector</c> and the event collector's
+        /// <c>latestPage</c>. Told apart by which property was asked for.
+        /// </summary>
+        private HttpResponseMessage Dispatch(XDocument document, CancellationToken cancellationToken)
+        {
+            var pathSets = document.Descendants()
+                .Where(e => e.Name.LocalName == "pathSet")
+                .Select(e => e.Value)
+                .ToHashSet(StringComparer.Ordinal);
+
+            if (pathSets.Contains("viewList"))
+            {
+                var refs = string.Concat(_openViews.Select(
+                    v => $"""<ManagedObjectReference type="ContainerView">{v}</ManagedObjectReference>"""));
+                return Ok($"""
+                    <RetrievePropertiesExResponse xmlns="urn:vim25">
+                      <returnval>
+                        <objects>
+                          <obj type="ViewManager">ViewManager</obj>
+                          <propSet><name>viewList</name><val>{refs}</val></propSet>
+                        </objects>
+                      </returnval>
+                    </RetrievePropertiesExResponse>
+                    """);
+            }
+
+            if (pathSets.Contains("maxCollector"))
+            {
+                return Ok("""
+                    <RetrievePropertiesExResponse xmlns="urn:vim25">
+                      <returnval>
+                        <objects>
+                          <obj type="EventManager">EventManager</obj>
+                          <propSet><name>maxCollector</name><val>10</val></propSet>
+                        </objects>
+                      </returnval>
+                    </RetrievePropertiesExResponse>
+                    """);
+            }
+
+            if (pathSets.Contains("latestPage"))
+            {
+                // No propSet at all is how an empty ArrayOfEvent property
+                // comes back (VsphereEventParser.ParseLatestPage's remarks):
+                // this collector has no events.
+                return Ok("""
+                    <RetrievePropertiesExResponse xmlns="urn:vim25">
+                      <returnval />
+                    </RetrievePropertiesExResponse>
+                    """);
+            }
+
+            // The inventory read itself: one HostSystem, the same shape
+            // CutOffServer above uses.
+            var page = Ok("""
+                <RetrievePropertiesExResponse xmlns="urn:vim25">
+                  <returnval>
+                    <objects><obj type="HostSystem">host-1</obj></objects>
+                  </returnval>
+                </RetrievePropertiesExResponse>
+                """);
+            OnInventoryFirstPage?.Invoke();
+            return page;
+        }
+
+        private static string ThisMoRef(XDocument document) =>
+            document.Descendants().First(e => e.Name.LocalName == "_this").Value.Trim();
     }
 }
