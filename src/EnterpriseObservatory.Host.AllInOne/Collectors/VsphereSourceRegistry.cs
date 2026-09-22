@@ -58,7 +58,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         VsphereClient Client,
         IInventorySource Inventory,
         IObservationSource Observation,
-        IEventSource Events);
+        IEventSource Events,
+        SourceRequestGate RequestGate);
 
     private readonly SourceConnectionCatalogue _catalogue;
     private readonly IEntityGraphStore _graph;
@@ -98,6 +99,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     private sealed record Retired(
         HttpClient Http,
         VsphereClient Client,
+        SourceRequestGate RequestGate,
         long AfterInventoryPass,
         long AfterObservationPass);
 
@@ -149,18 +151,26 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// <summary>The source-level gap record every observation source is given (T0.4).</summary>
     private readonly ICollectionGapStore? _gaps;
 
+    /// <summary>
+    /// How many requests one source may have in flight at once (F2). Applied
+    /// to every <see cref="SourceRequestGate"/> this registry builds.
+    /// </summary>
+    private readonly int _maxRequestsPerSource;
+
     public VsphereSourceRegistry(
         SourceConnectionCatalogue catalogue,
         IEntityGraphStore graph,
         IClock clock,
         Action<string, string> reportUnusable,
-        ICollectionGapStore? gaps = null)
+        ICollectionGapStore? gaps = null,
+        int maxRequestsPerSource = SourceRequestGate.DefaultLimit)
     {
         _gaps = gaps;
         _catalogue = catalogue ?? throw new ArgumentNullException(nameof(catalogue));
         _graph = graph ?? throw new ArgumentNullException(nameof(graph));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _reportUnusable = reportUnusable ?? throw new ArgumentNullException(nameof(reportUnusable));
+        _maxRequestsPerSource = maxRequestsPerSource;
     }
 
     public IReadOnlyList<IInventorySource> Inventory
@@ -280,7 +290,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// what "move on" is measured against.
     /// </remarks>
     private void Retire(Built built) =>
-        _retired.Add(new Retired(built.Http, built.Client, _inventoryPasses, _observationPasses));
+        _retired.Add(new Retired(
+            built.Http, built.Client, built.RequestGate, _inventoryPasses, _observationPasses));
 
     /// <summary>Ends the vCenter session, then closes the sockets under it.</summary>
     /// <remarks>
@@ -298,7 +309,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// and is closed before this returns.
     /// </para>
     /// </remarks>
-    private static async Task CloseAsync(VsphereClient client, HttpClient http)
+    private static async Task CloseAsync(VsphereClient client, HttpClient http, SourceRequestGate requestGate)
     {
         try
         {
@@ -308,6 +319,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         {
             client.Dispose();
             http.Dispose();
+            requestGate.Dispose();
         }
     }
 
@@ -331,7 +343,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             if (HasMovedOn(_inventoryPasses, retired.AfterInventoryPass) &&
                 HasMovedOn(_observationPasses, retired.AfterObservationPass))
             {
-                _ = CloseAsync(retired.Client, retired.Http);
+                _ = CloseAsync(retired.Client, retired.Http, retired.RequestGate);
                 _retired.RemoveAt(i);
             }
         }
@@ -511,7 +523,12 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             BaseAddress = options.BaseAddress,
         };
 
-        var client = new VsphereClient(http, options)
+        // One gate per source instance, not per cycle (F2) — created here,
+        // beside the client it bounds, and kept for the connection's whole
+        // lifetime so it still applies to a read a previous cycle abandoned.
+        var requestGate = new SourceRequestGate(_maxRequestsPerSource);
+
+        var client = new VsphereClient(http, options, requestGate)
         {
             // M8.7: the vCenter certificate's expiry, by a handshake alone.
             CertificateReader = new TlsEndpointCertificateReader(options.RequestTimeout),
@@ -524,7 +541,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             new VsphereInventorySource(client, _clock),
             new VsphereObservationSource(
                 client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock, _gaps),
-            new VsphereEventSource(client, _clock));
+            new VsphereEventSource(client, _clock),
+            requestGate);
     }
 
     private static readonly TimeSpan ShutdownLogoutDeadline = TimeSpan.FromSeconds(5);
@@ -540,8 +558,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             // Logged out as well as closed, together and against one short
             // deadline: a host that is stopping cannot wait on a vCenter that
             // is not answering, and the idle timeout is still the backstop.
-            var closing = _retired.Select(r => CloseAsync(r.Client, r.Http))
-                .Concat(_built.Values.Select(b => CloseAsync(b.Client, b.Http)))
+            var closing = _retired.Select(r => CloseAsync(r.Client, r.Http, r.RequestGate))
+                .Concat(_built.Values.Select(b => CloseAsync(b.Client, b.Http, b.RequestGate)))
                 .ToArray();
 
             Task.WhenAll(closing).Wait(ShutdownLogoutDeadline);

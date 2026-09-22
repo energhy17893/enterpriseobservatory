@@ -74,6 +74,18 @@ public sealed class CollectionOptions
     /// <summary>How many sources may be read at once.</summary>
     public int MaxConcurrency { get; set; } = Defaults.MaxConcurrency;
 
+    /// <summary>
+    /// How many requests one source may have in flight against it at once.
+    /// </summary>
+    /// <remarks>
+    /// F2. Default 2, matching <see cref="CollectionPolicy.MaxRequestsPerSource"/>;
+    /// at most <see cref="SourceRequestGate.MaximumLimit"/> — see
+    /// <see cref="Validate"/> for why an out-of-range value refuses to start
+    /// rather than being silently clamped to the nearest bound, the same
+    /// convention every other setting here follows.
+    /// </remarks>
+    public int MaxRequestsPerSource { get; set; } = Defaults.MaxRequestsPerSource;
+
     /// <summary>What is wrong with these values, or empty if nothing is.</summary>
     /// <remarks>
     /// Returns every problem rather than the first, the same reasoning as
@@ -120,6 +132,12 @@ public sealed class CollectionOptions
             problems.Add("Collection:MaxConcurrency must be at least 1.");
         }
 
+        if (MaxRequestsPerSource is < 1 or > SourceRequestGate.MaximumLimit)
+        {
+            problems.Add(
+                $"Collection:MaxRequestsPerSource must be between 1 and {SourceRequestGate.MaximumLimit}.");
+        }
+
         return problems;
     }
 
@@ -133,5 +151,6 @@ public sealed class CollectionOptions
         CircuitBreakerThreshold = CircuitBreakerThreshold,
         CircuitBreakerCooldown = TimeSpan.FromSeconds(CircuitBreakerCooldownSeconds),
         MaxConcurrency = MaxConcurrency,
+        MaxRequestsPerSource = MaxRequestsPerSource,
     };
 }

@@ -48,11 +48,28 @@ public sealed record CollectionPolicy
 
     /// <summary>How many sources may be read at once.</summary>
     /// <remarks>
-    /// A cap rather than unlimited parallelism: opening fifty simultaneous
-    /// sessions against one vCenter is a good way to be throttled by it, or to
-    /// become the reason it is slow.
+    /// A cap on how many sources one pipeline reads in parallel, not on how
+    /// many requests any single source sees at once — that is
+    /// <see cref="MaxRequestsPerSource"/>. The two are easy to conflate because
+    /// they are both called "concurrency": this one is "sources read in
+    /// parallel per pipeline" (F note §3.2).
     /// </remarks>
     public int MaxConcurrency { get; init; } = 8;
+
+    /// <summary>
+    /// How many requests one source may have in flight against it at once.
+    /// </summary>
+    /// <remarks>
+    /// Per source, not per cycle (F2, docs/proposals/f-invert-collector-authority.md
+    /// §3.2, §8 decision 3). Today one vCenter sees at most a handful of
+    /// in-flight requests in normal operation, because each read is sequential
+    /// inside the collector; this bounds the pathological case where an
+    /// abandoned or overrunning read stacks a second, concurrent one on top of
+    /// it against the same vCenter. Default 2, matching the measured basis in
+    /// the decision (package A's live timing and the estate's size); the
+    /// ceiling is <see cref="SourceRequestGate.MaximumLimit"/>.
+    /// </remarks>
+    public int MaxRequestsPerSource { get; init; } = SourceRequestGate.DefaultLimit;
 
     /// <summary>
     /// The share of a collection interval one source may spend being read.

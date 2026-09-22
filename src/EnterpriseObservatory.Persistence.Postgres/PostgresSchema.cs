@@ -794,6 +794,13 @@ internal static class PostgresSchema
             'An episode is one life of a fingerprint (its first_seen_utc). Kept 90 days after the '
             'episode ends (ADR-0017 hourly tier), swept by the compaction pass. ADR-0026.';
         """,
+
+        // Migration 15 (F2): cycles skipped because a previous read of the
+        // same source was still running, counted next to the rest of that
+        // source's collection numbers instead of only in a log line.
+        """
+        ALTER TABLE collector_health ADD COLUMN skipped_cycles integer NOT NULL DEFAULT 0;
+        """,
     ];
 
     public static int Current => Migrations.Length;
