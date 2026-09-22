@@ -988,6 +988,84 @@ kapasitesi/düşen. Ekranda Zabbix'in dört rengi (gri = bilinmiyor ayrı).
 alınır (bir tur değil eğilim gerekir). **Bulunamadı:** OTel vcenter ve Telegraf
 vsphere'de kaynak saatinin ölçü olarak yayımı; mdatagen'de çift Shutdown testi.
 
+### 10.7 M6 için derinleştirme — HPE iLO 5/6 Redfish ve SimpliVity REST (23 Eylül 2026)
+
+HPE'nin Redfish referansları (iLO 6 v1.78, iLO 5 v3.19), DMTF şemaları,
+Telegraf `inputs.redfish`, `redfish_exporter`, OTel `redfishreceiver`, Netdata
+ve HPE SimpliVity geliştirici portalı + 5.2.0 kılavuzları okundu. Alan adları
+birebir; ikincil kaynaktan gelenler işaretli.
+
+**iLO — hangi nesilde ne var (SMP = servermanagementportal.ext.hpe.com):**
+
+| Konu | iLO 5 (Gen10) | iLO 6 (Gen11) | Kaynak |
+|---|---|---|---|
+| PSU/fan | `Chassis/1/Power` (`Power.v1_3_0`): `PowerSupplies[].Status`, `.Redundancy`, `.Oem.Hpe.PowerSupplyStatus.State`; `Thermal.Fans[].Status`, `.Oem.Hpe.Redundant` | aynı legacy `Power` (`v1_7_1`) + `Oem.Hpe.Domains[].PowerSupplyRedundancy` (`Redundant`/`NonRedundant`/`FailedRedundant`/`Unknown`); **`PowerSubsystem` yok**, `ThermalSubsystem` var ama `FanRedundancy` yok | SMP `ilo6_other_resourcedefns178#power`, `ilo5_other_resourcedefns319#power` |
+| Toplu sağlık | — (ad yok) | `Systems/1` `Oem.Hpe.AggregateHealthStatus.{PowerSupplyRedundancy, FanRedundancy, PowerSupplies.Status, Fans.Status, Temperatures.Status, Memory.Status, Storage.Status, Network.Status, AgentlessManagementService, AggregateServerHealth}` | SMP `ilo6_computersystem_resourcedefns178` |
+| Sürücü | `Systems/1/Storage/*/Drives/*` (`Drive.v1_16_0`): `FailurePredicted`, `PredictedMediaLifeLeftPercent`, `MediaType`, `Status`, `Oem.Hpe.WearStatus`, `PowerOnHours`; OEM `SmartStorage` de var | aynı standart yol (`v1_17_0`); **SmartStorage OEM kaldırıldı** | SMP `ilo6_storage_resourcedefns178#drive`, `ilo6_adaptation` |
+| Bellek | `Memory.Oem.Hpe.DIMMStatus`, `PredictedMediaLifeLeftPercent`; `MemoryMetrics` **yok** | `MemoryMetrics` var ama referansta yalnız `Oem.Hpe.PageRetirementCounts`; `CurrentPeriod.CorrectableECCErrorCount` **listelenmiyor** | SMP `ilo6_other_resourcedefns178#memorymetrics` |
+| Sıcaklık | `Thermal.Temperatures[].ReadingCelsius`, `UpperThresholdCritical/Fatal/NonCritical` | aynı + `Chassis/1/Sensors` (`Sensor.v1_10_1`, v1.64+) | SMP `#thermal`, `#sensor` |
+| Firmware | `UpdateService/FirmwareInventory/*` (`SoftwareInventory`): `Version`, `Oem.Hpe.DeviceClass/DeviceContext` | aynı | SMP `#softwareinventory` |
+| Olay günlüğü | `Systems/1/LogServices/IML/Entries`: `Severity`, `Message`, `Created`, `Oem.Hpe.Severity` (`Informational`/`Caution`/`Critical`/`Repaired`), `Oem.Hpe.Repaired`, `Class`, `Code`; OData `$filter=Created gt '…'` (iLO 5+) | aynı | SMP `supplementdocuments/logservices`, `odataqueryoptions` |
+| Kimlik | Rol **`ReadOnly` = yalnız `LoginPriv`**; HPE **Basic auth**'u öneriyor ("self-cleaning the session list … risk of reaching the maximum number of iLO sessions is very low"); oturum kullanılırsa `SessionService.SessionTimeout`, `DELETE {SessionLocation}` | aynı | SMP `managingusers`, `managingilosessionswithredfish` |
+| AMS | iLO tek başına fan/sıcaklık/PSU/bellek/CPU/Smart Array/firmware verir; NIC MAC-IP, link up/down, OS bilgisi için ESXi'de `amsd`; `AggregateHealthStatus.AgentlessManagementService` = `Ready`/`Unavailable` | aynı | iLO 6 User Guide "Agentless Management and AMS" |
+
+Açık kaynak toplayıcıların hepsi legacy `Power`/`Thermal` okuyor (Telegraf,
+redfish_exporter, OTel); yalnız Netdata `Drive.FailurePredicted` ve
+`MemoryMetrics`'e bakıyor ve OEM alanı okumuyor. Hiçbiri `Redundancy` nesnesini
+yorumlamıyor.
+
+**SimpliVity (OmniStack) REST:**
+
+| Konu | Değer | Kaynak |
+|---|---|---|
+| Uç nokta | her Virtual Controller `https://<ovc>/api/`; 5.x centrally-managed'de MVA IP:443, MVA düşerse VC'ye düşer | developer.hpe.com architecture-and-object-model; sd00004303en_us |
+| Kimlik | `POST /api/oauth/token` (Basic `simplivity:`; `grant_type=password`), `Bearer`; token **10 dk hareketsizlik, 24 sa mutlak**; "read-only user can perform GET" — kullanıcı `svt-session-start`'takiyle aynı (vCenter hesabı) | developer.hpe.com authenticating…, authorization-related…log-messages |
+| Sürüm | `GET /api/version` (auth yok) → `REST_API_Version`, `SVTFS_Version`; `Accept: application/vnd.simplivity.v1.1+json` | developer.hpe.com versioning |
+| Host | `state` ∈ `ALIVE, FAULTY, MANAGED, REMOVED, SUSPECTED, UNKNOWN`; `upgrade_state`; `hypervisor_object_id` (SDK), `hypervisor_management_system`; kapasite `/hosts/{id}/capacity` (`free_space`, `used_capacity`, `compression_ratio`, …) | enumerations; simplivity-go hosts.go; metrics |
+| Küme | `arbiter_connected`, `arbiter_required`, `arbiter_configured` (API 1.14+), `upgrade_state` (`FAIL_CAN_ROLLBACK`, `SUCCESS_COMMIT_NEEDED`, `SUCCESS_MIXED_VERSION`, …), `members[]` | feature-and-function-support; whats-new |
+| VM | `ha_status` ∈ `SAFE, SYNCING, DEGRADED, DEFUNCT, NOT_APPLICABLE, OUT_OF_SCOPE, UNKNOWN`; `ha_resynchronization_progress`; `state` | enumerations |
+| Yedek | `state` ∈ `PROTECTED, FAILED, DEGRADED, QUEUED, SAVING, …`; `created_at`, `expiration_time`, `type` (`POLICY`/`MANUAL`), `consistency_type` | enumerations; backups.go |
+| Metrik | `/{hosts,omnistack_clusters,virtual_machines}/{id}/metrics?range=&resolution=SECOND|MINUTE|HOUR|DAY` → `iops`, `throughput`, `latency` (`reads`/`writes`); 5 sn toplama | developer.hpe.com metrics |
+| Donanım | `/hosts/{id}/hardware`: `raid_card`, `battery`, `logical_drives[].drive_sets[].physical_drives[].{status, health, life_remaining, …}` — **ikincil kaynak** (HPESimpliVity psm1, Centreon) | doğrulanmadı |
+| Alarm | REST'te **alarm/olay nesnesi yok**; ~190 vCenter alarmı `com.simplivity.event.*` olaylarıyla (ör. `arbiter.lost`, `vm.ha.fail`, `vm.backup.execute.fail`, `storage.phys.drv.smart.alert`, `control.node.state.faulty`) | sd00005179en_us alarm ve event listeleri |
+
+**Canlıda ölçülen (23 Eylül):** olay akışımızda `com.simplivity.*` olayı **yok**
+(0), HPE/ProLiant metni yok; 10 EsxiHost. Ya bu vCenter'da SimpliVity yok ya
+da eklenti olay üretmiyor — M6.0b probe'un ilk sorusu.
+
+**Benimsenen (M6):**
+- **Redfish kimlik: Basic auth, istek başına, oturum yok** — HPE'nin kendi
+  önerisi; F3'ün oturum kanalı Redfish için gerekmez. Hesap `ReadOnly` rolü.
+- **Legacy `Power`/`Thermal` birincil** (iki nesilde de var, dört toplayıcı da
+  bunu okuyor); iLO 6'da `AggregateHealthStatus` toplu sağlık kaynağı olarak
+  **ek**; `PowerSubsystem` beklenmez.
+- **Sürücü standart yoldan** (`Storage/*/Drives/*`), SmartStorage OEM yok
+  (Gen11'de kaldırıldı). M6.4 `FailurePredicted` ve `Oem.Hpe.WearStatus` ile.
+- **IML aktarım kataloğu:** `Oem.Hpe.Severity` ∈ `Caution`/`Critical` ve
+  `Repaired=false` girdiler bulgu; `Created` filigranı ile OData filtre.
+- **AMS yokluğu = kapsam boşluğu** (M6.3): `AgentlessManagementService`
+  `Unavailable` ise NIC/OS alanları "bakılamadı".
+- **SimpliVity alarmları REST'ten değil olay akışından** — toplayıcı yazmadan,
+  `com.simplivity.event.*` → alarm/bulgu eşlemesi (M2 olay yolu). REST yalnız
+  durum (`state`, `arbiter_*`, `ha_status`, `upgrade_state`), yedek ve kapasite.
+- **SimpliVity token yönetimi çalıştırıcıda** (10 dk hareketsizlik = her tur
+  yenilenmez, süresi dolunca 401'de bir kez yeniden alınır; F3 deseni).
+
+**Reddedilen:** `MemoryMetrics.CurrentPeriod` ECC sayacına dayalı kural (iLO 6
+referansı alanı listelemiyor → M6.4 ECC parçası "ölçüm gerektirir"; DIMMStatus
+ile başlanır); Sensors koleksiyonu (yalnız iLO 6; Thermal yeter); SimpliVity
+hardware ucu (ikincil kaynak, probe görmeden kural yazılmaz).
+
+**Ölçüm gerektirir (M6.0b):** estate'te iLO nesli ve sürümü; `Redundancy[]`
+nesnesinin gerçekten döndüğü; `hardware.systemInfo.{vendor,model,serialNumber,uuid}`
+(vim25) ↔ `Systems/1.{SerialNumber,UUID}` eşleşmesi; SimpliVity'nin hangi
+vCenter'da olduğu ve `hypervisor_object_id`'nin moRef olup olmadığı; IML girdi
+sayısı ve `Created` sırası; iLO cevap süreleri (Telegraf 5 sn, Netdata 15 sn
+zaman aşımı kullanıyor).
+
+**Bulunamadı:** iLO maksimum oturum sayısı ve rate limit; "GET için LoginPriv
+yeter" açık cümlesi; SimpliVity 5.x API sürüm numarası ve eşzamanlı token sınırı.
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:
