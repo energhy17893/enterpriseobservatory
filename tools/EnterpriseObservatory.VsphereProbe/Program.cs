@@ -120,38 +120,22 @@ try
         // The list is per session, so this cannot see what the service's own
         // session holds -- only what this probe's does. That makes the useful
         // question "does a full read leave its view behind", asked by doing
-        // one here and counting before and after.
-        var viewManager = await client.GetViewManagerAsync(cancellation.Token);
-        var before = await client.ReadCandidateObjectsAsync(
-            "ViewManager", [viewManager], "viewList", cancellation.Token);
-
+        // one here and counting before and after. The same reading the
+        // service records as views_held (F4): null is "could not look".
+        var before = await client.GetViewsHeldAsync(cancellation.Token);
         await client.RetrieveInventoryAsync(cancellation.Token);
+        var after = await client.GetViewsHeldAsync(cancellation.Token);
 
-        var views = await client.ReadCandidateObjectsAsync(
-            "ViewManager", [viewManager], "viewList", cancellation.Token);
-
-        if (views.Fault is { } fault)
+        if (after is not { } count)
         {
-            Console.WriteLine($"  view list                NOT READABLE by this account ({fault})");
+            Console.WriteLine("  view list                NOT READABLE by this account");
             Console.WriteLine("                           Then F4's \"no views accumulate\" cannot be confirmed");
             Console.WriteLine("                           from here, and says so rather than reading 0 as proof.");
             return 0;
         }
 
-        // A reference array comes back either as repeated structures or as one
-        // joined value, depending on the shape the parser met; count whichever
-        // this vCenter sent rather than assuming.
-        static int Count(VsphereCandidateRead read) => read.Objects.Sum(o =>
-            (o.Structures.TryGetValue("viewList", out var nodes) ? nodes.Count : 0) +
-            (o.Values.TryGetValue("viewList", out var joined)
-                ? PropertyCollectorParser.SplitValues(joined).Count
-                : 0));
-
-        var count = Count(views);
-
-        Console.WriteLine($"  before an inventory read {Count(before)}");
+        Console.WriteLine($"  before an inventory read {before?.ToString(CultureInfo.InvariantCulture) ?? "not readable"}");
         Console.WriteLine($"  after one               {count}   (per session: this probe's, not the service's)");
-        Console.WriteLine($"  read in                  {views.Elapsed.TotalMilliseconds:0} ms");
 
         return 0;
     }
