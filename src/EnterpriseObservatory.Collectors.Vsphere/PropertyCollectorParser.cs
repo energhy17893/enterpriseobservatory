@@ -499,7 +499,10 @@ public static class PropertyCollectorParser
 
             if (rule is not null)
             {
-                rules.Add(rule);
+                // The identity a continuity finding keys a rule by (K2); the
+                // name stands in only when vCenter reports no uuid.
+                var uuid = node.TextOf("ruleUuid");
+                rules.Add(string.IsNullOrWhiteSpace(uuid) ? rule : rule with { RuleUuid = uuid.Trim() });
             }
         }
 

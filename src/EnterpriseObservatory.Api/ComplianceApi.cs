@@ -49,6 +49,12 @@ public sealed record ComplianceControlView
 
     public required string Assessment { get; init; }
 
+    /// <summary>
+    /// The citable basis of the control's expectation or threshold, or
+    /// "product policy"; empty for a vendor guide's control.
+    /// </summary>
+    public string Source { get; init; } = string.Empty;
+
     /// <summary>Whether this product judges the control at all.</summary>
     public required bool Evaluated { get; init; }
 
@@ -435,6 +441,7 @@ public static class ComplianceApi
                     InstallationDefault = bound.Control.InstallationDefault,
                     BaselineValue = bound.Control.BaselineValue,
                     Assessment = bound.Control.Assessment,
+                    Source = bound.Control.Source,
                     Evaluated = bound.IsEvaluated,
                     NotEvaluatedReason = bound.NotEvaluatedReason,
                     CatalogueName = bound.CatalogueName,
@@ -573,6 +580,7 @@ public static class ComplianceApi
                     InstallationDefault = bound.Control.InstallationDefault,
                     BaselineValue = bound.Control.BaselineValue,
                     Assessment = bound.Control.Assessment,
+                    Source = bound.Control.Source,
                     Evaluated = bound.IsEvaluated,
                     NotEvaluatedReason = bound.NotEvaluatedReason,
                     CatalogueName = bound.CatalogueName,

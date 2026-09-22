@@ -509,6 +509,8 @@ export interface ComplianceControlView {
   installationDefault: string
   baselineValue: string
   assessment: string
+  /** Citable basis of the expectation/threshold, or 'product policy'; empty for vendor-guide controls. */
+  source?: string
   /** False when this product cannot judge the control at all. */
   evaluated: boolean
   notEvaluatedReason: string | null

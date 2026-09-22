@@ -481,6 +481,7 @@ public class VsphereInventorySourceTests
                     new VsphereDrsRule
                     {
                         Name = "keep-together",
+                        RuleUuid = "52a1c3d4-0f6e-4b7a-9c21-8d3e5f6a7b8c",
                         Kind = DrsRuleKind.Affinity,
                         Enabled = true,
                         VirtualMachineMoRefs = ["vm-1", "vm-2"],
@@ -493,6 +494,7 @@ public class VsphereInventorySourceTests
         var rule = Assert.Single(cluster.DrsRules);
 
         Assert.Equal("keep-together", rule.Name);
+        Assert.Equal("52a1c3d4-0f6e-4b7a-9c21-8d3e5f6a7b8c", rule.RuleUuid);
         Assert.Equal(["vc-1:vm-1", "vc-1:vm-2"], rule.VirtualMachineEntityIds);
     }
 
