@@ -1268,6 +1268,7 @@ public sealed class ReadModel(
                     Target = f.Target,
                     Detail = f.Detail,
                 })],
+                SkippedCycles = c.SkippedCycles,
             }),
     ];
 

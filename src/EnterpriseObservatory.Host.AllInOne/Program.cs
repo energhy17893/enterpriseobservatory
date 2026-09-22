@@ -375,7 +375,8 @@ builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegi
     provider.GetRequiredService<IClock>(),
     (instance, why) => HostLog.ConnectionNotPolled(
         provider.GetRequiredService<ILogger<VsphereSourceRegistry>>(), instance, why),
-    provider.GetRequiredService<ICollectionGapStore>()));
+    provider.GetRequiredService<ICollectionGapStore>(),
+    monitoringOptions.Collection.MaxRequestsPerSource));
 
 builder.Services.AddHostedService<MonitoringWorker>();
 builder.Services.AddHostedService<CompactionWorker>();

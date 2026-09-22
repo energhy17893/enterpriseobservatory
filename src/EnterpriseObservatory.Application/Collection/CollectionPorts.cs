@@ -363,4 +363,19 @@ public sealed record CollectorHealth
     /// than after five.
     /// </remarks>
     public CollectionFailureKind? LastFailureKind { get; init; }
+
+    /// <summary>
+    /// Cycles skipped because a previous read of this source was still running
+    /// when the next one was due.
+    /// </summary>
+    /// <remarks>
+    /// F2 (F note §8 decision 1), Telegraf's rule: a source that has not
+    /// finished by the time its next cycle is due is not asked again on top of
+    /// itself — the abandoned or overrunning read is left alone, and the whole
+    /// cycle is skipped rather than queued behind it. Counted here, cumulative
+    /// for the life of the process, so "we are not looking this cycle" stays
+    /// visible next to the rest of a source's collection numbers rather than
+    /// only in a log line.
+    /// </remarks>
+    public int SkippedCycles { get; init; }
 }

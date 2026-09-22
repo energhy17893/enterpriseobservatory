@@ -409,6 +409,12 @@ public sealed record CollectorView
     /// real estate the hidden one was an entire class of measurement missing.
     /// </remarks>
     public IReadOnlyList<PartialFailureView> PartialFailures { get; init; } = [];
+
+    /// <summary>
+    /// Cycles skipped because a previous read of this source was still
+    /// running when the next one was due (F2).
+    /// </summary>
+    public int SkippedCycles { get; init; }
 }
 
 /// <summary>One thing a collector could not read, and what it is.</summary>
