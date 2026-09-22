@@ -17,20 +17,25 @@ namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
 /// </remarks>
 public class RootFolderAlarmTests
 {
-    private static VsphereClient Client(RootAlarmServer server) =>
-        new(new HttpClient(server) { BaseAddress = new Uri("https://vc.invalid") },
-            new VsphereConnectionOptions
-            {
-                BaseAddress = new Uri("https://vc.invalid"),
-                Username = "svc-readonly@vsphere.local",
-                Password = Secret.From("not-a-real-password"),
-                InstanceId = "vc-test",
-            });
+    private static VsphereClient Client(RootAlarmServer server)
+    {
+        var options = new VsphereConnectionOptions
+        {
+            BaseAddress = new Uri("https://vc.invalid"),
+            Username = "svc-readonly@vsphere.local",
+            Password = Secret.From("not-a-real-password"),
+            InstanceId = "vc-test",
+        };
+
+        var channel = new VsphereSessionChannel(server, options);
+
+        return new VsphereClient(channel, options);
+    }
 
     [Fact]
     public async Task Alarms_raised_on_the_root_folder_arrive_and_one_seen_twice_arrives_once()
     {
-        using var client = Client(new RootAlarmServer());
+        var client = Client(new RootAlarmServer());
 
         var payload = await client.RetrieveInventoryAsync(CancellationToken.None);
 
@@ -50,7 +55,7 @@ public class RootFolderAlarmTests
     [Fact]
     public async Task A_refused_root_read_is_a_failure_and_the_inventory_still_arrives()
     {
-        using var client = Client(new RootAlarmServer { RefuseRoot = true });
+        var client = Client(new RootAlarmServer { RefuseRoot = true });
 
         var payload = await client.RetrieveInventoryAsync(CancellationToken.None);
 
@@ -65,7 +70,7 @@ public class RootFolderAlarmTests
     public async Task The_root_read_asks_the_root_folder_for_its_alarms_and_nothing_else()
     {
         var server = new RootAlarmServer();
-        using var client = Client(server);
+        var client = Client(server);
 
         await client.RetrieveInventoryAsync(CancellationToken.None);
 

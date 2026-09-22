@@ -54,12 +54,11 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
 
     private sealed record Built(
         Shape Shape,
-        HttpClient Http,
+        VsphereSessionChannel Channel,
         VsphereClient Client,
         IInventorySource Inventory,
         IObservationSource Observation,
-        IEventSource Events,
-        SourceRequestGate RequestGate);
+        IEventSource Events);
 
     private readonly SourceConnectionCatalogue _catalogue;
     private readonly IEntityGraphStore _graph;
@@ -92,14 +91,11 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     }
 
     /// <summary>A client that is no longer handed out, and who still might hold it.</summary>
-    /// <param name="Http">The client to dispose once nobody can be reading through it.</param>
+    /// <param name="Channel">The transport and session to close once nobody can be reading through it.</param>
     /// <param name="AfterInventoryPass">The inventory loop's pass count when it was retired.</param>
     /// <param name="AfterObservationPass">The observation loop's pass count when it was retired.</param>
-    /// <param name="Client">The session that goes with it, logged out before the client is closed.</param>
     private sealed record Retired(
-        HttpClient Http,
-        VsphereClient Client,
-        SourceRequestGate RequestGate,
+        VsphereSessionChannel Channel,
         long AfterInventoryPass,
         long AfterObservationPass);
 
@@ -290,8 +286,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// what "move on" is measured against.
     /// </remarks>
     private void Retire(Built built) =>
-        _retired.Add(new Retired(
-            built.Http, built.Client, built.RequestGate, _inventoryPasses, _observationPasses));
+        _retired.Add(new Retired(built.Channel, _inventoryPasses, _observationPasses));
 
     /// <summary>Ends the vCenter session, then closes the sockets under it.</summary>
     /// <remarks>
@@ -309,17 +304,15 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// and is closed before this returns.
     /// </para>
     /// </remarks>
-    private static async Task CloseAsync(VsphereClient client, HttpClient http, SourceRequestGate requestGate)
+    private static async Task CloseAsync(VsphereSessionChannel channel)
     {
         try
         {
-            await client.LogoutAsync(CancellationToken.None).ConfigureAwait(false);
+            await channel.LogoutAsync(CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
-            client.Dispose();
-            http.Dispose();
-            requestGate.Dispose();
+            channel.Dispose();
         }
     }
 
@@ -343,7 +336,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             if (HasMovedOn(_inventoryPasses, retired.AfterInventoryPass) &&
                 HasMovedOn(_observationPasses, retired.AfterObservationPass))
             {
-                _ = CloseAsync(retired.Client, retired.Http, retired.RequestGate);
+                _ = CloseAsync(retired.Channel);
                 _retired.RemoveAt(i);
             }
         }
@@ -515,20 +508,21 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             InventoryPageSize = connection.PageSize,
         };
 
-        // The handler comes from the collector, not from here. How certificate
-        // validation is relaxed is a security decision, and a second copy of it
-        // is how the two drift until one of them is quietly wrong.
-        var http = new HttpClient(VsphereClient.CreateHandler(options))
-        {
-            BaseAddress = options.BaseAddress,
-        };
+        // The handler policy (cookies, the TLS decision) and the session
+        // itself — login, re-login, logout — belong to the channel, not to
+        // VsphereClient (F3). How certificate validation is relaxed is a
+        // security decision, and a second copy of it is how the two drift
+        // until one of them is quietly wrong.
+        var handler = VsphereSessionChannel.CreateHandler(options);
 
         // One gate per source instance, not per cycle (F2) — created here,
-        // beside the client it bounds, and kept for the connection's whole
+        // beside the channel it bounds, and kept for the connection's whole
         // lifetime so it still applies to a read a previous cycle abandoned.
+        // It now lives inside the channel, not beside it (F3, §3.2).
         var requestGate = new SourceRequestGate(_maxRequestsPerSource);
+        var channel = new VsphereSessionChannel(handler, options, requestGate);
 
-        var client = new VsphereClient(http, options, requestGate)
+        var client = new VsphereClient(channel, options)
         {
             // M8.7: the vCenter certificate's expiry, by a handshake alone.
             CertificateReader = new TlsEndpointCertificateReader(options.RequestTimeout),
@@ -536,13 +530,12 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
 
         return new Built(
             shape,
-            http,
+            channel,
             client,
             new VsphereInventorySource(client, _clock),
             new VsphereObservationSource(
                 client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock, _gaps),
-            new VsphereEventSource(client, _clock),
-            requestGate);
+            new VsphereEventSource(client, _clock));
     }
 
     private static readonly TimeSpan ShutdownLogoutDeadline = TimeSpan.FromSeconds(5);
@@ -558,8 +551,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             // Logged out as well as closed, together and against one short
             // deadline: a host that is stopping cannot wait on a vCenter that
             // is not answering, and the idle timeout is still the backstop.
-            var closing = _retired.Select(r => CloseAsync(r.Client, r.Http, r.RequestGate))
-                .Concat(_built.Values.Select(b => CloseAsync(b.Client, b.Http, b.RequestGate)))
+            var closing = _retired.Select(r => CloseAsync(r.Channel))
+                .Concat(_built.Values.Select(b => CloseAsync(b.Channel)))
                 .ToArray();
 
             Task.WhenAll(closing).Wait(ShutdownLogoutDeadline);

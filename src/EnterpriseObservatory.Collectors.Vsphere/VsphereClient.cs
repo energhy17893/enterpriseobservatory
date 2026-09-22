@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Net.Http.Headers;
-using System.Text;
 using System.Xml.Linq;
 using EnterpriseObservatory.Application.Collection;
 
@@ -75,38 +73,27 @@ public sealed record VsphereAvailableMetric
 /// handling are the kind of thing that only a real server settles.
 /// </para>
 /// </remarks>
-public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi, IDisposable
+public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi
 {
     /// <summary>Samples per series; see <see cref="VsphereSoapRequests.QueryPerf"/>.</summary>
     private const int MaxSample = 3;
 
-    private readonly HttpClient _http;
-    private readonly VsphereConnectionOptions _options;
-    private readonly SemaphoreSlim _sessionGate = new(1, 1);
-
     /// <summary>
-    /// Bounds how many requests this client has in flight at once (F2). Null
-    /// when the caller supplied none — a test double, or a probe that never
-    /// runs concurrently with itself — in which case nothing is bounded here.
+    /// The transport and session, owned and lived out by whoever built this
+    /// client (F3) — the registry in production, a test's fixture otherwise.
+    /// This client no longer builds an <see cref="HttpClient"/>, decides when
+    /// it is logged in, or closes anything: it asks the channel for a session
+    /// and sends already-built SOAP envelopes through it.
     /// </summary>
-    private readonly SourceRequestGate? _requestGate;
+    private readonly VsphereSessionChannel _channel;
 
-    private VsphereServiceContent? _serviceContent;
+    private readonly VsphereConnectionOptions _options;
     private IReadOnlyList<VsphereCounter>? _counterCatalog;
-    private bool _loggedIn;
 
-    /// <summary>Which sign-in the current session came from; see <c>SendAsync</c>.</summary>
-    private int _sessionGeneration;
-    private bool _disposed;
-
-    public VsphereClient(HttpClient http, VsphereConnectionOptions options, SourceRequestGate? requestGate = null)
+    public VsphereClient(VsphereSessionChannel channel, VsphereConnectionOptions options)
     {
-        _http = http ?? throw new ArgumentNullException(nameof(http));
+        _channel = channel ?? throw new ArgumentNullException(nameof(channel));
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _requestGate = requestGate;
-
-        _http.BaseAddress ??= options.BaseAddress;
-        _http.Timeout = options.RequestTimeout;
     }
 
     public string InstanceId => _options.InstanceId;
@@ -142,7 +129,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             return cached;
         }
 
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
 
         // Level 4 is the whole catalogue. This asks what the server defines,
         // not what it is currently collecting; availability is a separate
@@ -160,7 +147,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
 
     public async Task<int?> GetMaxQueryMetricsAsync(CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
 
         if (content.SettingManager is not { } settingManager)
         {
@@ -204,7 +191,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// </remarks>
     public async Task<string> DiagnoseMaxQueryMetricsAsync(CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
 
         if (content.SettingManager is not { } settingManager)
         {
@@ -269,7 +256,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var catalog = await GetCounterCatalogAsync(cancellationToken).ConfigureAwait(false);
         var byId = catalog.ToDictionary(c => c.Id);
 
@@ -331,7 +318,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         ArgumentNullException.ThrowIfNull(entityMoRefs);
         ArgumentNullException.ThrowIfNull(counters);
 
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var intervalSeconds = VsphereIntervals.IntervalSecondsFor(entityType);
 
         // Real-time takes maxSample; a historical interval ignores it and needs
@@ -356,7 +343,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
 
     public async Task<DateTimeOffset?> GetServerTimeAsync(CancellationToken cancellationToken)
     {
-        await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
 
         var response = await SendAsync(VsphereSoapRequests.CurrentTime(), cancellationToken).ConfigureAwait(false);
 
@@ -372,7 +359,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         ArgumentNullException.ThrowIfNull(targets);
         ArgumentNullException.ThrowIfNull(counters);
 
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var intervalSeconds = VsphereIntervals.IntervalSecondsFor(entityType);
 
         var response = await SendAsync(
@@ -406,7 +393,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         ArgumentNullException.ThrowIfNull(entityMoRefs);
         ArgumentNullException.ThrowIfNull(counters);
 
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var intervalSeconds = VsphereIntervals.IntervalSecondsFor(entityType);
 
         var response = await SendAsync(
@@ -775,7 +762,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
 
     public async Task<VsphereInventoryPayload> RetrieveInventoryAsync(CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var failures = new List<VsphereReadFailure>();
 
         var viewMoRef = await CreateViewAsync(content, cancellationToken).ConfigureAwait(false);
@@ -1436,7 +1423,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// </remarks>
     public async Task<IReadOnlyList<string>> DescribeInventoryShapeAsync(CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var viewMoRef = await CreateViewAsync(content, cancellationToken).ConfigureAwait(false);
 
         try
@@ -2019,7 +2006,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
 
         if (content.EventManager is not { } eventManager)
         {
@@ -2103,67 +2090,11 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     private Task TryDestroyCollectorAsync(string collector, CancellationToken cancellationToken) =>
         TryCleanUpAsync(VsphereSoapRequests.DestroyCollector(collector), cancellationToken);
 
-    // --- session ----------------------------------------------------------
-
-    private Task<VsphereServiceContent> EnsureSessionAsync(CancellationToken cancellationToken) =>
-        EnsureSessionAsync(expired: null, cancellationToken);
-
-    /// <param name="expired">
-    /// The generation of a session the caller was just told is not
-    /// authenticated, or null when it is only asking for one.
-    /// </param>
-    private async Task<VsphereServiceContent> EnsureSessionAsync(int? expired, CancellationToken cancellationToken)
-    {
-        if (expired is null && _serviceContent is { } cached && _loggedIn)
-        {
-            return cached;
-        }
-
-        await _sessionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            // Inside the lock, and only for the session the caller actually
-            // used. A refusal describes the session a call was sent on. By the
-            // time it arrives another call may already have replaced that
-            // session, and giving up the replacement on the strength of news
-            // about its predecessor is how one expiry became two logins.
-            if (expired == _sessionGeneration)
-            {
-                _loggedIn = false;
-            }
-
-            if (_serviceContent is { } existing && _loggedIn)
-            {
-                return existing;
-            }
-
-            var contentXml = await PostAsync(
-                VsphereSoapRequests.RetrieveServiceContent(), cancellationToken).ConfigureAwait(false);
-
-            var content = VsphereServiceContentParser.TryParse(contentXml)
-                ?? throw new VsphereApiException(
-                    "vCenter did not return usable service content. The endpoint may not be a vSphere SDK.");
-
-            await PostAsync(
-                // The one place the credential leaves its wrapper. It goes straight
-                // into the login request and nowhere else; see ADR-0010.
-                VsphereSoapRequests.Login(
-                    content.SessionManager, _options.Username, _options.Password.Reveal()),
-                cancellationToken).ConfigureAwait(false);
-
-            _serviceContent = content;
-            _sessionGeneration++;
-            _loggedIn = true;
-            return content;
-        }
-        finally
-        {
-            _sessionGate.Release();
-        }
-    }
+    // --- session (F3: owned by VsphereSessionChannel, not this client) ----
 
     /// <summary>
-    /// Sends a request, logging in again once if the session has expired.
+    /// Sends a request, asking the channel to sign in again once if the
+    /// session has expired.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -2172,15 +2103,14 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// locked out by its own retry loop.
     /// </para>
     /// <para>
-    /// The generation is read before the call goes out, because that is the
-    /// session the answer will be about. Inventory, metrics and events share
-    /// this client across separate loops, so two calls routinely learn of one
-    /// expiry together. Each used to clear the signed-in flag itself, outside
-    /// the lock: the slower could clear it after the faster had already signed
-    /// in again, and sign in a second time. That cost nothing while sessions
-    /// were never given back. Now that they are, the first replacement is left
-    /// on the vCenter with nobody holding it — the leak T0.5 closed, by
-    /// another door. Found in architecture review 3.
+    /// The channel, not this client, decides what a retry means: this only
+    /// reads <see cref="VsphereSessionChannel.Generation"/> before the call
+    /// goes out and hands it back on a refusal, so the channel can tell "the
+    /// session my failed call used is still current" from "somebody already
+    /// replaced it while my failure was in flight" — that second case asks
+    /// for nothing, which is what closes the race #53 needed a lock-free
+    /// generation check for. This client no longer has a session field, a
+    /// login method or a lock; it only relays the generation it saw.
     /// </para>
     /// </remarks>
     private async Task<string> SendAsync(
@@ -2188,223 +2118,17 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         CancellationToken cancellationToken,
         VsphereCallContext context = VsphereCallContext.General)
     {
-        var sentOn = Volatile.Read(ref _sessionGeneration);
+        var sentOn = _channel.Generation;
 
         try
         {
-            return await PostAsync(body, cancellationToken, context).ConfigureAwait(false);
+            return await _channel.SendAsync(body, cancellationToken, context).ConfigureAwait(false);
         }
         catch (VsphereApiException ex) when (ex.Kind == VsphereFaultKind.NotAuthenticated)
         {
-            await EnsureSessionAsync(sentOn, cancellationToken).ConfigureAwait(false);
-            return await PostAsync(body, cancellationToken, context).ConfigureAwait(false);
+            await _channel.EnsureSessionAsync(sentOn, cancellationToken).ConfigureAwait(false);
+            return await _channel.SendAsync(body, cancellationToken, context).ConfigureAwait(false);
         }
-    }
-
-    /// <summary>
-    /// Sends one request and reads its reply, holding this source's request
-    /// gate for exactly that exchange (F2).
-    /// </summary>
-    /// <remarks>
-    /// The gate is acquired here and nowhere else, and released before this
-    /// method returns either way. That is what keeps a login nested inside
-    /// <c>SendAsync</c>'s retry from being able to deadlock against itself: it
-    /// is a second, independent acquisition of the same gate, never a nested
-    /// one, because the first exchange's permit was already released by the
-    /// time the retry's call reaches here.
-    /// </remarks>
-    private async Task<string> PostAsync(
-        string body,
-        CancellationToken cancellationToken,
-        VsphereCallContext context = VsphereCallContext.General)
-    {
-        if (_requestGate is null)
-        {
-            return await PostCoreAsync(body, cancellationToken, context).ConfigureAwait(false);
-        }
-
-        using var permit = await _requestGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
-        return await PostCoreAsync(body, cancellationToken, context).ConfigureAwait(false);
-    }
-
-    private async Task<string> PostCoreAsync(
-        string body,
-        CancellationToken cancellationToken,
-        VsphereCallContext context = VsphereCallContext.General)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/sdk")
-        {
-            Content = new StringContent(body, Encoding.UTF8),
-        };
-
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("text/xml") { CharSet = "utf-8" };
-        // vCenter accepts an empty SOAPAction; sending one avoids a 500 from
-        // intermediaries that insist on the header being present.
-        request.Headers.TryAddWithoutValidation("SOAPAction", "\"urn:vim25/8.0.0.0\"");
-
-        // Headers first, body by hand: the default would buffer whatever the
-        // far end sends, up to 2 GB, before this code saw a byte of it.
-        // HttpClient.Timeout then stops at the headers, so it is applied here to
-        // the body as well: a reply that drips forever is as bad as a huge one.
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (_http.Timeout != Timeout.InfiniteTimeSpan)
-        {
-            deadline.CancelAfter(_http.Timeout);
-        }
-
-        string content;
-        HttpResponseMessage response;
-        try
-        {
-            response = await _http
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token)
-                .ConfigureAwait(false);
-            try
-            {
-                content = await ReadBoundedAsync(response.Content, deadline.Token).ConfigureAwait(false);
-            }
-            catch
-            {
-                response.Dispose();
-                throw;
-            }
-        }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            // The shape HttpClient itself gives a timeout.
-            throw new TaskCanceledException(
-                $"The vCenter call did not complete within {_http.Timeout}.", new TimeoutException(ex.Message, ex));
-        }
-
-        using var owned = response;
-
-        // vCenter returns faults as HTTP 500 with a SOAP fault body, so the
-        // status code alone cannot tell "your credentials are wrong" from "the
-        // server is broken". The body decides.
-        if (VsphereSoapFaultReader.TryRead(content, context) is { } fault)
-        {
-            throw fault.Kind == VsphereFaultKind.QuerySizeRefused
-                ? new VsphereQuerySizeRefusedException(fault.Message)
-                : new VsphereApiException(fault.Kind, Describe(fault));
-        }
-
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new VsphereApiException(
-                $"vCenter returned {(int)response.StatusCode} {response.ReasonPhrase} with no SOAP fault.");
-        }
-
-        // Checked after the status, so that a proxy's HTML error page is still
-        // reported by its status rather than by its <!DOCTYPE html>.
-        if (VsphereXml.DeclaresDocumentType(content))
-        {
-            throw new VsphereApiException(
-                "vCenter's reply declared a DTD. vim25 never sends one, so the reply was refused unread.");
-        }
-
-        return content;
-    }
-
-    /// <summary>
-    /// The largest reply body read from vCenter, in bytes.
-    /// </summary>
-    /// <remarks>
-    /// Well above any real page (inventory and metric reads are paged far below
-    /// this) and far below what would exhaust the host if a hostile or
-    /// intercepted endpoint streamed without end.
-    /// </remarks>
-    public const long MaxResponseBytes = 64L * 1024 * 1024;
-
-    private static async Task<string> ReadBoundedAsync(HttpContent content, CancellationToken cancellationToken)
-    {
-        if (content.Headers.ContentLength is > MaxResponseBytes)
-        {
-            throw TooLarge();
-        }
-
-        using var buffer = new MemoryStream();
-        var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await using (stream.ConfigureAwait(false))
-        {
-            var chunk = new byte[81920];
-            int read;
-            while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
-            {
-                if (buffer.Length + read > MaxResponseBytes)
-                {
-                    throw TooLarge();
-                }
-
-                buffer.Write(chunk, 0, read);
-            }
-        }
-
-        buffer.Position = 0;
-        var encoding = EncodingFor(content.Headers.ContentType?.CharSet);
-        using var reader = new StreamReader(
-            buffer, encoding, detectEncodingFromByteOrderMarks: true, bufferSize: -1, leaveOpen: true);
-        return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-
-        static VsphereApiException TooLarge() => new(
-            $"vCenter's reply exceeded {MaxResponseBytes / (1024 * 1024)} MB and was abandoned unread.");
-    }
-
-    private static Encoding EncodingFor(string? charSet)
-    {
-        if (string.IsNullOrWhiteSpace(charSet))
-        {
-            return Encoding.UTF8;
-        }
-
-        try
-        {
-            return Encoding.GetEncoding(charSet.Trim('"'));
-        }
-        catch (ArgumentException)
-        {
-            return Encoding.UTF8;
-        }
-    }
-
-    private static string Describe(VsphereSoapFault fault) =>
-        fault.Kind switch
-        {
-            VsphereFaultKind.InvalidLogin =>
-                "vCenter rejected the credentials. This is not retried, so that repeated attempts " +
-                "cannot lock the monitoring account out.",
-            VsphereFaultKind.NoPermission =>
-                $"The account is authenticated but lacks a required privilege ({fault.Message}). " +
-                "This needs a role change, not a retry.",
-            _ => string.IsNullOrWhiteSpace(fault.Message) ? fault.FaultType : fault.Message,
-        };
-
-    /// <summary>
-    /// Builds a handler configured for this connection.
-    /// </summary>
-    /// <remarks>
-    /// Certificate validation is only relaxed when the options say so. vCenter
-    /// ships with a self-signed certificate that many installations never
-    /// replace, so this has to be expressible — but as a decision someone
-    /// recorded, not something the collector does quietly on their behalf.
-    /// </remarks>
-    public static HttpMessageHandler CreateHandler(VsphereConnectionOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-
-        var handler = new HttpClientHandler
-        {
-            // vCenter tracks the session with the vmware_soap_session cookie.
-            UseCookies = true,
-            CookieContainer = new System.Net.CookieContainer(),
-        };
-
-        if (options.AcceptUntrustedCertificate)
-        {
-            handler.ServerCertificateCustomValidationCallback =
-                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
-        }
-
-        return handler;
     }
 
     /// <summary>
@@ -2416,121 +2140,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// </remarks>
     public async Task<VsphereSessions> ReadSessionsAsync(CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
 
         var response = await SendAsync(
             VsphereSoapRequests.RetrieveSessions(content.PropertyCollector, content.SessionManager),
             cancellationToken).ConfigureAwait(false);
 
         return VsphereSessions.Parse(response);
-    }
-
-    /// <summary>
-    /// Logs out, then asks the vCenter whether it agrees.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// For the probe. A read-only account cannot list sessions, so "did the
-    /// session end" cannot be read off a list; but the server will say so
-    /// itself. After a logout that worked, a call carrying the same session
-    /// cookie is refused as <c>NotAuthenticated</c>. After one that did not,
-    /// it is answered.
-    /// </para>
-    /// <para>
-    /// The second call is posted directly, because <c>SendAsync</c> would meet
-    /// that refusal by signing in again and hide the very answer being sought.
-    /// </para>
-    /// </remarks>
-    /// <returns>
-    /// True when the vCenter refused the old session; false when it still
-    /// honoured it; null when this client never had a session to end.
-    /// </returns>
-    public async Task<bool?> LogoutAndConfirmAsync(CancellationToken cancellationToken)
-    {
-        if (!_loggedIn || _serviceContent is not { } content)
-        {
-            return null;
-        }
-
-        await LogoutAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-            var reply = await PostAsync(
-                VsphereSoapRequests.RetrieveSessions(content.PropertyCollector, content.SessionManager),
-                cancellationToken).ConfigureAwait(false);
-
-            // Answered, but an answer is not yet "still signed in". The
-            // property collector can reply to a session it no longer knows
-            // and refuse each property instead of the call — so the only
-            // thing that proves the session survived is the session itself
-            // coming back.
-            return VsphereSessions.Parse(reply).Current is null;
-        }
-        catch (VsphereApiException ex) when (ex.Kind == VsphereFaultKind.NotAuthenticated)
-        {
-            return true;
-        }
-    }
-
-    /// <summary>
-    /// Ends this client's session on the vCenter, if it has one.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Nothing called this. A session is a bounded thing on a vCenter and an
-    /// abandoned one stays until the idle timeout collects it, so every
-    /// restart, every edited or removed connection and every press of Test
-    /// left one behind.
-    /// </para>
-    /// <para>
-    /// Posted directly rather than through <c>SendAsync</c>: that path answers
-    /// an expired session by logging in again, and logging in so as to log out
-    /// is a directory login spent on nothing. A client that never logged in
-    /// sends nothing at all, for the same reason. Never throws — this runs
-    /// while a connection is being taken down, when there is nobody left to
-    /// tell and the idle timeout is still the backstop.
-    /// </para>
-    /// </remarks>
-    public async Task LogoutAsync(CancellationToken cancellationToken)
-    {
-        if (_disposed || !_loggedIn || _serviceContent is not { } content)
-        {
-            return;
-        }
-
-        // Cleared first, so a second caller asks nothing and a call racing
-        // this one logs in afresh rather than using a session being closed.
-        _loggedIn = false;
-
-        try
-        {
-            using var grace = new CancellationTokenSource(CleanupGrace);
-
-            await PostAsync(
-                VsphereSoapRequests.Logout(content.SessionManager),
-                cancellationToken.IsCancellationRequested ? grace.Token : cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (VsphereApiException)
-        {
-        }
-        catch (HttpRequestException)
-        {
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
-
-    public void Dispose()
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        _disposed = true;
-        _sessionGate.Dispose();
     }
 }
