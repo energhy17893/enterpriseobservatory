@@ -206,6 +206,36 @@ public static class AlertLifecycle
         };
     }
 
+    /// <summary>The actor recorded on a transition the product made itself.</summary>
+    public const string SystemActor = "system";
+
+    /// <summary>
+    /// Resolves an alarm whose condition is now judged as a compliance finding
+    /// (ADR-0024): "moved to compliance finding".
+    /// </summary>
+    /// <remarks>
+    /// A silence is dropped, not carried anywhere: it has no reason and no
+    /// end the finding could use, and turning it into an acceptance would be
+    /// the indefinite exception the finding lifecycle forbids. An alarm
+    /// already resolved is returned as it is, so moving twice changes nothing.
+    /// </remarks>
+    public static AlertInstance MoveToFinding(AlertInstance existing, DateTimeOffset nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(existing);
+
+        if (existing.State == AlertLifecycleState.Resolved)
+        {
+            return existing;
+        }
+
+        return existing.With(
+            AlertLifecycleState.Resolved, AlertTransitionReason.MovedToFinding, nowUtc, SystemActor) with
+        {
+            SilencedUntilUtc = null,
+            PendingNotification = AlertNotificationKind.None,
+        };
+    }
+
     /// <summary>Mutes an alert until a deadline.</summary>
     public static AlertInstance Silence(
         AlertInstance existing,

@@ -624,7 +624,16 @@ public sealed class MonitoringCycle(
                 NowUtc = now,
                 SilentSources = carry.SilentSources,
                 SourceOf = carry.SourceOf,
-                Unevaluated = carry.Unevaluated,
+
+                // An alarm of a rule that moved to the continuity catalogue
+                // (K2) is no longer raised, and its absence is not "condition
+                // cleared": it is kept as it is until the continuity
+                // evaluation has written its finding and resolves it as moved.
+                Unevaluated =
+                [
+                    .. carry.Unevaluated,
+                    .. stored.Where(Compliance.ContinuityAlarmTransition.AwaitsMove).Select(a => a.Fingerprint),
+                ],
             }));
 
     /// <summary>What reconciliation must keep rather than resolve; see <see cref="AlertReconciliationRequest"/>.</summary>

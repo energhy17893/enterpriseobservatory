@@ -28,8 +28,13 @@ public sealed class MonitoringWorker(
     EventCollectionPipeline events,
     ComplianceService compliance,
     IEntityGraphStore graph,
+    IAlertStateStore alerts,
+    IObservationStore series,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
+    private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
+    private readonly IObservationStore _series = series ?? throw new ArgumentNullException(nameof(series));
+
     private readonly ComplianceService _compliance =
         compliance ?? throw new ArgumentNullException(nameof(compliance));
 
@@ -162,16 +167,69 @@ public sealed class MonitoringWorker(
         try
         {
             var graph = _graph.Current;
-            var findings = _compliance.Evaluate([.. graph.Active], reportingSources, graph);
+            var findings = _compliance.Evaluate(
+                [.. graph.Active], reportingSources, graph, TakeDemand(graph));
 
             HostLog.ComplianceEvaluated(
                 _logger, findings, _compliance.Catalogue.Name, _compliance.Catalogue.Release);
+
+            MoveContinuityAlarms();
         }
 #pragma warning disable CA1031 // Justified: see the remarks above.
         catch (Exception ex)
 #pragma warning restore CA1031
         {
             HostLog.ComplianceFailed(_logger, ex);
+        }
+    }
+
+    /// <summary>
+    /// The demand N+1 is judged on, from the series store; null when it
+    /// cannot be taken, which the N+1 checks report as not evaluated.
+    /// </summary>
+    /// <remarks>
+    /// Taken here, outside the evaluation, so the evaluation stays pure (K1
+    /// decision 2) — and guarded on its own, so a history read that fails
+    /// costs N+1 its verdict and nothing else.
+    /// </remarks>
+    private DemandSnapshot? TakeDemand(Domain.EntityGraph graph)
+    {
+        try
+        {
+            return ContinuityDemand.Take(
+                _series, graph, _compliance.Now, _options.ClusterNPlusOne, _options.Retention);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+#pragma warning disable CA1031 // Justified: see the remarks above.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            HostLog.DemandSnapshotFailed(_logger, ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the alarms the retired M8 rules left open, once their
+    /// findings exist (ADR-0024 §5). Idempotent: a no-op once none remain.
+    /// </summary>
+    private void MoveContinuityAlarms()
+    {
+        if (!_compliance.Catalogues.Any(c =>
+                string.Equals(c.Release, ContinuityCatalogue.Release, StringComparison.Ordinal) && c.Problem is null))
+        {
+            return;
+        }
+
+        var moved = ContinuityAlarmTransition.Run(_alerts, _compliance.Findings(), _compliance.Now);
+
+        if (moved.Count > 0)
+        {
+            var matched = moved.Count(m => m.Finding is not null);
+            HostLog.AlarmsMovedToFindings(_logger, moved.Count, matched);
         }
     }
 

@@ -52,6 +52,13 @@ public enum AlertTransitionReason
     OperatorCleared,
     OperatorSilenced,
     SilenceExpired,
+
+    /// <summary>
+    /// The rule that raised it now judges the same condition as a compliance
+    /// finding (ADR-0024); the alarm was resolved as "moved to compliance
+    /// finding" and its silence, if any, was not carried over as an acceptance.
+    /// </summary>
+    MovedToFinding,
 }
 
 /// <summary>One recorded change in an alert's life.</summary>

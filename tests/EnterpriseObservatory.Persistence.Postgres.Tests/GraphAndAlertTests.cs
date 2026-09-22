@@ -199,6 +199,27 @@ public class GraphAndAlertTests : IDisposable
     }
 
     [SkippableFact]
+    public void An_alarm_moved_to_a_finding_keeps_that_reason_after_a_restart()
+    {
+        RequireDatabase();
+
+        // K2: the reason is the only record that the alarm went to the
+        // compliance screen rather than away; it must survive a restart.
+        var store = new PostgresAlertStateStore(_live.Database);
+
+        store.Reconcile("Inventory", (_, _) => new AlertReconciliationResult { Instances = [Alert()] });
+        store.Mutate(Alert().Fingerprint, i => AlertLifecycle.MoveToFinding(i, T0.AddMinutes(5)));
+
+        _live.Restart();
+
+        var recovered = Assert.Single(new PostgresAlertStateStore(_live.Database).All);
+
+        Assert.Equal(AlertLifecycleState.Resolved, recovered.State);
+        Assert.Equal(AlertTransitionReason.MovedToFinding, recovered.History[^1].Reason);
+        Assert.Equal(AlertLifecycle.SystemActor, recovered.History[^1].Actor);
+    }
+
+    [SkippableFact]
     public void An_acknowledgement_survives_the_next_cycle()
     {
         RequireDatabase();
