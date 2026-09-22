@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Api.Contracts;
 using EnterpriseObservatory.Api.Projections;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
@@ -1206,6 +1207,52 @@ public partial class ReadModelTests
 
     private static readonly EntityId ClusterC1 = new("vc-1:domain-c1");
 
+    private static readonly EntityId VCenter1 = new("vc-1:vcenter");
+
+    private ReadModel Model(IReadOnlyList<ContinuityCheck> continuity) =>
+        new(_graphs, _alerts, _collectors, _coverage, _observations, MonitoringOptions.Default, new StubClock(T0),
+            _compliance, continuity);
+
+    private static Entity VCenter(string id) => new()
+    {
+        Id = new EntityId(id),
+        Kind = EntityKind.VCenter,
+        DisplayName = "vcsa.corp.local",
+        SourceInstanceId = "vc-1",
+        Health = HealthState.Healthy,
+        LastSeenUtc = T0,
+    };
+
+    private static Entity Vm(string id) => new()
+    {
+        Id = new EntityId(id),
+        Kind = EntityKind.VirtualMachine,
+        DisplayName = id.Replace("vc-1:", string.Empty, StringComparison.Ordinal),
+        SourceInstanceId = "vc-1",
+        Health = HealthState.Healthy,
+        LastSeenUtc = T0,
+    };
+
+    private static Relationship Edge(EntityId from, EntityId to, RelationshipKind kind) => new()
+    {
+        From = from,
+        To = to,
+        Kind = kind,
+        ObservedAtUtc = T0,
+    };
+
+    /// <summary>A check registered by a test alone: the report must not have heard of it.</summary>
+    private sealed class ProbeCheck(EntityKind appliesTo) : IComplianceCheck
+    {
+        public EntityKind AppliesTo => appliesTo;
+
+        public IReadOnlyList<CheckVerdict> Judge(ComplianceControl control, Entity entity, CheckContext context) =>
+            throw new NotSupportedException();
+    }
+
+    private static ContinuityCheck Probe(string id, EntityKind appliesTo, string citation = "") =>
+        new(new ComplianceControl { ControlId = id, Title = $"Probe {id}", Source = citation }, new ProbeCheck(appliesTo));
+
     [Fact]
     public void Before_any_evaluation_the_report_says_so_rather_than_showing_all_clear()
     {
@@ -1227,14 +1274,142 @@ public partial class ReadModelTests
         var row = Assert.Single(report.Rows);
 
         Assert.False(row.HaSettingsCollected);
-        Assert.Equal(1, row.Ha.NotEvaluated);
-        Assert.Equal(0, row.Ha.Failing);
+        Assert.Equal(1, row.Control(ContinuityControls.HaEnabled).NotEvaluated);
+        Assert.Equal(0, row.Totals.Failing);
         Assert.False(report.Summary.HaInputsCollected);
         Assert.Contains("has not been read yet", report.Summary.Note, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Findings_are_counted_by_state_per_group()
+    public void Every_control_of_the_catalogue_has_exactly_one_place_in_the_report()
+    {
+        // The report reads the catalogue: every registered control is listed,
+        // placed by the entity kind its check applies to -- none hard-coded.
+        var report = Model().ContinuityReport();
+
+        Assert.Equal(
+            ContinuityCatalogue.Production.Select(c => c.Control.ControlId),
+            report.Controls.Select(c => c.ControlId));
+
+        Assert.Equal(ContinuityReportScope.VCenter, report.Controls.Single(c => c.ControlId == ContinuityControls.CertVCenter).Scope);
+        Assert.Equal(ContinuityReportScope.Cluster, report.Controls.Single(c => c.ControlId == ContinuityControls.MaintEvc).Scope);
+        Assert.Equal(ContinuityReportScope.Entity, report.Controls.Single(c => c.ControlId == ContinuityControls.CertEsxi).Scope);
+        Assert.Equal(ContinuityReportScope.Entity, report.Controls.Single(c => c.ControlId == ContinuityControls.MaintCdrom).Scope);
+        Assert.Equal(ContinuityReportScope.Entity, report.Controls.Single(c => c.ControlId == ContinuityControls.MaintSingleHostDatastore).Scope);
+
+        // One summary row per entity-level control, whether or not it has a finding yet.
+        Assert.Equal(
+            report.Controls.Where(c => c.Scope == ContinuityReportScope.Entity).Select(c => c.ControlId),
+            report.ControlRows.Select(r => r.ControlId));
+    }
+
+    [Fact]
+    public void The_eight_maintenance_and_expiry_controls_the_old_report_missed_are_on_it()
+    {
+        var hostId = new EntityId("vc-1:host-1");
+        var vmId = new EntityId("vc-1:vm-1");
+        var dsId = new EntityId("vc-1:ds-1");
+
+        GivenEntities(
+            Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")),
+            Host("vc-1:host-1", HealthState.Healthy),
+            Vm("vc-1:vm-1"),
+            Datastore("vc-1:ds-1"),
+            VCenter("vc-1:vcenter"));
+        GivenFindings(
+            Finding(ContinuityControls.MaintCdrom, vmId, ComplianceVerdict.Failing),
+            Finding(ContinuityControls.MaintConsolidation, vmId, ComplianceVerdict.Passing),
+            Finding(ContinuityControls.MaintSingleHostDatastore, dsId, ComplianceVerdict.Failing),
+            Finding(ContinuityControls.MaintEvc, ClusterC1, ComplianceVerdict.NotEvaluated),
+            Finding(ContinuityControls.CertEsxi, hostId, ComplianceVerdict.Failing),
+            Finding(ContinuityControls.CertVCenter, VCenter1, ComplianceVerdict.Passing));
+
+        var report = Model().ContinuityReport();
+
+        Assert.Equal(["vm-1"], report.ControlRows.Single(r => r.ControlId == ContinuityControls.MaintCdrom).FailingNames);
+        Assert.Equal(1, report.ControlRows.Single(r => r.ControlId == ContinuityControls.MaintConsolidation).Counts.Passing);
+        Assert.Equal(["vmfs01"], report.ControlRows.Single(r => r.ControlId == ContinuityControls.MaintSingleHostDatastore).FailingNames);
+        Assert.Equal(["vc-1:host-1.corp.local"], report.ControlRows.Single(r => r.ControlId == ContinuityControls.CertEsxi).FailingNames);
+        Assert.Equal(1, Assert.Single(report.Rows).Control(ContinuityControls.MaintEvc).NotEvaluated);
+        Assert.Equal(1, Assert.Single(report.VCenters).Control(ContinuityControls.CertVCenter).Passing);
+    }
+
+    [Fact]
+    public void A_newly_registered_control_grows_the_report_with_no_report_change()
+    {
+        // Registered here alone -- the report code has never heard of either id.
+        var checks = (IReadOnlyList<ContinuityCheck>)
+        [
+            .. ContinuityCatalogue.Production,
+            Probe("eo-cont.test-vm-probe", EntityKind.VirtualMachine, "Test basis"),
+            Probe("eo-cont.test-cluster-probe", EntityKind.Cluster),
+        ];
+
+        var vmId = new EntityId("vc-1:vm-7");
+        GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")), Vm("vc-1:vm-7"));
+        GivenFindings(
+            Finding("eo-cont.test-vm-probe", vmId, ComplianceVerdict.Failing),
+            Finding("eo-cont.test-cluster-probe", ClusterC1, ComplianceVerdict.Failing));
+
+        var report = Model(checks).ContinuityReport();
+
+        var vmRow = Assert.Single(report.ControlRows, r => r.ControlId == "eo-cont.test-vm-probe");
+        Assert.Equal("Probe eo-cont.test-vm-probe", vmRow.Title);
+        Assert.Equal("Test basis", vmRow.Citation);
+        Assert.Equal(EntityKind.VirtualMachine, vmRow.AppliesTo);
+        Assert.Equal(["vm-7"], vmRow.FailingNames);
+
+        var cluster = Assert.Single(report.Rows);
+        Assert.Equal(1, cluster.Control("eo-cont.test-cluster-probe").Failing);
+        Assert.True(cluster.HasFailing);
+        Assert.Equal(1, report.Summary.ByControl["eo-cont.test-vm-probe"].Failing);
+    }
+
+    [Fact]
+    public void A_summary_row_names_at_most_ten_failing_entities_and_counts_the_rest()
+    {
+        var hosts = Enumerable.Range(1, 15).Select(i => Host($"vc-1:host-{i:00}", HealthState.Healthy)).ToArray();
+        GivenEntities(hosts);
+        GivenFindings(
+        [
+            .. hosts.Take(13).Select(h => Finding(ContinuityControls.CertEsxi, h.Id, ComplianceVerdict.Failing)),
+            .. hosts.Skip(13).Select(h => Finding(ContinuityControls.CertEsxi, h.Id, ComplianceVerdict.Passing)),
+        ]);
+
+        var row = Model().ContinuityReport().ControlRows.Single(r => r.ControlId == ContinuityControls.CertEsxi);
+
+        Assert.Equal(13, row.Counts.Failing);
+        Assert.Equal(2, row.Counts.Passing);
+        Assert.Equal(ContinuityControlRow.MaxNamesListed, row.FailingNames.Count);
+        Assert.Equal("vc-1:host-01.corp.local", row.FailingNames[0]);
+        Assert.Equal(3, row.MoreFailing);
+    }
+
+    [Fact]
+    public void The_vcenter_has_its_own_section_with_its_certificate_and_root_alarms()
+    {
+        GivenEntities(VCenter("vc-1:vcenter"), Cluster("vc-1:domain-c1"));
+        GivenFindings(Finding(ContinuityControls.CertVCenter, VCenter1, ComplianceVerdict.Failing));
+        GivenAlerts(
+            Alert("licence-expiry", AlertSeverity.Warning) with { Entity = VCenter1, Category = "vCenter", Title = "License expiry" },
+            Alert("cluster-thing", AlertSeverity.Critical) with { Entity = ClusterC1 });
+
+        var report = Model().ContinuityReport();
+        var vcenter = Assert.Single(report.VCenters);
+
+        Assert.Equal("vcsa.corp.local", vcenter.VCenterName);
+        Assert.Equal(1, vcenter.Control(ContinuityControls.CertVCenter).Failing);
+        var finding = Assert.Single(vcenter.Findings);
+        Assert.Equal(ContinuityControls.CertVCenter, finding.ControlId);
+        var alarm = Assert.Single(vcenter.Alarms);
+        Assert.Equal("License expiry", alarm.Title);
+
+        // Not a cluster: the vCenter never opens a cluster row.
+        Assert.DoesNotContain(report.Rows, r => r.ClusterId == VCenter1.Value);
+    }
+
+    [Fact]
+    public void Findings_are_counted_by_state_per_control()
     {
         GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")));
         GivenFindings(
@@ -1248,12 +1423,13 @@ public partial class ReadModelTests
         var report = Model().ContinuityReport();
         var row = Assert.Single(report.Rows);
 
-        Assert.Equal(1, row.Ha.Passing);
-        Assert.Equal(1, row.Ha.Accepted);
-        Assert.Equal(1, row.Ha.Failing);
-        Assert.Equal(1, row.Drs.Failing);
-        Assert.Equal(1, row.Drs.Stale);
-        Assert.Equal(1, row.NPlusOne.NotEvaluated);
+        Assert.Equal(1, row.Control(ContinuityControls.HaEnabled).Passing);
+        Assert.Equal(1, row.Control(ContinuityControls.HaAdmissionControl).Accepted);
+        Assert.Equal(1, row.Control(ContinuityControls.HaHostMonitoring).Failing);
+        Assert.Equal(1, row.Control(ContinuityControls.DrsRule).Failing);
+        Assert.Equal(1, row.Control(ContinuityControls.DrsRule).Stale);
+        Assert.Equal(1, row.Control(ContinuityControls.NPlusOneCpu).NotEvaluated);
+        Assert.Equal(2, row.Totals.Failing);
         Assert.True(row.HasFailing);
 
         Assert.True(report.Summary.Evaluated);
@@ -1265,12 +1441,10 @@ public partial class ReadModelTests
     [Fact]
     public void Maintenance_and_expiry_findings_are_counted_in_the_summary_by_control()
     {
-        // M8.4/M8.7 findings sit on VMs, datastores, hosts and the vCenter,
-        // not on a cluster: the summary picks them up by control, generically.
         GivenEntities(Cluster("vc-1:domain-c1", ("dasConfig.enabled", "true")));
         GivenFindings(
             Finding(ContinuityControls.MaintCdrom, new EntityId("vc-1:vm-1"), ComplianceVerdict.Failing),
-            Finding(ContinuityControls.CertVCenter, new EntityId("vc-1:vcenter"), ComplianceVerdict.Passing));
+            Finding(ContinuityControls.CertVCenter, VCenter1, ComplianceVerdict.Passing));
 
         var summary = Model().ContinuityReport().Summary;
 
@@ -1297,38 +1471,38 @@ public partial class ReadModelTests
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
-        Assert.Equal(1, row.Ha.Excepted);
-        Assert.Equal(0, row.Ha.Failing);
+        Assert.Equal(1, row.Control(ContinuityControls.HaAdmissionControl).Excepted);
+        Assert.Equal(0, row.Totals.Failing);
         Assert.False(row.HasFailing);
     }
 
     [Fact]
-    public void Path_findings_on_a_hosts_roll_up_to_its_cluster_and_others_do_not()
+    public void Findings_under_a_cluster_roll_up_to_it_through_the_graph_and_others_do_not()
     {
         var hostId = new EntityId("vc-1:host-1");
         var otherHost = new EntityId("vc-1:host-2");
+        var vmId = new EntityId("vc-1:vm-1");
 
         GivenEntities(
             Cluster("vc-1:domain-c1"),
             Host("vc-1:host-1", HealthState.Warning),
-            Host("vc-1:host-2", HealthState.Warning));
-        GivenRelationships(new Relationship
-        {
-            From = hostId,
-            To = ClusterC1,
-            Kind = RelationshipKind.PartOf,
-            ObservedAtUtc = T0,
-        });
+            Host("vc-1:host-2", HealthState.Warning),
+            Vm("vc-1:vm-1"));
+        GivenRelationships(
+            Edge(hostId, ClusterC1, RelationshipKind.PartOf),
+            Edge(vmId, hostId, RelationshipKind.RunsOn));
         GivenFindings(
             Finding(ContinuityControls.PathSingleHba, hostId, ComplianceVerdict.Failing, "vmhba1"),
             Finding(ContinuityControls.PathSingle, hostId, ComplianceVerdict.Passing, "naa.1"),
+            Finding(ContinuityControls.MaintCdrom, vmId, ComplianceVerdict.Failing),
             Finding(ContinuityControls.PathSingleHba, otherHost, ComplianceVerdict.Failing, "vmhba1"));
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
-        Assert.Equal(1, row.StoragePath.Failing);
-        Assert.Equal(1, row.StoragePath.Passing);
-        Assert.Equal(["vc-1:host-1.corp.local"], row.StoragePathAffectedHosts);
+        Assert.Equal(2, row.Contained.Failing);
+        Assert.Equal(1, row.Contained.Passing);
+        Assert.Equal(["vc-1:host-1.corp.local", "vm-1"], row.ContainedAffectedNames);
+        Assert.True(row.HasFailing);
     }
 
     [Fact]
@@ -1339,7 +1513,7 @@ public partial class ReadModelTests
 
         var row = Assert.Single(Model().ContinuityReport().Rows);
 
-        Assert.Equal(0, row.Ha.Failing);
+        Assert.Equal(0, row.Totals.Failing);
         Assert.False(row.HasFailing);
     }
 

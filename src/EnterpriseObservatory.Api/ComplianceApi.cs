@@ -50,10 +50,18 @@ public sealed record ComplianceControlView
     public required string Assessment { get; init; }
 
     /// <summary>
-    /// The citable basis of the control's expectation or threshold, or
-    /// "product policy"; empty for a vendor guide's control.
+    /// The catalogue the control comes from, as the screen names it:
+    /// <see cref="ComplianceSources.Scg"/> or <see cref="ComplianceSources.Continuity"/>.
+    /// Not the citation -- see <see cref="Citation"/>.
     /// </summary>
     public string Source { get; init; } = string.Empty;
+
+    /// <summary>
+    /// What the control's expectation or threshold rests on
+    /// (<c>ComplianceControl.Source</c>), shown as "basis:"; empty for a
+    /// vendor guide's control, shown then as "no citation — product policy".
+    /// </summary>
+    public string Citation { get; init; } = string.Empty;
 
     /// <summary>Whether this product judges the control at all.</summary>
     public required bool Evaluated { get; init; }
@@ -101,6 +109,9 @@ public sealed record ComplianceExceptionView
 /// <summary>The whole compliance screen's summary.</summary>
 public sealed record ComplianceView
 {
+    /// <summary>The source of the catalogue the header names (the vendor guide); each control carries its own.</summary>
+    public string Source { get; init; } = string.Empty;
+
     public required string CatalogueName { get; init; }
 
     public required string CatalogueRelease { get; init; }
@@ -441,7 +452,8 @@ public static class ComplianceApi
                     InstallationDefault = bound.Control.InstallationDefault,
                     BaselineValue = bound.Control.BaselineValue,
                     Assessment = bound.Control.Assessment,
-                    Source = bound.Control.Source,
+                    Source = ComplianceSources.Of(bound.CatalogueName),
+                    Citation = bound.Control.Source,
                     Evaluated = bound.IsEvaluated,
                     NotEvaluatedReason = bound.NotEvaluatedReason,
                     CatalogueName = bound.CatalogueName,
@@ -564,6 +576,7 @@ public static class ComplianceApi
 
         return new ComplianceView
         {
+            Source = ComplianceSources.Of(catalogue.Name),
             CatalogueName = catalogue.Name,
             CatalogueRelease = catalogue.Release,
             CatalogueProblem = catalogue.Problem,
@@ -580,7 +593,8 @@ public static class ComplianceApi
                     InstallationDefault = bound.Control.InstallationDefault,
                     BaselineValue = bound.Control.BaselineValue,
                     Assessment = bound.Control.Assessment,
-                    Source = bound.Control.Source,
+                    Source = ComplianceSources.Of(bound.CatalogueName),
+                    Citation = bound.Control.Source,
                     Evaluated = bound.IsEvaluated,
                     NotEvaluatedReason = bound.NotEvaluatedReason,
                     CatalogueName = bound.CatalogueName,

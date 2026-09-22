@@ -168,6 +168,16 @@ public class ReportRendererTests
     }
 
     [Fact]
+    public async Task The_mailed_continuity_report_has_one_line_per_entity_level_control_not_per_entity()
+    {
+        var content = await Renderer().RenderAsync(
+            ReportKind.Continuity, ReportFrequency.Weekly, CancellationToken.None);
+
+        Assert.Contains("Hosts, virtual machines and datastores, by control:", content.BodyText, StringComparison.Ordinal);
+        Assert.Contains("  eo-cont.cert-esxi: 0 failing / 0 passing", content.BodyText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_compliance_subscription_without_the_compliance_engine_fails_visibly()
     {
         await Assert.ThrowsAsync<NotSupportedException>(
