@@ -1664,6 +1664,56 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
+    public async Task A_write_that_was_not_attempted_leaves_its_alert_open_and_one_that_landed_resolves_it()
+    {
+        // ADR-0026: a direct producer signs its cycle as run. The capacity
+        // write runs only when the inventory carried a reading; a cycle with
+        // none used to resolve "could not be saved" on a write never tried.
+        const double gb = 1024d * 1024 * 1024;
+        var datastore = new EntityId("vc-1:datastore-41");
+        var store = new FlakyObservationStore { Fails = true };
+        var cycle = Cycle(observations: store);
+        var withReading = true;
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot(
+                "vc-1", _clock.UtcNow, entities: [Node(datastore.Value, EntityKind.Datastore, "vmfs01")]) with
+            {
+                Observations = withReading
+                    ? [CapacityCounters.Reading(datastore, CapacityCounters.DatastoreCapacity, 60 * gb, _clock.UtcNow, "vc-1")]
+                    : [],
+            },
+        };
+
+        AlertInstance Saved() => Assert.Single(
+            _alerts.All, a => a.Title == "State could not be saved" && a.Description.Contains("capacity", StringComparison.Ordinal));
+
+        // Two failed writes: a warning confirms on its second sighting.
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        Assert.Equal(AlertLifecycleState.Open, Saved().State);
+
+        // Nothing to write, so nothing was tried: the alert stays open, stale.
+        store.Fails = false;
+        withReading = false;
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Equal(AlertLifecycleState.Open, Saved().State);
+        Assert.True(Saved().IsStale);
+        Assert.Equal(UnknownReason.NotReported, Saved().StaleReason);
+
+        // A write that ran and landed: the producer ran and did not see it.
+        withReading = true;
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Equal(AlertLifecycleState.Resolved, Saved().State);
+    }
+
+    [Fact]
     public async Task A_datastore_whose_history_cannot_be_read_keeps_its_alert_and_says_why()
     {
         var store = new FlakyObservationStore();

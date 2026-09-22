@@ -645,6 +645,10 @@ public class StorageLatencyBlindSpotTests
         {
             Scope = "observation",
             Observed = observed,
+
+            // Played as a direct producer that ran every cycle: this test is
+            // about fingerprints and clears, not about three values.
+            ProducersRun = [ProducerRun.Where("blind-spot", static _ => true)],
             Stored = stored,
             NowUtc = T0.AddMinutes(minute),
             Evaluations = [],

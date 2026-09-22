@@ -101,8 +101,7 @@ public static class GuardedRule
     private static AlertDefinition Failed(string ruleId, Exception error) =>
         new()
         {
-            Fingerprint = AlertFingerprint.Create(
-                "platform", Title, Category, ruleId, FailedCheckId),
+            Fingerprint = FailedFingerprint(ruleId),
 
             // Warning, not Critical, and for the same reason an unreachable
             // collector is: we do not know the estate is broken, only that we
@@ -121,4 +120,8 @@ public static class GuardedRule
         };
 
     private const string Title = "Analysis rule failed";
+
+    /// <summary>The fingerprint of the "Analysis rule failed" alert of one rule.</summary>
+    public static AlertFingerprint FailedFingerprint(string ruleId) =>
+        AlertFingerprint.Create("platform", Title, Category, ruleId, FailedCheckId);
 }

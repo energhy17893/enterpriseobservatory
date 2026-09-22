@@ -218,8 +218,9 @@ public sealed record AlertInstance
     /// alerts, store failures, rule failures, compaction, flapping).
     /// </summary>
     /// <remarks>
-    /// Null is the two-valued kind with N = 1 (design note §1.2): its producer
-    /// runs every cycle and is its own evidence. Anything with a rule id is
+    /// Null is the two-valued kind with N = 1 (design note §1.2): a producer
+    /// that signed the cycle as run and did not report it has found it gone;
+    /// one that did not run leaves it open and stale. Anything with a rule id is
     /// judged three-valued, and a cycle in which its rule says nothing about it
     /// is "not reported", never "gone".
     /// </remarks>

@@ -232,9 +232,29 @@ public sealed class MonitoringCycle(
         // EntityGraph.Merge keeps its entities: we did not look. Judged by the
         // entity's owner in the graph this cycle merged, which is the same
         // graph that decided the entities stay.
+        // Who ran, and so whose silence is an absence (ADR-0026): a direct
+        // producer that did not run this cycle has told us nothing, and its
+        // alerts stay open, stale. The sample write is the case that made it
+        // matter -- with no capacity reading there is no write, and a
+        // "could not be saved" alert used to resolve on a write never tried.
+        IReadOnlyList<ProducerRun> ran =
+        [
+            ProducerRun.For(
+                "collection:inventory",
+                sources.Select(s => SourceRunner.UnreachableFingerprint(s.InstanceId, CollectorRole.Inventory))),
+            .. cycle.Snapshots.Select(s => ProducerRun.Where(
+                $"inventory:{s.SourceInstanceId}", f => f.HasSource(s.SourceInstanceId))),
+            .. cycle.Snapshots.Select(s => Wrote($"coverage:{s.SourceInstanceId}")),
+            Wrote("collector-health:inventory"),
+            Wrote("entity-graph"),
+            .. samples.Count == 0 ? Array.Empty<ProducerRun>() : [Wrote("observations:inventory")],
+            RulesRan(RuleScope.Inventory),
+        ];
+
         var reconciliation = Reconcile(
             AlertScopes.Inventory,
             observed,
+            ran,
             analysis.Evaluations,
             new EvidenceSources
             {
@@ -358,9 +378,28 @@ public sealed class MonitoringCycle(
         // RunInventoryAsync applies to entities and coverage. Only the sources
         // that answered are evidence; a verdict about an entity of any other
         // is unknown, which keeps an open alarm open.
+        // Who ran (ADR-0026): the collector runner attempted every source,
+        // a batch was read from each that answered, and the bookkeeping was
+        // written only for what was kept.
+        IReadOnlyList<ProducerRun> ran =
+        [
+            ProducerRun.For(
+                "collection:metrics",
+                sources.Select(s => SourceRunner.UnreachableFingerprint(s.InstanceId, CollectorRole.Observation))),
+            .. cycle.Batches.Select(b => ProducerRun.For(
+                $"detail-level:{b.SourceInstanceId}",
+                ObservationCollectionPipeline.DetailLevelFingerprint(b.SourceInstanceId))),
+            Wrote("collector-health:metrics"),
+            .. kept
+                ? cycle.Batches.Where(b => b.Stored is not null).Select(b => Wrote($"collection-marks:{b.SourceInstanceId}"))
+                : [],
+            RulesRan(RuleScope.Metric),
+        ];
+
         var reconciliation = Reconcile(
             AlertScopes.Observation,
             observed,
+            ran,
             analysis.Evaluations,
             new EvidenceSources
             {
@@ -602,8 +641,7 @@ public sealed class MonitoringCycle(
     private static AlertDefinition WriteFailed(string writeId, string what, Exception error) =>
         new()
         {
-            Fingerprint = AlertFingerprint.Create(
-                "platform", WriteFailedTitle, WriteFailedCategory, writeId, "store-write-failed"),
+            Fingerprint = WriteFailedFingerprint(writeId),
 
             // Warning, for the reason an unreachable collector is one: nothing
             // says the estate is broken, only that part of what we measured was
@@ -618,6 +656,21 @@ public sealed class MonitoringCycle(
             Source = "platform",
             IsDerived = true,
         };
+
+    /// <summary>The fingerprint of one write's "could not be saved" alert.</summary>
+    private static AlertFingerprint WriteFailedFingerprint(string writeId) =>
+        AlertFingerprint.Create("platform", WriteFailedTitle, WriteFailedCategory, writeId, "store-write-failed");
+
+    /// <summary>The signature of a write that was attempted this cycle.</summary>
+    private static ProducerRun Wrote(string writeId) =>
+        ProducerRun.For($"write:{writeId}", WriteFailedFingerprint(writeId));
+
+    /// <summary>
+    /// Every rule of the scope ran under its guard, so each speaks for its own
+    /// "Analysis rule failed" alert.
+    /// </summary>
+    private static ProducerRun RulesRan(RuleScope scope) =>
+        ProducerRun.For("analysis", AnalysisRules.For(scope).Select(r => GuardedRule.FailedFingerprint(r.RuleId)));
 
     private const string WriteFailedTitle = "State could not be saved";
 
@@ -661,6 +714,7 @@ public sealed class MonitoringCycle(
     private AlertReconciliationResult Reconcile(
         string scope,
         IReadOnlyList<AlertDefinition> observed,
+        IReadOnlyList<ProducerRun> ran,
         IReadOnlyList<RuleEvaluation> evaluations,
         EvidenceSources sources,
         MonitoringOptions options,
@@ -675,6 +729,7 @@ public sealed class MonitoringCycle(
                 // reconciler stamps what comes out of it.
                 Scope = scope,
                 Observed = observed,
+                ProducersRun = ran,
                 Stored = stored,
                 FlapHistories = flaps,
                 Hysteresis = options.Hysteresis,

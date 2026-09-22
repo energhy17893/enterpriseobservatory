@@ -19,6 +19,9 @@ public class AlertReconcilerTests
         OwnerOf = entity => entity.Value == "esx01" ? "vc-1" : null,
     };
 
+    /// <summary>The direct producer of <see cref="Psu"/> and <see cref="Fan"/>.</summary>
+    private static readonly ProducerRun Ilo = ProducerRun.Where("ilo", f => f.HasSource("ilo"));
+
     private static AlertDefinition Psu(AlertSeverity severity = AlertSeverity.Critical) => new()
     {
         Fingerprint = AlertFingerprint.Create("ilo", "PSU 2 failed", "Hardware", "esx01"),
@@ -40,11 +43,16 @@ public class AlertReconcilerTests
         AlertReconciliationResult? previous = null,
         DateTimeOffset? now = null,
         FlapPolicy? flap = null,
-        string scope = AlertScopes.Observation) =>
+        string scope = AlertScopes.Observation,
+        bool ran = true) =>
         AlertReconciler.Reconcile(new AlertReconciliationRequest
         {
             Scope = scope,
             Observed = observed,
+
+            // The iLO collector ran this cycle and speaks for its own alerts:
+            // what it did not report is gone (N = 1).
+            ProducersRun = ran ? [Ilo] : [],
             Stored = previous?.Instances ?? [],
             FlapHistories = previous?.FlapHistories ?? [],
             Flap = flap ?? FlapPolicy.Default,
@@ -375,11 +383,13 @@ public class AlertReconcilerTests
         IReadOnlyList<SubjectVerdict> verdicts,
         IReadOnlyList<AlertDefinition>? observed = null,
         EvidenceSources? sources = null,
-        TimeSpan? evidenceLimit = null) =>
+        TimeSpan? evidenceLimit = null,
+        IReadOnlyList<ProducerRun>? ran = null) =>
         AlertReconciler.Reconcile(new AlertReconciliationRequest
         {
             Scope = AlertScopes.Observation,
             Observed = observed ?? [],
+            ProducersRun = ran ?? [],
             Stored = previous?.Instances ?? [],
             FlapHistories = previous?.FlapHistories ?? [],
             NowUtc = now,
@@ -499,7 +509,7 @@ public class AlertReconcilerTests
         // about the same machines: every finding closed after one missed read.
         var first = Run([Psu()], now: Cycle(0));
 
-        var second = Rules(first, Cycle(1), [], sources: Answered("vc-2"));
+        var second = Rules(first, Cycle(1), [], sources: Answered("vc-2"), ran: [Ilo]);
 
         var instance = Assert.Single(second.Instances);
         Assert.Equal(AlertLifecycleState.Open, instance.State);
@@ -515,9 +525,55 @@ public class AlertReconcilerTests
     {
         var first = Run([Psu()], now: Cycle(0));
 
-        var second = Rules(first, Cycle(1), []);
+        var second = Rules(first, Cycle(1), [], ran: [Ilo]);
 
         Assert.Equal(AlertLifecycleState.Resolved, Assert.Single(second.Instances).State);
+    }
+
+    // --- direct producers sign their cycle (ADR-0026, second PR) ------------
+
+    [Fact]
+    public void A_direct_producer_that_did_not_run_leaves_its_alerts_open_and_stale()
+    {
+        // "Silence is its absence" held only while every producer ran every
+        // cycle. A write that was not attempted, a collector that was not
+        // polled, a rule that was not run: none of them looked.
+        var first = Run([Psu()], now: Cycle(0));
+
+        var second = Run([], previous: first, now: Cycle(1), ran: false);
+
+        var instance = Assert.Single(second.Instances);
+        Assert.Equal(AlertLifecycleState.Open, instance.State);
+        Assert.True(instance.IsStale);
+        Assert.Equal(UnknownReason.NotReported, instance.StaleReason);
+        Assert.Contains("no producer", instance.StaleDetail, StringComparison.Ordinal);
+        Assert.Empty(second.Retired);
+    }
+
+    [Fact]
+    public void A_direct_producer_that_ran_and_did_not_see_the_condition_resolves_it_at_once()
+    {
+        var first = Run([Psu()], now: Cycle(0));
+
+        // Stale first, then the producer runs again: one fresh absence is N.
+        var stale = Run([], previous: first, now: Cycle(1), ran: false);
+        var ran = Run([], previous: stale, now: Cycle(2));
+
+        Assert.Equal(AlertLifecycleState.Resolved, Assert.Single(ran.Instances).State);
+    }
+
+    [Fact]
+    public void A_producer_speaks_only_for_its_own_alerts()
+    {
+        var other = Psu() with { Fingerprint = AlertFingerprint.Create("onboard", "PSU 2 failed", "Hardware", "esx01") };
+        var first = Run([Psu(), other], now: Cycle(0));
+
+        var second = Run([], previous: first, now: Cycle(1));
+
+        Assert.Equal(AlertLifecycleState.Resolved, second.Instances.Single(i => i.Fingerprint == Psu().Fingerprint).State);
+        var kept = second.Instances.Single(i => i.Fingerprint == other.Fingerprint);
+        Assert.Equal(AlertLifecycleState.Open, kept.State);
+        Assert.True(kept.IsStale);
     }
 
     [Fact]

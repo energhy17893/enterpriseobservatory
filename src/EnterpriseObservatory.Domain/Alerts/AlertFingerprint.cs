@@ -85,6 +85,19 @@ public readonly record struct AlertFingerprint
         return new AlertFingerprint(string.Join('|', parts));
     }
 
+    /// <summary>Whether this fingerprint was built with <paramref name="source"/> as its source part.</summary>
+    /// <remarks>
+    /// For a direct producer saying which of the stored alerts are its own
+    /// (ADR-0026): a vCenter's inventory read speaks for the alerts it raised
+    /// under its instance id and for nobody else's.
+    /// </remarks>
+    public bool HasSource(string source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        return Value is { } value && value.StartsWith(Normalize(source) + "|", StringComparison.Ordinal);
+    }
+
     private static string Normalize(string part) =>
         part.Trim().ToLowerInvariant().Replace("|", "\\|", StringComparison.Ordinal);
 

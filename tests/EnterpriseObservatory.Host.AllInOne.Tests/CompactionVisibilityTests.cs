@@ -118,6 +118,9 @@ public class CompactionVisibilityTests
                 {
                     Scope = AlertScopes.Observation,
                     Observed = observed,
+
+                    // The producer of "Host down" ran each cycle (ADR-0026).
+                    ProducersRun = [ProducerRun.Where("vc-1", f => f.HasSource("vc-1"))],
                     Stored = stored,
                     FlapHistories = flaps,
                     NowUtc = now,
