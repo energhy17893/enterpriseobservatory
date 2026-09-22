@@ -290,7 +290,23 @@ public sealed class MonitoringCycle(
 
         // The earlier samples go to the store and nowhere else. One append, so
         // they are kept or lost together with the values they came with.
-        StoreObservations([.. cycle.Observations, .. cycle.Backfill]);
+        var kept = StoreObservations([.. cycle.Observations, .. cycle.Backfill]);
+
+        // Only once the samples are in: a source moves its high-water marks
+        // and gap fill points past what was kept, never past what was merely
+        // read (T0.4). Guarded per source, so one source's bookkeeping failing
+        // costs that bookkeeping and nothing else.
+        IReadOnlyList<AlertDefinition> bookkeepingFailures = kept
+            ?
+            [
+                .. cycle.Batches
+                    .Where(b => b.Stored is not null)
+                    .SelectMany(b => Guarded(
+                        $"collection-marks:{b.SourceInstanceId}",
+                        $"the collection marks and gap record of '{b.SourceInstanceId}'",
+                        b.Stored!)),
+            ]
+            : [];
 
         // Only sources that actually answered may have their entities' metric
         // alerts judged on this cycle's silence. A source we could not reach
@@ -322,6 +338,7 @@ public sealed class MonitoringCycle(
         [
             .. cycle.CollectionAlerts,
             .. healthFailure,
+            .. bookkeepingFailures,
 
             // The store's graph, read by each rule that asks for it inside
             // that rule's guard: this cycle merged nothing.
@@ -428,7 +445,8 @@ public sealed class MonitoringCycle(
     /// surfaces where it belongs — the samples simply are not there, and a gap
     /// is already how this product says "we were not looking".
     /// </remarks>
-    private void StoreObservations(IReadOnlyList<Observation> observations)
+    /// <returns>Whether everything given is now in the store -- true when there was nothing to write.</returns>
+    private bool StoreObservations(IReadOnlyList<Observation> observations)
     {
         if (observations.Count == 0)
         {
@@ -440,7 +458,7 @@ public sealed class MonitoringCycle(
             // nothing to store repeats the last real failure; that is bounded
             // by the first cycle that has a sample, and a cycle with no samples
             // at all already says so through SilentSources.
-            return;
+            return true;
         }
 
         try
@@ -455,12 +473,14 @@ public sealed class MonitoringCycle(
             // in one respect -- it teaches an operator to ignore the one
             // message that means the history really does have a hole.
             _lastStorageFailure = null;
+            return true;
         }
 #pragma warning disable CA1031 // Justified: see the remarks above.
         catch (Exception ex)
 #pragma warning restore CA1031
         {
             _lastStorageFailure = ex.Message;
+            return false;
         }
     }
 

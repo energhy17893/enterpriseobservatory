@@ -27,6 +27,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Persistence.Postgres\EnterpriseObservatory.Persistence.Postgres.csproj" />
+
+    <!-- For the end-to-end gap fill test: the collector's samples through this store's refold. -->
+    <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
   </ItemGroup>
 
 </Project>

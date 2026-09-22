@@ -1,4 +1,4 @@
-﻿using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
@@ -438,6 +438,62 @@ public class MonitoringCycleTests : IDisposable
         // has to be visible in the product.
         Assert.NotNull(result.StorageFailure);
         Assert.Single(result.Observations);
+    }
+
+    [Fact]
+    public async Task A_source_is_told_its_batch_was_stored_only_when_it_was()
+    {
+        // T0.4: a source moves its high-water marks and gap fill points only
+        // past samples that were kept. Told on a failed append, the mark would
+        // run ahead of the history and the hole behind it would never be asked
+        // for again.
+        var stored = 0;
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Reading("cpu.usage.average", 1, _clock.UtcNow)],
+                Stored = () => stored++,
+            },
+        };
+
+        await Cycle().RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.Equal(1, stored);
+
+        var failing = new MonitoringCycle(
+            new InventoryCollectionPipeline(_clock),
+            new ObservationCollectionPipeline(_clock),
+            _graphs,
+            _alerts,
+            _health,
+            _coverage,
+            _notifier,
+            new FailingObservationStore(),
+            _maintenance,
+            _clock,
+            new InMemoryEventStore());
+
+        await failing.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.Equal(1, stored);
+    }
+
+    [Fact]
+    public async Task A_source_that_fails_on_being_told_costs_only_its_own_bookkeeping()
+    {
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Reading("cpu.usage.average", 1, _clock.UtcNow)],
+                Stored = () => throw new InvalidOperationException("gap record unreachable"),
+            },
+        };
+
+        var result = await Cycle().RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Null(result.StorageFailure);
+        Assert.Single(result.Observations);
+        Assert.Contains(_alerts.All, a => a.Description.Contains("gap record unreachable", StringComparison.Ordinal));
     }
 
     [Fact]
