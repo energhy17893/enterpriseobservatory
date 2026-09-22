@@ -103,6 +103,17 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
 
     public string InstanceId => _options.InstanceId;
 
+    /// <summary>
+    /// Reads the vCenter endpoint's certificate during the inventory read
+    /// (M8.7); none is read when null.
+    /// </summary>
+    /// <remarks>
+    /// Set by the host to a <see cref="TlsEndpointCertificateReader"/>. Left
+    /// out by default, so a client built for one question (the probe, a test)
+    /// opens no second connection it was not asked to.
+    /// </remarks>
+    public IEndpointCertificateReader? CertificateReader { get; init; }
+
     // --- IVsphereApi ------------------------------------------------------
 
     public async Task<IReadOnlyList<VsphereCounter>> GetCounterCatalogAsync(CancellationToken cancellationToken)
@@ -751,9 +762,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             // many and any one of them can say which device it sits on.
             var volumeDevices = ReadVolumeDevices(objects);
 
+            var vCenterVerdicts = await ReadVCenterCertificateAsync(cancellationToken).ConfigureAwait(false);
+
             return new VsphereInventoryPayload
             {
                 VCenterName = string.IsNullOrWhiteSpace(content.Name) ? InstanceId : content.Name,
+                VCenterVerdicts = vCenterVerdicts,
                 Hosts = [.. objects.Where(o => o.Type == "HostSystem").Select(ToHost)],
                 VirtualMachines = [.. objects.Where(o => o.Type == "VirtualMachine").Select(ToVirtualMachine)],
                 Clusters = [.. objects.Where(o => o.Type == "ClusterComputeResource").Select(ToCluster)],
@@ -774,6 +788,27 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             // one per cycle would accumulate until the session is recycled.
             await TryDestroyViewAsync(viewMoRef, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// The vCenter endpoint's certificate as its expiry and fingerprint, or
+    /// nothing when no reader is set or the handshake read none.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, string>> ReadVCenterCertificateAsync(
+        CancellationToken cancellationToken)
+    {
+        if (CertificateReader is null)
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        using var certificate = await CertificateReader
+            .ReadAsync(_options.BaseAddress, cancellationToken)
+            .ConfigureAwait(false);
+
+        return certificate is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : InventoryVerdictParser.CertificateVerdicts(certificate);
     }
 
     private Task<string> CreateViewAsync(VsphereServiceContent content, CancellationToken cancellationToken) =>

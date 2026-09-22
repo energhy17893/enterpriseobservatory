@@ -130,7 +130,7 @@ public class VsphereSessionCleanupTests
     }
 
     /// <summary>A vCenter that knows only the calls an inventory read makes.</summary>
-    private sealed class ScriptedVcenter : HttpMessageHandler
+    internal sealed class ScriptedVcenter : HttpMessageHandler
     {
         public List<string> Calls { get; } = [];
 
