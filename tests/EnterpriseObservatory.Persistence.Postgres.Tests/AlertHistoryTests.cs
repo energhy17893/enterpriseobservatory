@@ -102,10 +102,10 @@ public sealed class AlertHistoryTests : IDisposable
         Assert.Contains("gave no verdict", recovered.StaleDetail, StringComparison.Ordinal);
         Assert.Equal(0, recovered.ConsecutiveAbsent);
 
-        var lost = recovered.History[^1];
-        Assert.Equal(AlertTransitionReason.EvidenceLost, lost.Reason);
-        Assert.Contains("NotReported", lost.Detail, StringComparison.Ordinal);
-        Assert.Equal(T0.AddSeconds(30), lost.EvidenceAtUtc);
+        // Going stale is not a transition, so it is not a history row: the
+        // reason and detail above are on the instance, and the history is
+        // only the opening.
+        Assert.Equal(["Confirmed"], Reasons(psu.Fingerprint, T0));
     }
 
     [SkippableFact]
@@ -263,6 +263,130 @@ public sealed class AlertHistoryTests : IDisposable
         Assert.Empty(Reasons(gone.Fingerprint, T0));
         Assert.Equal(["Confirmed"], Reasons(live.Fingerprint, T0));
         Assert.Equal(AlertTransitionReason.Confirmed, Assert.Single(Assert.Single(store.All).History).Reason);
+    }
+
+    // --- only real transitions are history (post-#83 measurement) -------------
+
+    private static Observation Datastore(string host, string counter, double raw, string unit, DateTimeOffset at) => new()
+    {
+        Entity = new EntityId("vc-1:ds-prod"),
+        Source = "vc-1",
+        SampledAtUtc = at,
+        Value = new CounterValue
+        {
+            CounterName = counter,
+            Raw = raw,
+            Rollup = RollupType.Average,
+            Interval = TimeSpan.FromSeconds(20),
+            Unit = unit,
+            Instance = host,
+            InstanceIsVantagePoint = true,
+        },
+    };
+
+    /// <summary>A volume whose latency reads zero on three hosts, SIOC idle, at the given load.</summary>
+    private static List<Observation> BlindSpot(double load, DateTimeOffset at) =>
+    [
+        Datastore("esx01", "datastore.totalReadLatency.average", 0, "millisecond", at),
+        Datastore("esx02", "datastore.totalReadLatency.average", 0, "millisecond", at),
+        Datastore("esx03", "datastore.totalReadLatency.average", 0, "millisecond", at),
+        Datastore("esx01", "datastore.numberReadAveraged.average", load, "number", at),
+        Datastore("esx01", "datastore.siocActiveTimePercentage.average", 0, "percent", at),
+    ];
+
+    private long HistoryRows(string? reason = null) => _live.Database.Read(connection =>
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = reason is null
+            ? "SELECT count(*) FROM alert_history;"
+            : "SELECT count(*) FROM alert_history WHERE reason = @reason;";
+        command.Parameters.AddWithValue("@reason", reason ?? string.Empty);
+        return (long)command.ExecuteScalar()!;
+    });
+
+    [SkippableFact]
+    public void A_blind_spot_going_busy_and_quiet_writes_one_raised_row_and_nothing_on_a_quiet_cycle()
+    {
+        // Measured after #83: 307 Raised rows in 43 minutes for the same
+        // fingerprints. A quiet cycle made the rule call the volume absent,
+        // the unconfirmed alert was forgotten, and the next busy cycle raised
+        // it again as a new episode with a new "Raised" row. Now a quiet
+        // cycle is Unknown(NotJudgeable), a pending alert survives it, and
+        // only a real transition is written.
+        RequireDatabase();
+
+        var store = new PostgresAlertStateStore(_live.Database);
+        var rule = new StorageLatencyBlindSpotRule();
+        bool[] busy = [true, false, true, false, true, true, false, false, false, true, false, true];
+
+        for (var i = 0; i < busy.Length; i++)
+        {
+            var now = T0.AddSeconds(30 * i);
+            var verdicts = rule.Evaluate(new RuleContext
+            {
+                Observations = BlindSpot(busy[i] ? 1638 : 0.2, now),
+                ReadGraph = () => EntityGraph.Empty,
+                NowUtc = now,
+                Options = new MonitoringOptions(),
+                Series = new PostgresObservationStore(_live.Database),
+                Events = new PostgresEventStore(_live.Database),
+            });
+
+            if (!busy[i])
+            {
+                Assert.Equal(UnknownReason.NotJudgeable, Assert.IsType<Unknown>(Assert.Single(verdicts)).Reason);
+            }
+
+            var rows = HistoryRows();
+            Cycle(store, now, verdicts, rule.RuleId, n: rule.Resolution.ConsecutiveAbsent);
+
+            if (!busy[i])
+            {
+                Assert.Equal(rows, HistoryRows());
+            }
+        }
+
+        var alert = Assert.Single(store.All);
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.Equal(1, HistoryRows(nameof(AlertTransitionReason.Raised)));
+        Assert.Equal(1, HistoryRows());
+    }
+
+    [SkippableFact]
+    public void An_alert_that_is_already_open_or_pending_never_gets_a_second_raised_row()
+    {
+        RequireDatabase();
+
+        var store = new PostgresAlertStateStore(_live.Database);
+        var fan = Fault("fan", AlertSeverity.Warning);
+
+        // Pending, then confirmed, then seen for a while: one opening row.
+        for (var i = 0; i < 6; i++)
+        {
+            Cycle(store, T0.AddSeconds(30 * i), [Present(fan, T0.AddSeconds(30 * i))], n: 3);
+        }
+
+        Assert.Equal(["Raised"], Reasons(fan.Fingerprint, T0));
+    }
+
+    [SkippableFact]
+    public void An_unconfirmed_alert_that_comes_and_goes_leaves_no_history()
+    {
+        // Never shown to anyone, so never recorded: the flap tables keep the
+        // fact that it was unstable, the durable history keeps what an
+        // operator could have seen.
+        RequireDatabase();
+
+        var store = new PostgresAlertStateStore(_live.Database);
+        var fan = Fault("fan", AlertSeverity.Warning);
+
+        for (var i = 0; i < 6; i++)
+        {
+            var now = T0.AddSeconds(30 * i);
+            Cycle(store, now, [i % 2 == 0 ? Present(fan, now) : Absent(fan, now)]);
+        }
+
+        Assert.Equal(0, HistoryRows());
     }
 
     // --- the restart contract (design note §2, §5) ---------------------------

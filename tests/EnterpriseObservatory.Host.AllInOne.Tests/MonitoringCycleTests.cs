@@ -1044,9 +1044,9 @@ public class MonitoringCycleTests : IDisposable
         {
             Behaviour = () => Batch("vc-1", _clock.UtcNow) with
             {
-                Observations = faulty
-                    ? [Fault("storagePath.busResets.summation", 1, "vmhba0:C0:T0:L1")]
-                    : [],
+                // The counter still arrives, reading zero: a counter that
+                // stops arriving is not a fault that cleared (ADR-0026).
+                Observations = [Fault("storagePath.busResets.summation", faulty ? 1 : 0, "vmhba0:C0:T0:L1")],
             },
         };
 
@@ -1122,7 +1122,13 @@ public class MonitoringCycleTests : IDisposable
         // this is not a scope that stopped resolving anything -- after the
         // rule's N fresh absences (ADR-0026), not on the first.
         reachable = true;
-        var clean = new FakeObservationSource("vc-1") { Behaviour = () => Batch("vc-1", _clock.UtcNow) };
+        var clean = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Fault("storagePath.busResets.summation", 0, "vmhba0:C0:T0:L1")],
+            },
+        };
         var n = new FaultCountersRule().Resolution.ConsecutiveAbsent;
         MonitoringCycleResult recovered = null!;
 
@@ -1524,8 +1530,8 @@ public class MonitoringCycleTests : IDisposable
 
         _observations.Append(
         [
-            .. Enumerable.Range(0, 20).Select(i => CapacityCounters.Reading(
-                datastore, CapacityCounters.DatastoreUsed, (10 + 2 * i) * gb, T0.AddDays(i - 20), "vc-1")),
+            .. Enumerable.Range(0, 20 * 24).Select(i => CapacityCounters.Reading(
+                datastore, CapacityCounters.DatastoreUsed, (10 + (2 * i / 24d)) * gb, T0.AddHours(i - (20 * 24)), "vc-1")),
         ]);
 
         var cycle = Cycle();
@@ -1565,7 +1571,7 @@ public class MonitoringCycleTests : IDisposable
 
     /// <summary>
     /// A vCenter reporting one datastore filling at 2 GB a day with 10 GB
-    /// left, over twenty days of recorded history in <paramref name="store"/>.
+    /// left, over twenty days of hourly history in <paramref name="store"/>.
     /// </summary>
     private FakeInventorySource FillingDatastore(IObservationStore store, Func<bool> reachable)
     {
@@ -1574,8 +1580,8 @@ public class MonitoringCycleTests : IDisposable
 
         store.Append(
         [
-            .. Enumerable.Range(0, 20).Select(i => CapacityCounters.Reading(
-                datastore, CapacityCounters.DatastoreUsed, (10 + 2 * i) * gb, T0.AddDays(i - 20), "vc-1")),
+            .. Enumerable.Range(0, 20 * 24).Select(i => CapacityCounters.Reading(
+                datastore, CapacityCounters.DatastoreUsed, (10 + (2 * i / 24d)) * gb, T0.AddHours(i - (20 * 24)), "vc-1")),
         ]);
 
         return new FakeInventorySource("vc-1")
@@ -1625,13 +1631,25 @@ public class MonitoringCycleTests : IDisposable
         Assert.Equal(AlertLifecycleState.Open, held.State);
         Assert.Equal(raised.LastSeenUtc, held.LastSeenUtc);
 
-        // And once it answers without the problem, it resolves as before.
+        // And once it answers without the problem, it resolves as before --
+        // on a capacity actually read: a datastore with no reading this cycle
+        // gets no verdict, and "not reported" never resolves (ADR-0026).
         reachable = true;
         _clock.Advance(TimeSpan.FromMinutes(5));
+        const double gb = 1024d * 1024 * 1024;
+        var datastore = new EntityId("vc-1:datastore-41");
         var answered = new FakeInventorySource("vc-1")
         {
             Behaviour = () => Snapshot(
-                "vc-1", _clock.UtcNow, entities: [Node("vc-1:datastore-41", EntityKind.Datastore, "vmfs01")]),
+                "vc-1", _clock.UtcNow, entities: [Node(datastore.Value, EntityKind.Datastore, "vmfs01")]) with
+            {
+                // Grown: at 2 GB a day, 950 GB free is beyond the horizon.
+                Observations =
+                [
+                    CapacityCounters.Reading(datastore, CapacityCounters.DatastoreCapacity, 1000 * gb, _clock.UtcNow, "vc-1"),
+                    CapacityCounters.Reading(datastore, CapacityCounters.DatastoreFree, 950 * gb, _clock.UtcNow, "vc-1"),
+                ],
+            },
         };
         // After the rule's N fresh absences (ADR-0026), not on the first.
         for (var i = 0; i < new DatastoreTimeToFullRule().Resolution.ConsecutiveAbsent; i++)
@@ -1643,6 +1661,56 @@ public class MonitoringCycleTests : IDisposable
         Assert.Equal(
             AlertLifecycleState.Resolved,
             Assert.Single(_alerts.All, a => a.Title == DatastoreTimeToFull.FillingTitle).State);
+    }
+
+    [Fact]
+    public async Task A_write_that_was_not_attempted_leaves_its_alert_open_and_one_that_landed_resolves_it()
+    {
+        // ADR-0026: a direct producer signs its cycle as run. The capacity
+        // write runs only when the inventory carried a reading; a cycle with
+        // none used to resolve "could not be saved" on a write never tried.
+        const double gb = 1024d * 1024 * 1024;
+        var datastore = new EntityId("vc-1:datastore-41");
+        var store = new FlakyObservationStore { Fails = true };
+        var cycle = Cycle(observations: store);
+        var withReading = true;
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot(
+                "vc-1", _clock.UtcNow, entities: [Node(datastore.Value, EntityKind.Datastore, "vmfs01")]) with
+            {
+                Observations = withReading
+                    ? [CapacityCounters.Reading(datastore, CapacityCounters.DatastoreCapacity, 60 * gb, _clock.UtcNow, "vc-1")]
+                    : [],
+            },
+        };
+
+        AlertInstance Saved() => Assert.Single(
+            _alerts.All, a => a.Title == "State could not be saved" && a.Description.Contains("capacity", StringComparison.Ordinal));
+
+        // Two failed writes: a warning confirms on its second sighting.
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        Assert.Equal(AlertLifecycleState.Open, Saved().State);
+
+        // Nothing to write, so nothing was tried: the alert stays open, stale.
+        store.Fails = false;
+        withReading = false;
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Equal(AlertLifecycleState.Open, Saved().State);
+        Assert.True(Saved().IsStale);
+        Assert.Equal(UnknownReason.NotReported, Saved().StaleReason);
+
+        // A write that ran and landed: the producer ran and did not see it.
+        withReading = true;
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+
+        Assert.Equal(AlertLifecycleState.Resolved, Saved().State);
     }
 
     [Fact]

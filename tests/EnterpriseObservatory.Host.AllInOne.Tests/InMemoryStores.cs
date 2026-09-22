@@ -520,7 +520,10 @@ internal sealed class InMemoryObservationStore : IObservationStore
         return new SeriesResult
         {
             Key = query.Key,
-            Resolution = SeriesResolution.Raw,
+            // The tier asked for: the points are still the raw samples, but a
+            // caller counting them against its tier (the "enough history"
+            // test) must be told the tier it asked for, not 30 s buckets.
+            Resolution = query.Resolution ?? SeriesResolution.Raw,
             Points = points,
             Unit = samples[^1].Value.Unit,
             Rollup = samples[^1].Value.Rollup,

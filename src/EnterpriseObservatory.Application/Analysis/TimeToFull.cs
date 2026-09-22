@@ -26,6 +26,12 @@ public enum TimeToFullRefusalReason
 
     /// <summary>It fills, but later than <see cref="TimeToFullPolicy.Horizon"/>.</summary>
     BeyondHorizon,
+
+    /// <summary>
+    /// Too little of the history was read: <see cref="HistoryCoverage"/>'s
+    /// seven days and 80% of their points (ADR-0026).
+    /// </summary>
+    InsufficientHistory,
 }
 
 /// <summary>

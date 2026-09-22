@@ -1,5 +1,6 @@
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain.Alerts;
 
 namespace EnterpriseObservatory.Application.Tests;
 
@@ -196,5 +197,24 @@ public class RemoteLoggingTests
         var alert = Assert.Single(RemoteLogging.Evaluate([Host(settings: (Target, ""))]));
 
         Assert.Contains("esx-9.log-forwarding", alert.Description, StringComparison.Ordinal);
+    }
+
+    // --- three values (ADR-0026) -------------------------------------------
+
+    [Fact]
+    public void A_setting_read_is_present_or_absent_and_one_not_read_is_not_collected()
+    {
+        var empty = Assert.Single(RemoteLogging.Judge([Host(settings: (Target, ""))], null, T0));
+        var set = Assert.Single(RemoteLogging.Judge([Host(settings: (Target, "udp://10.0.0.5:514"))], null, T0));
+        var unread = Assert.Single(RemoteLogging.Judge([Host()], null, T0));
+
+        Assert.IsType<ConditionPresent>(empty);
+        Assert.IsType<ConditionAbsent>(set);
+
+        // It used to resolve an open alert: "unread" and "set" were the same
+        // silence.
+        var unknown = Assert.IsType<Unknown>(unread);
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+        Assert.Equal(empty.Covers, unknown.Covers);
     }
 }

@@ -61,7 +61,7 @@ public sealed class FaultCountersRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, FaultCounters.Evaluate(context.Observations));
+        return FaultCounters.Judge(context.Observations, context.NowUtc);
     }
 }
 
@@ -119,8 +119,8 @@ public sealed class MemoryPressureRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, MemoryPressure.Evaluate(
-            context.Observations, context.Graph, context.Options.MemoryPressure));
+        return MemoryPressure.Judge(
+            context.Observations, context.Graph, context.Options.MemoryPressure, context.HeldBy(RuleId), context.NowUtc);
     }
 }
 
@@ -180,16 +180,16 @@ public sealed class StorageLatencyBlindSpotRule : IAnalysisRule
 
     // Measured: 399 Cleared->Returned pairs over 30 fingerprints, p50 = p95 =
     // 1 absence (30 s), max 26 610 s; chosen 2, above the p95 (design note
-    // §3.1). Every one of those flaps is a quiet cycle, which the rule's own
-    // conversion will call NotJudgeable -- N was never the fix for them.
+    // §3.1). Every one of those flaps is a quiet cycle, which the rule now
+    // calls NotJudgeable -- N was never the fix for them (§7).
     public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 2 };
 
     public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, StorageLatencyBlindSpot.Evaluate(
-            context.Observations, context.Options.StorageLatencyBlindSpot));
+        return StorageLatencyBlindSpot.Judge(
+            context.Observations, context.Options.StorageLatencyBlindSpot, context.NowUtc);
     }
 }
 
@@ -308,7 +308,7 @@ public sealed class RemoteLoggingRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, RemoteLogging.Evaluate([.. context.Graph.Active], context.Options.RemoteLogging));
+        return RemoteLogging.Judge([.. context.Graph.Active], context.Options.RemoteLogging, context.NowUtc);
     }
 }
 
@@ -380,9 +380,7 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
         var readings = DatastoreTimeToFull.CurrentReadings(
             context.Snapshots.SelectMany(s => s.Observations), context.Graph);
 
-        var unevaluated = new List<AlertFingerprint>();
-
-        var raised = DatastoreTimeToFull.EvaluateEach(
+        return DatastoreTimeToFull.Judge(
             readings,
             d => DatastoreTimeToFull.Read(
                 context.Series,
@@ -391,18 +389,10 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
                 context.NowUtc,
                 policy,
                 context.Options.Retention),
-            unevaluated,
+            context.HeldBy(RuleId),
+            context.NowUtc,
             policy);
-
-        return TwoValuedVerdicts.From(
-            context,
-            RuleId,
-            raised,
-            unevaluated,
-            fingerprint => DatastoreTimeToFull.IsOvercommit(fingerprint) ? Overcommit : null);
     }
-
-    private static readonly ResolutionPolicy Overcommit = new() { ConsecutiveAbsent = 2 };
 }
 
 /// <summary>Adapts <see cref="CollectionCoverage"/>.</summary>
@@ -423,10 +413,12 @@ public sealed class CollectionCoverageRule : IAnalysisRule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, CollectionCoverage.Evaluate(
+        return CollectionCoverage.Judge(
             context.Snapshots.ToDictionary(
                 s => s.SourceInstanceId,
                 s => s.Coverage,
-                StringComparer.Ordinal)));
+                StringComparer.Ordinal),
+            context.HeldBy(RuleId),
+            context.NowUtc);
     }
 }

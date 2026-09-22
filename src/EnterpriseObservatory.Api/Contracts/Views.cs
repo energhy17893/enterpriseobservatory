@@ -86,6 +86,24 @@ public sealed record AlertView
     public required DateTimeOffset FirstSeenUtc { get; init; }
 
     public required DateTimeOffset LastSeenUtc { get; init; }
+
+    /// <summary>
+    /// When the newest input the alert's state rests on was taken (ADR-0026
+    /// point 3): the API does not return a state without its freshness.
+    /// </summary>
+    public required DateTimeOffset EvidenceAtUtc { get; init; }
+
+    /// <summary>Open, but the last cycles could not recheck it.</summary>
+    public required bool IsStale { get; init; }
+
+    /// <summary>Since when it could not be rechecked; null while fresh.</summary>
+    public DateTimeOffset? StaleSinceUtc { get; init; }
+
+    /// <summary>Why it could not be rechecked; null while fresh.</summary>
+    public UnknownReason? StaleReason { get; init; }
+
+    /// <summary>What was missing, in words; null while fresh.</summary>
+    public string? StaleDetail { get; init; }
 }
 
 /// <summary>An entity as the explorer lists it (tier 1 of ADR-0007).</summary>
@@ -411,6 +429,18 @@ public sealed record OverviewView
     public required int UnacknowledgedAlerts { get; init; }
 
     public required int SuppressedAlerts { get; init; }
+
+    /// <summary>Open alerts whose evidence is current (ADR-0026: "open" is two numbers).</summary>
+    public int FreshOpenAlerts { get; init; }
+
+    /// <summary>Open alerts the last cycles could not recheck.</summary>
+    public int StaleOpenAlerts { get; init; }
+
+    /// <summary>
+    /// Alerts without fresh evidence for as long as raw retention: out of the
+    /// open counts, listed under their own filter.
+    /// </summary>
+    public int UnknownAlerts { get; init; }
 
     public required IReadOnlyDictionary<string, int> EntitiesByHealth { get; init; }
 

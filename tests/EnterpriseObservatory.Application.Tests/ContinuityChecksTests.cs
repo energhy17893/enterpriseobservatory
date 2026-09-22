@@ -478,7 +478,7 @@ public class ContinuityChecksTests
                     {
                         DemandHosts = cpu,
                         AvailableAfterFailoverHosts = 1.8,
-                        HistoryCovered = history ?? TimeSpan.FromDays(30),
+                        History = Hourly(history ?? TimeSpan.FromDays(30)),
                         HistoryEndUtc = T0,
                         Date = date,
                     },
@@ -487,6 +487,13 @@ public class ContinuityChecksTests
                 },
             },
         };
+
+    /// <summary>Hourly demand points over <paramref name="span"/>, ending now, judged as the check will.</summary>
+    private static HistoryCoverage Hourly(TimeSpan span, Func<DateTimeOffset, bool>? keep = null) =>
+        HistoryCoverage.Of(
+            Enumerable.Range(0, (int)span.TotalHours + 1).Select(i => T0.AddHours(-i)).Where(keep ?? (_ => true)),
+            TimeSpan.FromHours(1),
+            T0);
 
     private static ComplianceFinding NPlusOne(DemandSnapshot? snapshot) =>
         One(Evaluate([Cluster()], demand: snapshot), NPlusOneCpu);
@@ -508,13 +515,40 @@ public class ContinuityChecksTests
         var finding = NPlusOne(Snapshot(history: TimeSpan.FromDays(2)));
 
         Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
-        Assert.Contains("No 7 days of demand history", finding.Reason, StringComparison.Ordinal);
+        Assert.Contains("the history spans 2 of the 7 days needed", finding.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_month_spanned_with_the_last_week_half_missing_is_not_evaluated_and_says_how_much()
+    {
+        // The span alone used to decide: thirty days from first to last point
+        // said "enough" even with most of the recent week missing. Now 80% of
+        // the week's points must have been read (ADR-0026, product policy).
+        var cluster = Snapshot().Clusters[ClusterId];
+        var snapshot = Snapshot() with
+        {
+            Clusters = new Dictionary<EntityId, ClusterDemand>
+            {
+                [ClusterId] = cluster with
+                {
+                    Cpu = cluster.Cpu with
+                    {
+                        History = Hourly(TimeSpan.FromDays(30), t => t < T0.AddDays(-5) || t > T0.AddDays(-1.5)),
+                    },
+                },
+            },
+        };
+
+        var finding = NPlusOne(snapshot);
+
+        Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
+        Assert.Contains("49% of the 7 days read, 80% needed", finding.Reason, StringComparison.Ordinal);
     }
 
     [Fact]
     public void Demand_over_the_headroom_fails_today_whatever_the_history()
     {
-        Assert.Equal(ComplianceVerdict.Failing, NPlusOne(Snapshot(cpu: 2.1, history: TimeSpan.Zero)).Verdict);
+        Assert.Equal(ComplianceVerdict.Failing, NPlusOne(Snapshot(cpu: 2.1, history: TimeSpan.FromHours(1))).Verdict);
     }
 
     [Fact]
@@ -563,7 +597,11 @@ public class ContinuityChecksTests
         var demand = snapshot.Clusters[ClusterId];
         Assert.Equal(2, demand.HostCount);
         Assert.Equal(1.0, demand.Cpu.DemandHosts);
-        Assert.Equal(TimeSpan.FromDays(10), demand.Cpu.HistoryCovered);
+        Assert.Equal(TimeSpan.FromDays(10), demand.Cpu.History?.Span);
+
+        // Two points in ten days is not ten days of history.
+        Assert.False(demand.Cpu.History?.IsEnough);
+        Assert.Equal(168, demand.Cpu.History?.PointsExpected);
         Assert.Equal(T0, snapshot.TakenUtc);
     }
 

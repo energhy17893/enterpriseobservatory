@@ -156,6 +156,11 @@ public sealed class CompactionWorker(
                 Scope = GuardedCompaction.Scope,
                 Observed = outcome.Alerts,
 
+                // The pass ran, and it is the only producer in its scope: it
+                // speaks for every alert filed there (ADR-0026). A pass that
+                // did not run never reaches this line.
+                ProducersRun = [ProducerRun.Where("compaction", static _ => true)],
+
                 // No rules and no sources: compaction is a direct producer,
                 // two-valued at N = 1, and its own evidence (ADR-0026 §1.2).
                 Evaluations = [],

@@ -65,17 +65,87 @@ public static class CollectionCoverage
         return alerts;
     }
 
+    /// <summary>
+    /// The same, in three values (ADR-0026).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Present: nothing answered. Absent: at least one object of this source's
+    /// snapshot answered. A property with nothing asked is not judgeable.
+    /// </para>
+    /// <para>
+    /// A held alert of a source that returned no snapshot this cycle is
+    /// <see cref="UnknownReason.SourceSilent"/>, said by the rule itself: the
+    /// alert has no entity, so the reconciler's source clamp cannot reach it,
+    /// and it used to resolve the first cycle its vCenter did not answer.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyDictionary<string, IReadOnlyList<PropertyCoverage>> bySource,
+        IReadOnlyList<HeldAlert> held,
+        DateTimeOffset evidenceAtUtc)
+    {
+        ArgumentNullException.ThrowIfNull(bySource);
+        ArgumentNullException.ThrowIfNull(held);
+
+        var verdicts = new List<SubjectVerdict>();
+
+        foreach (var (source, coverage) in bySource)
+        {
+            foreach (var c in coverage)
+            {
+                IReadOnlyList<AlertFingerprint> covers = [FingerprintOf(source, c)];
+
+                verdicts.Add(c.IsBlind
+                    ? new ConditionPresent { Covers = covers, Alerts = [Blind(source, c)], EvidenceAtUtc = evidenceAtUtc }
+                    : c.Answered > 0
+                        ? new ConditionAbsent { Covers = covers, EvidenceAtUtc = evidenceAtUtc }
+                        : new Unknown
+                        {
+                            Covers = covers,
+                            Reason = UnknownReason.NotJudgeable,
+                            Detail = $"no {c.ObjectType} object was asked for '{c.Property}' on '{source}' this cycle",
+                        });
+            }
+        }
+
+        var reported = bySource.Keys.Select(s => s.Trim().ToLowerInvariant() + "/").ToList();
+
+        foreach (var alert in held)
+        {
+            var parts = alert.Fingerprint.Value.Split('|');
+            var subject = parts.Length == 5 ? parts[3] : string.Empty;
+
+            if (subject.Length == 0 || reported.Any(r => subject.StartsWith(r, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            var source = subject.Split('/')[0];
+
+            verdicts.Add(new Unknown
+            {
+                Covers = [alert.Fingerprint],
+                Reason = UnknownReason.SourceSilent,
+                Detail = $"source '{source}' returned no snapshot this cycle, so its coverage was not measured",
+            });
+        }
+
+        return verdicts;
+    }
+
+    // The source is in the fingerprint because the answer differs per
+    // vCenter -- a permission granted on one and not the other is the
+    // commonest cause -- and the counts are deliberately not, because
+    // a property answered by one more object next cycle is the same
+    // problem and must not retire the operator's clear.
+    private static AlertFingerprint FingerprintOf(string source, PropertyCoverage c) =>
+        AlertFingerprint.Create(Platform, Title, Category, $"{source}/{c.ObjectType}/{c.Property}", RuleId);
+
     private static AlertDefinition Blind(string source, PropertyCoverage c) =>
         new()
         {
-            // The source is in the fingerprint because the answer differs per
-            // vCenter -- a permission granted on one and not the other is the
-            // commonest cause -- and the counts are deliberately not, because
-            // a property answered by one more object next cycle is the same
-            // problem and must not retire the operator's clear.
-            Fingerprint = AlertFingerprint.Create(
-                Platform, Title, Category,
-                $"{source}/{c.ObjectType}/{c.Property}", RuleId),
+            Fingerprint = FingerprintOf(source, c),
             Severity = AlertSeverity.Warning,
             Title = Title,
             Description =

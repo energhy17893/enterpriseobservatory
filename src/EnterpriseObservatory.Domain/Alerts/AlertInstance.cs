@@ -84,6 +84,9 @@ public enum AlertTransitionReason
 
     /// <summary>Resolved because an occurrence aged out; the type declares it two-valued.</summary>
     Expired,
+
+    /// <summary>Resolved because the rule that raised it is no longer registered (K2, M3.3).</summary>
+    RuleRetired,
 }
 
 /// <summary>One recorded change in an alert's life.</summary>
@@ -218,8 +221,9 @@ public sealed record AlertInstance
     /// alerts, store failures, rule failures, compaction, flapping).
     /// </summary>
     /// <remarks>
-    /// Null is the two-valued kind with N = 1 (design note §1.2): its producer
-    /// runs every cycle and is its own evidence. Anything with a rule id is
+    /// Null is the two-valued kind with N = 1 (design note §1.2): a producer
+    /// that signed the cycle as run and did not report it has found it gone;
+    /// one that did not run leaves it open and stale. Anything with a rule id is
     /// judged three-valued, and a cycle in which its rule says nothing about it
     /// is "not reported", never "gone".
     /// </remarks>
@@ -289,21 +293,32 @@ public sealed record AlertInstance
     }
 
     /// <summary>
-    /// Records something that happened without changing state.
+    /// Records something that happened without changing state — only when an
+    /// operator did it.
     /// </summary>
     /// <remarks>
-    /// A severity change is the case that matters: an alert going from critical
-    /// to warning stays open, but the improvement is exactly the sort of thing
-    /// someone will later want to see in the history. <see cref="With"/>
-    /// deliberately ignores same-state calls, so this exists to say that the
-    /// no-op is not what was meant.
+    /// <para>
+    /// The history is the durable record (<c>alert_history</c>) and holds
+    /// transitions, not observations: an episode's opening, a real state change
+    /// (<see cref="With"/>), or an explicit operator action. Measured after
+    /// #83: <c>storage-latency-blind-spot</c> wrote 307 "Raised" rows in 43
+    /// minutes for the same fingerprints, and same-state rows (evidence lost
+    /// and back, severity eased) are the same kind of noise one cycle at a
+    /// time. What they said stays on the instance instead: stale since, why,
+    /// and the pending "improved" notification.
+    /// </para>
+    /// <para>
+    /// A system event without an actor is therefore not written, which keeps
+    /// the in-memory history and the stored one the same list, so a restart
+    /// cannot shift the position the next row is written at.
+    /// </para>
     /// </remarks>
     internal AlertInstance RecordEvent(
         AlertTransitionReason reason,
         DateTimeOffset atUtc,
         string? actor = null,
         string? detail = null) =>
-        this with
+        actor is null ? this : this with
         {
             History = [.. History, new AlertTransition
             {

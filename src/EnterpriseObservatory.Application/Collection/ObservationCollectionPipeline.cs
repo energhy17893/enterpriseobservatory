@@ -121,12 +121,7 @@ public sealed class ObservationCollectionPipeline(IClock clock, TimeProvider? ti
 
         yield return new AlertDefinition
         {
-            Fingerprint = AlertFingerprint.Create(
-                "platform",
-                "Platform detail level too low",
-                "Configuration",
-                batch.SourceInstanceId,
-                "insufficient-detail-level"),
+            Fingerprint = DetailLevelFingerprint(batch.SourceInstanceId),
             Severity = AlertSeverity.Warning,
             Title = "Platform detail level too low",
             Description =
@@ -138,4 +133,13 @@ public sealed class ObservationCollectionPipeline(IClock clock, TimeProvider? ti
             IsDerived = true,
         };
     }
+
+    /// <summary>The fingerprint of a source's "detail level too low" alert, for the cycle's signature (ADR-0026).</summary>
+    internal static AlertFingerprint DetailLevelFingerprint(string sourceInstanceId) =>
+        AlertFingerprint.Create(
+            "platform",
+            "Platform detail level too low",
+            "Configuration",
+            sourceInstanceId,
+            "insufficient-detail-level");
 }

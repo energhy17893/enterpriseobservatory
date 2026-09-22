@@ -156,4 +156,39 @@ public class CollectionCoverageTests
     {
         Assert.Throws<ArgumentNullException>(() => CollectionCoverage.Evaluate(null!));
     }
+
+    // --- three values (ADR-0026) -------------------------------------------
+
+    private static EnterpriseObservatory.Domain.Alerts.AlertFingerprint Fp(string source, string property) =>
+        Assert.Single(CollectionCoverage.Evaluate(
+            new Dictionary<string, IReadOnlyList<PropertyCoverage>>(StringComparer.Ordinal)
+            {
+                [source] = [Row(property, asked: 1, answered: 0)],
+            })).Fingerprint;
+
+    [Fact]
+    public void A_property_answered_is_absent_and_one_nobody_answered_is_present()
+    {
+        var verdicts = CollectionCoverage.Judge(
+            From(Row("config.option", 10, 0), Row("summary.runtime", 10, 3)), [], DateTimeOffset.UnixEpoch);
+
+        Assert.IsType<ConditionPresent>(Assert.Single(verdicts, v => v.Covers.Contains(Fp("vc-1", "config.option"))));
+        Assert.IsType<ConditionAbsent>(Assert.Single(verdicts, v => v.Covers.Contains(Fp("vc-1", "summary.runtime"))));
+    }
+
+    [Fact]
+    public void A_held_alert_of_a_source_that_returned_no_snapshot_is_source_silent()
+    {
+        // The alert has no entity, so the reconciler's source clamp cannot
+        // reach it: it used to resolve the first cycle its vCenter did not
+        // answer (design note §3). The rule says it itself now.
+        var held = Fp("vc-2", "config.option");
+
+        var verdicts = CollectionCoverage.Judge(
+            From(Row("config.option", 10, 10)), [new HeldAlert(held, null)], DateTimeOffset.UnixEpoch);
+
+        var unknown = Assert.IsType<Unknown>(Assert.Single(verdicts, v => v.Covers.Contains(held)));
+        Assert.Equal(EnterpriseObservatory.Domain.Alerts.UnknownReason.SourceSilent, unknown.Reason);
+        Assert.Contains("vc-2", unknown.Detail, StringComparison.Ordinal);
+    }
 }

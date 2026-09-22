@@ -103,7 +103,9 @@ public class AlertLifecycleTests
 
         Assert.Equal(AlertSeverity.Warning, i.Severity);
         Assert.Equal(AlertNotificationKind.Improved, i.PendingNotification);
-        Assert.Contains(i.History, t => t.Reason == AlertTransitionReason.SeverityDecreased);
+        // Said through the notification kind; not a state change, so not a
+        // history row (only transitions and operator actions are).
+        Assert.DoesNotContain(i.History, t => t.Reason == AlertTransitionReason.SeverityDecreased);
     }
 
     [Fact]

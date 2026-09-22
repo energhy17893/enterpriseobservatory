@@ -429,6 +429,16 @@ public static class ClusterNPlusOne
         return nowUtc - latest.StartUtc <= staleAfter ? latest.Last : null;
     }
 
+    /// <summary>The width of one point of the demand history: the tier <see cref="HostHistoryQuery"/> reads.</summary>
+    public static TimeSpan HistoryInterval(ClusterNPlusOnePolicy policy, SeriesRetentionPolicy retention)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(retention);
+
+        return SeriesResolutions.Width(
+            retention.RetainedResolutionFor(policy.Lookback, policy.MaxPoints, policy.Lookback));
+    }
+
     /// <summary>One host's demand history query, aligned with the cluster's other hosts.</summary>
     public static SeriesQuery HostHistoryQuery(
         EntityId host,

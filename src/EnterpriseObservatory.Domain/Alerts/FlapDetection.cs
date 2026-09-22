@@ -140,6 +140,18 @@ public static class FlapDetection
     }
 
     /// <summary>
+    /// Whether a fingerprint is one <see cref="FingerprintFor"/> built: an
+    /// "unstable signal" alert, which reconciliation itself re-derives every
+    /// cycle and so is always its own producer (ADR-0026).
+    /// </summary>
+    public static bool IsDerivedFingerprint(AlertFingerprint fingerprint) =>
+        fingerprint.Value is { } value &&
+        value.StartsWith(
+            AlertFingerprint.Create(Source, "Unstable signal", "Reliability", string.Empty).Value[..^2],
+            StringComparison.Ordinal) &&
+        value.Contains("|flapping:", StringComparison.Ordinal);
+
+    /// <summary>
     /// The fingerprint of the derived alert, tied to the original so the two
     /// can be correlated but never merged.
     /// </summary>

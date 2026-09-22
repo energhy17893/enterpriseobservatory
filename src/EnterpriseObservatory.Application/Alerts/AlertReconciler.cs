@@ -30,6 +30,18 @@ public sealed record EvidenceSources
     public required Func<EntityId, string?> OwnerOf { get; init; }
 
     /// <summary>
+    /// Whether an entity is gone from a source that answered: marked vanished
+    /// in the graph. Its alerts resolve as <see cref="AbsenceKind.SubjectRemoved"/>,
+    /// never as "condition cleared" (design note §2).
+    /// </summary>
+    /// <remarks>
+    /// "Nothing vanished" by default, which is the safe answer: it retires
+    /// nothing. A purged entity is not claimed here — it is not in the graph,
+    /// and not being in the graph is also what an entity never read looks like.
+    /// </remarks>
+    public Func<EntityId, bool> IsVanished { get; init; } = static _ => false;
+
+    /// <summary>
     /// For a scope whose alerts belong to no source, such as compaction: nothing
     /// reported, and nothing is owned.
     /// </summary>
@@ -42,6 +54,45 @@ public sealed record EvidenceSources
         !Reporting.Contains(owner, StringComparer.Ordinal)
             ? owner
             : null;
+}
+
+/// <summary>
+/// A direct producer's signature that it ran this cycle, and which stored
+/// alerts it speaks for (ADR-0026).
+/// </summary>
+/// <remarks>
+/// <para>
+/// A direct producer — a collector, a store write, a rule's failure guard —
+/// is two-valued at N = 1: what it ran and did not report is gone. That holds
+/// only for a producer that <em>ran</em>. One that did not (a write that was
+/// not attempted because there was nothing to write, a source that was not
+/// polled) has told us nothing, and its alerts stay open and go stale.
+/// </para>
+/// <para>
+/// So a producer signs: without a signature that speaks for an alert, the
+/// alert is "not reported" — the same flipped default rules have. Forgetting
+/// to sign keeps an alarm open; it cannot close one.
+/// </para>
+/// </remarks>
+public sealed record ProducerRun
+{
+    /// <summary>Who ran: for the detail an operator reads, never for matching.</summary>
+    public required string Producer { get; init; }
+
+    /// <summary>Whether a stored alert is one this producer would have raised.</summary>
+    public required Func<AlertFingerprint, bool> SpeaksFor { get; init; }
+
+    /// <summary>A producer whose alerts are exactly these fingerprints.</summary>
+    public static ProducerRun For(string producer, params IEnumerable<AlertFingerprint> fingerprints)
+    {
+        var own = fingerprints.ToHashSet();
+
+        return new ProducerRun { Producer = producer, SpeaksFor = own.Contains };
+    }
+
+    /// <summary>A producer whose alerts are the ones <paramref name="speaksFor"/> recognises.</summary>
+    public static ProducerRun Where(string producer, Func<AlertFingerprint, bool> speaksFor) =>
+        new() { Producer = producer, SpeaksFor = speaksFor };
 }
 
 /// <summary>
@@ -80,11 +131,29 @@ public sealed record AlertReconciliationRequest
     /// failures, rule failures, compaction. Two-valued at N = 1.
     /// </summary>
     /// <remarks>
-    /// A direct producer runs every cycle and is its own evidence (design note
-    /// §1.2), so its alert not being here is its absence — unless the alert is
-    /// about an entity of a source that did not report, which is unknown.
+    /// Its alert not being here is its absence only when its producer signed
+    /// <see cref="ProducersRun"/> — and even then not when the alert is about
+    /// an entity of a source that did not report, which is unknown.
     /// </remarks>
     public IReadOnlyList<AlertDefinition> Observed { get; init; } = [];
+
+    /// <summary>
+    /// The direct producers that ran this cycle (ADR-0026). A stored alert with
+    /// no rule that none of them speaks for is "not reported": open, stale.
+    /// </summary>
+    /// <remarks>
+    /// Empty by default, and the empty list is the safe one: it resolves no
+    /// direct producer's alert. Flap-derived alerts need no signature — this
+    /// reconciler re-derives them itself every cycle.
+    /// </remarks>
+    public IReadOnlyList<ProducerRun> ProducersRun { get; init; } = [];
+
+    /// <summary>
+    /// Every rule registered in the product, across scopes. An open alert of a
+    /// rule not in it resolves as <see cref="AbsenceKind.RuleRetired"/> (K2's
+    /// moved alarms, M3.3's remote logging); null retires nothing.
+    /// </summary>
+    public IReadOnlyCollection<string>? RegisteredRules { get; init; }
 
     /// <summary>
     /// What each rule of this scope concluded, with its N (ADR-0026).
@@ -405,6 +474,25 @@ public static class AlertReconciler
                 continue;
             }
 
+            // An open alert of a rule that is registered nowhere: nothing will
+            // ever speak for it again, so it is over -- as "rule retired", not
+            // as "condition cleared". Only with the roster in hand (a request
+            // without it retires nothing), and only once it has already gone a
+            // cycle unreported: the path that retired the rule gets that cycle
+            // to close it its own way (ContinuityAlarmTransition's "moved to
+            // compliance finding" for K2's four).
+            if (instance.RuleId is { } unregistered &&
+                request.RegisteredRules is { } registered &&
+                !registered.Contains(unregistered, StringComparer.Ordinal) &&
+                (instance.State == AlertLifecycleState.Unknown ||
+                 instance is { IsStale: true, StaleReason: UnknownReason.NotReported }))
+            {
+                decisions[fingerprint] = new Gone(
+                    new AlertAbsence { EvidenceAtUtc = request.NowUtc, Because = AbsenceKind.RuleRetired },
+                    ResolutionPolicy.Immediate);
+                continue;
+            }
+
             decisions[fingerprint] = instance.RuleId is { } ruleId
                 // The flipped default: a rule that said nothing about an alert
                 // it holds has not found the condition gone.
@@ -413,21 +501,59 @@ public static class AlertReconciler
                     Reason = UnknownReason.NotReported,
                     Detail = $"'{ruleId}' gave no verdict about this alert this cycle",
                 })
+                : DirectProducer(request, instance);
+        }
 
-                // A direct producer's silence is its absence, unless the alert
-                // is about an entity of a source that did not answer: that
-                // source has told us nothing, and EntityGraph.Merge keeps its
-                // entities for the same reason.
-                : request.Sources.SilentOwnerOf(instance.Entity) is { } silent
-                    ? new Blind(new AlertUnknown
-                    {
-                        Reason = UnknownReason.SourceSilent,
-                        Detail = $"source '{silent}' did not report this cycle",
-                    })
-                    : new Gone(new AlertAbsence { EvidenceAtUtc = request.NowUtc }, ResolutionPolicy.Immediate);
+        // A subject gone from a source that answered: whatever was said or
+        // not said about it, the alert is over as "subject removed". Only a
+        // present verdict outranks it -- something is still being seen.
+        foreach (var (fingerprint, instance) in stored)
+        {
+            if (instance.Entity is { } entity &&
+                request.Sources.IsVanished(entity) &&
+                decisions.GetValueOrDefault(fingerprint) is not Seen)
+            {
+                decisions[fingerprint] = new Gone(
+                    new AlertAbsence { EvidenceAtUtc = request.NowUtc, Because = AbsenceKind.SubjectRemoved },
+                    ResolutionPolicy.Immediate);
+            }
         }
 
         return decisions;
+    }
+
+    /// <summary>
+    /// A direct producer's alert that was not reported this cycle.
+    /// </summary>
+    /// <remarks>
+    /// Absent (N = 1) only when a producer that speaks for it signed the cycle
+    /// as run — "ran and did not see it". A producer that did not run has not
+    /// looked, and its alert stays open and stale; so does one about an entity
+    /// of a source that did not answer, for the reason EntityGraph.Merge keeps
+    /// that source's entities. Flap-derived alerts are this reconciler's own,
+    /// re-derived above every cycle, so it is always their producer.
+    /// </remarks>
+    private static Decision DirectProducer(AlertReconciliationRequest request, AlertInstance instance)
+    {
+        var ran = FlapDetection.IsDerivedFingerprint(instance.Fingerprint) ||
+                  request.ProducersRun.Any(p => p.SpeaksFor(instance.Fingerprint));
+
+        if (!ran)
+        {
+            return new Blind(new AlertUnknown
+            {
+                Reason = UnknownReason.NotReported,
+                Detail = "no producer that raises this alert ran this cycle",
+            });
+        }
+
+        return request.Sources.SilentOwnerOf(instance.Entity) is { } silent
+            ? new Blind(new AlertUnknown
+            {
+                Reason = UnknownReason.SourceSilent,
+                Detail = $"source '{silent}' did not report this cycle",
+            })
+            : new Gone(new AlertAbsence { EvidenceAtUtc = request.NowUtc }, ResolutionPolicy.Immediate);
     }
 
     /// <summary>

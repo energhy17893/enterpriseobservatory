@@ -468,16 +468,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
 
         return new AlertDefinition
         {
-            // The role is part of the identity, not decoration. Reading
-            // inventory and reading metrics fail independently, and one
-            // fingerprint for both would let each cycle resolve the other's
-            // alert on every pass.
-            Fingerprint = AlertFingerprint.Create(
-                "platform",
-                "Collector unreachable",
-                "Configuration",
-                instanceId,
-                $"collector-unreachable:{what}"),
+            Fingerprint = UnreachableFingerprint(instanceId, role),
             Severity = AlertSeverity.Warning,
             Title = $"Collector unreachable ({what})",
             Description = $"{detail} Everything this source reports on is Unknown, not healthy.",
@@ -486,6 +477,22 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             IsDerived = true,
         };
     }
+
+    /// <summary>The fingerprint of a source's "Collector unreachable" alert in one role.</summary>
+    /// <remarks>
+    /// The role is part of the identity, not decoration. Reading inventory and
+    /// reading metrics fail independently, and one fingerprint for both would
+    /// let each cycle resolve the other's alert on every pass. Public to the
+    /// cycle so the runner can sign, for every source it attempted, that it
+    /// looked (ADR-0026).
+    /// </remarks>
+    internal static AlertFingerprint UnreachableFingerprint(string instanceId, CollectorRole role) =>
+        AlertFingerprint.Create(
+            "platform",
+            "Collector unreachable",
+            "Configuration",
+            instanceId,
+            $"collector-unreachable:{(role == CollectorRole.Inventory ? "inventory" : "metrics")}");
 
     internal static CollectorHealth Existing(
         IReadOnlyList<CollectorHealth> health,

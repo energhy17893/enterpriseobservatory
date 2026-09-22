@@ -33,7 +33,10 @@ public sealed record MovedAlarm(AlertInstance Alarm, ComplianceFinding? Finding)
 /// resolving them for being absent: they still carry their retired rule's id,
 /// no rule gives them a verdict, so they are "not reported" and marked stale
 /// (ADR-0026). Otherwise the first cycle after the upgrade would close them as
-/// "condition cleared", which is not what happened.
+/// "condition cleared", which is not what happened. One that is still not
+/// moved on the next inventory cycle — the continuity catalogue did not load,
+/// or its evaluation failed — is closed there as "rule retired" instead, so it
+/// cannot stay "not reported" for ever.
 /// </para>
 /// </remarks>
 public static class ContinuityAlarmTransition

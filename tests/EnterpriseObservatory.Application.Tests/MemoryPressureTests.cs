@@ -424,4 +424,113 @@ public class MemoryPressureTests
         Assert.Single(MemoryPressure.Evaluate(
             [Rate(guests[0], 300), Rate(guests[0], 0)], Estate(guests)));
     }
+
+    // --- three values (ADR-0026) -------------------------------------------
+
+    private static AlertFingerprint HostFp => AlertFingerprint.Create(
+        "platform", HostTitle, MemoryPressure.Category, Host, "memory-host-pressure");
+
+    private static AlertFingerprint GuestFp(string vm) => AlertFingerprint.Create(
+        "platform", GuestTitle, MemoryPressure.Category, vm, "memory-guest-pressure");
+
+    private static AlertFingerprint LimitFp(string vm) => AlertFingerprint.Create(
+        "platform", LimitTitle, MemoryPressure.SizingCategory, vm, "memory-limit-pressure");
+
+    private static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations, EntityGraph graph, params AlertFingerprint[] held) =>
+        MemoryPressure.Judge(
+            observations, graph, null, [.. held.Select(f => new HeldAlert(f, null))], T0);
+
+    private static SubjectVerdict On(IReadOnlyList<SubjectVerdict> verdicts, AlertFingerprint fingerprint) =>
+        Assert.Single(verdicts, v => v.Covers.Contains(fingerprint));
+
+    [Fact]
+    public void All_four_rates_read_and_calm_is_absent_for_host_and_guest()
+    {
+        var guests = Guests(1);
+        var sized = Estate(guests) with
+        {
+            Entities = new Dictionary<EntityId, Entity>(Estate(guests).Entities)
+            {
+                [new EntityId(guests[0])] = Node(guests[0], EntityKind.VirtualMachine) with { Sizing = new EntitySizing() },
+            },
+        };
+
+        var verdicts = Judge([.. Calm(Host), .. Calm(guests[0])], sized);
+
+        Assert.IsType<ConditionAbsent>(On(verdicts, HostFp));
+        Assert.IsType<ConditionAbsent>(On(verdicts, GuestFp(guests[0])));
+        Assert.IsType<ConditionAbsent>(On(verdicts, LimitFp(guests[0])));
+    }
+
+    [Theory]
+    [InlineData(SwapIn)]
+    [InlineData(SwapOut)]
+    [InlineData(Compression)]
+    [InlineData(Decompression)]
+    public void A_missing_rate_is_not_collected_rather_than_absent(string missing)
+    {
+        // Measured on this estate: all four arrive for hosts and VMs, so
+        // absence needs all four (design note §5.9). A missing one used to
+        // read as "no pressure" and resolve the alert.
+        var guests = Guests(1);
+        var calm = Calm(Host).Concat(Calm(guests[0])).Where(o => o.Value.CounterName != missing).ToList();
+
+        var verdicts = Judge(calm, Estate(guests));
+
+        var host = Assert.IsType<Unknown>(On(verdicts, HostFp));
+        Assert.Equal(UnknownReason.InputNotCollected, host.Reason);
+        Assert.Contains(missing, host.Detail, StringComparison.Ordinal);
+
+        var guest = Assert.IsType<Unknown>(On(verdicts, GuestFp(guests[0])));
+        Assert.Equal(UnknownReason.InputNotCollected, guest.Reason);
+    }
+
+    [Fact]
+    public void Pressure_on_one_rate_is_present_even_with_the_others_missing()
+    {
+        // Missing inputs cannot hide a reading that is there.
+        var guests = Guests(1);
+
+        var verdicts = Judge([Rate(guests[0], 300)], Estate(guests));
+
+        Assert.IsType<ConditionPresent>(On(verdicts, GuestFp(guests[0])));
+    }
+
+    [Fact]
+    public void An_unread_memory_limit_is_not_collected_for_the_limit_alert()
+    {
+        var guests = Guests(1);
+
+        var verdicts = Judge([.. Calm(Host), .. Calm(guests[0])], Estate(guests));
+
+        var limit = Assert.IsType<Unknown>(On(verdicts, LimitFp(guests[0])));
+        Assert.Equal(UnknownReason.InputNotCollected, limit.Reason);
+        Assert.IsType<ConditionAbsent>(On(verdicts, GuestFp(guests[0])));
+    }
+
+    [Fact]
+    public void A_guest_the_host_verdict_speaks_for_is_superseded()
+    {
+        var guests = Guests(3);
+
+        var verdicts = Judge(
+            [Rate(Host, 800), .. guests.Select(g => Rate(g, 300))], Estate(guests));
+
+        Assert.IsType<ConditionPresent>(On(verdicts, HostFp));
+        var absent = Assert.IsType<ConditionAbsent>(On(verdicts, GuestFp(guests[0])));
+        Assert.Equal(AbsenceKind.Superseded, absent.Because);
+    }
+
+    [Fact]
+    public void A_held_alert_whose_entity_sent_no_rate_at_all_is_not_collected()
+    {
+        var guests = Guests(1);
+
+        var verdicts = MemoryPressure.Judge(
+            [.. Calm(Host)], Estate(guests), null, [new HeldAlert(GuestFp(guests[0]), new EntityId(guests[0]))], T0);
+
+        var unknown = Assert.IsType<Unknown>(On(verdicts, GuestFp(guests[0])));
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+    }
 }

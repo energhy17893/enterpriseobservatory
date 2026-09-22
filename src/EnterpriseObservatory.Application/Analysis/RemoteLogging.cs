@@ -115,8 +115,7 @@ public static class RemoteLogging
 
             alerts.Add(new AlertDefinition
             {
-                Fingerprint = AlertFingerprint.Create(
-                    Platform, Title, Category, host.Id.Value, RuleId),
+                Fingerprint = FingerprintOf(host.Id),
                 Severity = AlertSeverity.Warning,
                 Title = Title,
                 Description =
@@ -136,6 +135,50 @@ public static class RemoteLogging
 
         return alerts;
     }
+
+    /// <summary>
+    /// The same, in three values (ADR-0026): a target read and set is absent;
+    /// a setting that was not read is <see cref="UnknownReason.InputNotCollected"/>,
+    /// which used to resolve the alert through the <c>continue</c> above.
+    /// </summary>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Entity> entities,
+        RemoteLoggingPolicy? policy,
+        DateTimeOffset evidenceAtUtc)
+    {
+        ArgumentNullException.ThrowIfNull(entities);
+
+        var rules = policy ?? RemoteLoggingPolicy.Default;
+        var raised = Evaluate(entities, rules).ToDictionary(a => a.Entity!.Value);
+        var verdicts = new List<SubjectVerdict>();
+
+        foreach (var host in entities)
+        {
+            if (host.Kind != EntityKind.EsxiHost || host.ObservationState == ObservationState.Vanished)
+            {
+                continue;
+            }
+
+            IReadOnlyList<AlertFingerprint> covers = [FingerprintOf(host.Id)];
+
+            verdicts.Add(raised.TryGetValue(host.Id, out var alert)
+                ? new ConditionPresent { Covers = covers, Alerts = [alert], Entity = host.Id, EvidenceAtUtc = evidenceAtUtc }
+                : host.Settings.ContainsKey(rules.RemoteHostSetting)
+                    ? new ConditionAbsent { Covers = covers, Entity = host.Id, EvidenceAtUtc = evidenceAtUtc }
+                    : new Unknown
+                    {
+                        Covers = covers,
+                        Entity = host.Id,
+                        Reason = UnknownReason.InputNotCollected,
+                        Detail = $"'{rules.RemoteHostSetting}' was not read from this host",
+                    });
+        }
+
+        return verdicts;
+    }
+
+    private static AlertFingerprint FingerprintOf(EntityId host) =>
+        AlertFingerprint.Create(Platform, Title, Category, host.Value, RuleId);
 
     /// <summary>Where the logs are going instead, when the host said.</summary>
     /// <remarks>

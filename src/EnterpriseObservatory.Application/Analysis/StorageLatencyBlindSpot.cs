@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -260,7 +261,46 @@ public static class StorageLatencyBlindSpot
     /// </remarks>
     public static IReadOnlyList<AlertDefinition> Evaluate(
         IReadOnlyList<Observation> observations,
-        StorageLatencyBlindSpotPolicy? policy = null)
+        StorageLatencyBlindSpotPolicy? policy = null) =>
+        [.. Judge(observations, policy, DateTimeOffset.MinValue).OfType<ConditionPresent>().SelectMany(p => p.Alerts)];
+
+    /// <summary>
+    /// Every volume this cycle's samples carried latency for, judged in three
+    /// values (ADR-0026).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Present: blind, as <see cref="Evaluate"/> has always said. Absent: the
+    /// measurement works — a latency at or above the platform's resolution, or
+    /// SIOC active. Unknown otherwise, and this is the rule's whole conversion:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>A quiet cycle</b> — load below
+    /// <see cref="StorageLatencyBlindSpotPolicy.MinimumOperationsPerSecond"/> —
+    /// is <see cref="UnknownReason.NotJudgeable"/>. At idle a zero is an honest
+    /// zero, so the cycle cannot tell whether the measurement works; it is not
+    /// evidence that it does. Measured: every one of the 399 Cleared→Returned
+    /// pairs this rule left in fifteen hours before 22 September 2026 was a
+    /// quiet cycle resolving the alert and the next busy one raising it again
+    /// (design note §3.1, §7).</item>
+    /// <item>Fewer latency readings than
+    /// <see cref="StorageLatencyBlindSpotPolicy.MinimumLatencyReadings"/>:
+    /// <see cref="UnknownReason.NotJudgeable"/>.</item>
+    /// <item>Load or SIOC counter missing:
+    /// <see cref="UnknownReason.InputNotCollected"/>.</item>
+    /// </list>
+    /// <para>
+    /// A volume with no latency reading at all gets no verdict: nothing in the
+    /// cycle names it, so an alert on it is "not reported".
+    /// </para>
+    /// </remarks>
+    /// <param name="observations">This cycle's samples.</param>
+    /// <param name="policy">The resolutions; <see cref="StorageLatencyBlindSpotPolicy.Default"/> when null.</param>
+    /// <param name="evidenceAtUtc">When those samples were taken.</param>
+    public static IReadOnlyList<SubjectVerdict> Judge(
+        IReadOnlyList<Observation> observations,
+        StorageLatencyBlindSpotPolicy? policy,
+        DateTimeOffset evidenceAtUtc)
     {
         ArgumentNullException.ThrowIfNull(observations);
 
@@ -271,8 +311,7 @@ public static class StorageLatencyBlindSpot
         // denominator is volumes this rule was able to consider at all — ones
         // that reported latency counters — rather than every entity in the
         // cycle, so a cluster of hosts does not dilute it into meaninglessness.
-        var blind = new List<Observation>();
-        var considered = 0;
+        var judged = new List<(EntityId Volume, Judgement Judgement)>();
 
         foreach (var volume in observations.GroupBy(o => o.Entity))
         {
@@ -283,26 +322,64 @@ public static class StorageLatencyBlindSpot
                 continue;
             }
 
-            considered++;
-
-            if (Unmeasurable(volume, latency, rules) is { } witness)
-            {
-                blind.Add(witness);
-            }
+            judged.Add((volume.Key, Unmeasurable(volume, latency, rules)));
         }
 
-        return [.. blind.Select(w => Alert(w, blind.Count, considered))];
+        var blind = judged.Count(j => j.Judgement.Kind == JudgementKind.Blind);
+
+        return
+        [
+            .. judged.Select(j =>
+            {
+                IReadOnlyList<AlertFingerprint> covers = [FingerprintOf(j.Volume)];
+
+                return j.Judgement.Kind switch
+                {
+                    JudgementKind.Blind => (SubjectVerdict)new ConditionPresent
+                    {
+                        Covers = covers,
+                        Alerts = [Alert(j.Volume, blind, judged.Count)],
+                        Entity = j.Volume,
+                        EvidenceAtUtc = evidenceAtUtc,
+                    },
+                    JudgementKind.Measured => new ConditionAbsent
+                    {
+                        Covers = covers,
+                        Entity = j.Volume,
+                        EvidenceAtUtc = evidenceAtUtc,
+                    },
+                    _ => new Unknown
+                    {
+                        Covers = covers,
+                        Entity = j.Volume,
+                        Reason = j.Judgement.Reason,
+                        Detail = j.Judgement.Detail,
+                    },
+                };
+            }),
+        ];
     }
 
-    /// <summary>
-    /// The reading that stands for this volume, or nothing to say about it.
-    /// </summary>
-    /// <remarks>
-    /// Returns an observation rather than a bool so the alert can be built from
-    /// something real. Which reading it is does not matter — the finding is
-    /// that they all agree — so it is the first, taken only for its entity.
-    /// </remarks>
-    private static Observation? Unmeasurable(
+    /// <summary>The fingerprint of the alert about one volume.</summary>
+    public static AlertFingerprint FingerprintOf(EntityId volume) =>
+        // The volume and nothing else. There is no counter to name because
+        // the finding is about all of them, and no host to name because the
+        // finding is that every host agrees. A fingerprint carrying either
+        // would invent a protagonist the alert is specifically denying —
+        // the same choice SharedVolumeLatency makes, from the same place.
+        AlertFingerprint.Create(Platform, Title, Category, volume.Value, "storage-latency-blind-spot");
+
+    private enum JudgementKind
+    {
+        Blind,
+        Measured,
+        Unknown,
+    }
+
+    private readonly record struct Judgement(JudgementKind Kind, UnknownReason Reason = default, string Detail = "");
+
+    /// <summary>What can be said about this volume's measurement this cycle.</summary>
+    private static Judgement Unmeasurable(
         IEnumerable<Observation> volume,
         List<Observation> latency,
         StorageLatencyBlindSpotPolicy rules)
@@ -312,7 +389,8 @@ public static class StorageLatencyBlindSpot
         // being judged on one number.
         if (latency.Count < rules.MinimumLatencyReadings)
         {
-            return null;
+            return new(JudgementKind.Unknown, UnknownReason.NotJudgeable, string.Create(CultureInfo.InvariantCulture,
+                $"{latency.Count} latency reading(s) this cycle; {rules.MinimumLatencyReadings} are needed to judge the measurement"));
         }
 
         // Any reading at or above the platform's resolution means the
@@ -321,7 +399,16 @@ public static class StorageLatencyBlindSpot
         // them.
         if (latency.Any(o => o.Value.Raw >= rules.MinimumMeasurableMilliseconds))
         {
-            return null;
+            return new(JudgementKind.Measured);
+        }
+
+        // SIOC running answers the question on its own, whatever the load: the
+        // channel this rule says is missing is there.
+        var sioc = Sioc(volume, rules);
+
+        if (sioc is { } running && running >= rules.MinimumActiveSiocPercentage)
+        {
+            return new(JudgementKind.Measured);
         }
 
         // Not looking is not the same as looking and finding nothing. Without
@@ -330,23 +417,31 @@ public static class StorageLatencyBlindSpot
         // wrong answer this codebase treats as worse than silence.
         var load = Load(volume);
 
-        if (load is not { } operations || operations < rules.MinimumOperationsPerSecond)
+        if (load is not { } operations)
         {
-            return null;
+            return new(JudgementKind.Unknown, UnknownReason.InputNotCollected,
+                "no load counter (operations a second from a mounting host) arrived for this volume this cycle");
+        }
+
+        // A quiet cycle: a zero at idle is an honest zero, so whether the
+        // measurement works cannot be told. Not evidence that it does.
+        if (operations < rules.MinimumOperationsPerSecond)
+        {
+            return new(JudgementKind.Unknown, UnknownReason.NotJudgeable, string.Create(CultureInfo.InvariantCulture,
+                $"a quiet cycle: {operations:0.##} operations a second, below the {rules.MinimumOperationsPerSecond:0.##} that makes a zero a truncation rather than an honest idle zero"));
         }
 
         // The same argument again for the evidence counter. A collector that
         // does not report SIOC leaves the product unable to say why the zeros
         // are there, and an alert that cannot name its cause cannot name its
         // fix.
-        var sioc = Sioc(volume, rules);
-
-        if (sioc is not { } active || active >= rules.MinimumActiveSiocPercentage)
+        if (sioc is null)
         {
-            return null;
+            return new(JudgementKind.Unknown, UnknownReason.InputNotCollected,
+                $"'{rules.SiocCounter}' did not arrive for this volume this cycle");
         }
 
-        return latency[0];
+        return new(JudgementKind.Blind);
     }
 
     /// <summary>
@@ -423,16 +518,10 @@ public static class StorageLatencyBlindSpot
         return highest;
     }
 
-    private static AlertDefinition Alert(Observation witness, int blind, int considered) =>
+    private static AlertDefinition Alert(EntityId volume, int blind, int considered) =>
         new()
         {
-            // The volume and nothing else. There is no counter to name because
-            // the finding is about all of them, and no host to name because the
-            // finding is that every host agrees. A fingerprint carrying either
-            // would invent a protagonist the alert is specifically denying —
-            // the same choice SharedVolumeLatency makes, from the same place.
-            Fingerprint = AlertFingerprint.Create(
-                Platform, Title, Category, witness.Entity.Value, "storage-latency-blind-spot"),
+            Fingerprint = FingerprintOf(volume),
 
             // Warning, and the precedent is GuardedRule's rather than a storage
             // rule's: we do not know the estate is broken, only that we have
@@ -444,7 +533,7 @@ public static class StorageLatencyBlindSpot
             Description = Describe(blind, considered),
             Category = Category,
             Source = Platform,
-            Entity = witness.Entity,
+            Entity = volume,
 
             // Concluded by the product from an absence, not observed by a
             // collector. It also keeps the blind spot out of flap tracking,

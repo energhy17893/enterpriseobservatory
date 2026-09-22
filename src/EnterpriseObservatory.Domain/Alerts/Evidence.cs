@@ -38,6 +38,9 @@ public enum AbsenceKind
     SubjectRemoved,
     Superseded,
     Expired,
+
+    /// <summary>The rule that raised it is no longer registered; nothing will speak for it again.</summary>
+    RuleRetired,
 }
 
 /// <summary>
