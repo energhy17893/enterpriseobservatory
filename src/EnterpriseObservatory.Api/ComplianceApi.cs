@@ -106,18 +106,68 @@ public sealed record ComplianceExceptionView
     public DateTimeOffset? RemovedAtUtc { get; init; }
 }
 
+/// <summary>
+/// One catalogue's scorecard: the five-way finding count and coverage, for
+/// the posture screen's row above the grouped control sections (K3 §1.1,
+/// ADR-0026 — NotEvaluated is always shown, never folded into a percentage).
+/// </summary>
+/// <remarks>
+/// Built independently for every entry of <see cref="ComplianceService.Descriptors"/>
+/// — there is no "the" catalogue here, only a list, so a screen showing two
+/// (or, with M9, more) catalogues never has to guess which one is first.
+/// </remarks>
+public sealed record CatalogueScorecardView
+{
+    public required string Id { get; init; }
+
+    public required string Name { get; init; }
+
+    public required CatalogueOwner Owner { get; init; }
+
+    public required CatalogueKind Kind { get; init; }
+
+    public required string Release { get; init; }
+
+    /// <summary>Why this catalogue could not be loaded, when it could not be; counts are then all zero.</summary>
+    public string? Problem { get; init; }
+
+    public required FindingCountsView Counts { get; init; }
+
+    /// <summary>Passed + failing + accepted + excepted — subjects this product reached a verdict on.</summary>
+    public required int EvaluableSubjects { get; init; }
+
+    /// <summary>Every subject the catalogue's controls apply to, evaluated or not.</summary>
+    public required int TotalSubjects { get; init; }
+
+    /// <summary>
+    /// <see cref="EvaluableSubjects"/> over <see cref="TotalSubjects"/>; null
+    /// when there are no subjects at all (an unloaded or empty catalogue) —
+    /// never a manufactured 0% or 100% for "nothing to judge".
+    /// </summary>
+    public double? Coverage { get; init; }
+}
+
 /// <summary>The whole compliance screen's summary.</summary>
 public sealed record ComplianceView
 {
-    /// <summary>The source of the catalogue the header names (the vendor guide); each control carries its own.</summary>
+    /// <summary>
+    /// The source of the vendor guide, found by ownership
+    /// (<see cref="CatalogueOwner.Broadcom"/>), never by list position; each
+    /// control carries its own catalogue too. Kept for the header text
+    /// existing callers already read — <see cref="Catalogues"/> is the
+    /// list a screen should read to show more than one.
+    /// </summary>
     public string Source { get; init; } = string.Empty;
 
     public required string CatalogueName { get; init; }
 
     public required string CatalogueRelease { get; init; }
 
-    /// <summary>Why no catalogue is loaded, when none is.</summary>
+    /// <summary>Why no vendor guide is loaded, when none is.</summary>
     public string? CatalogueProblem { get; init; }
+
+    /// <summary>Every loaded catalogue's scorecard, in registration order — not "the vendor guide first".</summary>
+    public required IReadOnlyList<CatalogueScorecardView> Catalogues { get; init; }
 
     public required int DefaultControlsSkipped { get; init; }
 
@@ -572,15 +622,23 @@ public static class ComplianceApi
             .GroupBy(f => f.ControlId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => Count(g, exceptions, now), StringComparer.Ordinal);
 
-        var catalogue = service.Catalogue;
+        // The vendor guide, found by who owns it, never by "the first
+        // catalogue" -- P1 removes that assumption. Falls back to whichever
+        // catalogue is loaded first only when none is Broadcom's, which
+        // cannot happen in production (ComplianceService always registers
+        // the vendor guide) but keeps this total for any catalogue list a
+        // test hands in.
+        var vendorCatalogue = service.Catalogues.FirstOrDefault(
+            c => CatalogueDescriptor.Of(c).Owner == CatalogueOwner.Broadcom) ?? service.Catalogues[0];
 
         return new ComplianceView
         {
-            Source = ComplianceSources.Of(catalogue.Name),
-            CatalogueName = catalogue.Name,
-            CatalogueRelease = catalogue.Release,
-            CatalogueProblem = catalogue.Problem,
-            DefaultControlsSkipped = catalogue.DefaultControlsSkipped,
+            Source = ComplianceSources.Of(vendorCatalogue.Name),
+            CatalogueName = vendorCatalogue.Name,
+            CatalogueRelease = vendorCatalogue.Release,
+            CatalogueProblem = vendorCatalogue.Problem,
+            Catalogues = [.. service.Catalogues.Select(c => Scorecard(c, findings, exceptions, now))],
+            DefaultControlsSkipped = service.Catalogues.Sum(c => c.DefaultControlsSkipped),
             Controls =
             [
                 .. service.Controls().Select(bound => new ComplianceControlView
@@ -661,6 +719,60 @@ public static class ComplianceApi
                 .ThenBy(e => e.ExpiresUtc)
                 .Select(e => ToView(e, now)),
         ];
+    }
+
+    /// <summary>
+    /// One catalogue's scorecard, counted only over its own findings —
+    /// <see cref="ComplianceFinding.CatalogueRelease"/> is the identity's own
+    /// field, so no catalogue's row can pick up another's rows.
+    /// </summary>
+    private static CatalogueScorecardView Scorecard(
+        ComplianceCatalogue catalogue,
+        IReadOnlyList<ComplianceFinding> allFindings,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var descriptor = CatalogueDescriptor.Of(catalogue);
+
+        if (catalogue.Problem is not null)
+        {
+            return new CatalogueScorecardView
+            {
+                Id = descriptor.Id,
+                Name = descriptor.Name,
+                Owner = descriptor.Owner,
+                Kind = descriptor.Kind,
+                Release = descriptor.Release,
+                Problem = catalogue.Problem,
+                Counts = new FindingCountsView(),
+                EvaluableSubjects = 0,
+                TotalSubjects = 0,
+                Coverage = null,
+            };
+        }
+
+        var own = allFindings.Where(f => string.Equals(f.CatalogueRelease, catalogue.Release, StringComparison.Ordinal));
+        var counts = Count(own, exceptions, now);
+
+        // Coverage is a subject-count fraction, not a state count: a subject
+        // that is Failing-and-Accepted is one evaluable subject, not two, and
+        // NotEvaluated never contributes to the numerator (ADR-0026).
+        var evaluable = counts.Passing + counts.Failing + counts.Accepted + counts.Excepted;
+        var total = evaluable + counts.NotEvaluated;
+
+        return new CatalogueScorecardView
+        {
+            Id = descriptor.Id,
+            Name = descriptor.Name,
+            Owner = descriptor.Owner,
+            Kind = descriptor.Kind,
+            Release = descriptor.Release,
+            Problem = null,
+            Counts = counts,
+            EvaluableSubjects = evaluable,
+            TotalSubjects = total,
+            Coverage = total == 0 ? null : (double)evaluable / total,
+        };
     }
 
     private static FindingCountsView Count(

@@ -43,7 +43,7 @@ const GROUPS = [
     // needs doing tonight, which is the mistake this screen exists to avoid.
     label: 'Assess',
     question: 'Is it set up correctly?',
-    items: [{ to: '/compliance', label: 'Compliance' }],
+    items: [{ to: '/compliance', label: 'Posture' }],
   },
   {
     // What the market research says the buyer looks at first. M5.2

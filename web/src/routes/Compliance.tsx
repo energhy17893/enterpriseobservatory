@@ -7,6 +7,7 @@ import { ago, cn, type StatusName } from '@/lib/ui'
 import { basisLabel } from '@/lib/basis'
 import type {
   AuthStateView,
+  CatalogueScorecardView,
   ComplianceControlView,
   ComplianceExceptionView,
   ComplianceFindingView,
@@ -36,12 +37,42 @@ const ORDER: FindingState[] = ['Failing', 'Accepted', 'Excepted', 'Passing', 'No
  * K3 §1.1: the catalogue a control comes from, as a first-class, always-
  * visible dimension -- distinct from `control.citation` ("basis:", what the
  * expectation rests on). Fixed order: SCG is the audit-standard catalogue,
- * eo-continuity is the product's own, listed second. Values match
- * `ComplianceSources` on the server exactly.
+ * eo-continuity is the product's own, listed second -- a display rule keyed
+ * on ownership, never on the position `catalogues[]` happens to arrive in
+ * (P1 removes that assumption on the server; the screen must not reintroduce
+ * it). The label matches `ComplianceControlView.source` / `ComplianceSources`
+ * on the server exactly.
  */
-const SOURCES = ['Broadcom SCG', 'eo-continuity'] as const
-const SOURCE_FILTERS = ['All', ...SOURCES] as const
-type SourceFilter = (typeof SOURCE_FILTERS)[number]
+function sourceLabel(catalogue: CatalogueScorecardView): string {
+  return catalogue.owner === 'Broadcom' ? 'Broadcom SCG' : 'eo-continuity'
+}
+
+const SOURCE_ORDER = ['Broadcom SCG', 'eo-continuity'] as const
+
+/** `catalogues[]`, labelled and in the screen's fixed display order -- never the API's own order. */
+function sourcesOf(catalogues: CatalogueScorecardView[]): string[] {
+  const labels = new Set(catalogues.map(sourceLabel))
+  return SOURCE_ORDER.filter((label) => labels.has(label))
+}
+
+type SourceFilter = 'All' | (typeof SOURCE_ORDER)[number]
+
+/**
+ * P1, Zabbix's four colours (reference-approaches.md §6): a catalogue's
+ * scorecard reads at a glance without opening a single control. "Accepted"
+ * still counts as failing (ADR-0024 -- accepting a finding does not make it
+ * compliant); "excepted" does not (an exception takes a finding out of the
+ * non-compliant count).
+ */
+function scorecardStatus(counts: FindingCountsView): { status: StatusName; label: string } {
+  const failing = counts.failing + counts.accepted > 0
+  const unevaluated = counts.notEvaluated > 0
+
+  if (failing && unevaluated) return { status: 'Warning', label: 'Mixed' }
+  if (failing) return { status: 'Critical', label: 'Failing remain' }
+  if (unevaluated) return { status: 'Unknown', label: 'Not fully evaluated' }
+  return { status: 'Healthy', label: 'All passed' }
+}
 
 /** The server refuses longer; see ComplianceService. */
 const MAX_REASON = 2000
@@ -58,6 +89,57 @@ function StaleBadge({ count }: { count: number }) {
     <StatusBadge status="Unknown">
       Stale {count}
     </StatusBadge>
+  )
+}
+
+/**
+ * P1: one catalogue's scorecard row (K3 §1.1's catalogue as a first-class
+ * dimension, made visible before an operator opens any control). Coverage is
+ * over evaluable subjects only -- passed + failing + accepted + excepted --
+ * never treating NotEvaluated as a denominator it can shrink out of
+ * (ADR-0026).
+ */
+function CatalogueScorecard({ catalogue }: { catalogue: CatalogueScorecardView }) {
+  if (catalogue.problem !== null) {
+    return (
+      <Card className="space-y-1 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-medium">{sourceLabel(catalogue)}</div>
+          <StatusBadge status="Unknown">Unavailable</StatusBadge>
+        </div>
+        <div className="text-xs text-muted-foreground">{catalogue.problem}</div>
+      </Card>
+    )
+  }
+
+  const { counts } = catalogue
+  const { status, label } = scorecardStatus(counts)
+
+  return (
+    <Card className="space-y-2 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="font-medium">{sourceLabel(catalogue)}</div>
+          <div className="text-xs text-muted-foreground">
+            <Identifier>{catalogue.name}</Identifier> release <Identifier>{catalogue.release}</Identifier>
+          </div>
+        </div>
+        <StatusBadge status={status}>{label}</StatusBadge>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {ORDER.map((state) => (
+          <StatusBadge key={state} status={STATE_STATUS[state]}>
+            {STATE_LABEL[state]} {countOf(counts, state)}
+          </StatusBadge>
+        ))}
+        <StaleBadge count={counts.stale} />
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {catalogue.coverage === null
+          ? 'no subjects evaluated yet'
+          : `${(catalogue.coverage * 100).toFixed(0)}% coverage (${catalogue.evaluableSubjects} of ${catalogue.totalSubjects} subjects evaluated)`}
+      </div>
+    </Card>
   )
 }
 
@@ -118,28 +200,42 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
 
   const data = summary.data
 
-  if (data.catalogueProblem !== null) {
+  // Every catalogue failed to load: nothing at all can be shown. A single
+  // catalogue's problem (e.g. the vendor guide missing while eo-continuity
+  // still evaluates) is shown on that catalogue's own scorecard row instead
+  // -- one broken catalogue must not blank a screen the other one can fill.
+  if (data.catalogues.length > 0 && data.catalogues.every((c) => c.problem !== null)) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-semibold">Compliance</h1>
-        <LoadFailure what="The compliance catalogue" error={new Error(data.catalogueProblem)} />
+        <h1 className="text-xl font-semibold">Posture</h1>
+        <LoadFailure what="The compliance catalogues" error={new Error(data.catalogues[0].problem!)} />
       </div>
     )
   }
 
   const evaluated = data.controls.filter((c) => c.evaluated)
   const unevaluated = data.controls.filter((c) => !c.evaluated)
+  const sources = sourcesOf(data.catalogues)
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold">Compliance</h1>
+        <h1 className="text-xl font-semibold">Posture</h1>
         <div className="mt-1 text-sm text-muted-foreground">
-          Security Configuration Guide <Identifier>{data.catalogueName}</Identifier> release{' '}
-          <Identifier>{data.catalogueRelease}</Identifier>
-          {' · '}
           {data.lastEvaluatedUtc === null ? 'not evaluated yet' : `evaluated ${ago(data.lastEvaluatedUtc)}`}
         </div>
+      </div>
+
+      {/*
+        P1: one scorecard row per catalogue, above the grouped sections --
+        Zabbix's four colours (reference-approaches.md §6) so posture reads
+        at a glance without opening a control. NotEvaluated is always shown
+        (ADR-0026); a zero counter is not hidden.
+      */}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {data.catalogues.map((catalogue) => (
+          <CatalogueScorecard key={catalogue.id} catalogue={catalogue} />
+        ))}
       </div>
 
       <Card className="p-4 text-sm text-muted-foreground">
@@ -173,7 +269,7 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
         the citation.
       */}
       <div className="flex flex-wrap gap-2">
-        {SOURCE_FILTERS.map((value) => (
+        {(['All', ...sources] as SourceFilter[]).map((value) => (
           <button
             key={value}
             type="button"
@@ -189,7 +285,7 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
         ))}
       </div>
 
-      {SOURCES.filter((source) => sourceFilter === 'All' || sourceFilter === source).map((source) => (
+      {sources.filter((source) => sourceFilter === 'All' || sourceFilter === source).map((source) => (
         <SourceSection
           key={source}
           source={source}

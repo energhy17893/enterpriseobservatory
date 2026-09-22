@@ -598,12 +598,44 @@ export interface ComplianceExceptionView {
   removedAtUtc: string | null
 }
 
+/** Who publishes a catalogue's controls. */
+export type CatalogueOwner = 'Broadcom' | 'Product' | 'Cisa'
+
+/** How this product came to hold a catalogue's controls. */
+export type CatalogueKind = 'Passthrough' | 'Computed' | 'Feed'
+
+/**
+ * One catalogue's scorecard: the posture screen's row above the grouped
+ * control sections (K3 §1.1). NotEvaluated is always shown, never folded
+ * into `coverage` (ADR-0026) -- a zero counter is not hidden.
+ */
+export interface CatalogueScorecardView {
+  /** Stable across editions of the same catalogue -- 'scg' or 'eo-continuity'. */
+  id: string
+  name: string
+  owner: CatalogueOwner
+  kind: CatalogueKind
+  /** The specific version findings were judged against. */
+  release: string
+  /** Why this catalogue could not be loaded, when it could not be; counts are then all zero. */
+  problem: string | null
+  counts: FindingCountsView
+  /** Passed + failing + accepted + excepted -- subjects this product reached a verdict on. */
+  evaluableSubjects: number
+  /** Every subject the catalogue's controls apply to, evaluated or not. */
+  totalSubjects: number
+  /** evaluableSubjects / totalSubjects; null when there are no subjects at all. */
+  coverage: number | null
+}
+
 export interface ComplianceView {
-  /** The source of the catalogue the header names; each control carries its own. */
+  /** The vendor guide's source, found by ownership, not by list position; each control also carries its own. */
   source: string
   catalogueName: string
   catalogueRelease: string
   catalogueProblem: string | null
+  /** Every loaded catalogue's scorecard, in registration order -- not "the vendor guide first". */
+  catalogues: CatalogueScorecardView[]
   defaultControlsSkipped: number
   controls: ComplianceControlView[]
   totals: FindingCountsView
