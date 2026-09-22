@@ -1,5 +1,7 @@
+using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Domain;
+using EnterpriseObservatory.Domain.Alerts;
 using Npgsql;
 
 namespace EnterpriseObservatory.Persistence.Postgres.Tests;
@@ -66,8 +68,8 @@ public class SchemaTests : IDisposable
         // says it is", which passes even if the migration list were truncated
         // by accident. The literal makes adding a migration an event somebody
         // has to acknowledge here -- which is exactly what it did when the
-        // coverage table arrived as migration 3, again when the event tables arrived as 4, when the event read indexes arrived as 5, when the compliance tables arrived as 6, when compliance history, staleness and exception withdrawal arrived as 7, when the scheduled email report tables arrived as 8, when the compaction late-sample marker arrived as 9, when the report subscription audit columns arrived as 10, when the compliance finding subject arrived as 11, and when the collection gap record arrived as 13 -- with 12 held back for the K2 package, which had not landed when this did.
-        Assert.Equal(13, Version());
+        // coverage table arrived as migration 3, again when the event tables arrived as 4, when the event read indexes arrived as 5, when the compliance tables arrived as 6, when compliance history, staleness and exception withdrawal arrived as 7, when the scheduled email report tables arrived as 8, when the compaction late-sample marker arrived as 9, when the report subscription audit columns arrived as 10, when the compliance finding subject arrived as 11, when the collection gap record arrived as 13 -- with 12 held back for the K2 package, which had not landed when this did -- and when the three-valued alert state and the durable alert history arrived as 14.
+        Assert.Equal(14, Version());
 
         // Measurements and state both, from the same open. The two used to be
         // separate SQLite files and a half-applied schema would now be a
@@ -127,7 +129,7 @@ public class SchemaTests : IDisposable
 
         _live.Restart();
 
-        Assert.Equal(13, Version());
+        Assert.Equal(14, Version());
         Assert.Equal(tablesBefore, TableCount());
         Assert.NotNull(new PostgresUserAccountStore(_live.Database).Find("ertugrul"));
     }
@@ -236,4 +238,126 @@ public class SchemaTests : IDisposable
                 command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
         }));
     }
+
+    [SkippableFact]
+    public void Migration_14_keeps_every_alert_as_it_was_moves_its_transitions_into_the_history_and_names_its_rule()
+    {
+        RequireDatabase();
+
+        Assert.Equal(14, Version());
+
+        // The alert tables as migration 13 left them, spelled out: what an
+        // installation upgrading from 13 has on disk.
+        Execute("""
+            DROP TABLE alert_history;
+            DROP INDEX ix_alert_rule;
+            ALTER TABLE alert_instance
+                DROP COLUMN rule_id, DROP COLUMN evidence_at_utc, DROP COLUMN stale_since_utc,
+                DROP COLUMN stale_reason, DROP COLUMN stale_detail, DROP COLUMN consecutive_absent;
+            CREATE TABLE alert_transition (
+                fingerprint text        NOT NULL REFERENCES alert_instance (fingerprint) ON DELETE CASCADE,
+                ordinal     integer     NOT NULL,
+                from_state  text        NOT NULL,
+                to_state    text        NOT NULL,
+                reason      text        NOT NULL,
+                at_utc      timestamptz NOT NULL,
+                actor       text        NULL,
+                PRIMARY KEY (fingerprint, ordinal)
+            );
+            UPDATE schema_version SET version = 13;
+            """);
+
+        // One open alert per check id every rule emits, plus the event table's
+        // prefix, the four rules K2 retired, and direct producers.
+        List<string> checkIds =
+        [
+            .. RuleCheckIds.Exact.Keys,
+            "vcenter-events:ha-host-failed",
+            "cluster-ha-scorecard-ha-disabled",
+            "drs-rule-violation",
+            "multipath-single-point-of-failure",
+            "cluster-n-plus-one-history-unreadable",
+            "collector-unreachable:metrics",
+            "analysis-rule-failed",
+            "store-write-failed",
+        ];
+
+        var first = new DateTimeOffset(2026, 9, 21, 18, 10, 54, TimeSpan.Zero);
+        var fingerprints = checkIds
+            .Select((id, n) => AlertFingerprint.Create("platform", "t", "c", $"object-{n}", id))
+            .ToList();
+
+        foreach (var (fingerprint, n) in fingerprints.Select((f, n) => (f, n)))
+        {
+            Execute(
+                """
+                INSERT INTO alert_instance (
+                    fingerprint, scope, severity, state, title, description, category, source,
+                    entity_id, is_derived, consecutive_hits, is_confirmed, cleared_by_operator,
+                    pending_notification, suppressed_by_window_id, first_seen_utc, last_seen_utc,
+                    silenced_until_utc)
+                VALUES (@f, 'observation', 'Warning', 'Acknowledged', 't', '', 'c', 'platform',
+                        NULL, false, 3, true, false, 'None', NULL, @first, @last, NULL);
+                INSERT INTO alert_transition VALUES
+                    (@f, 0, 'Open', 'Open', 'Raised', @first, NULL),
+                    (@f, 1, 'Open', 'Acknowledged', 'OperatorAcknowledged', @first + interval '1 minute', 'ertugrul');
+                """,
+                ("@f", fingerprint.Value),
+                ("@first", first),
+                ("@last", first.AddMinutes(n)));
+        }
+
+        _live.Restart();
+
+        Assert.Equal(14, Version());
+        Assert.Equal(0, Count("information_schema.tables WHERE table_schema = current_schema() AND table_name = 'alert_transition'"));
+
+        var store = new PostgresAlertStateStore(_live.Database);
+        var byFingerprint = store.All.ToDictionary(a => a.Fingerprint);
+
+        foreach (var (fingerprint, n) in fingerprints.Select((f, n) => (f, n)))
+        {
+            var alert = byFingerprint[fingerprint];
+
+            // The same map as the code, row for row.
+            Assert.Equal(RuleCheckIds.RuleOf(fingerprint), alert.RuleId);
+
+            // Nothing changes state because of the deploy: every alert is as
+            // it was, and fresh.
+            Assert.Equal(AlertLifecycleState.Acknowledged, alert.State);
+            Assert.Equal(first.AddMinutes(n), alert.EvidenceAtUtc);
+            Assert.False(alert.IsStale);
+            Assert.Equal(0, alert.ConsecutiveAbsent);
+
+            Assert.Equal(
+                [AlertTransitionReason.Raised, AlertTransitionReason.OperatorAcknowledged],
+                alert.History.Select(t => t.Reason));
+            Assert.Equal("ertugrul", alert.History[1].Actor);
+        }
+
+        Assert.Null(byFingerprint[fingerprints[^1]].RuleId);
+        Assert.Equal(2 * fingerprints.Count, Count("alert_history"));
+    }
+
+    private void Execute(string sql, params (string Name, object Value)[] parameters) =>
+        _live.Database.Write(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+
+            foreach (var (name, value) in parameters)
+            {
+                command.Parameters.AddWithValue(name, value);
+            }
+
+            command.ExecuteNonQuery();
+            return 0;
+        });
+
+    private long Count(string from) => _live.Database.Read(connection =>
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT count(*) FROM {from};";
+        return (long)command.ExecuteScalar()!;
+    });
 }

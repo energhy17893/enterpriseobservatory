@@ -14,7 +14,8 @@ namespace EnterpriseObservatory.Persistence.Postgres.Tests;
 /// Written for the outage of 22 September 2026: a vCenter unreachable for four
 /// hours, the notifier logging "[Raised] Collector unreachable" for each role,
 /// and afterwards neither <c>alert_instance</c> nor <c>alert_transition</c>
-/// holding a trace of it. The question was whether the collection alert ever
+/// holding a trace of it. The trace now lives in <c>alert_history</c>, which a
+/// retired instance does not take with it. The question was whether the collection alert ever
 /// reached the store. These drive the whole composition — pipeline, runner,
 /// breaker, reconciler, store — for longer than the breaker threshold, across
 /// a restart, and read the rows back with SQL rather than through the store's
@@ -106,18 +107,30 @@ public sealed class CollectorUnreachableTests : IDisposable
         Assert.Equal("Resolved", Row("collector-unreachable:metrics")?.State);
         Assert.Contains("ConditionCleared", Transitions("collector-unreachable:metrics"));
 
-        // And this is why the tables were empty when they were read after the
-        // outage. A resolved alert still absent on the next cycle retires
-        // (AlertLifecycle.OnAbsent), the scope is rewritten without it, and
-        // its transitions go with it by cascade. Thirty seconds after the
-        // vCenter came back, nothing in the database said it had ever been
-        // gone. Pinned so that a durable alert history, when it comes, has to
-        // change this line on purpose.
+        // This is why the tables were empty when they were read after the
+        // outage: a resolved alert still absent on the next cycle retires, the
+        // scope is rewritten without it, and its transitions used to go with it
+        // by cascade -- thirty seconds after the vCenter came back, nothing in
+        // the database said it had ever been gone. The instance row still
+        // retires; its history no longer goes with it (migration 14,
+        // alert_history, ADR-0026). This line was pinned so that the change
+        // would have to be made on purpose, and this is it.
         _clock.Advance(TimeSpan.FromSeconds(30));
         await cycle.RunObservationsAsync([source], Options, CancellationToken.None);
 
         Assert.Null(Row("collector-unreachable:metrics"));
-        Assert.Empty(Transitions("collector-unreachable:metrics"));
+        var history = Transitions("collector-unreachable:metrics");
+        Assert.Equal("Raised", history[0]);
+        Assert.Equal("ConditionCleared", history[^1]);
+
+        // And days later, across another restart, it is still there to read.
+        _clock.Advance(TimeSpan.FromDays(3));
+        _live.Restart();
+        cycle = Start();
+        await cycle.RunObservationsAsync([source], Options, CancellationToken.None);
+
+        Assert.Null(Row("collector-unreachable:metrics"));
+        Assert.Contains("ConditionCleared", Transitions("collector-unreachable:metrics"));
     }
 
     [SkippableFact]
@@ -194,9 +207,9 @@ public sealed class CollectorUnreachableTests : IDisposable
         {
             using var command = connection.CreateCommand();
             command.CommandText = """
-                SELECT reason FROM alert_transition
+                SELECT reason FROM alert_history
                 WHERE fingerprint LIKE 'platform|collector unreachable|%|' || @check
-                ORDER BY ordinal;
+                ORDER BY episode_first_seen_utc, ordinal;
                 """;
             command.Parameters.AddWithValue("@check", check);
 

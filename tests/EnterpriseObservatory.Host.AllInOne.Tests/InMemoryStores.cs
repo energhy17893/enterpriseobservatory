@@ -213,6 +213,7 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
             // field is for neither of them to have anything to say about it.
             _instances[scope] = [.. result.Instances];
             _flaps[scope] = [.. result.FlapHistories];
+            Remember(result.Instances);
 
             return result;
         }
@@ -272,6 +273,8 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
                 slice[index] = next;
             }
 
+            Remember([.. pending.Select(p => p.Next)]);
+
             return [.. pending.Select(p => p.Next)];
         }
     }
@@ -291,6 +294,53 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
 
             _instances[scope] =
                 [.. slice.Select(i => wanted.Contains(i.Fingerprint) ? AlertLifecycle.MarkNotified(i) : i)];
+        }
+    }
+
+    /// <summary>
+    /// Every life of every fingerprint, as last written: what alert_history
+    /// holds for the real store, and like it, untouched by retiring.
+    /// </summary>
+    private readonly Dictionary<(AlertFingerprint, DateTimeOffset), AlertInstance> _episodes = [];
+
+    private void Remember(IEnumerable<AlertInstance> instances)
+    {
+        foreach (var instance in instances)
+        {
+            _episodes[(instance.Fingerprint, instance.FirstSeenUtc)] = instance;
+        }
+    }
+
+    public IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc)
+    {
+        lock (_gate)
+        {
+            return
+            [
+                .. _episodes.Values
+                    .Where(i => i.History.Count > 0 && i.History[^1].To == AlertLifecycleState.Resolved)
+                    .Where(i => i.History.Any(t =>
+                        t.To == AlertLifecycleState.Resolved && t.From != AlertLifecycleState.Resolved &&
+                        t.AtUtc >= fromUtc && t.AtUtc <= toUtc)),
+            ];
+        }
+    }
+
+    public int PruneHistory(DateTimeOffset olderThanUtc)
+    {
+        lock (_gate)
+        {
+            var live = _instances.Values.SelectMany(s => s).Select(i => (i.Fingerprint, i.FirstSeenUtc)).ToHashSet();
+            var ended = _episodes
+                .Where(e => !live.Contains(e.Key) && e.Value.History.All(t => t.AtUtc < olderThanUtc))
+                .ToList();
+
+            foreach (var episode in ended)
+            {
+                _episodes.Remove(episode.Key);
+            }
+
+            return ended.Sum(e => e.Value.History.Count);
         }
     }
 
@@ -314,6 +364,7 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
 
             var next = change(slice[index]);
             slice[index] = next;
+            Remember([next]);
 
             return next;
         }

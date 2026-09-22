@@ -2248,6 +2248,11 @@ internal sealed class ScopeWatchingAlertStateStore(InMemoryAlertStateStore inner
 
     public void MarkNotified(string scope, IReadOnlyList<AlertFingerprint> fingerprints) =>
         inner.MarkNotified(scope, fingerprints);
+
+    public IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc) =>
+        inner.ResolvedBetween(fromUtc, toUtc);
+
+    public int PruneHistory(DateTimeOffset olderThanUtc) => inner.PruneHistory(olderThanUtc);
 }
 
 /// <summary>A sample store whose failure can end, as a real one's does.</summary>
