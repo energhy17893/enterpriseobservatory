@@ -30,10 +30,14 @@ public sealed class MonitoringWorker(
     IEntityGraphStore graph,
     IAlertStateStore alerts,
     IObservationStore series,
+    IOperationalMetricsStore selfMetrics,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
     private readonly IObservationStore _series = series ?? throw new ArgumentNullException(nameof(series));
+
+    private readonly IOperationalMetricsStore _selfMetrics =
+        selfMetrics ?? throw new ArgumentNullException(nameof(selfMetrics));
 
     private readonly ComplianceService _compliance =
         compliance ?? throw new ArgumentNullException(nameof(compliance));
@@ -72,6 +76,14 @@ public sealed class MonitoringWorker(
 
                 HostLog.InventoryCycle(
                     _logger, result.ActiveEntities, result.VanishedEntities, result.Visible.Count);
+
+                _selfMetrics.RecordInventory(new CycleMetricsSnapshot
+                {
+                    AtUtc = result.AtUtc,
+                    Duration = result.CycleDuration,
+                    TransitionsAppended = result.TransitionsAppended,
+                    AgeClampedToUnknown = result.AgeClampedToUnknown,
+                });
 
                 WarnAboutSilence(result);
 
@@ -117,6 +129,14 @@ public sealed class MonitoringWorker(
                     .ConfigureAwait(false);
 
                 HostLog.ObservationCycle(_logger, result.Observations.Count, result.Visible.Count);
+
+                _selfMetrics.RecordObservation(new CycleMetricsSnapshot
+                {
+                    AtUtc = result.AtUtc,
+                    Duration = result.CycleDuration,
+                    TransitionsAppended = result.TransitionsAppended,
+                    AgeClampedToUnknown = result.AgeClampedToUnknown,
+                });
 
                 if (result.StorageFailure is { } failure)
                 {

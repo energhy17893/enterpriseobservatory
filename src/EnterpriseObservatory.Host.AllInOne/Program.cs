@@ -85,6 +85,7 @@ if (intervalProblems.Count > 0)
 }
 
 builder.Services.AddSingleton(monitoringOptions);
+builder.Services.AddSingleton(BuildHealthOptions(builder.Configuration));
 builder.Services.AddSingleton<IClock, SystemClock>();
 
 // State outlives the process. Losing it forgets every acknowledgement and
@@ -160,6 +161,7 @@ builder.Services.AddSingleton<ICollectorHealthStore, PostgresCollectorHealthStor
 builder.Services.AddSingleton<ICoverageStore, PostgresCoverageStore>();
 builder.Services.AddSingleton<IObservationStore, PostgresObservationStore>();
 builder.Services.AddSingleton<ICollectionGapStore, PostgresCollectionGapStore>();
+builder.Services.AddSingleton<IOperationalMetricsStore, OperationalMetricsStore>();
 builder.Services.AddSingleton<IEventStore, PostgresEventStore>();
 
 // The same store, read-only, for naming who took a stale snapshot (M2.4).
@@ -391,6 +393,7 @@ host.MapComplianceApi();
 host.MapEmailApi();
 host.MapReportsApi();
 host.MapObservatoryApi();
+host.MapHealthApi();
 
 // The SPA's build output, when it has been built. Serving the interface from
 // the same origin as the API is what lets authentication stay a cookie rather
@@ -544,6 +547,20 @@ static TimeSpan Seconds(string? value, TimeSpan fallback) =>
     int.TryParse(value, out var seconds) && seconds > 0
         ? TimeSpan.FromSeconds(seconds)
         : fallback;
+
+static HealthOptions BuildHealthOptions(IConfiguration configuration)
+{
+    var section = configuration.GetSection("Health");
+    var defaults = HealthOptions.Default;
+
+    return new HealthOptions
+    {
+        DegradedAfterIntervals = int.TryParse(section["DegradedAfterIntervals"], out var intervals) && intervals > 0
+            ? intervals
+            : defaults.DegradedAfterIntervals,
+        UnhealthyAfter = Seconds(section["UnhealthyAfterSeconds"], defaults.UnhealthyAfter),
+    };
+}
 
 static TimeSpan Days(string? value, TimeSpan fallback) =>
     int.TryParse(value, out var days) && days > 0 ? TimeSpan.FromDays(days) : fallback;

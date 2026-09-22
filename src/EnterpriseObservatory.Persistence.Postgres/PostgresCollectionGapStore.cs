@@ -130,6 +130,25 @@ public sealed class PostgresCollectionGapStore : ICollectionGapStore
         });
     }
 
+    public IReadOnlyDictionary<CollectionGapState, int> CountsByState()
+    {
+        return _database.Read(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT state, count(*) FROM collection_gap GROUP BY state;";
+
+            var counts = new Dictionary<CollectionGapState, int>();
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                counts[ParseState(reader.GetString(0))] = checked((int)reader.GetInt64(1));
+            }
+
+            return (IReadOnlyDictionary<CollectionGapState, int>)counts;
+        });
+    }
+
     private List<CollectionGap> Select(string sourceInstanceId, bool onlyOpen)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceInstanceId);

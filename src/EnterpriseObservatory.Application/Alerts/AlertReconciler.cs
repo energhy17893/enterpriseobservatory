@@ -231,6 +231,33 @@ public sealed record AlertReconciliationResult
     /// <summary>Instances visible in the alert inbox right now.</summary>
     public IReadOnlyList<AlertInstance> Visible =>
         [.. Instances.Where(i => i.IsVisible)];
+
+    /// <summary>
+    /// How many <c>alert_history</c> rows this cycle's write will append.
+    /// </summary>
+    /// <remarks>
+    /// Computed the same way <c>PostgresAlertStateStore.AppendHistory</c>
+    /// decides what to write — a confirmed instance whose episode matches the
+    /// one stored appends only the transitions past what is already there;
+    /// a new episode appends its whole history; an unconfirmed instance
+    /// appends nothing (Package D). Kept here rather than read back from
+    /// storage so the count is available to a caller that never touches the
+    /// database, and so a runaway write path shows up on the very cycle it
+    /// happens rather than after the next query.
+    /// </remarks>
+    public int TransitionsAppended { get; init; }
+
+    /// <summary>
+    /// How many verdicts this cycle were clamped to <see cref="AlertLifecycleState.Unknown"/>
+    /// by the age rule (ADR-0026 §Z3: evidence older than 2 × the scope's
+    /// interval plus its read budget), rather than by a source going silent.
+    /// </summary>
+    /// <remarks>
+    /// Counted at the fingerprint-decision level, not per instance, so it
+    /// reflects what the rule actually judged this cycle. See
+    /// <see cref="UnknownReason.InputStale"/>.
+    /// </remarks>
+    public int AgeClampedToUnknown { get; init; }
 }
 
 /// <summary>
@@ -380,7 +407,29 @@ public static class AlertReconciler
             Retired = retired,
             ToNotify = [.. instances.Where(i => i.ShouldNotify)],
             FlapHistories = [.. flaps.Values.Select(f => f with { Scope = request.Scope })],
+            TransitionsAppended = instances.Sum(i => AppendedRowCount(i, stored.GetValueOrDefault(i.Fingerprint))),
+            AgeClampedToUnknown = decisions.Values.Count(
+                d => d is Blind { Unknown.Reason: UnknownReason.InputStale }),
         };
+    }
+
+    /// <summary>
+    /// How many <c>alert_history</c> rows writing <paramref name="instance"/>
+    /// would append, mirroring <c>PostgresAlertStateStore.AppendHistory</c>
+    /// exactly so the count matches what actually gets written.
+    /// </summary>
+    private static int AppendedRowCount(AlertInstance instance, AlertInstance? previous)
+    {
+        if (!instance.IsConfirmed)
+        {
+            return 0;
+        }
+
+        var from = previous is { IsConfirmed: true } && previous.FirstSeenUtc == instance.FirstSeenUtc
+            ? Math.Min(previous.History.Count, instance.History.Count)
+            : 0;
+
+        return from >= instance.History.Count ? 0 : instance.History.Count - from;
     }
 
     /// <summary>One decision per fingerprint, from every producer and every stored instance.</summary>

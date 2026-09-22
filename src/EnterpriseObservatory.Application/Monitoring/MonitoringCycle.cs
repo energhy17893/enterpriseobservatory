@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using EnterpriseObservatory.Application.Alerts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
@@ -53,6 +54,31 @@ public sealed record MonitoringCycleResult
     /// judged from them is not current, and only this list can say so.
     /// </remarks>
     public IReadOnlyList<string> ReportingSources { get; init; } = [];
+
+    /// <summary>
+    /// How long this pass took, wall clock, from the first collection call to
+    /// the reconciliation it fed.
+    /// </summary>
+    /// <remarks>
+    /// Package D (self-monitoring): the runner produces this, not each
+    /// collector, per ADR-0025. Measured with a <see cref="Stopwatch"/>
+    /// rather than <see cref="IClock"/> so a fake clock in a test does not
+    /// make every cycle look instantaneous or, worse, negative.
+    /// </remarks>
+    public TimeSpan CycleDuration { get; init; }
+
+    /// <summary>
+    /// <c>alert_history</c> rows this cycle's reconciliation appended. See
+    /// <see cref="AlertReconciliationResult.TransitionsAppended"/>.
+    /// </summary>
+    public int TransitionsAppended { get; init; }
+
+    /// <summary>
+    /// Verdicts this cycle clamped to <see cref="AlertLifecycleState.Unknown"/> by the
+    /// age rule (ADR-0026 §Z3) rather than by a source going silent. See
+    /// <see cref="AlertReconciliationResult.AgeClampedToUnknown"/>.
+    /// </summary>
+    public int AgeClampedToUnknown { get; init; }
 }
 
 /// <summary>
@@ -127,6 +153,7 @@ public sealed class MonitoringCycle(
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(options);
 
+        var stopwatch = Stopwatch.StartNew();
         var now = _clock.UtcNow;
 
         var cycle = await _inventory
@@ -280,6 +307,9 @@ public sealed class MonitoringCycle(
             VanishedEntities = graph.Vanished.Count(),
             SilentSources = silent,
             ReportingSources = reporting,
+            CycleDuration = stopwatch.Elapsed,
+            TransitionsAppended = reconciliation.TransitionsAppended,
+            AgeClampedToUnknown = reconciliation.AgeClampedToUnknown,
         };
     }
 
@@ -292,6 +322,7 @@ public sealed class MonitoringCycle(
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(options);
 
+        var stopwatch = Stopwatch.StartNew();
         var now = _clock.UtcNow;
 
         var cycle = await _observations
@@ -427,6 +458,9 @@ public sealed class MonitoringCycle(
             ActiveEntities = graph.Active.Count(),
             VanishedEntities = graph.Vanished.Count(),
             SilentSources = silent,
+            CycleDuration = stopwatch.Elapsed,
+            TransitionsAppended = reconciliation.TransitionsAppended,
+            AgeClampedToUnknown = reconciliation.AgeClampedToUnknown,
         };
     }
 

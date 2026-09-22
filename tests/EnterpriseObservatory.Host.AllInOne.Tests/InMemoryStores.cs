@@ -947,3 +947,70 @@ internal sealed class InMemoryReportSubscriptionStore : IReportSubscriptionStore
         }
     }
 }
+
+/// <summary>Source-level gap records, held only for the life of the test.</summary>
+/// <remarks>
+/// The gap arithmetic itself (<see cref="CollectionGaps"/>) is tested without
+/// any store at all; this exists only so the composition-root smoke suite
+/// (Package D's <c>/health</c> now reads <see cref="ICollectionGapStore"/>)
+/// never reaches PostgreSQL.
+/// </remarks>
+internal sealed class InMemoryCollectionGapStore : ICollectionGapStore
+{
+    private readonly Lock _gate = new();
+    private readonly List<CollectionGap> _gaps = [];
+
+    public IReadOnlyDictionary<EntityId, DateTimeOffset> LatestSampleTimes(
+        IReadOnlyCollection<EntityId> entities) =>
+        new Dictionary<EntityId, DateTimeOffset>();
+
+    public IReadOnlyList<CollectionGap> OpenGaps(string sourceInstanceId)
+    {
+        lock (_gate)
+        {
+            return [.. Gaps(sourceInstanceId).Where(g => g.State == CollectionGapState.Open)];
+        }
+    }
+
+    public IReadOnlyList<CollectionGap> Gaps(string sourceInstanceId)
+    {
+        lock (_gate)
+        {
+            return [.. _gaps.Where(g => g.SourceInstanceId == sourceInstanceId).OrderBy(g => g.FromUtc)];
+        }
+    }
+
+    public CollectionGap Open(CollectionGap gap)
+    {
+        ArgumentNullException.ThrowIfNull(gap);
+
+        lock (_gate)
+        {
+            var opened = gap with { Id = _gaps.Count + 1 };
+            _gaps.Add(opened);
+            return opened;
+        }
+    }
+
+    public void Update(CollectionGap gap)
+    {
+        ArgumentNullException.ThrowIfNull(gap);
+
+        lock (_gate)
+        {
+            var index = _gaps.FindIndex(g => g.Id == gap.Id);
+            if (index >= 0)
+            {
+                _gaps[index] = gap;
+            }
+        }
+    }
+
+    public IReadOnlyDictionary<CollectionGapState, int> CountsByState()
+    {
+        lock (_gate)
+        {
+            return _gaps.GroupBy(g => g.State).ToDictionary(g => g.Key, g => g.Count());
+        }
+    }
+}
