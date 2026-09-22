@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -39,9 +38,18 @@ internal readonly record struct SourceRunOutcome<TResult>(
 /// <see cref="IObservationSource.ReadAsync"/> says callers must not do.
 /// </para>
 /// </remarks>
-internal sealed class SourceRunner(IClock clock)
+internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = null)
 {
     private readonly IClock _clock = clock;
+
+    // Elapsed-time tracking (the retry budget, the hard timeout, the retry
+    // delay) is a separate axis from IClock's wall-clock UtcNow, and defaults
+    // to the system's real timer in production. Tests substitute a
+    // FakeTimeProvider so a budget of, say, one second can be crossed without
+    // an actual second of wall-clock delay — which is what made these tests
+    // flaky under parallel load: real Task.Delay calls raced real timeouts,
+    // and CPU contention from other tests skewed both by different amounts.
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
 
     public async Task<SourceRunOutcome<TResult>> RunAsync<TResult>(
         string instanceId,
@@ -93,13 +101,13 @@ internal sealed class SourceRunner(IClock clock)
         // retry used to get a fresh SourceTimeout, and the cycle waits for every
         // source, so one slow vCenter held a 30-second metric cycle for three
         // timeouts and the retry delays between them.
-        var budget = Stopwatch.StartNew();
+        var budgetStart = _time.GetTimestamp();
 
         for (var attempt = 1; attempt <= policy.MaxRetries + 1; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var left = policy.SourceTimeout - budget.Elapsed;
+            var left = policy.SourceTimeout - _time.GetElapsedTime(budgetStart);
             if (attempt > 1 && left <= policy.ReturnGrace)
             {
                 // Nothing worth starting: the attempt would be asked to stop
@@ -110,7 +118,7 @@ internal sealed class SourceRunner(IClock clock)
             try
             {
                 var result = await ReadWithHardTimeoutAsync(
-                    instanceId, read, left, policy.ReturnGrace, cancellationToken).ConfigureAwait(false);
+                    instanceId, read, left, policy.ReturnGrace, _time, cancellationToken).ConfigureAwait(false);
 
                 return new SourceRunOutcome<TResult>(
                     result,
@@ -171,13 +179,13 @@ internal sealed class SourceRunner(IClock clock)
                     // loop. Without it, twenty iLOs that failed together would
                     // retry together, turning a blip into a stampede.
                     var delay = policy.RetryDelay(attempt, Random.Shared.NextDouble());
-                    if (delay >= policy.SourceTimeout - budget.Elapsed - policy.ReturnGrace)
+                    if (delay >= policy.SourceTimeout - _time.GetElapsedTime(budgetStart) - policy.ReturnGrace)
                     {
                         // Waiting would spend what is left of the budget.
                         break;
                     }
 
-                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(delay, _time, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -227,14 +235,42 @@ internal sealed class SourceRunner(IClock clock)
         Func<CancellationToken, Task<TResult>> read,
         TimeSpan timeout,
         TimeSpan grace,
+        TimeProvider time,
         CancellationToken cancellationToken)
     {
         using var cooperative = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var askToStop = timeout - grace;
-        cooperative.CancelAfter(askToStop > TimeSpan.Zero ? askToStop : TimeSpan.Zero);
+
+        // CancellationTokenSource has no instance-level "CancelAfter" that
+        // takes a TimeProvider, so the cooperative-cancel deadline is driven
+        // by a timer from the provider instead — the same mechanism a fake
+        // provider lets a test fire instantly rather than after a real delay.
+        //
+        // The timer is its own object, separate from `cooperative`, so its
+        // callback can still be in flight — already handed to a thread pool
+        // thread — at the instant this method returns and the `using`s below
+        // dispose `cooperative`. A read that finishes just before the grace
+        // deadline hits exactly that: the callback fires a moment later and
+        // calls Cancel() on an already-disposed source. That is not this
+        // read's problem to report — there is nothing left to cancel — so it
+        // is swallowed here rather than crashing the process.
+        using var askToStopTimer = time.CreateTimer(
+            static state =>
+            {
+                try
+                {
+                    ((CancellationTokenSource)state!).Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            },
+            cooperative,
+            askToStop > TimeSpan.Zero ? askToStop : TimeSpan.Zero,
+            Timeout.InfiniteTimeSpan);
 
         var reading = read(cooperative.Token);
-        var expiry = Task.Delay(timeout, cancellationToken);
+        var expiry = Task.Delay(timeout, time, cancellationToken);
 
         if (await Task.WhenAny(reading, expiry).ConfigureAwait(false) == reading)
         {
