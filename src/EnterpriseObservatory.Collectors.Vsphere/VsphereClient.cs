@@ -84,6 +84,13 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     private readonly VsphereConnectionOptions _options;
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
 
+    /// <summary>
+    /// Bounds how many requests this client has in flight at once (F2). Null
+    /// when the caller supplied none — a test double, or a probe that never
+    /// runs concurrently with itself — in which case nothing is bounded here.
+    /// </summary>
+    private readonly SourceRequestGate? _requestGate;
+
     private VsphereServiceContent? _serviceContent;
     private IReadOnlyList<VsphereCounter>? _counterCatalog;
     private bool _loggedIn;
@@ -92,10 +99,11 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     private int _sessionGeneration;
     private bool _disposed;
 
-    public VsphereClient(HttpClient http, VsphereConnectionOptions options)
+    public VsphereClient(HttpClient http, VsphereConnectionOptions options, SourceRequestGate? requestGate = null)
     {
         _http = http ?? throw new ArgumentNullException(nameof(http));
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _requestGate = requestGate;
 
         _http.BaseAddress ??= options.BaseAddress;
         _http.Timeout = options.RequestTimeout;
@@ -2193,7 +2201,33 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         }
     }
 
+    /// <summary>
+    /// Sends one request and reads its reply, holding this source's request
+    /// gate for exactly that exchange (F2).
+    /// </summary>
+    /// <remarks>
+    /// The gate is acquired here and nowhere else, and released before this
+    /// method returns either way. That is what keeps a login nested inside
+    /// <c>SendAsync</c>'s retry from being able to deadlock against itself: it
+    /// is a second, independent acquisition of the same gate, never a nested
+    /// one, because the first exchange's permit was already released by the
+    /// time the retry's call reaches here.
+    /// </remarks>
     private async Task<string> PostAsync(
+        string body,
+        CancellationToken cancellationToken,
+        VsphereCallContext context = VsphereCallContext.General)
+    {
+        if (_requestGate is null)
+        {
+            return await PostCoreAsync(body, cancellationToken, context).ConfigureAwait(false);
+        }
+
+        using var permit = await _requestGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
+        return await PostCoreAsync(body, cancellationToken, context).ConfigureAwait(false);
+    }
+
+    private async Task<string> PostCoreAsync(
         string body,
         CancellationToken cancellationToken,
         VsphereCallContext context = VsphereCallContext.General)

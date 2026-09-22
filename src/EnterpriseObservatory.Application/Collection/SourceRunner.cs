@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -35,7 +36,11 @@ internal readonly record struct SourceRunOutcome<TResult>(
 /// cancelled, so it is still inside the source, still holding its vCenter
 /// session, and may still return. Calling the source again would put two
 /// threads inside one instance, which is what
-/// <see cref="IObservationSource.ReadAsync"/> says callers must not do.
+/// <see cref="IObservationSource.ReadAsync"/> says callers must not do. F2
+/// (F note §8 decision 1) is what stops this from being able to happen at
+/// all: while a source's read is still running, every following cycle for
+/// that source is skipped rather than started on top of it, and the skip is
+/// counted on <see cref="CollectorHealth.SkippedCycles"/>.
 /// </para>
 /// </remarks>
 internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = null)
@@ -51,6 +56,22 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
     // and CPU contention from other tests skewed both by different amounts.
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
 
+    /// <summary>
+    /// One source's read is running: present between the moment its cycle
+    /// starts and the moment it truly finishes, which for an abandoned read is
+    /// later than the cycle that started it returned.
+    /// </summary>
+    /// <remarks>
+    /// F2 (F note §8 decision 1), Telegraf's rule. This instance is held by
+    /// the pipeline for the process's life, so it is what lets a skip decided
+    /// in one cycle be seen by the next one — a set local to one
+    /// <see cref="RunAsync{TResult}"/> call could never do that. Keyed by role
+    /// as well as instance id, matching <see cref="CollectorHealth"/>: events,
+    /// inventory and metrics are read independently and must be able to
+    /// overlap without one skipping for another.
+    /// </remarks>
+    private readonly ConcurrentDictionary<(string InstanceId, CollectorRole Role), byte> _running = new();
+
     public async Task<SourceRunOutcome<TResult>> RunAsync<TResult>(
         string instanceId,
         CollectorRole role,
@@ -62,28 +83,89 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CancellationToken cancellationToken)
         where TResult : class
     {
-        if (IsBreakerOpen(prior, policy, _clock.UtcNow))
+        var key = (instanceId, role);
+
+        if (!_running.TryAdd(key, 0))
         {
-            // Left alone deliberately. Reported rather than silently skipped so
-            // an operator can tell "we are not looking" from "we looked and it
-            // was fine" — those must never be confused.
-            return new SourceRunOutcome<TResult>(
-                null,
-                prior with { IsBackingOff = true, Health = HealthState.Unknown },
-                [UnreachableAlert(instanceId, role, prior, backingOff: true)]);
+            // A previous cycle's read is still inside the source — abandoned
+            // at its own hard timeout, or simply still overrunning. Asking
+            // again would put two calls in one source instance, which
+            // IObservationSource.ReadAsync (and its siblings) says callers
+            // must not do, and would double the load on a vCenter that may
+            // already be the reason the first read is slow. So this cycle is
+            // skipped rather than queued behind it, and the skip is counted
+            // where the rest of this source's numbers already live.
+            return Skipped<TResult>(prior);
         }
 
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // Cleared in every path except one: an abandoned read leaves this set
+        // until the background task it left running truly completes, however
+        // many cycles later that is. See ReadWithHardTimeoutAsync.
+        var abandoned = false;
+
         try
         {
-            return await AttemptAsync(instanceId, role, read, reportedFailures, prior, policy, cancellationToken)
-                .ConfigureAwait(false);
+            if (IsBreakerOpen(prior, policy, _clock.UtcNow))
+            {
+                // Left alone deliberately. Reported rather than silently skipped so
+                // an operator can tell "we are not looking" from "we looked and it
+                // was fine" — those must never be confused.
+                return new SourceRunOutcome<TResult>(
+                    null,
+                    prior with { IsBackingOff = true, Health = HealthState.Unknown },
+                    [UnreachableAlert(instanceId, role, prior, backingOff: true)]);
+            }
+
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await AttemptAsync(
+                        instanceId, role, read, reportedFailures, prior, policy,
+                        onAbandoned: task =>
+                        {
+                            abandoned = true;
+                            ForgetAbandoned(key, task);
+                        },
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
         }
         finally
         {
-            gate.Release();
+            if (!abandoned)
+            {
+                _running.TryRemove(key, out _);
+            }
         }
     }
+
+    /// <summary>The outcome of a cycle this runner declined to attempt (see <see cref="_running"/>).</summary>
+    private static SourceRunOutcome<TResult> Skipped<TResult>(CollectorHealth prior)
+        where TResult : class =>
+        new(
+            null,
+            prior with { SkippedCycles = prior.SkippedCycles + 1 },
+            []);
+
+    /// <summary>
+    /// Observes the forgotten read's eventual outcome and, once it truly
+    /// finishes, lets the source be read again.
+    /// </summary>
+    private void ForgetAbandoned(
+        (string InstanceId, CollectorRole Role) key, Task task) =>
+        _ = task.ContinueWith(
+            t =>
+            {
+                _ = t.Exception; // observed, never rethrown — see Forget.
+                _running.TryRemove(key, out _);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     private async Task<SourceRunOutcome<TResult>> AttemptAsync<TResult>(
         string instanceId,
@@ -92,6 +174,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         Func<TResult, IReadOnlyList<CollectionFailure>> reportedFailures,
         CollectorHealth prior,
         CollectionPolicy policy,
+        Action<Task> onAbandoned,
         CancellationToken cancellationToken)
         where TResult : class
     {
@@ -118,7 +201,8 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             try
             {
                 var result = await ReadWithHardTimeoutAsync(
-                    instanceId, read, left, policy.ReturnGrace, _time, cancellationToken).ConfigureAwait(false);
+                    instanceId, read, left, policy.ReturnGrace, _time, onAbandoned, cancellationToken)
+                    .ConfigureAwait(false);
 
                 return new SourceRunOutcome<TResult>(
                     result,
@@ -148,8 +232,9 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
                     // gained either: the abandoned read holds the session the
                     // new one would need, and if it was slow because the
                     // vCenter is slow, a second concurrent query is how a slow
-                    // vCenter becomes an overloaded one. The cycle is only
-                    // 30 seconds long; the next one asks again.
+                    // vCenter becomes an overloaded one. Every following cycle
+                    // is skipped and counted (F2) rather than started on top
+                    // of it, until the abandoned read itself finishes.
                     break;
                 }
 
@@ -236,6 +321,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         TimeSpan timeout,
         TimeSpan grace,
         TimeProvider time,
+        Action<Task> onAbandoned,
         CancellationToken cancellationToken)
     {
         using var cooperative = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -288,7 +374,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        Forget(reading);
+        onAbandoned(reading);
 
         throw new AbandonedReadException(
             $"Source '{instanceId}' did not respond within {timeout.TotalSeconds:0.#}s.");
@@ -312,13 +398,6 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
     /// finished, but the time it would be retried in is gone.
     /// </remarks>
     private sealed class OutOfTimeException(string message, Exception inner) : TimeoutException(message, inner);
-
-    private static void Forget(Task task) =>
-        _ = task.ContinueWith(
-            static t => _ = t.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
 
     /// <summary>Whether this source should be left alone for now.</summary>
     /// <remarks>

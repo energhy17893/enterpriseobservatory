@@ -100,9 +100,9 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                 INSERT INTO collector_health (
                     instance_id, role, health, last_success_utc,
                     consecutive_failures, is_backing_off, last_failure_detail,
-                    last_attempt_utc, last_failure_kind)
+                    last_attempt_utc, last_failure_kind, skipped_cycles)
                 VALUES (@instance, @role, @health, @success, @failures, @backing, @detail,
-                        @attempt, @kind)
+                        @attempt, @kind, @skipped)
                 ON CONFLICT (instance_id, role) DO UPDATE SET
                     health = EXCLUDED.health,
                     last_success_utc = EXCLUDED.last_success_utc,
@@ -110,7 +110,8 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                     is_backing_off = EXCLUDED.is_backing_off,
                     last_failure_detail = EXCLUDED.last_failure_detail,
                     last_attempt_utc = EXCLUDED.last_attempt_utc,
-                    last_failure_kind = EXCLUDED.last_failure_kind;
+                    last_failure_kind = EXCLUDED.last_failure_kind,
+                    skipped_cycles = EXCLUDED.skipped_cycles;
                 """);
 
             foreach (var entry in health)
@@ -125,6 +126,7 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                 command.Bind("@detail", entry.LastFailureDetail);
                 command.BindTime("@attempt", entry.LastAttemptUtc);
                 command.Bind("@kind", entry.LastFailureKind?.ToString());
+                command.Bind("@skipped", entry.SkippedCycles);
                 command.ExecuteNonQuery();
             }
 
@@ -178,7 +180,7 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
         using (var command = Command(connection, """
             SELECT instance_id, role, health, last_success_utc,
                    consecutive_failures, is_backing_off, last_failure_detail,
-                   last_attempt_utc, last_failure_kind
+                   last_attempt_utc, last_failure_kind, skipped_cycles
             FROM collector_health;
             """))
         using (var reader = command.ExecuteReader())
@@ -200,6 +202,7 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                     // the right one: a classification nobody recorded must not
                     // be invented.
                     LastFailureKind = ReadEnumOrNull<CollectionFailureKind>(reader, 8),
+                    SkippedCycles = reader.GetInt32(9),
                 };
 
                 health[(entry.InstanceId, entry.Role)] = entry;

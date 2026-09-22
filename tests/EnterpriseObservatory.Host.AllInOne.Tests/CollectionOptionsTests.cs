@@ -28,6 +28,7 @@ public class CollectionOptionsTests
         Assert.Equal(builtIn.CircuitBreakerThreshold, fromConfig.CircuitBreakerThreshold);
         Assert.Equal(builtIn.CircuitBreakerCooldown, fromConfig.CircuitBreakerCooldown);
         Assert.Equal(builtIn.MaxConcurrency, fromConfig.MaxConcurrency);
+        Assert.Equal(builtIn.MaxRequestsPerSource, fromConfig.MaxRequestsPerSource);
     }
 
     [Theory]
@@ -154,6 +155,29 @@ public class CollectionOptionsTests
         Assert.Contains(options.Validate(), p => p.Contains("MaxConcurrency", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(9)]
+    [InlineData(-1)]
+    public void A_per_source_request_limit_outside_one_to_eight_is_refused(int limit)
+    {
+        // F2: default 2, ceiling 8 (F note §8 decision 3). Out of range is
+        // refused at startup, the same as every other Collection setting here
+        // — not silently clamped to the nearest bound.
+        var options = new CollectionOptions { MaxRequestsPerSource = limit };
+
+        Assert.Contains(options.Validate(), p => p.Contains("MaxRequestsPerSource", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(8)]
+    public void A_per_source_request_limit_of_one_to_eight_is_accepted(int limit)
+    {
+        Assert.Empty(new CollectionOptions { MaxRequestsPerSource = limit }.Validate());
+    }
+
     [Fact]
     public void Every_problem_is_reported_at_once()
     {
@@ -166,9 +190,10 @@ public class CollectionOptionsTests
             CircuitBreakerThreshold = 0,
             CircuitBreakerCooldownSeconds = 0,
             MaxConcurrency = 0,
+            MaxRequestsPerSource = 0,
         };
 
-        Assert.Equal(7, options.Validate().Count);
+        Assert.Equal(8, options.Validate().Count);
     }
 
     [Fact]
@@ -183,6 +208,7 @@ public class CollectionOptionsTests
             CircuitBreakerThreshold = 3,
             CircuitBreakerCooldownSeconds = 600,
             MaxConcurrency = 16,
+            MaxRequestsPerSource = 4,
         };
 
         Assert.Empty(options.Validate());
@@ -196,5 +222,6 @@ public class CollectionOptionsTests
         Assert.Equal(3, policy.CircuitBreakerThreshold);
         Assert.Equal(TimeSpan.FromSeconds(600), policy.CircuitBreakerCooldown);
         Assert.Equal(16, policy.MaxConcurrency);
+        Assert.Equal(4, policy.MaxRequestsPerSource);
     }
 }
