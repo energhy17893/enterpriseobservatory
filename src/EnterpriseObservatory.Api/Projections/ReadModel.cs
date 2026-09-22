@@ -34,13 +34,21 @@ public sealed class ReadModel(
     IObservationStore observations,
     MonitoringOptions options,
     IClock clock,
-    IComplianceStore? compliance = null)
+    IComplianceStore? compliance = null,
+    IReadOnlyList<ContinuityCheck>? continuityChecks = null)
 {
     /// <summary>
     /// Where the continuity findings live (ADR-0024); null reads as "never
     /// evaluated", which the continuity report says rather than showing zeros.
     /// </summary>
     private readonly IComplianceStore? _compliance = compliance;
+
+    /// <summary>
+    /// The continuity catalogue the report is placed by: production's unless a
+    /// caller registers its own. The report reads it, never a list of ids.
+    /// </summary>
+    private readonly IReadOnlyList<ContinuityCheck> _continuityChecks =
+        continuityChecks ?? ContinuityCatalogue.Production;
 
     private readonly IEntityGraphStore _graphs = graphs ?? throw new ArgumentNullException(nameof(graphs));
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
@@ -447,30 +455,60 @@ public sealed class ReadModel(
     private static bool IsHa(string controlId) =>
         controlId.StartsWith("eo-cont.ha-", StringComparison.Ordinal);
 
-    private static bool IsStoragePath(string controlId) =>
-        controlId.StartsWith("eo-cont.path-", StringComparison.Ordinal);
-
-    private static bool IsNPlusOne(string controlId) =>
-        controlId.StartsWith("eo-cont.n-plus-one-", StringComparison.Ordinal);
+    /// <summary>
+    /// Where a control's findings sit in the report, read from the entity kind
+    /// its check applies to -- the only thing the report knows about a control.
+    /// </summary>
+    private static ContinuityReportScope ScopeOf(EntityKind kind) => kind switch
+    {
+        EntityKind.VCenter => ContinuityReportScope.VCenter,
+        EntityKind.Cluster => ContinuityReportScope.Cluster,
+        _ => ContinuityReportScope.Entity,
+    };
 
     /// <summary>
-    /// One row per live cluster: its HA scorecard (M8.1), DRS rules (M8.3) and
-    /// N+1 (M8.2) findings, and the multipath findings (M8.6) of the hosts
-    /// under it — each counted by finding state.
+    /// The continuity report (M8.10), placed by the catalogue (K3): a vCenter
+    /// section, one row per live cluster, and one summary row per control that
+    /// applies to hosts, VMs or datastores.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Read from the <c>eo-continuity</c> findings (ADR-0024), never
     /// recomputed: the same rows the compliance screen shows. A finding is
-    /// counted in its state — failing, accepted, excepted, not evaluated,
-    /// passing — and a stale one also in <see cref="ContinuityStateCounts.Stale"/>,
+    /// counted in its state -- failing, accepted, excepted, not evaluated,
+    /// passing -- and a stale one also in <see cref="ContinuityStateCounts.Stale"/>,
     /// the way the compliance summary counts it. Zero is only "all clear"
     /// when the checks have run: until then the summary says so.
+    /// </para>
+    /// <para>
+    /// No control id appears here. Each control is placed by its check's
+    /// <see cref="IComplianceCheck.AppliesTo"/>, and a finding under a cluster
+    /// reaches it through the graph's containment edges, so a control added to
+    /// the catalogue grows the report without a change to this method.
+    /// </para>
     /// </remarks>
     public ContinuityReportView ContinuityReport()
     {
         var graph = _graphs.Current;
         var now = _clock.UtcNow;
         var (findings, exceptions) = Continuity();
+
+        var controls = _continuityChecks
+            .Select(c => new ContinuityControlInfo
+            {
+                ControlId = c.Control.ControlId,
+                Title = c.Control.Title,
+                Citation = c.Control.Source,
+                AppliesTo = c.Check.AppliesTo,
+                Scope = ScopeOf(c.Check.AppliesTo),
+            })
+            .ToList();
+
+        var clusterControls = controls.Where(c => c.Scope == ContinuityReportScope.Cluster).ToList();
+        var vCenterControls = controls.Where(c => c.Scope == ContinuityReportScope.VCenter).ToList();
+        var entityControls = controls.Where(c => c.Scope == ContinuityReportScope.Entity).ToList();
+
+        var byEntity = findings.ToLookup(f => f.Entity);
 
         var clusters = graph.Entities.Values
             .Where(e => e.Kind == EntityKind.Cluster && e.ObservationState != ObservationState.Vanished)
@@ -482,15 +520,39 @@ public sealed class ReadModel(
         // read as "not collected", not as "every cluster passed".
         var haInputsCollected = clusters.Any(HasHaSettings);
 
+        // The findings of entity-level controls, by the cluster they sit under.
+        var entityControlIds = entityControls.Select(c => c.ControlId).ToHashSet(StringComparer.Ordinal);
+        var clusterOf = ContainingClusters(graph);
+        var underCluster = findings
+            .Where(f => entityControlIds.Contains(f.ControlId))
+            .Select(f => (Finding: f, Cluster: clusterOf(f.Entity)))
+            .Where(x => x.Cluster is not null)
+            .ToLookup(x => x.Cluster!.Value, x => x.Finding);
+
         var rows = clusters
-            .Select(c => ToContinuityRow(c, graph, findings, exceptions, now))
+            .Select(c => ToContinuityRow(c, graph, clusterControls, byEntity[c.Id], underCluster[c.Id], exceptions, now))
+            .ToList();
+
+        var vCenters = graph.Entities.Values
+            .Where(e => e.Kind == EntityKind.VCenter && e.ObservationState != ObservationState.Vanished)
+            .OrderBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Select(v => ToVCenterSection(v, vCenterControls, byEntity[v.Id], exceptions, now))
+            .ToList();
+
+        var byControl = findings.ToLookup(f => f.ControlId, StringComparer.Ordinal);
+
+        var controlRows = entityControls
+            .Select(c => ToControlRow(c, graph, byControl[c.ControlId], exceptions, now))
             .ToList();
 
         return new ContinuityReportView
         {
             GeneratedAtUtc = now,
             Summary = SummarizeContinuity(rows, findings, exceptions, now, haInputsCollected),
+            Controls = controls,
+            VCenters = vCenters,
             Rows = rows,
+            ControlRows = controlRows,
         };
     }
 
@@ -540,28 +602,46 @@ public sealed class ReadModel(
         };
     }
 
-    private static ContinuityReportRow ToContinuityRow(
-        Entity cluster,
-        EntityGraph graph,
-        IReadOnlyList<ComplianceFinding> findings,
-        IReadOnlyList<ComplianceWaiver> exceptions,
-        DateTimeOffset now)
-    {
-        var onCluster = findings.Where(f => f.Entity == cluster.Id).ToList();
-        var hostIds = HostsOf(graph, cluster.Id);
-        var storagePath = findings.Where(f => IsStoragePath(f.ControlId) && hostIds.Contains(f.Entity)).ToList();
+    /// <summary>A failing, accepted or excepted finding: non-compliant, whoever owns it.</summary>
+    private static bool IsAffected(ComplianceFinding finding, IReadOnlyList<ComplianceWaiver> exceptions, DateTimeOffset now) =>
+        finding.StateAt(exceptions, now) is FindingState.Failing or FindingState.Accepted or FindingState.Excepted;
 
-        var affectedHosts = storagePath
-            .Where(f => f.StateAt(exceptions, now) is FindingState.Failing or FindingState.Accepted or FindingState.Excepted)
-            .Select(f => graph.Entities.TryGetValue(f.Entity, out var host) ? host.DisplayName : f.EntityName)
+    private static string NameOf(EntityGraph graph, ComplianceFinding finding) =>
+        graph.Entities.TryGetValue(finding.Entity, out var entity) ? entity.DisplayName : finding.EntityName;
+
+    /// <summary>The distinct names, ordered, at most <see cref="ContinuityControlRow.MaxNamesListed"/>, and how many more.</summary>
+    private static (IReadOnlyList<string> Names, int More) Listed(IEnumerable<string> names)
+    {
+        var all = names
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var ha = Count(onCluster.Where(f => IsHa(f.ControlId)), exceptions, now);
-        var drs = Count(onCluster.Where(f => f.ControlId == ContinuityControls.DrsRule), exceptions, now);
-        var path = Count(storagePath, exceptions, now);
-        var nPlusOne = Count(onCluster.Where(f => IsNPlusOne(f.ControlId)), exceptions, now);
+        return (
+            [.. all.Take(ContinuityControlRow.MaxNamesListed)],
+            Math.Max(0, all.Count - ContinuityControlRow.MaxNamesListed));
+    }
+
+    private static ContinuityReportRow ToContinuityRow(
+        Entity cluster,
+        EntityGraph graph,
+        IReadOnlyList<ContinuityControlInfo> clusterControls,
+        IEnumerable<ComplianceFinding> onCluster,
+        IEnumerable<ComplianceFinding> under,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var own = onCluster.ToLookup(f => f.ControlId, StringComparer.Ordinal);
+        var controls = clusterControls
+            .Select(c => new ContinuityControlCounts { ControlId = c.ControlId, Counts = Count(own[c.ControlId], exceptions, now) })
+            .ToList();
+
+        var contained = under.ToList();
+        var (names, more) = Listed(contained.Where(f => IsAffected(f, exceptions, now)).Select(f => NameOf(graph, f)));
+
+        var clusterControlIds = clusterControls.Select(c => c.ControlId).ToHashSet(StringComparer.Ordinal);
+        var totals = Count(
+            onCluster.Where(f => clusterControlIds.Contains(f.ControlId)).Concat(contained), exceptions, now);
 
         return new ContinuityReportRow
         {
@@ -569,34 +649,150 @@ public sealed class ReadModel(
             ClusterName = cluster.DisplayName,
             Source = cluster.SourceInstanceId,
             HaSettingsCollected = HasHaSettings(cluster),
-            Ha = ha,
-            Drs = drs,
-            StoragePath = path,
-            StoragePathAffectedHosts = affectedHosts,
-            NPlusOne = nPlusOne,
-            HasFailing = ha.Failing + drs.Failing + path.Failing + nPlusOne.Failing > 0,
+            Controls = controls,
+            Contained = Count(contained, exceptions, now),
+            ContainedAffectedNames = names,
+            ContainedAffectedMore = more,
+            Totals = totals,
+            HasFailing = totals.Failing > 0,
+        };
+    }
+
+    private ContinuityVCenterSection ToVCenterSection(
+        Entity vCenter,
+        IReadOnlyList<ContinuityControlInfo> vCenterControls,
+        IEnumerable<ComplianceFinding> onVCenter,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var ids = vCenterControls.Select(c => c.ControlId).ToList();
+        var own = onVCenter.Where(f => ids.Contains(f.ControlId, StringComparer.Ordinal)).ToList();
+        var byControl = own.ToLookup(f => f.ControlId, StringComparer.Ordinal);
+
+        return new ContinuityVCenterSection
+        {
+            VCenterId = vCenter.Id.Value,
+            VCenterName = vCenter.DisplayName,
+            Source = vCenter.SourceInstanceId,
+            Controls =
+            [
+                .. vCenterControls.Select(c => new ContinuityControlCounts
+                {
+                    ControlId = c.ControlId,
+                    Counts = Count(byControl[c.ControlId], exceptions, now),
+                }),
+            ],
+            Findings =
+            [
+                .. own
+                    .OrderBy(f => ids.IndexOf(f.ControlId))
+                    .ThenBy(f => f.Subject, StringComparer.Ordinal)
+                    .Select(f => ToView(f, exceptions, now)),
+            ],
+            // The alarms vCenter raised on itself: a root-folder alarm is
+            // filed on the vCenter entity by the collector (#84).
+            Alarms =
+            [
+                .. Visible()
+                    .Where(a => a.Entity == vCenter.Id)
+                    .OrderByDescending(a => a.Severity)
+                    .ThenBy(a => a.FirstSeenUtc)
+                    .Select(a => new ContinuityAlarmView
+                    {
+                        Title = a.Title,
+                        Severity = a.Severity,
+                        State = a.State,
+                        IsStale = a.IsStale,
+                        FirstSeenUtc = a.FirstSeenUtc,
+                    }),
+            ],
+        };
+    }
+
+    private static ContinuityControlRow ToControlRow(
+        ContinuityControlInfo control,
+        EntityGraph graph,
+        IEnumerable<ComplianceFinding> findings,
+        IReadOnlyList<ComplianceWaiver> exceptions,
+        DateTimeOffset now)
+    {
+        var all = findings.ToList();
+        var (names, more) = Listed(
+            all.Where(f => f.StateAt(exceptions, now) == FindingState.Failing).Select(f => NameOf(graph, f)));
+
+        return new ContinuityControlRow
+        {
+            ControlId = control.ControlId,
+            Title = control.Title,
+            Citation = control.Citation,
+            AppliesTo = control.AppliesTo,
+            Counts = Count(all, exceptions, now),
+            FailingNames = names,
+            MoreFailing = more,
         };
     }
 
     /// <summary>
-    /// Every host <c>PartOf</c> this cluster -- the same edge the inventory
-    /// collector writes; see <c>VsphereInventorySource</c>.
+    /// The cluster an entity sits under, by the containment edges the
+    /// inventory collector writes: a host <c>PartOf</c> its cluster, a VM
+    /// <c>RunsOn</c> its host. Null when it is under none (a datastore, a
+    /// standalone host).
     /// </summary>
-    private static HashSet<EntityId> HostsOf(EntityGraph graph, EntityId clusterId) =>
-    [
-        .. graph.Relationships
-            .Where(r => r.Kind == RelationshipKind.PartOf && r.To == clusterId)
-            .Select(r => r.From),
-    ];
+    private static Func<EntityId, EntityId?> ContainingClusters(EntityGraph graph)
+    {
+        var parents = graph.Relationships
+            .Where(r => r.Kind is RelationshipKind.PartOf or RelationshipKind.RunsOn)
+            .ToLookup(r => r.From, r => r.To);
 
-    private static ContinuityReportSummary SummarizeContinuity(
+        var memo = new Dictionary<EntityId, EntityId?>();
+
+        return start =>
+        {
+            if (memo.TryGetValue(start, out var known))
+            {
+                return known;
+            }
+
+            // Breadth-first up the edges; the visited set keeps a bad edge
+            // from looping, since RunsOn is not checked acyclic with PartOf.
+            var visited = new HashSet<EntityId> { start };
+            var frontier = new Queue<EntityId>(parents[start]);
+            EntityId? found = null;
+
+            while (frontier.Count > 0)
+            {
+                var next = frontier.Dequeue();
+
+                if (!visited.Add(next))
+                {
+                    continue;
+                }
+
+                if (graph.Entities.TryGetValue(next, out var entity) && entity.Kind == EntityKind.Cluster)
+                {
+                    found = next;
+                    break;
+                }
+
+                foreach (var parent in parents[next])
+                {
+                    frontier.Enqueue(parent);
+                }
+            }
+
+            memo[start] = found;
+            return found;
+        };
+    }
+
+    private ContinuityReportSummary SummarizeContinuity(
         List<ContinuityReportRow> rows,
         IReadOnlyList<ComplianceFinding> findings,
         IReadOnlyList<ComplianceWaiver> exceptions,
         DateTimeOffset now,
         bool haInputsCollected)
     {
-        var byControl = ContinuityCatalogue.Production
+        var byControl = _continuityChecks
             .Select(c => c.Control.ControlId)
             .ToDictionary(
                 id => id,
@@ -636,12 +832,12 @@ public sealed class ReadModel(
     }
 
     /// <summary>A continuity finding as a card or a report shows it.</summary>
-    private static ContinuityFindingView ToView(
+    private ContinuityFindingView ToView(
         ComplianceFinding finding,
         IReadOnlyList<ComplianceWaiver> exceptions,
         DateTimeOffset now)
     {
-        var control = ContinuityCatalogue.Production
+        var control = _continuityChecks
             .FirstOrDefault(c => c.Control.ControlId == finding.ControlId)?.Control;
 
         return new ContinuityFindingView
@@ -785,7 +981,7 @@ public sealed class ReadModel(
     {
         var (findings, exceptions) = Continuity();
         var now = _clock.UtcNow;
-        var order = ContinuityCatalogue.Production.Select(c => c.Control.ControlId).ToList();
+        var order = _continuityChecks.Select(c => c.Control.ControlId).ToList();
 
         return
         [

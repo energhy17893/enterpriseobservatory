@@ -1100,13 +1100,21 @@ public sealed record CapacityReportView
     public required IReadOnlyList<CapacityReportRow> Rows { get; init; }
 }
 
-// --- continuity report (M8.10) -------------------------------------------
+// --- continuity report (M8.10, K3) ---------------------------------------
 //
-// The fourth report: one row per cluster -- its HA scorecard (M8.1), DRS
-// rules (M8.3) and N+1 (M8.2), and the multipath findings (M8.6) of the hosts
-// under it. Read from the eo-continuity findings (ADR-0024), the same rows
-// the compliance screen shows; nothing here recomputes a verdict. See
-// ReadModel.ContinuityReport.
+// The fourth report, read from the eo-continuity findings (ADR-0024) -- the
+// same rows the compliance screen shows; nothing here recomputes a verdict.
+// It reads the catalogue rather than knowing controls: each control is placed
+// by the entity kind its check applies to (K3 note §3), so a control added to
+// the catalogue grows the report with no change here. Three places:
+//   - the vCenter section: controls that apply to the vCenter itself, and the
+//     alarms vCenter raised on itself;
+//   - one row per live cluster: the controls that apply to a cluster, and a
+//     rollup of the findings on hosts, VMs and datastores under it;
+//   - one summary row per control that applies to anything else (a host, a
+//     VM, a datastore): counts and at most ten failing names -- the report is
+//     for an auditor, not an inventory dump.
+// See ReadModel.ContinuityReport.
 
 /// <summary>
 /// Findings of one group counted by state. A stale finding is counted in its
@@ -1127,7 +1135,47 @@ public sealed record ContinuityStateCounts
     public int Stale { get; init; }
 }
 
-/// <summary>One cluster's continuity posture, by finding state per group.</summary>
+/// <summary>Where a control's findings sit in the report, read from its check's entity kind.</summary>
+public enum ContinuityReportScope
+{
+    /// <summary>The vCenter itself: its own section, above the clusters.</summary>
+    VCenter,
+
+    /// <summary>A cluster: a count on each cluster row.</summary>
+    Cluster,
+
+    /// <summary>Anything else -- host, VM, datastore: one summary row for the control.</summary>
+    Entity,
+}
+
+/// <summary>One control of the catalogue as the report names it.</summary>
+public sealed record ContinuityControlInfo
+{
+    public required string ControlId { get; init; }
+
+    public required string Title { get; init; }
+
+    /// <summary>
+    /// What the expectation rests on (<c>ComplianceControl.Source</c>), shown
+    /// as "basis:". Empty when the control cites nothing; shown then as
+    /// "no citation — product policy", never hidden.
+    /// </summary>
+    public required string Citation { get; init; }
+
+    public required EntityKind AppliesTo { get; init; }
+
+    public required ContinuityReportScope Scope { get; init; }
+}
+
+/// <summary>One control's findings on one entity, counted by state.</summary>
+public sealed record ContinuityControlCounts
+{
+    public required string ControlId { get; init; }
+
+    public required ContinuityStateCounts Counts { get; init; }
+}
+
+/// <summary>One cluster's continuity posture, by finding state per control.</summary>
 public sealed record ContinuityReportRow
 {
     public required string ClusterId { get; init; }
@@ -1143,23 +1191,100 @@ public sealed record ContinuityReportRow
     /// </summary>
     public required bool HaSettingsCollected { get; init; }
 
-    /// <summary>The cluster's <c>eo-cont.ha-*</c> findings.</summary>
-    public required ContinuityStateCounts Ha { get; init; }
+    /// <summary>Every control that applies to a cluster, in catalogue order, with this cluster's findings.</summary>
+    public required IReadOnlyList<ContinuityControlCounts> Controls { get; init; }
 
-    /// <summary>The cluster's <c>eo-cont.drs-rule</c> findings, one per rule.</summary>
-    public required ContinuityStateCounts Drs { get; init; }
+    /// <summary>
+    /// The findings of hosts, VMs and datastores under this cluster, through
+    /// the graph's containment edges (<c>PartOf</c>, <c>RunsOn</c>).
+    /// </summary>
+    public required ContinuityStateCounts Contained { get; init; }
 
-    /// <summary>The <c>eo-cont.path-*</c> findings of the hosts under the cluster.</summary>
-    public required ContinuityStateCounts StoragePath { get; init; }
+    /// <summary>Entities under this cluster with a failing, accepted or excepted finding: at most ten names.</summary>
+    public required IReadOnlyList<string> ContainedAffectedNames { get; init; }
 
-    /// <summary>Hosts under this cluster with a failing, accepted or excepted path finding, by name.</summary>
-    public required IReadOnlyList<string> StoragePathAffectedHosts { get; init; }
+    /// <summary>How many more such entities there are beyond the names listed.</summary>
+    public required int ContainedAffectedMore { get; init; }
 
-    /// <summary>The cluster's <c>eo-cont.n-plus-one-*</c> findings.</summary>
-    public required ContinuityStateCounts NPlusOne { get; init; }
+    /// <summary>The cluster's own findings and the ones under it, together.</summary>
+    public required ContinuityStateCounts Totals { get; init; }
 
-    /// <summary>Any failing finding (not accepted, not excepted) in the four groups.</summary>
+    /// <summary>Any failing finding (not accepted, not excepted), on the cluster or under it.</summary>
     public required bool HasFailing { get; init; }
+
+    /// <summary>This cluster's counts for one control; all zero when the control is not a cluster's.</summary>
+    public ContinuityStateCounts Control(string controlId) =>
+        Controls.FirstOrDefault(c => string.Equals(c.ControlId, controlId, StringComparison.Ordinal))?.Counts
+        ?? new ContinuityStateCounts();
+}
+
+/// <summary>
+/// One control that applies to hosts, VMs or datastores, summarised on one
+/// row: its counts and the entities failing it, by name.
+/// </summary>
+public sealed record ContinuityControlRow
+{
+    /// <summary>The most failing names a row lists; the rest are counted in <see cref="MoreFailing"/>.</summary>
+    public const int MaxNamesListed = 10;
+
+    public required string ControlId { get; init; }
+
+    public required string Title { get; init; }
+
+    /// <inheritdoc cref="ContinuityControlInfo.Citation"/>
+    public required string Citation { get; init; }
+
+    public required EntityKind AppliesTo { get; init; }
+
+    public required ContinuityStateCounts Counts { get; init; }
+
+    /// <summary>Entities failing the control, by name, at most <see cref="MaxNamesListed"/>.</summary>
+    public required IReadOnlyList<string> FailingNames { get; init; }
+
+    /// <summary>How many more failing entities there are beyond the names listed.</summary>
+    public required int MoreFailing { get; init; }
+}
+
+/// <summary>An alarm vCenter raised on itself, as the report lists it.</summary>
+public sealed record ContinuityAlarmView
+{
+    public required string Title { get; init; }
+
+    public required AlertSeverity Severity { get; init; }
+
+    public required AlertLifecycleState State { get; init; }
+
+    /// <summary>The source did not report it last cycle: the last state that could be read.</summary>
+    public required bool IsStale { get; init; }
+
+    public required DateTimeOffset FirstSeenUtc { get; init; }
+}
+
+/// <summary>
+/// One vCenter: the controls that apply to the vCenter itself, and the alarms
+/// raised on it. Above the cluster rows -- it sits under no cluster.
+/// </summary>
+public sealed record ContinuityVCenterSection
+{
+    public required string VCenterId { get; init; }
+
+    public required string VCenterName { get; init; }
+
+    public required string Source { get; init; }
+
+    /// <summary>Every control that applies to a vCenter, in catalogue order.</summary>
+    public required IReadOnlyList<ContinuityControlCounts> Controls { get; init; }
+
+    /// <summary>The findings behind <see cref="Controls"/>, so the section can say what the certificate says.</summary>
+    public required IReadOnlyList<ContinuityFindingView> Findings { get; init; }
+
+    /// <summary>The visible alerts on the vCenter entity -- its root alarms -- worst first.</summary>
+    public required IReadOnlyList<ContinuityAlarmView> Alarms { get; init; }
+
+    /// <summary>This vCenter's counts for one control; all zero when the control is not a vCenter's.</summary>
+    public ContinuityStateCounts Control(string controlId) =>
+        Controls.FirstOrDefault(c => string.Equals(c.ControlId, controlId, StringComparison.Ordinal))?.Counts
+        ?? new ContinuityStateCounts();
 }
 
 /// <summary>Counts by control and by state, and what the counts cannot say for themselves.</summary>
@@ -1194,8 +1319,8 @@ public sealed record ContinuityReportSummary
 }
 
 /// <summary>
-/// The continuity report: every live cluster's HA, DRS and storage-path
-/// posture, for the printable page and the CSV export. See
+/// The continuity report, for the printable page, the CSV export and the
+/// mailed report -- one projection, three renderings. See
 /// <see cref="AlertReportView"/> for the shape this copies.
 /// </summary>
 public sealed record ContinuityReportView
@@ -1204,5 +1329,15 @@ public sealed record ContinuityReportView
 
     public required ContinuityReportSummary Summary { get; init; }
 
+    /// <summary>Every control of the catalogue, in catalogue order, with where it sits.</summary>
+    public required IReadOnlyList<ContinuityControlInfo> Controls { get; init; }
+
+    /// <summary>The vCenter section, above the clusters.</summary>
+    public required IReadOnlyList<ContinuityVCenterSection> VCenters { get; init; }
+
+    /// <summary>One row per live cluster.</summary>
     public required IReadOnlyList<ContinuityReportRow> Rows { get; init; }
+
+    /// <summary>One summary row per control that applies to hosts, VMs or datastores.</summary>
+    public required IReadOnlyList<ContinuityControlRow> ControlRows { get; init; }
 }

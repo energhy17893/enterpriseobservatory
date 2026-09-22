@@ -167,7 +167,7 @@ public static class ObservatoryApi
         api.MapGet("/reports/continuity.csv", (ReadModel model) =>
         {
             var report = model.ContinuityReport();
-            var csv = ContinuityReportCsv.Write(report.Rows);
+            var csv = ContinuityReportCsv.Write(report);
             var fileName = $"continuity-{report.GeneratedAtUtc:yyyyMMdd-HHmm}.csv";
 
             return Results.File(CsvWriter.ToUtf8WithBom(csv), "text/csv", fileName);
