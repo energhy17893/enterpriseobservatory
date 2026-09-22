@@ -101,7 +101,9 @@ public abstract class ObservationContractTests<TFixture>
         Assert.NotEmpty(batch.Observations);
         Assert.All(batch.Observations, o => Assert.StartsWith("host-", o.Entity.Value, StringComparison.Ordinal));
 
+        // The target names the entity type; its exact wording (e.g. the fault
+        // kind suffix package A adds) is not part of the contract.
         var failure = Assert.Single(batch.Failures);
-        Assert.Equal("VirtualMachine", failure.Target);
+        Assert.StartsWith("VirtualMachine", failure.Target, StringComparison.Ordinal);
     }
 }
