@@ -403,3 +403,94 @@ Does not: change fingerprints, change opening hysteresis, change flap detection 
 is counted at resolution, not at the first absence), convert K2's four rules, or change the
 screens beyond the fields and counts §2 requires. K3 and the web package decide how "stale"
 and "unknown" look.
+
+## 7. Measured: the blind spot's quiet cycles (second code PR)
+
+**What "quiet" means.** `storage-latency-blind-spot` asks one question: is the latency
+measurement working on this volume? Its inputs are the volume's latency readings (a duration
+from a vantage point), the load (operations a second, summed over read and write and over
+every mounting host) and SIOC's active time. A cycle is **quiet** when the load is below
+`MinimumOperationsPerSecond` (1 op/s). At idle a zero latency is an honest zero, so the cycle
+cannot tell whether the measurement works. That is not evidence that it does, so a quiet cycle
+is `Unknown(NotJudgeable)` and not `Absent`. The rule now answers in this order:
+
+| Order | Input | Verdict |
+|---|---|---|
+| 1 | no latency reading for the volume this cycle | no verdict (`NotReported`) |
+| 2 | fewer than 3 latency readings | `NotJudgeable` |
+| 3 | any latency ≥ 1 ms | **Absent** (the measurement works) |
+| 4 | SIOC active ≥ 1 % | **Absent** (the channel is there, whatever the load) |
+| 5 | no load counter | `InputNotCollected` |
+| 6 | load < 1 op/s (**quiet**) | `NotJudgeable` |
+| 7 | no SIOC counter | `InputNotCollected` |
+| 8 | otherwise | **Present** (blind) |
+
+Step 4 moved ahead of the load check. Before this PR both gates only silenced the rule, so
+their order did not matter. Now it does: SIOC running is an answer ("the channel exists"), and
+the answer does not depend on the load.
+
+**Evidence so far.** The live database held 399 Cleared→Returned pairs for this rule in the
+~15 h before 22 September (§3.1, p50 = p95 = one 30 s absence), all on quiet cycles. After the
+reconnect it held 29 `ConditionCleared`. The query below reclassifies every historical
+`ConditionCleared` transition of the rule with the verdict the new code would have given it.
+It is read-only, and it joins `alert_history` to the raw samples of the series the rule reads.
+
+```sql
+-- ADR-0026 §7: storage-latency-blind-spot's ConditionCleared transitions,
+-- reclassified under the three-valued rule. Read-only.
+-- Raw samples are kept 2 days (ADR-0017): run it before the transitions'
+-- samples age out, or the older ones read as "no latency reading".
+WITH cleared AS (
+    SELECT h.id,
+           extract(epoch FROM h.at_utc)::bigint       AS at_s,
+           lower(split_part(h.fingerprint, '|', 4))   AS volume   -- the fingerprint's object: the datastore id
+    FROM alert_history h
+    WHERE h.reason = 'ConditionCleared'
+      AND (h.rule_id = 'storage-latency-blind-spot'
+           OR h.fingerprint LIKE '%|storage-latency-blind-spot')
+),
+cycle AS (
+    -- Each series' newest sample the cycle could have read: at most 60 s
+    -- (two metric intervals) before the transition.
+    SELECT c.id, s.counter,
+           (SELECT x.value FROM sample x
+             WHERE x.series_id = s.id AND x.at_utc BETWEEN c.at_s - 60 AND c.at_s
+             ORDER BY x.at_utc DESC LIMIT 1) AS value
+    FROM cleared c
+    JOIN series s ON lower(s.entity_id) = c.volume
+    WHERE s.instance <> ''                                          -- from a vantage point (a host)
+      AND (s.counter LIKE 'datastore.total%Latency.average'         -- latency, ms
+           OR s.counter LIKE 'datastore.number%Averaged.average'    -- load, op/s
+           OR s.counter = 'datastore.siocActiveTimePercentage.average')
+),
+judged AS (
+    SELECT c.id,
+           count(y.value) FILTER (WHERE y.counter LIKE 'datastore.total%Latency.average')  AS latency_readings,
+           max(y.value)   FILTER (WHERE y.counter LIKE 'datastore.total%Latency.average')  AS worst_latency_ms,
+           max(y.value)   FILTER (WHERE y.counter = 'datastore.siocActiveTimePercentage.average') AS sioc_pct,
+           sum(y.value)   FILTER (WHERE y.counter LIKE 'datastore.number%Averaged.average') AS load_ops
+    FROM cleared c
+    LEFT JOIN cycle y ON y.id = c.id
+    GROUP BY c.id
+)
+SELECT verdict, count(*) AS transitions
+FROM (
+    SELECT CASE
+             WHEN latency_readings = 0 THEN '0 NotReported (no latency reading in the window)'
+             WHEN latency_readings < 3 THEN '1 NotJudgeable (fewer than 3 latency readings)'
+             WHEN worst_latency_ms >= 1 THEN '2 Absent (latency measured)'
+             WHEN sioc_pct >= 1 THEN '3 Absent (SIOC active)'
+             WHEN load_ops IS NULL THEN '4 InputNotCollected (no load counter)'
+             WHEN load_ops < 1 THEN '5 NotJudgeable (quiet cycle: load < 1 op/s)'
+             WHEN sioc_pct IS NULL THEN '6 InputNotCollected (no SIOC counter)'
+             ELSE '7 Present (still blind: the clear was not the rule)'
+           END AS verdict
+    FROM judged
+) v
+GROUP BY ROLLUP (verdict)
+ORDER BY verdict NULLS LAST;   -- the NULL row is the total
+```
+
+**Result:** *to be filled in from the live run.* Rows 1 and 5 together are the transitions
+that would have been `NotJudgeable`. Row 5 alone is the "quiet" answer. Rows 2 and 3 are real
+absences, which still resolve at N = 2.

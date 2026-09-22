@@ -180,16 +180,16 @@ public sealed class StorageLatencyBlindSpotRule : IAnalysisRule
 
     // Measured: 399 Cleared->Returned pairs over 30 fingerprints, p50 = p95 =
     // 1 absence (30 s), max 26 610 s; chosen 2, above the p95 (design note
-    // §3.1). Every one of those flaps is a quiet cycle, which the rule's own
-    // conversion will call NotJudgeable -- N was never the fix for them.
+    // §3.1). Every one of those flaps is a quiet cycle, which the rule now
+    // calls NotJudgeable -- N was never the fix for them (§7).
     public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 2 };
 
     public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return TwoValuedVerdicts.From(context, RuleId, StorageLatencyBlindSpot.Evaluate(
-            context.Observations, context.Options.StorageLatencyBlindSpot));
+        return StorageLatencyBlindSpot.Judge(
+            context.Observations, context.Options.StorageLatencyBlindSpot, context.NowUtc);
     }
 }
 

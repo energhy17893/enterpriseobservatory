@@ -656,5 +656,145 @@ public class StorageLatencyBlindSpotTests
     public void Nothing_at_all_produces_nothing()
     {
         Assert.Empty(StorageLatencyBlindSpot.Evaluate([]));
+        Assert.Empty(StorageLatencyBlindSpot.Judge([], null, T0));
+    }
+
+    // --- three values (ADR-0026) -------------------------------------------
+
+    private static AlertFingerprint Fp(string datastore = Volume) =>
+        StorageLatencyBlindSpot.FingerprintOf(new EntityId(datastore));
+
+    private static SubjectVerdict JudgeOne(IReadOnlyList<Observation> observations) =>
+        Assert.Single(StorageLatencyBlindSpot.Judge(observations, null, T0));
+
+    [Fact]
+    public void A_blind_volume_is_present()
+    {
+        var present = Assert.IsType<ConditionPresent>(JudgeOne(Blind()));
+
+        Assert.Equal([Fp()], present.Covers);
+        Assert.Equal(Fp(), Assert.Single(present.Alerts).Fingerprint);
+        Assert.Equal(new EntityId(Volume), present.Entity);
+    }
+
+    [Fact]
+    public void A_quiet_cycle_is_not_judgeable_rather_than_absent()
+    {
+        // The measured flap: 399 Cleared->Returned pairs in fifteen hours
+        // before 22 September, every one a cycle whose load fell below one
+        // operation a second. A zero at idle is an honest zero, so nothing can
+        // be said about whether the measurement works -- which is not saying
+        // it works (ADR-0026 design note §3).
+        var quiet = Blind().Select(o => o.Value.CounterName == Iops
+            ? o with { Value = o.Value with { Raw = 0.4 } }
+            : o).ToList();
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(quiet));
+
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        Assert.Contains("0.4 operations a second", unknown.Detail, StringComparison.Ordinal);
+        Assert.Equal([Fp()], unknown.Covers);
+    }
+
+    [Fact]
+    public void A_latency_the_platform_can_report_is_absent()
+    {
+        var measured = Blind().Append(From("esx02", 3, counter: Write)).ToList();
+
+        var absent = Assert.IsType<ConditionAbsent>(JudgeOne(measured));
+        Assert.Equal(T0, absent.EvidenceAtUtc);
+    }
+
+    [Fact]
+    public void Sioc_running_is_absent_even_on_a_quiet_cycle()
+    {
+        // The configuration is fixed: the load does not matter to that answer.
+        var fixedVolume = Blind().Select(o => o.Value.CounterName switch
+        {
+            Iops => o with { Value = o.Value with { Raw = 0 } },
+            Sioc => o with { Value = o.Value with { Raw = 4 } },
+            _ => o,
+        }).ToList();
+
+        Assert.IsType<ConditionAbsent>(JudgeOne(fixedVolume));
+    }
+
+    [Fact]
+    public void Too_few_latency_readings_is_not_judgeable()
+    {
+        var sparse = Blind().Where(o => o.Value.Instance != "esx03" && o.Value.CounterName != Write).ToList();
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(sparse));
+        Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+    }
+
+    [Theory]
+    [InlineData(Iops)]
+    [InlineData(Sioc)]
+    public void A_missing_load_or_sioc_counter_is_not_collected(string missing)
+    {
+        var without = Blind().Where(o => o.Value.CounterName != missing).ToList();
+
+        var unknown = Assert.IsType<Unknown>(JudgeOne(without));
+        Assert.Equal(UnknownReason.InputNotCollected, unknown.Reason);
+    }
+
+    [Fact]
+    public void A_quiet_cycle_keeps_an_open_blind_spot_open_across_the_rules_n()
+    {
+        // The end to end of the fix: raise, confirm, then quiet cycles well
+        // past N = 2. It used to resolve on the first and come back as
+        // "Returned" on the next busy one.
+        var rule = new StorageLatencyBlindSpotRule();
+        var quiet = Blind().Select(o => o.Value.CounterName == Iops
+            ? o with { Value = o.Value with { Raw = 0 } }
+            : o).ToList();
+
+        IReadOnlyList<AlertInstance> stored = [];
+
+        for (var minute = 0; minute < 6; minute++)
+        {
+            var observations = minute < 2 ? Blind() : quiet;
+            var context = new RuleContext
+            {
+                Observations = observations,
+                ReadGraph = () => EntityGraph.Empty,
+                NowUtc = T0.AddMinutes(minute),
+                Options = EnterpriseObservatory.Application.Monitoring.MonitoringOptions.Default,
+                Series = new NoSeries(),
+                Events = new NoEvents(),
+            };
+
+            stored = AlertReconciler.Reconcile(new AlertReconciliationRequest
+            {
+                Scope = "observation",
+                Stored = stored,
+                NowUtc = T0.AddMinutes(minute),
+                Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+                Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+                RawRetention = TimeSpan.FromDays(2),
+            }).Instances;
+        }
+
+        var alert = Assert.Single(stored);
+        Assert.Equal(AlertLifecycleState.Open, alert.State);
+        Assert.True(alert.IsStale);
+        Assert.Equal(UnknownReason.NotJudgeable, alert.StaleReason);
+        Assert.DoesNotContain(alert.History, t => t.Reason == AlertTransitionReason.ConditionCleared);
+    }
+
+    private sealed class NoSeries : EnterpriseObservatory.Application.Monitoring.ISeriesReader
+    {
+        public EnterpriseObservatory.Application.Monitoring.SeriesResult Query(
+            EnterpriseObservatory.Application.Monitoring.SeriesQuery query) =>
+            new() { Key = query.Key, Resolution = SeriesResolution.Raw };
+
+        public IReadOnlyList<SeriesKey> SeriesFor(EntityId entity) => [];
+    }
+
+    private sealed class NoEvents : EnterpriseObservatory.Application.Collection.IEventReader
+    {
+        public IReadOnlyList<EnterpriseObservatory.Application.Collection.SourceEvent> OfTypes(
+            IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc) => [];
     }
 }
