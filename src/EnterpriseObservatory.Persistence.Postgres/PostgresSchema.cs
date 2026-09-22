@@ -219,10 +219,6 @@ internal static class PostgresSchema
             last_failure_detail  text        NULL,
             last_attempt_utc     timestamptz NULL,
             last_failure_kind    text        NULL,
-            -- F2: cycles skipped because a previous read of this source was
-            -- still running when the next one was due. Added by migration 15
-            -- on a database that already has this table.
-            skipped_cycles       integer     NOT NULL DEFAULT 0,
             PRIMARY KEY (instance_id, role)
         );
 
