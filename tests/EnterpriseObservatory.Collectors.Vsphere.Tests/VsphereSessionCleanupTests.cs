@@ -17,19 +17,21 @@ namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
 /// </remarks>
 public class VsphereSessionCleanupTests
 {
-    private static (VsphereClient Client, ScriptedVcenter Server) Connect(ScriptedVcenter server)
+    private static (VsphereClient Client, VsphereSessionChannel Channel, ScriptedVcenter Server) Connect(
+        ScriptedVcenter server)
     {
-        var http = new HttpClient(server) { BaseAddress = new Uri("https://vc.invalid") };
-
-        var client = new VsphereClient(http, new VsphereConnectionOptions
+        var options = new VsphereConnectionOptions
         {
             BaseAddress = new Uri("https://vc.invalid"),
             Username = "svc-readonly@vsphere.local",
             Password = Secret.From("not-a-real-password"),
             InstanceId = "vc-test",
-        });
+        };
 
-        return (client, server);
+        var channel = new VsphereSessionChannel(server, options);
+        var client = new VsphereClient(channel, options);
+
+        return (client, channel, server);
     }
 
     [Fact]
@@ -40,7 +42,7 @@ public class VsphereSessionCleanupTests
         // anything and the view stayed on a session the metric loop keeps
         // alive — one more for every inventory read that timed out.
         using var cutOff = new CancellationTokenSource();
-        var (client, server) = Connect(new ScriptedVcenter { OnFirstPage = cutOff.Cancel });
+        var (client, _, server) = Connect(new ScriptedVcenter { OnFirstPage = cutOff.Cancel });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => client.RetrieveInventoryAsync(cutOff.Token));
@@ -56,7 +58,7 @@ public class VsphereSessionCleanupTests
         // pages, because a read cut off during the first one never learned a
         // token and has nothing to give back.
         using var cutOff = new CancellationTokenSource();
-        var (client, server) = Connect(new ScriptedVcenter
+        var (client, _, server) = Connect(new ScriptedVcenter
         {
             FirstPageHasMore = true,
             OnNextPage = cutOff.Cancel,
@@ -72,7 +74,7 @@ public class VsphereSessionCleanupTests
     [Fact]
     public async Task A_retrieval_that_ran_to_its_last_page_has_no_token_to_cancel()
     {
-        var (client, server) = Connect(new ScriptedVcenter());
+        var (client, _, server) = Connect(new ScriptedVcenter());
 
         await client.RetrieveInventoryAsync(CancellationToken.None);
 
@@ -86,10 +88,10 @@ public class VsphereSessionCleanupTests
         // Nothing called Logout. Every restart, every edited or removed
         // connection and every press of Test left a session behind until
         // vCenter's idle timeout collected it.
-        var (client, server) = Connect(new ScriptedVcenter());
+        var (client, channel, server) = Connect(new ScriptedVcenter());
         await client.RetrieveInventoryAsync(CancellationToken.None);
 
-        await client.LogoutAsync(CancellationToken.None);
+        await channel.LogoutAsync(CancellationToken.None);
 
         Assert.Equal(1, server.Calls.Count(c => c == "Logout"));
     }
@@ -98,9 +100,9 @@ public class VsphereSessionCleanupTests
     public async Task A_client_that_never_logged_in_has_nothing_to_log_out_of()
     {
         // Logging out must not be what opens the connection.
-        var (client, server) = Connect(new ScriptedVcenter());
+        var (_, channel, server) = Connect(new ScriptedVcenter());
 
-        await client.LogoutAsync(CancellationToken.None);
+        await channel.LogoutAsync(CancellationToken.None);
 
         Assert.Empty(server.Calls);
     }
@@ -108,11 +110,11 @@ public class VsphereSessionCleanupTests
     [Fact]
     public async Task Logging_out_twice_asks_once()
     {
-        var (client, server) = Connect(new ScriptedVcenter());
+        var (client, channel, server) = Connect(new ScriptedVcenter());
         await client.RetrieveInventoryAsync(CancellationToken.None);
 
-        await client.LogoutAsync(CancellationToken.None);
-        await client.LogoutAsync(CancellationToken.None);
+        await channel.LogoutAsync(CancellationToken.None);
+        await channel.LogoutAsync(CancellationToken.None);
 
         Assert.Equal(1, server.Calls.Count(c => c == "Logout"));
     }
@@ -122,11 +124,11 @@ public class VsphereSessionCleanupTests
     {
         // This runs while a connection is being taken down. There is nobody
         // left to tell, and the idle timeout still collects the session.
-        var (client, server) = Connect(new ScriptedVcenter());
+        var (client, channel, server) = Connect(new ScriptedVcenter());
         await client.RetrieveInventoryAsync(CancellationToken.None);
         server.Unreachable = true;
 
-        await client.LogoutAsync(CancellationToken.None);
+        await channel.LogoutAsync(CancellationToken.None);
     }
 
     /// <summary>A vCenter that knows only the calls an inventory read makes.</summary>
