@@ -296,6 +296,13 @@ public static class PropertyCollectorParser
         };
     }
 
+    /// <summary>Reads one element of a method reply as a node tree.</summary>
+    public static PropertyNode ReadNode(XElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return ReadStructure(element);
+    }
+
     private const string XmlSchemaInstance = "http://www.w3.org/2001/XMLSchema-instance";
 
     /// <summary>Splits a value produced by <see cref="Flatten"/>.</summary>

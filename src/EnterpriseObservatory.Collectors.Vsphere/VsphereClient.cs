@@ -75,7 +75,7 @@ public sealed record VsphereAvailableMetric
 /// handling are the kind of thing that only a real server settles.
 /// </para>
 /// </remarks>
-public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi, IDisposable
+public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi, IDisposable
 {
     /// <summary>Samples per series; see <see cref="VsphereSoapRequests.QueryPerf"/>.</summary>
     private const int MaxSample = 3;
@@ -437,12 +437,24 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             "config.instanceUuid",
             "config.hardware.numCPU",
             "config.hardware.memoryMB",
+
+            // Collection PR 1, each seen on 145 of 145 live machines. Every
+            // machine has a connection state, a consolidation flag and a
+            // device list (a keyboard and a video card at the least), so an
+            // absent one was not read.
+            "runtime.connectionState",
+            "runtime.consolidationNeeded",
+            "config.hardware.device",
         ],
         ["ClusterComputeResource"] =
         [
             "name",
             "configuration.dasConfig.enabled",
             "configuration.drsConfig.enabled",
+
+            // Every cluster has a summary (3 of 3 live). Its currentEVCModeKey
+            // is legitimately absent when EVC is off, and is not a row.
+            "summary",
 
             // Stands for its dasConfig child: configurationEx can only be
             // requested whole, and every cluster's carries dasConfig, so a
@@ -572,6 +584,23 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             // The three-valued mode, not the legacy adminDisabled boolean,
             // which cannot tell normal lockdown from strict.
             "config.lockdownMode",
+
+            // Collection PR 1 -- every path below was read alone on a live
+            // vCenter before entering this list
+            // (docs/measurements/collection-pr1-shapes.md). Read in
+            // InventoryVerdictParser.
+            //
+            // vCenter's own verdicts: its configuration issues (an empty
+            // array on a healthy host) and the hardware sensors (749 on 10
+            // hosts, 343 KB).
+            InventoryVerdictParser.ConfigIssuePath,
+            InventoryVerdictParser.HealthSystemRuntimePath,
+
+            // M8.7: the ESXi certificate, whole, for its expiry. The
+            // certificate manager's certificateInfo would be smaller and is
+            // refused to the read-only role (NoPermission, measured); this is
+            // ~55 KB a host.
+            InventoryVerdictParser.CertificatePath,
         ],
         ["VirtualMachine"] =
         [
@@ -598,6 +627,14 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             "snapshot",
             "layoutEx.file",
             "layoutEx.disk",
+
+            // Collection PR 1 (measured live, see the host list). The device
+            // list is the largest addition -- ~8 KB a machine -- and there is
+            // no narrower path to a CD drive's backing and connection (M8.4).
+            InventoryVerdictParser.ConfigIssuePath,
+            InventoryVerdictParser.ConnectionStatePath,
+            InventoryVerdictParser.ConsolidationNeededPath,
+            InventoryVerdictParser.DevicePath,
         ],
         ["ClusterComputeResource"] =
         [
@@ -614,6 +651,12 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             // can only walk declared types.
             "configurationEx",
             "triggeredAlarmState",
+
+            // Collection PR 1. summary whole, for EVC (M8.4): its
+            // currentEVCModeKey sub-path is InvalidProperty on a live
+            // vCenter, like configurationEx's children.
+            InventoryVerdictParser.ConfigIssuePath,
+            InventoryVerdictParser.ClusterSummaryPath,
         ],
         ["Datastore"] =
         [
@@ -629,6 +672,12 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
             // has — see counter map §4.
             "summary.uncommitted",
             "triggeredAlarmState",
+
+            // Collection PR 1: vCenter's verdicts, and which hosts mount it
+            // (M8.4 -- one mounting host pins its machines to that host).
+            InventoryVerdictParser.ConfigIssuePath,
+            InventoryVerdictParser.MaintenanceModePath,
+            InventoryVerdictParser.DatastoreHostPath,
         ],
     };
 
@@ -696,11 +745,17 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         }
     }
 
-    private async Task<string> CreateViewAsync(VsphereServiceContent content, CancellationToken cancellationToken)
+    private Task<string> CreateViewAsync(VsphereServiceContent content, CancellationToken cancellationToken) =>
+        CreateViewAsync(content, [.. InventoryProperties.Keys], cancellationToken);
+
+    private async Task<string> CreateViewAsync(
+        VsphereServiceContent content,
+        IReadOnlyList<string> types,
+        CancellationToken cancellationToken)
     {
         var response = await SendAsync(
             VsphereSoapRequests.CreateContainerView(
-                content.ViewManager, content.RootFolder, [.. InventoryProperties.Keys]),
+                content.ViewManager, content.RootFolder, types),
             cancellationToken).ConfigureAwait(false);
 
         var moRef = VsphereXml.Parse(response)
@@ -766,10 +821,18 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
     /// rather than a bug. This is the single easiest way to under-report an
     /// environment.
     /// </remarks>
+    private Task<(List<PropertyObject> Objects, int Pages)> RetrieveAllPagesAsync(
+        VsphereServiceContent content,
+        string viewMoRef,
+        CancellationToken cancellationToken) =>
+        RetrieveAllPagesAsync(content, viewMoRef, InventoryProperties, cancellationToken);
+
     private async Task<(List<PropertyObject> Objects, int Pages)> RetrieveAllPagesAsync(
         VsphereServiceContent content,
         string viewMoRef,
-        CancellationToken cancellationToken)
+        IReadOnlyDictionary<string, IReadOnlyList<string>> properties,
+        CancellationToken cancellationToken,
+        Action<int>? onReply = null)
     {
         var all = new List<PropertyObject>();
         var pages = 1;
@@ -777,8 +840,9 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         var response = await SendAsync(
             VsphereSoapRequests.RetrievePropertiesEx(
                 content.PropertyCollector, content.RootFolder, viewMoRef,
-                InventoryProperties, _options.InventoryPageSize),
+                properties, _options.InventoryPageSize),
             cancellationToken).ConfigureAwait(false);
+        onReply?.Invoke(response.Length);
 
         var page = PropertyCollectorParser.ParsePage(response);
         all.AddRange(page.Objects);
@@ -798,6 +862,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                         content.PropertyCollector, page.ContinuationToken!),
                     cancellationToken).ConfigureAwait(false);
 
+                onReply?.Invoke(response.Length);
                 page = PropertyCollectorParser.ParsePage(response);
                 open = page.ContinuationToken;
                 all.AddRange(page.Objects);
@@ -1200,6 +1265,22 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                     $"distinct targets {byTransport.Select(p => p.Target).OfType<string>().Distinct(StringComparer.Ordinal).Count()}");
             }
 
+            // Collection PR 1: which verdict keys each object type yielded,
+            // and on how many objects. Keys and counts only.
+            lines.Add("verdicts");
+            foreach (var byType in objects
+                .GroupBy(o => o.Type, StringComparer.Ordinal)
+                .OrderBy(g => g.Key, StringComparer.Ordinal))
+            {
+                foreach (var key in byType
+                    .SelectMany(o => InventoryVerdictParser.Read(o).Keys)
+                    .GroupBy(k => k, StringComparer.Ordinal)
+                    .OrderBy(g => g.Key, StringComparer.Ordinal))
+                {
+                    lines.Add($"  {byType.Key,-24} {key.Key,-34} {key.Count()}/{byType.Count()}");
+                }
+            }
+
             return lines;
         }
         finally
@@ -1541,6 +1622,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         VirtualSwitchSecurity = HostConfigurationParser.ReadVirtualSwitchSecurity(o),
         PortGroupSecurity = HostConfigurationParser.ReadPortGroupSecurity(o),
         LockdownMode = HostConfigurationParser.ReadLockdownMode(o),
+        Verdicts = InventoryVerdictParser.Read(o),
     };
 
     public static VsphereVirtualMachine ToVirtualMachine(PropertyObject o) => new()
@@ -1562,6 +1644,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         MemoryLimitMb = PropertyCollectorParser.ReadLong(o.Values, "config.memoryAllocation.limit"),
         Snapshots = ReadSnapshots(o),
         SnapshotBytes = ReadSnapshotBytes(o),
+        Verdicts = InventoryVerdictParser.Read(o),
     };
 
     /// <summary>Reads a count that must fit in an int, or null.</summary>
@@ -1588,6 +1671,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         HaSettings = ClusterConfigurationParser.ReadHaSettings(o) ?? ClusterHaSettings.None,
         Groups = PropertyCollectorParser.ReadClusterGroups(o.Structures),
         DrsRules = PropertyCollectorParser.ReadDrsRules(o.Structures),
+        Verdicts = InventoryVerdictParser.Read(o),
     };
 
     public static VsphereDatastore ToDatastore(
@@ -1606,6 +1690,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                 : [],
         Accessible = PropertyCollectorParser.ReadBoolean(o.Values, "summary.accessible"),
         Type = PropertyCollectorParser.ReadString(o.Values, "summary.type"),
+        Verdicts = InventoryVerdictParser.Read(o),
     };
 
     // --- IVsphereEventApi -------------------------------------------------
