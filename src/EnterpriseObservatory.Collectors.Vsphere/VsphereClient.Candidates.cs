@@ -41,7 +41,7 @@ public sealed partial class VsphereClient
         string path,
         CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var target = $"{managedObjectType}.{path}";
         var stopwatch = Stopwatch.StartNew();
         long characters = 0;
@@ -102,7 +102,7 @@ public sealed partial class VsphereClient
     {
         ArgumentNullException.ThrowIfNull(moRefs);
 
-        await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
         var target = $"{managedObjectType}.{path}";
 
         if (moRefs.Count == 0)
@@ -110,7 +110,6 @@ public sealed partial class VsphereClient
             return new VsphereCandidateRead { Target = target, Fault = "no objects to ask" };
         }
 
-        var content = _serviceContent!;
         var stopwatch = Stopwatch.StartNew();
 
         try
@@ -142,15 +141,15 @@ public sealed partial class VsphereClient
 
     /// <summary>The root folder's reference: where vCenter-scoped alarms are raised.</summary>
     public async Task<string> GetRootFolderAsync(CancellationToken cancellationToken) =>
-        (await EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).RootFolder;
+        (await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).RootFolder;
 
     /// <summary>The license manager's reference, or null when vCenter offers none.</summary>
     public async Task<string?> GetLicenseManagerAsync(CancellationToken cancellationToken) =>
-        (await EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).LicenseManager;
+        (await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).LicenseManager;
 
     /// <summary>The custom fields manager's reference, or null when vCenter offers none.</summary>
     public async Task<string?> GetCustomFieldsManagerAsync(CancellationToken cancellationToken) =>
-        (await EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).CustomFieldsManager;
+        (await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).CustomFieldsManager;
 
     /// <summary>
     /// Calls <c>QueryComplianceStatus</c> with no filter, for the probe: its
@@ -163,7 +162,7 @@ public sealed partial class VsphereClient
         ReadComplianceStatusAsync(
             IReadOnlyList<string>? hostMoRefs, CancellationToken cancellationToken)
     {
-        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
 
         if (content.ComplianceManager is not { } manager)
         {

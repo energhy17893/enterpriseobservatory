@@ -99,9 +99,9 @@ var options = new VsphereConnectionOptions
     InventoryPageSize = pageSize,
 };
 
-using var handler = VsphereClient.CreateHandler(options);
-using var http = new HttpClient(handler) { BaseAddress = baseAddress };
-using var client = new VsphereClient(http, options);
+using var handler = VsphereSessionChannel.CreateHandler(options);
+using var channel = new VsphereSessionChannel(handler, options);
+var client = new VsphereClient(channel, options);
 using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(3));
 
 try
@@ -126,7 +126,7 @@ try
         // connection is edited or removed, and after every Test.
         if (args.Contains("--confirm-logout", StringComparer.OrdinalIgnoreCase))
         {
-            var ended = await client.LogoutAndConfirmAsync(cancellation.Token);
+            var ended = await channel.LogoutAndConfirmAsync(cancellation.Token);
 
             Console.WriteLine(ended switch
             {
@@ -770,7 +770,7 @@ finally
 {
     // The probe signs in, so it signs out. It used to leave a session behind
     // on every run, which is an odd habit for the tool that checks for them.
-    await client.LogoutAsync(CancellationToken.None);
+    await channel.LogoutAsync(CancellationToken.None);
 }
 
 // Enough of a session key to tell two apart, not enough to be one.

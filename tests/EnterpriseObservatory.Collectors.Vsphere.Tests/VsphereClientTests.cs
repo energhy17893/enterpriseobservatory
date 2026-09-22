@@ -30,7 +30,7 @@ public class VsphereClientTests
     };
 
     private static HttpClientHandler Handler(VsphereConnectionOptions options) =>
-        Assert.IsType<HttpClientHandler>(VsphereClient.CreateHandler(options));
+        Assert.IsType<HttpClientHandler>(VsphereSessionChannel.CreateHandler(options));
 
     [Fact]
     public void Certificate_validation_stays_on_unless_the_connection_explicitly_asked_for_it()
@@ -109,6 +109,6 @@ public class VsphereClientTests
         // request, which reads as "the vCenter is unreachable" rather than
         // "nothing was configured" — and an endpoint that looks unreachable
         // gets ignored rather than fixed.
-        Assert.Throws<ArgumentNullException>(() => VsphereClient.CreateHandler(null!));
+        Assert.Throws<ArgumentNullException>(() => VsphereSessionChannel.CreateHandler(null!));
     }
 }

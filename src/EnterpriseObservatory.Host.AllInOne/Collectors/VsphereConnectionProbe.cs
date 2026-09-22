@@ -57,15 +57,12 @@ public sealed class VsphereConnectionProbe : IConnectionProbe, ISourceCapability
             Password = connection.Password,
             AcceptUntrustedCertificate = connection.AcceptUntrustedCertificate,
             InventoryPageSize = connection.PageSize,
+            RequestTimeout = Timeout,
         };
 
-        using var http = new HttpClient(VsphereClient.CreateHandler(options))
-        {
-            BaseAddress = options.BaseAddress,
-            Timeout = Timeout,
-        };
-
-        using var client = new VsphereClient(http, options);
+        var handler = VsphereSessionChannel.CreateHandler(options);
+        using var channel = new VsphereSessionChannel(handler, options);
+        var client = new VsphereClient(channel, options);
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(Timeout);
@@ -80,7 +77,7 @@ public sealed class VsphereConnectionProbe : IConnectionProbe, ISourceCapability
             // A successful test is a session, and it used to be left on the
             // vCenter: one per press of the button, until the idle timeout.
             // A probe that never signed in sends nothing here.
-            await client.LogoutAsync(cancellationToken).ConfigureAwait(false);
+            await channel.LogoutAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -198,12 +195,9 @@ public sealed class VsphereConnectionProbe : IConnectionProbe, ISourceCapability
             InventoryPageSize = connection.PageSize,
         };
 
-        using var http = new HttpClient(VsphereClient.CreateHandler(options))
-        {
-            BaseAddress = options.BaseAddress,
-        };
-
-        using var client = new VsphereClient(http, options);
+        var handler = VsphereSessionChannel.CreateHandler(options);
+        using var channel = new VsphereSessionChannel(handler, options);
+        var client = new VsphereClient(channel, options);
 
         IReadOnlyList<VsphereCounter> catalogue;
         try
@@ -213,7 +207,7 @@ public sealed class VsphereConnectionProbe : IConnectionProbe, ISourceCapability
         finally
         {
             // As above: reading the catalogue signs in, so it signs out.
-            await client.LogoutAsync(cancellationToken).ConfigureAwait(false);
+            await channel.LogoutAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return
