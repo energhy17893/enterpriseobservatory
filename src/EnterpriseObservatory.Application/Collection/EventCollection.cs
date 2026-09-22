@@ -172,6 +172,69 @@ public sealed record EventCursor
     public DateTimeOffset? LastGapUtc { get; init; }
 }
 
+/// <summary>
+/// How far one source's event stream is known to have been read without a
+/// hole (ADR-0026 §5.7, F note §6).
+/// </summary>
+/// <remarks>
+/// <para>
+/// What lets a rule that reads events tell "nothing happened" from "we did not
+/// look". The stored events of a source say nothing about the time after its
+/// watermark: a clear, or a new report, may be sitting unread in vCenter.
+/// </para>
+/// <para>
+/// Derived from the cursor, not stored beside it. The time is that of the
+/// latest read that reached its mark. A read that could not ask, was cut off
+/// or abandoned, or was never made records no success and so leaves it. A read
+/// that stopped short of its mark (<see cref="EventCursor.LastGapUtc"/>)
+/// withdraws it: the newest events were kept and the middle lost, and the
+/// cursor keeps no earlier complete time to fall back to. That errs towards
+/// "not known", which keeps alerts open, for the one cycle until the next
+/// complete read.
+/// </para>
+/// </remarks>
+public sealed record EventReadWatermark
+{
+    public required string SourceInstanceId { get; init; }
+
+    /// <summary>
+    /// The time of the latest read that reached its mark; null when there is
+    /// none to vouch for the stream.
+    /// </summary>
+    public DateTimeOffset? ReadThroughUtc { get; init; }
+
+    /// <summary>Why there is no watermark, when there is none.</summary>
+    public string? Detail { get; init; }
+
+    /// <summary>The watermark a cursor vouches for.</summary>
+    public static EventReadWatermark Of(EventCursor cursor)
+    {
+        ArgumentNullException.ThrowIfNull(cursor);
+
+        if (cursor.LastSuccessUtc is not { } success)
+        {
+            return new EventReadWatermark
+            {
+                SourceInstanceId = cursor.SourceInstanceId,
+                Detail = cursor.LastFailure is { } failure
+                    ? $"its events have never been read: {failure}"
+                    : "its events have never been read",
+            };
+        }
+
+        if (cursor.LastGapUtc is { } gap && gap >= success)
+        {
+            return new EventReadWatermark
+            {
+                SourceInstanceId = cursor.SourceInstanceId,
+                Detail = $"the latest read, at {success:u}, stopped short of its mark and events in between were not read",
+            };
+        }
+
+        return new EventReadWatermark { SourceInstanceId = cursor.SourceInstanceId, ReadThroughUtc = success };
+    }
+}
+
 /// <summary>Where collected events are kept.</summary>
 public interface IEventStore : IEventReader
 {
@@ -196,6 +259,10 @@ public interface IEventStore : IEventReader
 
     /// <summary>Removes events created before the cutoff; returns how many.</summary>
     int Prune(DateTimeOffset createdBeforeUtc);
+
+    /// <summary>One watermark per cursor: every store answers it the same way.</summary>
+    IReadOnlyList<EventReadWatermark> IEventReader.ReadWatermarks =>
+        [.. Cursors.Select(EventReadWatermark.Of)];
 }
 
 /// <summary>
@@ -238,6 +305,17 @@ public interface IEventReader
     /// </para>
     /// </remarks>
     IReadOnlyList<SourceEvent> OfTypes(IReadOnlyCollection<string> typeIds, DateTimeOffset createdSinceUtc);
+
+    /// <summary>
+    /// How far each source's events are known to have been read; see
+    /// <see cref="EventReadWatermark"/>.
+    /// </summary>
+    /// <remarks>
+    /// None by default, which vouches for nothing: a reader that cannot say
+    /// how far it has read makes every event rule's held alert unknown rather
+    /// than absent. The forgetful implementation is the safe one.
+    /// </remarks>
+    IReadOnlyList<EventReadWatermark> ReadWatermarks => [];
 }
 
 /// <summary>What one pass over the event sources did.</summary>

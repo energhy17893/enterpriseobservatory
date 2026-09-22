@@ -147,6 +147,36 @@ public class EventStoreTests : IDisposable
     }
 
     [SkippableFact]
+    public void The_read_watermark_survives_a_restart_and_moves_only_on_a_complete_read()
+    {
+        // The rules read it after a restart, from the cursor as it was stored;
+        // no column of its own, so what matters is that the stored cursor
+        // still tells a complete read from one that stopped short.
+        RequireDatabase();
+
+        var store = new PostgresEventStore(_live.Database);
+        store.Record("vc-1", [Event(1, T0.AddMinutes(-1))], complete: true, T0);
+        store.RecordFailure("vc-1", "vCenter did not answer", T0.AddMinutes(5));
+        store.Record("vc-2", [Event(2, T0.AddMinutes(-1))], complete: false, T0);
+
+        _live.Restart();
+
+        IEventReader reader = new PostgresEventStore(_live.Database);
+        var watermarks = reader.ReadWatermarks.ToDictionary(w => w.SourceInstanceId, StringComparer.Ordinal);
+
+        Assert.Equal(T0, watermarks["vc-1"].ReadThroughUtc);
+        Assert.Null(watermarks["vc-2"].ReadThroughUtc);
+        Assert.Contains("stopped short", watermarks["vc-2"].Detail, StringComparison.Ordinal);
+
+        var again = new PostgresEventStore(_live.Database);
+        again.Record("vc-2", [], complete: true, T0.AddMinutes(5));
+
+        Assert.Equal(
+            T0.AddMinutes(5),
+            ((IEventReader)again).ReadWatermarks.Single(w => w.SourceInstanceId == "vc-2").ReadThroughUtc);
+    }
+
+    [SkippableFact]
     public void A_source_that_has_only_ever_failed_still_has_a_cursor()
     {
         // "Could not read" has to be sayable, and an absent row cannot say it.
