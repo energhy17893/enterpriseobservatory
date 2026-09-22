@@ -356,7 +356,6 @@ builder.Services.AddHostedService<ReportSchedulerWorker>();
 
 builder.Services.AddSingleton<ISourceConnectionStore, PostgresSourceConnectionStore>();
 builder.Services.AddSingleton<VsphereConnectionProbe>();
-builder.Services.AddSingleton<IConnectionProbe>(p => p.GetRequiredService<VsphereConnectionProbe>());
 builder.Services.AddSingleton<ISourceCapabilityReader>(
     p => p.GetRequiredService<VsphereConnectionProbe>());
 
@@ -364,10 +363,18 @@ builder.Services.AddSingleton<ISourceCapabilityReader>(
 // the stored ones by the catalogue, which is the single place that decides
 // which of the two wins — two copies of that rule is how the screen and the
 // collector start disagreeing about what is being polled.
+//
+// The probe map is also the catalogue's job: it is what lets it pick a
+// prober by a connection's kind and report "no collector yet" for redfish
+// and simplivity, whose modules have not landed, instead of throwing.
 builder.Services.AddSingleton(provider => new SourceConnectionCatalogue(
     provider.GetRequiredService<ISourceConnectionStore>(),
     [.. endpoints.Select(AsConnection)],
-    provider.GetRequiredService<IClock>()));
+    provider.GetRequiredService<IClock>(),
+    new Dictionary<string, IConnectionProbe>(StringComparer.Ordinal)
+    {
+        [ConnectionKinds.Vsphere] = provider.GetRequiredService<VsphereConnectionProbe>(),
+    }));
 
 builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegistry(
     provider.GetRequiredService<SourceConnectionCatalogue>(),

@@ -12,6 +12,36 @@ public enum ConnectionFailure
 
     /// <summary>It came from configuration, so the product does not own it.</summary>
     ReadOnly,
+
+    /// <summary>
+    /// The kind is known but no <see cref="IConnectionProbe"/> is registered for
+    /// it yet.
+    /// </summary>
+    /// <remarks>
+    /// Not the same question as an unknown kind, which is <see cref="Invalid"/>.
+    /// A connection of a real, listed kind — iLO, SimpliVity — can be entered
+    /// and saved before its collector exists; this is what a probe of it reports
+    /// instead of throwing, so entering the credentials does not have to wait
+    /// for the module that reads them.
+    /// </remarks>
+    NoCollector,
+}
+
+/// <summary>Friendly text for a <see cref="ConnectionFailure"/>.</summary>
+public static class ConnectionFailureExtensions
+{
+    public static string Describe(this ConnectionFailure failure) => failure switch
+    {
+        ConnectionFailure.NotFound => "No connection has that name.",
+        ConnectionFailure.NameTaken => "A connection with that name already exists.",
+        ConnectionFailure.ReadOnly =>
+            "This connection comes from configuration and is owned by whoever deploys the " +
+            "service. Change it there — an edit here would be undone by the next restart.",
+        ConnectionFailure.NoCollector =>
+            "There is no collector for this kind yet. The connection is saved; it will not be " +
+            "tested or polled until one is added.",
+        _ => "The change was not applied.",
+    };
 }
 
 /// <summary>What a change to a connection did.</summary>
@@ -58,7 +88,8 @@ public sealed record ConnectionResult
 public sealed class SourceConnectionCatalogue(
     ISourceConnectionStore store,
     IReadOnlyList<SourceConnection> configured,
-    IClock clock)
+    IClock clock,
+    IReadOnlyDictionary<string, IConnectionProbe>? probesByKind = null)
 {
     private readonly ISourceConnectionStore _store =
         store ?? throw new ArgumentNullException(nameof(store));
@@ -67,6 +98,13 @@ public sealed class SourceConnectionCatalogue(
         configured ?? throw new ArgumentNullException(nameof(configured));
 
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+
+    // Empty rather than required: most tests build a catalogue to exercise the
+    // Add/Update/Remove rules and have no reason to know about probing. A kind
+    // with nothing in here behaves exactly like one whose collector has not
+    // shipped yet, which for every kind but vsphere is the truth today.
+    private readonly IReadOnlyDictionary<string, IConnectionProbe> _probesByKind =
+        probesByKind ?? new Dictionary<string, IConnectionProbe>(StringComparer.Ordinal);
 
     /// <summary>Everything, configured and stored, by name.</summary>
     public IReadOnlyList<SourceConnection> All()
@@ -189,6 +227,34 @@ public sealed class SourceConnectionCatalogue(
             ? ConnectionResult.Ok(existing)
             : ConnectionResult.No(ConnectionFailure.NotFound);
     }
+
+    /// <summary>
+    /// Tries a connection once, choosing the prober by its kind.
+    /// </summary>
+    /// <remarks>
+    /// The one place that resolves an <see cref="IConnectionProbe"/> by kind, so
+    /// that adding a kind with no collector yet is a result on this screen
+    /// rather than an unhandled-exception page. A person entering an iLO
+    /// password before the Redfish module exists should see "no collector for
+    /// this kind yet", not a 500.
+    /// </remarks>
+    public Task<ConnectionProbeResult> ProbeAsync(
+        SourceConnection connection, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        if (!_probesByKind.TryGetValue(connection.Kind, out var probe))
+        {
+            return Task.FromResult(new ConnectionProbeResult
+            {
+                Succeeded = false,
+                Detail = ConnectionFailure.NoCollector.Describe(),
+                Failure = ConnectionFailure.NoCollector,
+            });
+        }
+
+        return probe.ProbeAsync(connection, cancellationToken);
+    }
 }
 
 /// <summary>What one attempt to reach a system found.</summary>
@@ -212,6 +278,19 @@ public sealed record ConnectionProbeResult
     /// so rather than inviting another click.
     /// </remarks>
     public bool CredentialsRejected { get; init; }
+
+    /// <summary>
+    /// Why the probe could not run at all, as opposed to what it found.
+    /// </summary>
+    /// <remarks>
+    /// Null for an ordinary success or failure from the prober itself. Set only
+    /// when <see cref="SourceConnectionCatalogue"/> could not resolve a prober
+    /// for the connection's kind — currently always
+    /// <see cref="ConnectionFailure.NoCollector"/> — so a caller that wants to
+    /// tell the two apart programmatically can, without parsing
+    /// <see cref="Detail"/>.
+    /// </remarks>
+    public ConnectionFailure? Failure { get; init; }
 }
 
 /// <summary>One counter a source says it can supply.</summary>
