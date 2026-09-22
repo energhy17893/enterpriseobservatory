@@ -1,8 +1,16 @@
 # ADR-0026: three-valued analysis rules (design note)
 
-Status: proposal, for the planner to review **before any code is written**. It is a
-companion to [ADR-0026](../adr/0026-evaluation-is-three-valued.md), which was accepted on
-22 September 2026 together with the carry-forward limit (2 days).
+Status: **approved with review changes** (PR #69, 22 September 2026). The planner's three
+mandatory changes are in: Z1, N measured (§3); Z2, vanished subjects (§2, §3); Z3, the age
+clamp (§1.3). The answers are recorded in §5. This is a companion to
+[ADR-0026](../adr/0026-evaluation-is-three-valued.md), which was accepted on 22 September
+2026 together with the carry-forward limit (2 days).
+
+**Evidence.** At least seven of the 14 remaining rules contain a live instance of the #63
+class, and neither `Unevaluated` nor the silent-source carry reaches it. In the others, a
+missing counter also resolves the alert. That is the ADR's "a third scope will forget it the
+same way" argument, shown in the rules we already have (§3, the rows marked "today …
+resolves").
 Scope: the `IAnalysisRule` contract, `AlertReconciler`, `AlertLifecycle`, `MonitoringCycle`,
 the alert schema, and the 14 rules that stay in `Application/Analysis`. K2 is moving the four
 M8 continuity rules (HA, DRS, multipath, N+1) to compliance findings, whose verdict type
@@ -154,8 +162,14 @@ Together they replace today's silent-source carry-forward:
 
 1. **Source clamp.** A `ConditionAbsent` or `ConditionPresent` whose `Entity` belongs to a
    source outside `ReportingSources` becomes `Unknown(SourceSilent)`.
-2. **Age clamp.** A verdict whose `EvidenceAtUtc` is older than `2 × scope interval` becomes
-   `Unknown(InputStale)`. The intervals are 30 s for metrics and 5 min for inventory.
+2. **Age clamp** *(Z3)*. A verdict becomes `Unknown(InputStale)` when its `EvidenceAtUtc` is
+   older than **2 × scope interval + that scope's read budget**. The read budget is the
+   source timeout derived from `CollectionPolicy.IntervalShare` (0.8 × interval, at least
+   10 s; `ForInterval`, #67). That gives 60 + 24 = **84 s** for the metric scope and
+   600 + 240 = **840 s** for the inventory scope. The limit is computed from the policy and
+   is never set as a separate number. **It is not tuned without a measurement.** After
+   deploy, the number of verdicts this clamp catches is a package-D self-monitoring metric.
+   If it stays zero, the clamp is left as it is.
 
 This is what "Unknown never opens" means in the code: a clamped Present cannot raise a new
 alert either.
@@ -202,17 +216,63 @@ Invariants the tests should pin, one test each:
   state is outside `IsVisible` and outside the open count, and is listed under its own
   filter. Every view model carries `EvidenceAtUtc`, and the API cannot return a state without
   it (ADR point 3).
-- **Housekeeping.** An instance whose entity is `Vanished` retires with `SubjectRemoved`. An
-  instance whose `rule_id` is no longer registered retires with `RuleRetired`, which is K2's
-  and M3.3's path. Neither is a "condition cleared".
+- **Housekeeping.** An instance whose entity is `Vanished` (or purged) retires with
+  `SubjectRemoved`. An instance whose `rule_id` is no longer registered retires with
+  `RuleRetired`, which is K2's and M3.3's path. Neither is a "condition cleared". **There is
+  no second limit:** an alert may stay in Unknown indefinitely. It is out of the count and
+  under its own filter, and that is accepted (decision §5.6).
+- **Health (ADR-0018 note, decision §5.4).** A stale Critical keeps the entity **red**, with
+  a "since <date>" mark. An alert in the Unknown state makes the entity **grey, not green**.
+- **Vanished subjects below the entity** *(Z2)*. `RuleContext.OpenFingerprints(RuleId)` is
+  offered read-only, and using it is **optional**. A rule that does not give every one of its
+  alerts a verdict leaves them `NotReported`; after 2 days they are Unknown. Neither outcome
+  fabricates anything. A rule may return `Absent(SubjectRemoved)` for a device or instance
+  **only if it read a fresh table and the subject is absent from it** (as path-redundancy
+  does with the host's path table). A rule that did not read the table cannot say this.
 
 ## 3. Every current rule
 
-N is a **choice, not a citation.** Grafana marks a missing series stale after 2 evaluations,
-and our opening hysteresis is 2 hits for a warning. Those are the only anchors. Before merge,
-measure cessations per rule from `flap_history` on the live estate. Rules that flap need a
-larger N (ölç, sonra öner). "Default" below means the rule does not mention the subject, so it
-gets `Unknown(NotReported)`, with `SourceSilent` from the clamp where it applies.
+N is **measured where the data exists and a choice where it does not** *(Z1)*. The rule is
+N = max(p95 of the number of consecutive 30 s absences after which the condition came back,
+the proposed value). Where there is no data, the proposed value is kept, and it is anchored
+only on Grafana's 2-evaluation staleness and our 2-hit opening hysteresis. "Default" below
+means the rule does not mention the subject, so it gets `Unknown(NotReported)`, with
+`SourceSilent` from the clamp where it applies.
+
+### 3.1 Measurement (live database, read-only, 22 September 2026)
+
+Sources: `alert_transition` pairs (`ConditionCleared` followed by `ConditionReturned` on the
+same fingerprint; the gap ÷ 30 s gives the number of absences) and `flap_cessation`. The
+window runs from **21 Sep 18:10 to 22 Sep 09:38 (~15 h)**, because every stored instance was
+first seen at 18:10:54, after the last restart. Schema version 11.
+
+The measurement has three limits, stated rather than hidden:
+
+1. A retired instance takes its transitions with it (`ON DELETE CASCADE`). A condition that
+   resolved and was then retired left only a `flap_cessation` row, which records the
+   cessation and not the return.
+2. Alerts with `IsDerived` are excluded from flap tracking, so their only record is the
+   transition pairs.
+3. A follow-up histogram query (absences per bucket) was **refused by the session's
+   permission guard for production reads** and was not run again. The p50, p95 and max
+   below come from the percentile query that did run.
+
+| Rule | Sample | p95 (absences) | Chosen N |
+|---|---|---|---|
+| `storage-latency-blind-spot` | 399 Cleared→Returned pairs over 30 fps | **1** (p50 = p95 = 30 s; max 26 610 s) | **2** (proposed; above the p95) |
+| `peer-outliers` | 23 cessations over 21 fps; 2 recurrences, 81 s and 111 s between cessations | ≤ 2 (upper bound; n = 2 is too small for a p95) | **3** (proposed kept) |
+| `storage-layer-split` | 2 cessations, 2 fps, no recurrence | no data | **3** (proposed kept) |
+| `dropped-packets` | 1 cessation, never returned | no data | **3** (proposed kept) |
+| `datastore-time-to-full` (over-commit) | 11 cessations; the only "returns" (4 fps) span 21 Sep 14:17 → 18:10, which is a **product outage**, not a flap | no data | **2** (proposed kept) |
+| `remote-logging` | 9 alerts, 0 cleared | no data | **1** (proposed kept) |
+| `fault-counters`, `cpu-contention`, `memory-pressure`, `shared-volume-latency`, `storage-noisy-neighbour`, `storage-path-redundancy`, `vcenter-events`, filling, `collection-coverage` | no alert in the window | no data | proposed kept (see the table below) |
+
+Also in the data: `vcenter-alarm` and `vm-stale-snapshot` come from the collector
+(`VsphereInventorySource`), not from a rule. They are direct producers and stay two-valued at
+N = 1 (§1.2). The blind-spot result is itself evidence for the design: all 399 of its flaps
+are quiet cycles, and in this design a quiet cycle is `NotJudgeable`, not an absence. N was
+never going to be the fix for them; the Unknown value is. The same limit should be measured
+again after deploy, from a D metric that records the return time.
 
 | Rule (scope) | Subject → fingerprints | Absent when | Unknown when (which input is missing) | N |
 |---|---|---|---|---|
@@ -225,7 +285,7 @@ gets `Unknown(NotReported)`, with `SourceSilent` from the clamp where it applies
 | `storage-latency-blind-spot` (M) | volume: 1 fp | any latency reading ≥ 1 ms (measurement works), or SIOC active ≥ 1 % | fewer than 3 latency readings, or load below 1 op/s (**a quiet cycle, which resolves the alert today and raises it again on the next busy cycle**) → `NotJudgeable`. Load or SIOC counter missing → `InputNotCollected` | 2 (the condition is configuration) |
 | `dropped-packets` (M) | (entity, rx/tx counter): 1 fp | dropped and packets both read, packets ≥ 100/s, drop % < 1 | packets counter missing → `InputNotCollected`. Packets below 100/s → `NotJudgeable` | 3 |
 | `storage-noisy-neighbour` (M) | volume: 1 fp | latency read and not slow, **or** ≥ 4 measured residents with no culprit, **or** load < 1.5× typical | fewer than 4 measured residents → `NotJudgeable`. Load counters missing → `InputNotCollected`. No baseline (`typicalRate` null: first day, or a gap longer than retention) → `InsufficientSeries`. Baseline read throws → `RuleFailed` for **that volume** (today it throws the whole rule; move to a per-volume guard, as time-to-full does) | 3 |
-| `storage-path-redundancy` (I) | (host, device): lost and down fps | host Active, source reported, device paths all working. Device no longer in a **freshly read** table → `Absent(SubjectRemoved)` (needs §5.8) | source silent → `SourceSilent` (clamp). Host `InMaintenance` → `NotJudgeable` (today this **resolves**). Path table not read (coverage blind on `multipathInfo`) → `InputNotCollected` | 2 (10 min) |
+| `storage-path-redundancy` (I) | (host, device): lost and down fps | host Active, source reported, device paths all working. Device no longer in a **freshly read** table → `Absent(SubjectRemoved)` (Z2: allowed only because the table was read fresh) | source silent → `SourceSilent` (clamp). Host `InMaintenance` → `NotJudgeable` (today this **resolves**). Empty path table → `InputNotCollected`. Coverage cannot tell "not read" apart here, because `VsphereClient` deliberately leaves `multipathInfo` out of coverage | 2 (10 min) |
 | `remote-logging` (I) | host: 1 fp | `Syslog.global.logHost` read and non-empty | setting key absent (unread; today `continue` **resolves**) → `InputNotCollected`. Source silent → `SourceSilent` | 1 (a configuration value read fresh is definitive; retires after M3.3) |
 | `vcenter-events` (I) | (condition, event subject, instance): 1 fp | a clear event newer than the raise (`EvidenceAtUtc` = time of the clear). The TTL expires on a condition **without** `ClearedBy` → `Absent(Expired)`: an occurrence, which the type declares two-valued | the TTL expires on a condition **with** `ClearedBy` and no clear was seen → `Unknown(InsufficientSeries, "no clear event")`. Events for that source not read this cycle → `SourceSilent` (needs a read watermark; see §5.7) | 1 (the clear is vCenter's own statement) |
 | `datastore-time-to-full` (I) | datastore: filling fp (by id) and over-commit fp (by name). Estate: history-unreadable fp | Filling: a forecast beyond 30 days, or refused for `NotFilling`, `BeyondHorizon`, `BelowUsageFloor` or `NoSignificantTrend`. Over-commit: uncommitted read and ≤ free | refused for `TooFewPoints`, `WindowTooShort` or `StepChange` → `InsufficientSeries`. History query throws → `RuleFailed` (replaces `unevaluated.Add`). Capacity not read this cycle → default / `SourceSilent`. Uncommitted `null` → `InputNotCollected` (see §5.10). **`AlreadyFull` resolves "filling" today, and is proposed as Present Critical** | 3 (filling), 2 (over-commit) |
@@ -286,43 +346,58 @@ CREATE INDEX ix_alert_rule ON alert_instance (scope, rule_id);
   `LoadInstances` / write-through code gains the six columns. `InMemoryStores` (tests) gains
   them too.
 
-## 5. Open questions
+## 5. Decisions (planner review, PR #69) and what is still open
 
-1. **N values** (§3) are proposals. Measure cessations per rule from `flap_history` on the
-   live estate before merge. Is the planner happy to ship them as proposed and adjust later?
-2. **ADR wording vs "no Unknown→resolved edge".** The ADR says that after the 2 days, the
-   first fresh evaluation "either reopens or resolves". This design reads that as *decides
-   the direction*: a fresh Absent restarts the count at 1, and resolution still needs N. The
-   two readings differ only for N ≥ 2. Please confirm.
-3. **Does Unknown reset or pause the absent count?** The proposal is reset: "consecutive"
-   means an uninterrupted run of fresh absences.
-4. **Health (ADR-0018).** Does a stale Critical keep the entity red with an "as of" marker?
-   Does an Unknown-state alert make the entity's health *unknown* (grey) rather than green?
-   The proposal is yes to both. This needs an ADR-0018 note.
-5. **Notifications.** No per-alert notification on stale or on entering Unknown; the
-   "Collector unreachable" alert is the page. Is a daily digest of Unknown-state alerts
-   wanted?
-6. **Unknown-state lifetime.** It retires on `Vanished` / entity purge. Otherwise it stays
-   forever. Or does it get a second limit?
-7. **Event freshness.** `IEventReader` has no per-source "read up to" watermark. Without one,
-   "events for that source were not read" cannot be told apart from "no clear arrived". Is a
-   watermark added in the event pipeline (package F?), or accepted as `NotReported` for now?
-8. **A subject that disappears within a freshly read entity** (a device, a NIC instance, a
-   property). A rule cannot say `Absent(SubjectRemoved)` about something it no longer sees.
-   The proposal is a read-only `context.OpenFingerprints(RuleId)`, so a rule can return a
-   verdict for each alert it holds. The alternative is to accept that these become Unknown
-   after 2 days.
-9. **Memory pressure with partial counters.** Should Absent require all four rates? If the
-   live estate never delivers one of them (for example, compression at some levels), every
-   memory alert would go stale and never resolve. The fix belongs in the counter map (§3
-   "measure first"), but that needs checking first.
-10. **Datastore behaviour changes.** `AlreadyFull` → Present Critical (today it resolves
-    "filling"). Uncommitted `null` means both "no thin disks" and "not read". Is coverage
-    enough to tell them apart?
-11. **Direct producers at N = 1.** Confirm that collection, store-failure, rule-failure,
-    compaction and flap alerts stay two-valued.
-12. **Age clamp at `2 × interval`.** Is it too tight for the inventory scope when a vCenter
-    answers slowly but correctly (a 5 min cycle that takes 6 min)?
+1. **N values:** measured per Z1. The results are in §3.1, and the per-rule table uses them.
+2. **Direction decides.** A fresh Absent after the Unknown state starts the counter at 1, and
+   resolution still needs N. There is no Unknown→Resolved edge.
+3. **Unknown resets the absent count.** "Consecutive" means an uninterrupted run of fresh
+   absences.
+4. **Health, yes to both** (ADR-0018 note). A stale Critical keeps the entity red with a
+   "since <date>" mark. An alert in the Unknown state makes the entity grey, not green.
+5. **No daily digest for now.** The Unknown count appears on package D's self-monitoring
+   screen.
+6. **Unknown-state lifetime:** retired at vanished or purge, and nothing else. There is no
+   second limit. "Unknown forever" is acceptable, because it is out of the count and under
+   its own filter.
+7. **Event freshness:** this goes to F's design note as the item *"per-source event read
+   watermark"*. Until then, a source whose events were not read gets `NotReported`.
+8. **Vanished subject** (Z2): recorded in §2. `OpenFingerprints(RuleId)` is available and
+   optional. `Absent(SubjectRemoved)` at the device or instance level is allowed only if the
+   rule read a fresh table.
+9. **Memory counters: measure with the probe, then decide. Not measured yet.** The question
+   is which of the four ratio counters (`mem.swapinRate`, `mem.swapoutRate`,
+   `mem.compressionRate`, `mem.decompressionRate`, all `.average`) never arrive for which
+   hosts and VMs on this estate. What exists without a measurement:
+   - The collector asks for all four on **both** hosts and VMs (`VsphereCounter.Host` and
+     `VsphereCounter.VirtualMachine`).
+   - The counter map lists them as host-only (§5f).
+   - The counter map records that none of the four was checked against a live vCenter (§5g,
+     "Doğrulandı mı: Hayır").
+
+   Reading them, from the probe or from the live `observation` series, needs a
+   production-read permission that this session did not have. **Until it is measured, Absent
+   requires all four,** which is the safe definition: the worst outcome is a stale memory
+   alert, never a fabricated resolution. If a counter turns out to be "never on this
+   estate", Absent is defined without it and a note goes into the counter map.
+10. **Datastore:** `AlreadyFull` → Present Critical is **accepted**.
+    **Uncommitted `null`: Coverage cannot tell the two cases apart, as the code is today.**
+    - `VsphereClient`'s coverage remarks list `summary.uncommitted` among the properties
+      **deliberately left out of coverage**, "which the vSphere API documents as optional".
+    - Coverage is also counted per object type (`Asked`/`Answered`), not per datastore.
+    - A datastore without thin disks and a datastore whose property was not answered both
+      arrive as an absent property.
+
+    So `null` stays `Unknown(InputNotCollected)`. Telling the two apart would need the
+    collector to record, per datastore, that the property was requested and returned empty.
+    That is a collector change, filed as a follow-up and not guessed at here.
+11. **Direct producers at N = 1:** approved. These are collection alerts (including
+    `vcenter-alarm` and `vm-stale-snapshot`), store failures, rule failures, compaction and
+    flap alerts.
+12. **Age clamp** (Z3): 2 × interval + read budget, which is 84 s for metrics and 840 s for
+    inventory. It is not tuned until the D metric shows it catching verdicts (§1.3).
+
+**Still open:** item 9's measurement and the follow-up on item 10.
 
 Does not: change fingerprints, change opening hysteresis, change flap detection (a cessation
 is counted at resolution, not at the first absence), convert K2's four rules, or change the
