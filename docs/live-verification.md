@@ -233,6 +233,36 @@ Sıradaki kısılacak yer artık saatlik değil: **beş dakikalık kademe** en b
 
 ---
 
+## 8. vCenter gerçek zamanlı slotu değerlerinden önce listeliyor
+
+**Ölçüldü, 22 Eylül 2026.** vCenter yeni bir 20 sn'lik slotu `sampleInfo`'da,
+o slotun değerleri henüz dolmadan (`-1`) listeliyor; birkaç saniye sonraki bir
+okuma aynı slotu dolu getiriyor. 07:21:20Z'de beş host'ta 759 ham serinin
+**474'ü ilk görüşte `-1`** idi (datastore 180, disk 160, cpu 96, net 24,
+mem toplamı 8, net toplamı 4, …); iki host'ta yalnızca datastore instance'ları.
+07:13:40 ve 07:14:20'de de aynısı görüldü. **Hiçbir slot kalıcı olarak `-1`
+kalmadı** — hepsi sonraki okumada doldu.
+
+**Nasıl ortaya çıktı:** H3 (#73, canlı okuma işaretten başlar, `StartTime`
+dışlayıcı) yayımlandıktan sonra tek bir host her `:00` slotunda tüm serilerini
+kaybetti (~540 örnek/dk, satırların ~%2'si). Ayrıştırıcı `-1`'i atıp slotu yine
+"en yeni zaman" diye bildiriyordu; işaret onun ötesine geçti, sonraki pencere
+bir daha sormadı. **Eski kod her turda son 3 örneği yeniden okuyup
+`ON CONFLICT DO NOTHING`'e bırakıyordu — bu davranışı iki gün boyunca yanlışlıkla
+doğru biçimde gizledi.** Düzeltme #76: dolmamış slotlar host başına tutulur ve
+en çok 6 örnek geriye kadar yeniden okunur; dolu değer bir kez yazılır; kısmi
+birleşik (toplam/en büyük) değer yazılmaz; 6 örnekte dolmayan slot "düşürülen
+örnek" olarak sayılır.
+
+**Nasıl tekrar edilir:** `dotnet run --project tools/EnterpriseObservatory.VsphereProbe
+-- --from-store --mask --late-samples --follow` (salt-okunur; `EO_PG_PASSWORD`
+gerekli). Yayım sonrası kontrol: 20 sn adımı başına `sample` sayısı (bu estate'te
+8.828) ve dakika başına satır (~26.660).
+
+**Ders:** "önce ölç" kuralının bir tuzağı — tek turluk anlık görüntü, zamanla
+değişen bir sunucu davranışını kaçırır. Bu davranışı ancak aynı sorguyu
+saniyeler arayla tekrarlayan `--follow` yakaladı.
+
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
 
 ### Gecikme 1 ms altında görünmüyor
