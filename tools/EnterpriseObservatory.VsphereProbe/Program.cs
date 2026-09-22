@@ -213,6 +213,16 @@ try
         return 0;
     }
 
+    // M8.8's gate: custom field definitions, the VM custom value paths each
+    // read alone, and the backup field's value format as counts only.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --candidates-backup
+    if (args.Contains("--candidates-backup", StringComparer.OrdinalIgnoreCase))
+    {
+        await EnterpriseObservatory.VsphereProbe.BackupFields.RunAsync(client, cancellation.Token);
+        return 0;
+    }
+
     // Collection PR 1's gate: every candidate path and call, each read alone,
     // before any of them enters the collector's request list.
     //

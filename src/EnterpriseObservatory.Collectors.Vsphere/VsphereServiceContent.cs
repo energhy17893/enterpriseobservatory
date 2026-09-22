@@ -51,6 +51,13 @@ public sealed record VsphereServiceContent
     /// <summary>The license manager, or null when it was not offered.</summary>
     public string? LicenseManager { get; init; }
 
+    /// <summary>The custom fields manager, or null when it was not offered.</summary>
+    /// <remarks>
+    /// Its <c>field</c> list is what turns a VM's custom value key into the
+    /// attribute's name (M8.8, backup freshness). Null costs that one reading.
+    /// </remarks>
+    public string? CustomFieldsManager { get; init; }
+
     /// <summary>The API version the server reports, e.g. <c>8.0.3.0</c>.</summary>
     public string ApiVersion { get; init; } = string.Empty;
 
@@ -112,6 +119,7 @@ public static class VsphereServiceContentParser
             EventManager = Child(returnVal, "eventManager"),
             ComplianceManager = Child(returnVal, "complianceManager"),
             LicenseManager = Child(returnVal, "licenseManager"),
+            CustomFieldsManager = Child(returnVal, "customFieldsManager"),
             ApiVersion = about is null ? string.Empty : Child(about, "apiVersion") ?? string.Empty,
             Name = about is null ? string.Empty : Child(about, "name") ?? string.Empty,
         };

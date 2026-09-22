@@ -148,6 +148,10 @@ public sealed partial class VsphereClient
     public async Task<string?> GetLicenseManagerAsync(CancellationToken cancellationToken) =>
         (await EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).LicenseManager;
 
+    /// <summary>The custom fields manager's reference, or null when vCenter offers none.</summary>
+    public async Task<string?> GetCustomFieldsManagerAsync(CancellationToken cancellationToken) =>
+        (await EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).CustomFieldsManager;
+
     /// <summary>
     /// Calls <c>QueryComplianceStatus</c> with no filter, for the probe: its
     /// cost and the shape of what it returns.
