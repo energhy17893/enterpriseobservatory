@@ -1066,6 +1066,85 @@ zaman aşımı kullanıyor).
 **Bulunamadı:** iLO maksimum oturum sayısı ve rate limit; "GET için LoginPriv
 yeter" açık cümlesi; SimpliVity 5.x API sürüm numarası ve eşzamanlı token sınırı.
 
+### 10.8 SimpliVity sağlık kontrolleri — HPE'nin kendi kataloğu ve çapraz-ortam kuralları (23 Eylül 2026)
+
+Okunan birincil kaynaklar: Command Reference 5.1.0U1 (sd00004299en_us),
+Administration Guide 5.2.0 (sd00005173en_us), Events Reference 5.2.0
+(sd00005179en_us — 188 alarm, ~330 `com.simplivity.event.*`), Upgrade Guide
+5.2.0 (sd00005177en_us), InfoSight Wellness KB (sf000087618en_us), HPE ağ
+teknik raporu a50000783enw. Üçüncü taraf: Centreon, Nagios (sdouce), OpsRamp.
+
+**zeus.sh:** HPE destek personelinin iç aracı; kontrol listesi hiçbir yerde
+yayımlanmamış, yalnız `--bal ratio` (mantıksal/fiziksel kapasite oranı) bir
+topluluk cevabında geçiyor. **Taklit edilecek bir katalog değil.** Aynı
+işi HPE'nin yayımlanmış üç kataloğu yapıyor: alarm/olay referansı, `svt-*`
+komutlarının sorun göstergeleri ve Upgrade Guide ön-kontrolleri.
+
+**HPE'nin sağlık modeli, üç kaynaktan:**
+
+| Kaynak | Kontrol | Sorun göstergesi | URL |
+|---|---|---|---|
+| `svt-federation-show` | host `State`, `Arbiter` | `Faulty`/`Suspected`/`Unknown`; Arbiter `Disconnected`, `Configuration required`, `Unknown`, IP `0.0.0.0` | sd00004299 GUID-552B93DC |
+| `svt-vm-show --violations` | Storage HA, Zoning | `No`/`Unknown`; `Non-Compliant*`; çıktı boş değilse ihlal | sd00004299 GUID-1510DEE7 |
+| `svt-hardware-show` | adaptör, BBU, mantıksal/fiziksel sürücü | `Degraded`/`Warning`/`Rebuilding` sarı; `Error`/`Missing`/`Offline` kırmızı; SSD ömrü ≤%10 uyarı, ≤%5 kritik | sd00004299 GUID-01FE7A96 |
+| `svt-software-status-show` | yükseltme durumu | `Mixed version`, `Failed`, `Ready to commit` | sd00004299 GUID-E07AB4E4 |
+| `svt-backup-show` | yedek durumu | `FAILED`/`DEGRADED`/`UNKNOWN`; ad sonunda `+` = zamanında bitmedi; replication attempts >1 | sd00004299 GUID-AB7BF8C7 |
+| `svt-policy-status-show` | politika | `Suspended` | sd00004299 GUID-B358D04A |
+| Events Reference — kapasite | host/küme boş fiziksel alan | ≤%20 uyarı, ≤%10 hata (30 dk'da bir) | sd00005179 GUID-BAEDE61C, -3CB2AEE9, -91903902, -56ACA861 |
+| Events Reference — OVC | swap ≥1 GB uyarı, >2 GB hata; dosya sistemi <%10; SQLite >%85 | ilgili `com.simplivity.event.*` | GUID-23DDF176, -67B761C3, -9F755E38 |
+| Upgrade Guide "Check the federation" | hostlar kümede, tüm VM'ler Storage HA=Yes, MVA sağlıklı, vSphere lisansı geçerli, lockdown istisnası | herhangi biri sağlanmıyor | sd00005177 GUID-4AA963F4 |
+| MVA sağlığı | State + Power + Storage HA → yeşil/sarı/kırmızı tablo | sarı/kırmızı | sd00005177 GUID-AEF479F0 |
+
+**Çapraz-ortam kuralları (vSphere tarafından kontrol edilir, HPE birincil):**
+
+| Kural | Gösterge | URL |
+|---|---|---|
+| OVC VM: HA restart kapalı (Event Manager açar), resource pool'da değil, sanal donanımı değiştirilmemiş; lokal `datastore-<seri>` yalnız OVC için | başka VM o datastore'da; OVC resource pool'da | sd00005173 GUID-5AACD6F9, -3BB703E5 |
+| HA admission control yüzdesi = ((toplam bellek − OVC rezervasyonu × host) / toplam bellek) × (1/host) × 100, yukarı yuvarlanır; "Cluster resource percentage" | formülün altındaki yüzde | sd00005173 GUID-5EBC5FC4, -C8D90369 |
+| DPM kapalı | alarm `DPM enabled on OmniCube system` (kırmızı) | sd00005173 GUID-CB42AB7B |
+| MVA'nın kümesinde vSphere HA açık | `MVA cluster has vSphere HA disabled` | sd00005179 GUID-5EBBA0A1 |
+| DRS "must run on" grubu host başına >100 VM olmasın; IWO: DRS açık, 3–16 host, ≤720 VM/küme, ≤90 VM/host, farklı CPU nesillerinde EVC | `IWO feature is inactive` | sd00005173 GUID-87E50895, -FA0E3F6C |
+| Arbiter yönettiği kümede/aynı datastore'da değil; 2 düğümlü ve stretched'da zorunlu; RTT 300 ms (stretched 50 ms) | `Arbiter Data Storage Location Violation` | sd00005173 GUID-255274A0; a50000783enw |
+| Storage/Federation MTU 9000 uçtan uca, ≥10 Gbps; NTP OVC=ESXi=vCenter (en az 3 sunucu); DNS ≥2 resolver | `unable to reach expected ports on storage/federation network` | a50000783enw; sd00005173 GUID-E3460A32 |
+| Federation'da >2 OmniStack sürümü yok; vCenter/ESXi ↔ OmniStack Interop matrisi | `Mixed version, upgrade needed` | sd00005173 GUID-511CF9D3; Upgrade Guide adım 9 |
+| VMware snapshot üretimde önerilmez; çoklu snapshot yedek hatası | `VM Backup Snapshot Failure` | sd00005173 GUID-FF3CDFC4 |
+| Storage vMotion ile sahibi olmayan host'a taşınan VM | `VM Data Access Not Optimized` (sarı) | sd00005179 GUID-34AEA3D8 |
+| Lockdown mode'da Digital Vault ESXi hesabı Exception listesinde | yükseltme başarısız | sd00005173 GUID-4B8A8E70 |
+
+**Üç kova (reference-products-first kural 5):**
+
+1. **Bugün cevaplanabilir** (ikinci vCenter eklenince, toplayıcı yazmadan):
+   188 alarmın olay akışından aktarımı (`com.simplivity.event.*` → kategori:
+   arbiter, Storage HA, kapasite, yedek, donanım, yazılım); vim25'ten DPM
+   açık, MVA kümesinde HA kapalı, OVC rezervasyonu ↔ admission control
+   yüzdesi, DRS must-grubu yükü, OVC dışı VM'nin `datastore-<seri>`'de
+   olması, politikalı VM'de VMware snapshot, EVC/karışık CPU, ESXi sürüm
+   farkı, lockdown istisnası, NTP tutarlılığı (M9.4 ile), vmkernel MTU.
+2. **Bir REST çağrısı uzakta:** host `state`, küme `arbiter_*`,
+   `upgrade_state`, VM `ha_status`, yedek `state`/`+`/attempts, kapasite
+   ≤%20/%10 (used/allocated'dan), `hardware` ağacı (ikincil şema — probe
+   görmeden kural yok), politika askıda.
+3. **Yeni eksen, yapılmaz:** yalnız `svt-*` CLI ile bakılabilenler
+   (`svt-network-test --mtu-test`, `svt-node-compliance`, `svt-support-show`,
+   OVC swap/dosya sistemi) — salt-okunur REST'te yok; olay akışındaki
+   karşılıkları (swap, partition, ports) aktarım olarak yeter.
+
+**Benimsenen:** HPE'nin kendi eşikleri aynen (≤%20/≤%10 boş alan; SSD ≤%10/≤%5;
+swap 1/2 GB), uydurma yok; sarı/kırmızı anlamı HPE'ninki. Alarmlar ADR-0024
+ayrımıyla: kendiliğinden geçebilen (`arbiter.lost`, `vm.ha.fail`, kapasite)
+alarm; geçemeyen (arbiter yerleşimi, DPM açık, MVA kümesinde HA kapalı,
+admission control formülü, karışık sürüm, BIOS önerilen dışı, OVC ayarı
+değişmiş) `eo-simplivity` bulgusu. Kimlik katlama: OmniStack host ↔ ESXi host
+(`hypervisor_object_id`), OmniStack cluster ↔ vSphere cluster, OVC = VM.
+**Reddedilen:** zeus.sh'yi taklit eden "toplu sağlık script'i" (kaynağı yok);
+Centreon/Nagios'un "≠SAFE → uyarı" tek-değerli eşlemesi (SYNCING geçici,
+OUT_OF_SCOPE bilgi — üç değerli kalır); kapasite %80/%90 (ikincil, HPE ≤%20/%10).
+**Ölçüm gerektirir (M6.0b):** `hardware` şeması; `ha_status` `OUT_OF_SCOPE`
+anlamı; `hypervisor_object_id` moRef mi; kaç `com.simplivity.*` olayı geliyor.
+**Bulunamadı:** zeus.sh kontrol listesi; Upgrade Manager ön-doğrulama test
+adları; host isolation response / datastore heartbeat için HPE önerisi;
+"tek datastore per cluster" kuralı.
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:
