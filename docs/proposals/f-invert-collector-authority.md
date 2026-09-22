@@ -634,3 +634,20 @@ public sealed class RedfishObservationSource : IObservationSource
 8. **F3: where does the TLS decision live?** `CreateHandler`'s relaxed-certificate switch
    moves to the runner's channel. Package G's thumbprint pinning then lands there once, for
    both collectors. Is G sequenced after F3 to avoid doing it twice?
+
+## 8. Decisions (planner review, 22 September 2026)
+
+Accepted as written (order, §4 "stays in vSphere", target size). Answers to §7:
+
+1. **Skip the next cycle while an abandoned read is still running, and count the skip** — Telegraf's rule ("did not complete within its interval"); it is ADR-0025 §5's "skipped cycle" metric. A second read to the same source strains both the session and vCenter. Lands with **F2**.
+2. **The bounded store queue goes to F5, not D.** The queue sits behind the runner's store port, and F5 already removes the collector's store access; D only surfaces the queue's counters (dropped, size, age), so D stays purely "measure and show".
+3. **F2 default = 2 parallel requests per vCenter** (not 4), configurable, ceiling 8. Measured basis: package A's live timing (~135 ms/call, ≈ 25 ms + 9 ms/VM) fits 2000 VMs with 2 workers (~9 s); Telegraf's rule is VMs/1500; on this estate (145 VMs) 4 parallel requests add risk and no gain.
+4. **Package G's TLS thumbprint pinning comes after F3**: the HTTP handler then belongs to the runner, so pinning is written once there instead of being moved twice.
+
+Additional done-criteria:
+
+- **F1** also fixes `VsphereEventSource` (every `VsphereApiException` → `CouldNotAsk` today), so one-strike applies to the event path.
+- **F3's PR body names the closed defect** "`LogoutAsync` clears `_loggedIn` outside the session lock (`VsphereClient.cs:2244`, same shape as #53)" — it closes by construction once the runner owns the session.
+- **F5's done definition includes an architecture test: the collector project does not reference Persistence** (marks and unfilled-slot memory move to the runner; `SeedMarks`/`Stored` store access leaves the collector — ADR-0005 §3).
+
+**Sequence:** F1 → per-source event watermark (separate PR, right after F1) → F2 (+ skip rule) → F3 → F4 → F5 (+ bounded queue, architecture test) → F6 → G-TLS → M6 design note. Every PR: contract suite (E) green, the name of the contract case it adds, and "verified live / not verified". **F code starts after K2's deploy and the ADR-0026 code** — all three touch `Application/Collection`.
