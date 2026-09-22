@@ -328,6 +328,36 @@ Yalnızca sayı; değer ve ad basılmadı.
 "collector's reading" bölümü); olay tarafı için ölçüm belgesindeki (d)
 sorguları 1–3.
 
+## 11. Kör-nokta histerezisi (K/P): pencere eşiği canlı veriden
+
+Kural: `storage-latency-blind-spot`. Ham örnekler üzerinden yeniden oynatma
+(`docs/measurements/blind-spot-hysteresis-replay.sql`, salt-okunur), 22 Eylül 2026,
+2,00 gün, 29 volume, 90.624 yargılanan tur. **Ölçülebilirlik %4,5** — bu estate
+neredeyse tamamen kör; çalkalanma o %4,5'lik ölçülebilir turlardan geliyor.
+
+| variant | present % | verdict flip/gün | alarm flip/gün | ≥1 flip/gün olan volume | pencere dolarken % |
+|---|---|---|---|---|---|
+| current (K=1) | 95,5 | 2916,0 | 369,9 | 20 | 0,0 |
+| K=10 P=50 | 97,2 | 115,0 | 95,0 | 7 | 0,3 |
+| K=10 P=70 | 99,2 | 64,0 | 44,0 | 4 | 0,3 |
+| K=20 P=50 | 97,4 | 62,5 | 49,5 | 4 | 0,6 |
+| K=20 P=70 | 99,4 | 25,0 | 21,0 | 4 | 0,6 |
+| K=30 P=50 | 97,5 | 50,0 | 38,0 | 3 | 0,9 |
+| K=30 P=70 | 99,4 | 19,5 | 15,0 | 2 | 0,9 |
+| **K=30 P=90 (seçilen)** | **99,9** | **6,0** | **5,0** | **1** | **0,9** |
+| K=60 P=70 | 100,0 | 0,0 | 0,0 | 0 | 1,9 |
+| K=60 P=90 | 100,0 | 0,0 | 0,0 | 0 | 1,9 |
+
+**Gerçek körlüğü yakalama** (≥30 dakikalık, ölçülebilir turu olmayan 385 kesintisiz
+dilim; §4 blind-summary): K=30 P=90 **385'in %100'ünü** yakalıyor, en kötü durumda
+30 yargılanan tur = **29,0 dakika**, ortanca 0,0 dakika (dilimlerin çoğu zaten
+Present başlıyor). 3 dilim hiç Present'e ulaşmıyor — pencereyi dolduramadan bitiyorlar.
+
+K=60 bu estate'te sıfır çalkalanma veriyor, ama bu %4,5 ölçülebilirliğin artefaktı:
+ölçüm geri geldiğinde fark etme süresini iki katına çıkarır. Seçim K=30 P=90.
+
+Yayım sonrası 24 saatte çalkalanma yeniden sayılacak (hedef: volume başına ≤1/gün
+ortalama; 1 volume'ün çalkalanmaya devam etmesi kabul edilebilir).
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
 
 ### Gecikme 1 ms altında görünmüyor
@@ -548,3 +578,4 @@ Dürüstlük gereği: aşağıdakiler **çalışıyor diye bilinmiyor.**
 - **Yetkisi kısıtlı hesap.** Bağlantı `gentel@vsphere.local` ile kuruldu.
   Salt-okunur bir servis hesabının hangi özellikleri okuyamadığı ölçülmedi —
   `missingSet` yolu kodda var ve test edildi, canlıda tetiklenmedi.
+
