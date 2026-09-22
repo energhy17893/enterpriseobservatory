@@ -111,7 +111,7 @@ public sealed class ReadModel(
         var visible = Visible();
         var health = _collectors.Current;
 
-        var derived = EntityHealth.DeriveAll(graph.Active, _alerts.All);
+        var derived = EntityHealth.DeriveAll(graph.Active, _alerts.All, ReportingSources());
 
         var byHealth = derived.Values
             .GroupBy(d => d.Health)
@@ -921,7 +921,7 @@ public sealed class ReadModel(
     {
         var graph = _graphs.Current;
         var counts = AlertCountsByEntity();
-        var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All);
+        var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All, ReportingSources());
 
         var matching = graph.Entities.Values
             .Where(e => includeVanished || e.ObservationState != ObservationState.Vanished)
@@ -950,7 +950,7 @@ public sealed class ReadModel(
         }
 
         var counts = AlertCountsByEntity();
-        var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All);
+        var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All, ReportingSources());
 
         var entityAlerts =
         (IReadOnlyList<AlertView>)
@@ -1435,6 +1435,24 @@ public sealed class ReadModel(
             .Where(a => a.Entity is not null)
             .GroupBy(a => a.Entity!.Value)
             .ToDictionary(g => g.Key, g => g.Count());
+
+    /// <summary>
+    /// The source instance ids that answered in the latest collection cycle,
+    /// for entities with no counting alert (<see cref="EntityHealth"/>).
+    /// </summary>
+    /// <remarks>
+    /// Inventory is the collector role that populates the entity graph, so
+    /// only it says whether an entity's source answered. A record whose
+    /// health is not Unknown means the last attempt succeeded — the runner
+    /// (<see cref="Application.Collection.SourceRunner"/>) sets Unknown on
+    /// every failed or backed-off attempt and only Healthy/Warning on a
+    /// success — so this is already the persisted "did it answer" signal
+    /// (<see cref="ICollectorHealthStore"/>), not a new one.
+    /// </remarks>
+    private HashSet<string> ReportingSources() =>
+        [.. _collectors.Current
+            .Where(h => h.Role == Application.Collection.CollectorRole.Inventory && h.Health != HealthState.Unknown)
+            .Select(h => h.InstanceId)];
 
     private static bool Matches(AlertInstance alert, string? search) =>
         search is null ||

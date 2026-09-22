@@ -16,15 +16,33 @@ public class EntityHealthDerivationTests
     private static readonly EntityId H1 = new("vc-1:host-1");
     private static readonly EntityId H2 = new("vc-1:host-2");
 
-    [Fact]
-    public void With_no_alerts_the_collector_value_stands()
-    {
-        var health = EntityHealth.Derive(Host(H1, HealthState.Warning), []);
+    /// <summary>vc-1 answered in the latest collection cycle.</summary>
+    private static readonly HashSet<string> Reporting = ["vc-1"];
 
-        Assert.Equal(HealthState.Warning, health.Health);
-        Assert.Equal(HealthBasis.Collector, health.Basis);
+    /// <summary>No source answered in the latest collection cycle.</summary>
+    private static readonly HashSet<string> Silent = [];
+
+    [Fact]
+    public void With_no_alerts_and_the_source_reporting_the_entity_is_healthy()
+    {
+        // The collector says Critical; ADR-0018 says the collector's own
+        // value is never an input, so it is ignored.
+        var health = EntityHealth.Derive(Host(H1, HealthState.Critical), [], Reporting);
+
+        Assert.Equal(HealthState.Healthy, health.Health);
+        Assert.Equal(HealthBasis.NoAlertsSourceReporting, health.Basis);
         Assert.False(health.IsStale);
         Assert.Null(health.StaleSinceUtc);
+    }
+
+    [Fact]
+    public void With_no_alerts_and_the_source_silent_the_entity_is_unknown()
+    {
+        // Nobody looked at this entity this cycle; it does not get to be green.
+        var health = EntityHealth.Derive(Host(H1, HealthState.Healthy), [], Silent);
+
+        Assert.Equal(HealthState.Unknown, health.Health);
+        Assert.Equal(HealthBasis.NoAlertsSourceSilent, health.Basis);
     }
 
     [Theory]
@@ -33,7 +51,7 @@ public class EntityHealthDerivationTests
     public void An_open_alert_sets_the_health_to_its_severity(AlertSeverity severity, HealthState expected)
     {
         // The collector says green; the alert against the entity decides.
-        var health = EntityHealth.Derive(Host(H1, HealthState.Healthy), [Alert("a", H1, severity)]);
+        var health = EntityHealth.Derive(Host(H1, HealthState.Healthy), [Alert("a", H1, severity)], Reporting);
 
         Assert.Equal(expected, health.Health);
         Assert.Equal(HealthBasis.Alerts, health.Basis);
@@ -44,7 +62,8 @@ public class EntityHealthDerivationTests
     {
         var health = EntityHealth.Derive(
             Host(H1, HealthState.Healthy),
-            [Alert("a", H1, AlertSeverity.Warning), Alert("b", H1, AlertSeverity.Critical), Alert("c", H1, AlertSeverity.Warning)]);
+            [Alert("a", H1, AlertSeverity.Warning), Alert("b", H1, AlertSeverity.Critical), Alert("c", H1, AlertSeverity.Warning)],
+            Reporting);
 
         Assert.Equal(HealthState.Critical, health.Health);
     }
@@ -54,7 +73,7 @@ public class EntityHealthDerivationTests
     {
         // ADR-0018: the badge derives from alerts only. A red collector rollup
         // with only a Warning alert against the entity is Warning.
-        var health = EntityHealth.Derive(Host(H1, HealthState.Critical), [Alert("a", H1, AlertSeverity.Warning)]);
+        var health = EntityHealth.Derive(Host(H1, HealthState.Critical), [Alert("a", H1, AlertSeverity.Warning)], Reporting);
 
         Assert.Equal(HealthState.Warning, health.Health);
     }
@@ -67,7 +86,8 @@ public class EntityHealthDerivationTests
         // Taking ownership or muting stops notifications; it does not fix anything.
         var health = EntityHealth.Derive(
             Host(H1, HealthState.Healthy),
-            [Alert("a", H1, AlertSeverity.Critical) with { State = state }]);
+            [Alert("a", H1, AlertSeverity.Critical) with { State = state }],
+            Reporting);
 
         Assert.Equal(HealthState.Critical, health.Health);
     }
@@ -77,7 +97,8 @@ public class EntityHealthDerivationTests
     {
         var health = EntityHealth.Derive(
             Host(H1, HealthState.Healthy),
-            [Alert("a", H1, AlertSeverity.Critical) with { StaleSinceUtc = T0.AddHours(-3) }]);
+            [Alert("a", H1, AlertSeverity.Critical) with { StaleSinceUtc = T0.AddHours(-3) }],
+            Reporting);
 
         Assert.Equal(HealthState.Critical, health.Health);
         Assert.Equal(HealthBasis.Alerts, health.Basis);
@@ -94,7 +115,8 @@ public class EntityHealthDerivationTests
             [
                 Alert("a", H1, AlertSeverity.Critical) with { StaleSinceUtc = T0.AddHours(-3) },
                 Alert("b", H1, AlertSeverity.Critical),
-            ]);
+            ],
+            Reporting);
 
         Assert.Equal(HealthState.Critical, health.Health);
         Assert.False(health.IsStale);
@@ -109,7 +131,8 @@ public class EntityHealthDerivationTests
             [
                 Alert("a", H1, AlertSeverity.Critical) with { StaleSinceUtc = T0.AddHours(-3) },
                 Alert("b", H1, AlertSeverity.Warning),
-            ]);
+            ],
+            Reporting);
 
         Assert.Equal(HealthState.Critical, health.Health);
         Assert.True(health.IsStale);
@@ -124,7 +147,8 @@ public class EntityHealthDerivationTests
             [
                 Alert("a", H1, AlertSeverity.Critical) with { StaleSinceUtc = T0.AddHours(-3) },
                 Alert("b", H1, AlertSeverity.Critical) with { StaleSinceUtc = T0.AddHours(-1) },
-            ]);
+            ],
+            Reporting);
 
         Assert.Equal(T0.AddHours(-1), health.StaleSinceUtc);
     }
@@ -134,7 +158,8 @@ public class EntityHealthDerivationTests
     {
         var health = EntityHealth.Derive(
             Host(H1, HealthState.Healthy),
-            [Alert("a", H1, AlertSeverity.Critical) with { State = AlertLifecycleState.Unknown }]);
+            [Alert("a", H1, AlertSeverity.Critical) with { State = AlertLifecycleState.Unknown }],
+            Reporting);
 
         Assert.Equal(HealthState.Unknown, health.Health);
         Assert.Equal(HealthBasis.UnknownAlerts, health.Basis);
@@ -148,7 +173,8 @@ public class EntityHealthDerivationTests
             [
                 Alert("a", H1, AlertSeverity.Critical) with { State = AlertLifecycleState.Unknown },
                 Alert("b", H1, AlertSeverity.Warning),
-            ]);
+            ],
+            Reporting);
 
         Assert.Equal(HealthState.Warning, health.Health);
         Assert.Equal(HealthBasis.Alerts, health.Basis);
@@ -163,17 +189,18 @@ public class EntityHealthDerivationTests
                 Alert("a", H1, AlertSeverity.Critical) with { State = AlertLifecycleState.Resolved },
                 Alert("b", H1, AlertSeverity.Critical) with { IsConfirmed = false },
                 Alert("c", H1, AlertSeverity.Critical) with { State = AlertLifecycleState.Unknown, IsConfirmed = false },
-            ]);
+            ],
+            Reporting);
 
         Assert.Equal(HealthState.Healthy, health.Health);
-        Assert.Equal(HealthBasis.Collector, health.Basis);
+        Assert.Equal(HealthBasis.NoAlertsSourceReporting, health.Basis);
     }
 
     [Fact]
     public void Another_entitys_alert_does_not_colour_this_one()
     {
         // ADR-0018: no propagation, and the entity's own alerts only.
-        var health = EntityHealth.Derive(Host(H1, HealthState.Healthy), [Alert("a", H2, AlertSeverity.Critical)]);
+        var health = EntityHealth.Derive(Host(H1, HealthState.Healthy), [Alert("a", H2, AlertSeverity.Critical)], Reporting);
 
         Assert.Equal(HealthState.Healthy, health.Health);
     }
@@ -183,7 +210,21 @@ public class EntityHealthDerivationTests
     {
         var health = EntityHealth.Derive(
             Host(H1, HealthState.Healthy) with { ObservationState = ObservationState.Vanished },
-            [Alert("a", H1, AlertSeverity.Critical)]);
+            [Alert("a", H1, AlertSeverity.Critical)],
+            Reporting);
+
+        Assert.Equal(HealthState.Unknown, health.Health);
+        Assert.Equal(HealthBasis.NotObserved, health.Basis);
+    }
+
+    [Fact]
+    public void A_vanished_entity_is_unknown_even_when_its_source_is_reporting_and_has_no_alerts()
+    {
+        // Vanished wins over everything, including "the source answered".
+        var health = EntityHealth.Derive(
+            Host(H1, HealthState.Healthy) with { ObservationState = ObservationState.Vanished },
+            [],
+            Reporting);
 
         Assert.Equal(HealthState.Unknown, health.Health);
         Assert.Equal(HealthBasis.NotObserved, health.Basis);
@@ -195,12 +236,16 @@ public class EntityHealthDerivationTests
         Entity[] entities = [Host(H1, HealthState.Healthy), Host(H2, HealthState.Warning)];
         AlertInstance[] alerts = [Alert("a", H1, AlertSeverity.Critical), Alert("b", null, AlertSeverity.Critical)];
 
-        var all = EntityHealth.DeriveAll(entities, alerts);
+        var all = EntityHealth.DeriveAll(entities, alerts, Reporting);
 
-        Assert.Equal(EntityHealth.Derive(entities[0], alerts), all[H1]);
-        Assert.Equal(EntityHealth.Derive(entities[1], alerts), all[H2]);
+        Assert.Equal(EntityHealth.Derive(entities[0], alerts, Reporting), all[H1]);
+        Assert.Equal(EntityHealth.Derive(entities[1], alerts, Reporting), all[H2]);
         Assert.Equal(HealthState.Critical, all[H1].Health);
-        Assert.Equal(HealthState.Warning, all[H2].Health);
+
+        // H2 has no alert of its own; its source (vc-1) is reporting, so it
+        // is Healthy regardless of the collector's own Warning value.
+        Assert.Equal(HealthState.Healthy, all[H2].Health);
+        Assert.Equal(HealthBasis.NoAlertsSourceReporting, all[H2].Basis);
     }
 
     private static Entity Host(EntityId id, HealthState health) => new()

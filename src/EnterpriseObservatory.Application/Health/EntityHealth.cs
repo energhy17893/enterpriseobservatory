@@ -6,8 +6,12 @@ namespace EnterpriseObservatory.Application.Health;
 /// <summary>What an entity's reported health rests on.</summary>
 public enum HealthBasis
 {
-    /// <summary>No alert is against the entity; the collector's own rollup is shown.</summary>
-    Collector = 0,
+    /// <summary>
+    /// No counting alert against the entity, and its source answered in the
+    /// latest collection cycle: Healthy. Never the collector's own rollup —
+    /// ADR-0018 removed that as an input and it does not come back here.
+    /// </summary>
+    NoAlertsSourceReporting = 0,
 
     /// <summary>The most severe active alert against the entity (ADR-0018).</summary>
     Alerts = 1,
@@ -20,6 +24,13 @@ public enum HealthBasis
 
     /// <summary>The entity is not currently seen (vanished); nothing else counts.</summary>
     NotObserved = 3,
+
+    /// <summary>
+    /// No counting alert against the entity, and its source did not answer in
+    /// the latest collection cycle (unreachable, or we simply do not know):
+    /// Unknown. An entity nobody looked at does not get to be green.
+    /// </summary>
+    NoAlertsSourceSilent = 4,
 }
 
 /// <summary>An entity's health as every screen should show it.</summary>
@@ -59,7 +70,11 @@ public sealed record DerivedHealth
 /// carries "stale since".</item>
 /// <item>No active alert but at least one confirmed alert in the Unknown
 /// state: Unknown (grey), never Healthy — the product does not know.</item>
-/// <item>No alert at all: the collector's value, as before this rule existed.</item>
+/// <item>No alert at all: Healthy if the entity's source answered in the
+/// latest collection cycle, Unknown otherwise (unreachable, or we do not
+/// know). The collector's own health value is never used — that would bring
+/// back exactly what ADR-0018 removed, and "no alerts always means Healthy"
+/// would show green for an entity nobody looked at.</item>
 /// </list>
 /// <para>
 /// There is <strong>no propagation</strong> along any edge (ADR-0018): only
@@ -77,30 +92,51 @@ public sealed record DerivedHealth
 public static class EntityHealth
 {
     /// <summary>Derives one entity's health; alerts against other entities are ignored.</summary>
-    public static DerivedHealth Derive(Entity entity, IEnumerable<AlertInstance> alerts)
+    /// <param name="entity">The entity to derive health for.</param>
+    /// <param name="alerts">All alerts; only those against this entity count.</param>
+    /// <param name="reportingSources">
+    /// The source instance ids that answered in the latest collection cycle
+    /// (see <see cref="Monitoring.MonitoringCycleResult.ReportingSources"/> or
+    /// the equivalent persisted collector-health signal). Used only when the
+    /// entity has no counting alert, to decide Healthy vs. Unknown — never as
+    /// a source of the entity's own health value.
+    /// </param>
+    public static DerivedHealth Derive(
+        Entity entity,
+        IEnumerable<AlertInstance> alerts,
+        IReadOnlySet<string> reportingSources)
     {
         ArgumentNullException.ThrowIfNull(entity);
         ArgumentNullException.ThrowIfNull(alerts);
+        ArgumentNullException.ThrowIfNull(reportingSources);
 
-        return DeriveOwn(entity, alerts.Where(a => a.Entity == entity.Id));
+        return DeriveOwn(entity, alerts.Where(a => a.Entity == entity.Id), reportingSources);
     }
 
     /// <summary>Derives health for many entities, grouping the alerts once.</summary>
+    /// <param name="reportingSources">
+    /// See <see cref="Derive(Entity, IEnumerable{AlertInstance}, IReadOnlySet{string})"/>.
+    /// </param>
     public static Dictionary<EntityId, DerivedHealth> DeriveAll(
         IEnumerable<Entity> entities,
-        IEnumerable<AlertInstance> alerts)
+        IEnumerable<AlertInstance> alerts,
+        IReadOnlySet<string> reportingSources)
     {
         ArgumentNullException.ThrowIfNull(entities);
         ArgumentNullException.ThrowIfNull(alerts);
+        ArgumentNullException.ThrowIfNull(reportingSources);
 
         var byEntity = alerts
             .Where(a => a.Entity is not null)
             .ToLookup(a => a.Entity!.Value);
 
-        return entities.ToDictionary(e => e.Id, e => DeriveOwn(e, byEntity[e.Id]));
+        return entities.ToDictionary(e => e.Id, e => DeriveOwn(e, byEntity[e.Id], reportingSources));
     }
 
-    private static DerivedHealth DeriveOwn(Entity entity, IEnumerable<AlertInstance> own)
+    private static DerivedHealth DeriveOwn(
+        Entity entity,
+        IEnumerable<AlertInstance> own,
+        IReadOnlySet<string> reportingSources)
     {
         if (entity.ObservationState == ObservationState.Vanished)
         {
@@ -165,6 +201,11 @@ public static class EntityHealth
             return new DerivedHealth { Health = HealthState.Unknown, Basis = HealthBasis.UnknownAlerts };
         }
 
-        return new DerivedHealth { Health = entity.EffectiveHealth, Basis = HealthBasis.Collector };
+        // No counting alert. The collector's own health value is never
+        // consulted here (ADR-0018): whether the entity is Healthy or Unknown
+        // rests only on whether its source answered this cycle.
+        return reportingSources.Contains(entity.SourceInstanceId)
+            ? new DerivedHealth { Health = HealthState.Healthy, Basis = HealthBasis.NoAlertsSourceReporting }
+            : new DerivedHealth { Health = HealthState.Unknown, Basis = HealthBasis.NoAlertsSourceSilent };
     }
 }
