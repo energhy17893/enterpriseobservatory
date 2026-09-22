@@ -15,7 +15,7 @@ namespace EnterpriseObservatory.Api.Tests;
 /// The read surface, held to ADR-0007's governing rule: however many screens
 /// there are, they are projections of one model.
 /// </summary>
-public class ReadModelTests
+public partial class ReadModelTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 19, 9, 0, 0, TimeSpan.Zero);
 
