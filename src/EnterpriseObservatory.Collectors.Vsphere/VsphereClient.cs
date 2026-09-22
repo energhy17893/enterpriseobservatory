@@ -75,7 +75,7 @@ public sealed record VsphereAvailableMetric
 /// handling are the kind of thing that only a real server settles.
 /// </para>
 /// </remarks>
-public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi, IDisposable
+public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi, IDisposable
 {
     /// <summary>Samples per series; see <see cref="VsphereSoapRequests.QueryPerf"/>.</summary>
     private const int MaxSample = 3;
@@ -622,11 +622,17 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         }
     }
 
-    private async Task<string> CreateViewAsync(VsphereServiceContent content, CancellationToken cancellationToken)
+    private Task<string> CreateViewAsync(VsphereServiceContent content, CancellationToken cancellationToken) =>
+        CreateViewAsync(content, [.. InventoryProperties.Keys], cancellationToken);
+
+    private async Task<string> CreateViewAsync(
+        VsphereServiceContent content,
+        IReadOnlyList<string> types,
+        CancellationToken cancellationToken)
     {
         var response = await SendAsync(
             VsphereSoapRequests.CreateContainerView(
-                content.ViewManager, content.RootFolder, [.. InventoryProperties.Keys]),
+                content.ViewManager, content.RootFolder, types),
             cancellationToken).ConfigureAwait(false);
 
         var moRef = VsphereXml.Parse(response)
@@ -692,10 +698,18 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
     /// rather than a bug. This is the single easiest way to under-report an
     /// environment.
     /// </remarks>
+    private Task<(List<PropertyObject> Objects, int Pages)> RetrieveAllPagesAsync(
+        VsphereServiceContent content,
+        string viewMoRef,
+        CancellationToken cancellationToken) =>
+        RetrieveAllPagesAsync(content, viewMoRef, InventoryProperties, cancellationToken);
+
     private async Task<(List<PropertyObject> Objects, int Pages)> RetrieveAllPagesAsync(
         VsphereServiceContent content,
         string viewMoRef,
-        CancellationToken cancellationToken)
+        IReadOnlyDictionary<string, IReadOnlyList<string>> properties,
+        CancellationToken cancellationToken,
+        Action<int>? onReply = null)
     {
         var all = new List<PropertyObject>();
         var pages = 1;
@@ -703,8 +717,9 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
         var response = await SendAsync(
             VsphereSoapRequests.RetrievePropertiesEx(
                 content.PropertyCollector, content.RootFolder, viewMoRef,
-                InventoryProperties, _options.InventoryPageSize),
+                properties, _options.InventoryPageSize),
             cancellationToken).ConfigureAwait(false);
+        onReply?.Invoke(response.Length);
 
         var page = PropertyCollectorParser.ParsePage(response);
         all.AddRange(page.Objects);
@@ -724,6 +739,7 @@ public sealed class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereE
                         content.PropertyCollector, page.ContinuationToken!),
                     cancellationToken).ConfigureAwait(false);
 
+                onReply?.Invoke(response.Length);
                 page = PropertyCollectorParser.ParsePage(response);
                 open = page.ContinuationToken;
                 all.AddRange(page.Objects);
