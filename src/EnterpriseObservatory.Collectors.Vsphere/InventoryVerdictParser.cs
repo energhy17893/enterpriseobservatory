@@ -157,12 +157,16 @@ public static class InventoryVerdictParser
         {
             verdicts[InventoryVerdicts.ConfigIssueCount] = Count(issues.Count);
 
+            // Every Event array element declares its concrete subtype. An entry
+            // without one is a shape nobody has seen live, and its element name
+            // is not an event type — so the types are left unread rather than
+            // reported from a tag name. The count still stands: an entry exists.
             var types = issues
-                .Select(i => i.Type.Length > 0 ? i.Type : i.Name)
+                .Select(i => i.Type)
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
 
-            if (types.Count > 0)
+            if (types.Count > 0 && types.All(t => t.Length > 0))
             {
                 verdicts[InventoryVerdicts.ConfigIssueTypes] = string.Join(", ", types);
             }

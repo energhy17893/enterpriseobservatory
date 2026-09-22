@@ -393,6 +393,28 @@ try
             client, payload, catalog, calls, cancellation.Token);
     }
 
+    // Whether a host's newest real-time slot is complete when first returned
+    // (the H3 late-sample regression). Read-only.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --late-samples 120
+    var lateIndex = Array.FindIndex(args, a =>
+        string.Equals(a, "--late-samples", StringComparison.OrdinalIgnoreCase));
+    if (lateIndex >= 0)
+    {
+        var seconds = lateIndex + 1 < args.Length &&
+                      int.TryParse(args[lateIndex + 1], out var s) && s is >= 30 and <= 150
+            ? s
+            : 100;
+
+        Section("Late real-time samples");
+        return args.Contains("--follow", StringComparer.OrdinalIgnoreCase)
+            ? await EnterpriseObservatory.VsphereProbe.LateSamples.FollowAsync(
+                client, payload, catalog, seconds, cancellation.Token)
+            : await EnterpriseObservatory.VsphereProbe.LateSamples.RunAsync(
+                client, payload, catalog, seconds, cancellation.Token,
+                fast: args.Contains("--fast", StringComparer.OrdinalIgnoreCase));
+    }
+
     // The full map, and then nothing else: it is a reference document, not a
     // section of a health check, and burying it under a sample read would make
     // it something nobody pastes into a file.
