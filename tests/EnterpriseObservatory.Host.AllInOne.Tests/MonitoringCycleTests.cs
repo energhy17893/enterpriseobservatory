@@ -1020,6 +1020,9 @@ public class MonitoringCycleTests : IDisposable
                 Stored = stored,
                 FlapHistories = flaps,
                 NowUtc = _clock.UtcNow,
+                Evaluations = [],
+                Sources = EvidenceSources.None,
+                RawRetention = TimeSpan.FromDays(2),
             }));
 
         var filed = Assert.Single(_alerts.InstancesIn(AlertScopes.Inventory));
@@ -1115,14 +1118,24 @@ public class MonitoringCycleTests : IDisposable
         // a notification just because the cycle ran.
         Assert.DoesNotContain(result.ToNotify, a => a.Category == "Fault");
 
-        // And once the source answers again without the fault, it resolves as
-        // before -- this is not a scope that stopped resolving anything.
+        // And once the source answers again without the fault, it resolves --
+        // this is not a scope that stopped resolving anything -- after the
+        // rule's N fresh absences (ADR-0026), not on the first.
         reachable = true;
-        _clock.Advance(TimeSpan.FromSeconds(30));
-        var recovered = await cycle.RunObservationsAsync(
-            [new FakeObservationSource("vc-1") { Behaviour = () => Batch("vc-1", _clock.UtcNow) }],
-            Options,
-            CancellationToken.None);
+        var clean = new FakeObservationSource("vc-1") { Behaviour = () => Batch("vc-1", _clock.UtcNow) };
+        var n = new FaultCountersRule().Resolution.ConsecutiveAbsent;
+        MonitoringCycleResult recovered = null!;
+
+        for (var i = 1; i <= n; i++)
+        {
+            _clock.Advance(TimeSpan.FromSeconds(30));
+            recovered = await cycle.RunObservationsAsync([clean], Options, CancellationToken.None);
+
+            if (i < n)
+            {
+                Assert.Contains(recovered.Visible, a => a.Category == "Fault");
+            }
+        }
 
         Assert.DoesNotContain(recovered.Visible, a => a.Category == "Fault");
     }
@@ -1620,7 +1633,12 @@ public class MonitoringCycleTests : IDisposable
             Behaviour = () => Snapshot(
                 "vc-1", _clock.UtcNow, entities: [Node("vc-1:datastore-41", EntityKind.Datastore, "vmfs01")]),
         };
-        await cycle.RunInventoryAsync([answered], Options, CancellationToken.None);
+        // After the rule's N fresh absences (ADR-0026), not on the first.
+        for (var i = 0; i < new DatastoreTimeToFullRule().Resolution.ConsecutiveAbsent; i++)
+        {
+            await cycle.RunInventoryAsync([answered], Options, CancellationToken.None);
+            _clock.Advance(TimeSpan.FromMinutes(5));
+        }
 
         Assert.Equal(
             AlertLifecycleState.Resolved,

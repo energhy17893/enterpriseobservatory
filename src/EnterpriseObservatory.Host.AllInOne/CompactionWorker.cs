@@ -143,6 +143,12 @@ public sealed class CompactionWorker(
                 // one a new worker cannot file wrongly.
                 Scope = GuardedCompaction.Scope,
                 Observed = outcome.Alerts,
+
+                // No rules and no sources: compaction is a direct producer,
+                // two-valued at N = 1, and its own evidence (ADR-0026 §1.2).
+                Evaluations = [],
+                Sources = EvidenceSources.None,
+                RawRetention = _options.Retention.Raw,
                 Stored = stored,
                 FlapHistories = flaps,
                 Hysteresis = _options.Hysteresis,

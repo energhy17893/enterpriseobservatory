@@ -52,11 +52,16 @@ public sealed class FaultCountersRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen, not measured: no fault-counter alert in the 15 h window of
+    // design note §3.1. Six cycles (3 min), because faults come in bursts and
+    // one clean 30 s window is weak evidence.
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 6 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return FaultCounters.Evaluate(context.Observations);
+        return TwoValuedVerdicts.From(context, RuleId, FaultCounters.Evaluate(context.Observations));
     }
 }
 
@@ -67,11 +72,16 @@ public sealed class PeerOutliersRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Measured: 23 cessations over 21 fingerprints, 2 recurrences after 81 s
+    // and 111 s, so p95 <= 2 absences (n too small for a p95); proposed 3 kept
+    // (design note §3.1).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 3 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return PeerOutliers.Evaluate(context.Observations, context.Options.PeerOutliers);
+        return TwoValuedVerdicts.From(context, RuleId, PeerOutliers.Evaluate(context.Observations, context.Options.PeerOutliers));
     }
 }
 
@@ -82,12 +92,15 @@ public sealed class CpuContentionRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen: no alert in the measured window (design note §3.1).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 3 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return CpuContention.Evaluate(
-            context.Observations, context.Graph, context.Options.CpuContention);
+        return TwoValuedVerdicts.From(context, RuleId, CpuContention.Evaluate(
+            context.Observations, context.Graph, context.Options.CpuContention));
     }
 }
 
@@ -98,12 +111,16 @@ public sealed class MemoryPressureRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen: no alert in the measured window; four because swapping comes in
+    // bursts (design note §3).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 4 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return MemoryPressure.Evaluate(
-            context.Observations, context.Graph, context.Options.MemoryPressure);
+        return TwoValuedVerdicts.From(context, RuleId, MemoryPressure.Evaluate(
+            context.Observations, context.Graph, context.Options.MemoryPressure));
     }
 }
 
@@ -114,11 +131,15 @@ public sealed class StorageLayerSplitRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Measured: 2 cessations, no recurrence -- no data; proposed 3 kept
+    // (design note §3.1).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 3 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return StorageLayerSplit.Evaluate(context.Observations, context.Options.StorageLayers);
+        return TwoValuedVerdicts.From(context, RuleId, StorageLayerSplit.Evaluate(context.Observations, context.Options.StorageLayers));
     }
 }
 
@@ -136,14 +157,17 @@ public sealed class SharedVolumeLatencyRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen: no alert in the measured window (design note §3.1).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 3 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
         var options = context.Options;
 
-        return SharedVolumeLatency.Evaluate(
-            context.Observations, options.SharedVolumes with { Peers = options.PeerOutliers });
+        return TwoValuedVerdicts.From(context, RuleId, SharedVolumeLatency.Evaluate(
+            context.Observations, options.SharedVolumes with { Peers = options.PeerOutliers }));
     }
 }
 
@@ -154,12 +178,18 @@ public sealed class StorageLatencyBlindSpotRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Measured: 399 Cleared->Returned pairs over 30 fingerprints, p50 = p95 =
+    // 1 absence (30 s), max 26 610 s; chosen 2, above the p95 (design note
+    // §3.1). Every one of those flaps is a quiet cycle, which the rule's own
+    // conversion will call NotJudgeable -- N was never the fix for them.
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 2 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return StorageLatencyBlindSpot.Evaluate(
-            context.Observations, context.Options.StorageLatencyBlindSpot);
+        return TwoValuedVerdicts.From(context, RuleId, StorageLatencyBlindSpot.Evaluate(
+            context.Observations, context.Options.StorageLatencyBlindSpot));
     }
 }
 
@@ -170,11 +200,15 @@ public sealed class DroppedPacketsRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Measured: 1 cessation, never returned -- no data; proposed 3 kept
+    // (design note §3.1).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 3 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return DroppedPackets.Evaluate(context.Observations, context.Options.DroppedPackets);
+        return TwoValuedVerdicts.From(context, RuleId, DroppedPackets.Evaluate(context.Observations, context.Options.DroppedPackets));
     }
 }
 
@@ -192,18 +226,21 @@ public sealed class StorageNoisyNeighbourRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Metric;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen: no alert in the measured window (design note §3.1).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 3 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
         var options = context.Options;
 
-        return StorageNoisyNeighbour.Evaluate(
+        return TwoValuedVerdicts.From(context, RuleId, StorageNoisyNeighbour.Evaluate(
             context.Observations,
             context.Graph,
             StorageNoisyNeighbour.TypicalRateFrom(
                 context.Series, context.NowUtc, options.StorageNoisyNeighbour),
-            options.StorageNoisyNeighbour with { Peers = options.PeerOutliers });
+            options.StorageNoisyNeighbour with { Peers = options.PeerOutliers }));
     }
 }
 
@@ -228,12 +265,16 @@ public sealed class StoragePathRedundancyRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Inventory;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen: no alert in the measured window; two inventory cycles (10 min)
+    // (design note §3).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 2 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return StoragePathRedundancy.Evaluate(
-            [.. context.Graph.Active], context.Options.StoragePathRedundancy);
+        return TwoValuedVerdicts.From(context, RuleId, StoragePathRedundancy.Evaluate(
+            [.. context.Graph.Active], context.Options.StoragePathRedundancy));
     }
 }
 
@@ -259,11 +300,15 @@ public sealed class RemoteLoggingRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Inventory;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen: 9 alerts, none cleared in the measured window. A configuration
+    // value read fresh is definitive, so one (design note §3).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 1 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return RemoteLogging.Evaluate([.. context.Graph.Active], context.Options.RemoteLogging);
+        return TwoValuedVerdicts.From(context, RuleId, RemoteLogging.Evaluate([.. context.Graph.Active], context.Options.RemoteLogging));
     }
 }
 
@@ -284,14 +329,17 @@ public sealed class EventAlertsRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Inventory;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen: the clear event is vCenter's own statement, so one (design note §3).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 1 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
         var policy = context.Options.EventAlerts;
 
-        return EventAlerts.Evaluate(
-            EventAlerts.Read(context.Events, context.NowUtc, policy), context.NowUtc, policy);
+        return TwoValuedVerdicts.From(context, RuleId, EventAlerts.Evaluate(
+            EventAlerts.Read(context.Events, context.NowUtc, policy), context.NowUtc, policy));
     }
 }
 
@@ -309,7 +357,7 @@ public sealed class EventAlertsRule : IAnalysisRule
 /// </para>
 /// <para>
 /// Each query is guarded on its own: a datastore whose history cannot be read
-/// keeps the alerts it had (through <see cref="RuleContext.Unevaluated"/>),
+/// keeps the alerts it had (an <see cref="UnknownReason.RuleFailed"/> verdict),
 /// the failure is raised as an alert, and the others are estimated as usual.
 /// </para>
 /// </remarks>
@@ -319,7 +367,12 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Inventory;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Filling: 3 (chosen). Over-commit: 2 (chosen; its 11 cessations and 4
+    // "returns" in the measured window span a product outage, not a flap),
+    // given per verdict. Design note §3.1.
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 3 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
@@ -327,7 +380,9 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
         var readings = DatastoreTimeToFull.CurrentReadings(
             context.Snapshots.SelectMany(s => s.Observations), context.Graph);
 
-        return DatastoreTimeToFull.EvaluateEach(
+        var unevaluated = new List<AlertFingerprint>();
+
+        var raised = DatastoreTimeToFull.EvaluateEach(
             readings,
             d => DatastoreTimeToFull.Read(
                 context.Series,
@@ -336,9 +391,18 @@ public sealed class DatastoreTimeToFullRule : IAnalysisRule
                 context.NowUtc,
                 policy,
                 context.Options.Retention),
-            context.Unevaluated,
+            unevaluated,
             policy);
+
+        return TwoValuedVerdicts.From(
+            context,
+            RuleId,
+            raised,
+            unevaluated,
+            fingerprint => DatastoreTimeToFull.IsOvercommit(fingerprint) ? Overcommit : null);
     }
+
+    private static readonly ResolutionPolicy Overcommit = new() { ConsecutiveAbsent = 2 };
 }
 
 /// <summary>Adapts <see cref="CollectionCoverage"/>.</summary>
@@ -352,14 +416,17 @@ public sealed class CollectionCoverageRule : IAnalysisRule
 
     public RuleScope Scope => RuleScope.Inventory;
 
-    public IReadOnlyList<AlertDefinition> Evaluate(RuleContext context)
+    // Chosen: the snapshot is the evidence, so one (design note §3).
+    public ResolutionPolicy Resolution { get; } = new() { ConsecutiveAbsent = 1 };
+
+    public IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return CollectionCoverage.Evaluate(
+        return TwoValuedVerdicts.From(context, RuleId, CollectionCoverage.Evaluate(
             context.Snapshots.ToDictionary(
                 s => s.SourceInstanceId,
                 s => s.Coverage,
-                StringComparer.Ordinal));
+                StringComparer.Ordinal)));
     }
 }

@@ -229,6 +229,9 @@ public class CompactionVisibilityTests
                 Stored = stored,
                 FlapHistories = flaps,
                 NowUtc = T0,
+                Evaluations = [],
+                Sources = EvidenceSources.None,
+                RawRetention = TimeSpan.FromDays(2),
             }));
 
         harness.Clock.Advance(TimeSpan.FromMinutes(5));

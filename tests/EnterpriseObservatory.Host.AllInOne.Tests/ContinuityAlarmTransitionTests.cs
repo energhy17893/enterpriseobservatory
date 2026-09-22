@@ -65,6 +65,11 @@ public class ContinuityAlarmTransitionTests
     private static AlertInstance Alarm(AlertFingerprint fingerprint, AlertLifecycleState state, string title) => new()
     {
         Fingerprint = fingerprint,
+
+        // What migration 14 fills in from the fingerprint's check id: the
+        // retired rule still owns the alarm, so a cycle that no longer
+        // evaluates that rule leaves it "not reported", open.
+        RuleId = MovedContinuityRules.RuleOf(fingerprint.Value),
         Severity = AlertSeverity.Warning,
         State = state,
         Title = title,

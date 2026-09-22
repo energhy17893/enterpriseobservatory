@@ -1,4 +1,5 @@
 using EnterpriseObservatory.Application.Alerts;
+using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Alerts;
 
@@ -8,6 +9,15 @@ public class AlertReconcilerTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
     private static DateTimeOffset Cycle(int n) => T0.AddSeconds(30 * n);
+
+    private static readonly TimeSpan Raw = TimeSpan.FromDays(2);
+
+    /// <summary>vc-1 answered and owns esx01.</summary>
+    private static readonly EvidenceSources Reporting = new()
+    {
+        Reporting = ["vc-1"],
+        OwnerOf = entity => entity.Value == "esx01" ? "vc-1" : null,
+    };
 
     private static AlertDefinition Psu(AlertSeverity severity = AlertSeverity.Critical) => new()
     {
@@ -39,6 +49,9 @@ public class AlertReconcilerTests
             FlapHistories = previous?.FlapHistories ?? [],
             Flap = flap ?? FlapPolicy.Default,
             NowUtc = now ?? Cycle(0),
+            Evaluations = [],
+            Sources = Reporting,
+            RawRetention = Raw,
         });
 
     [Fact]
@@ -222,6 +235,9 @@ public class AlertReconcilerTests
             Observed = [Psu()],
             MaintenanceWindows = [window],
             NowUtc = Cycle(1),
+            Evaluations = [],
+            Sources = Reporting,
+            RawRetention = Raw,
         });
 
         Assert.Single(result.Visible);
@@ -306,6 +322,9 @@ public class AlertReconcilerTests
             Scope = "   ",
             Observed = [Psu()],
             NowUtc = Cycle(0),
+            Evaluations = [],
+            Sources = Reporting,
+            RawRetention = Raw,
         };
 
         Assert.Throws<ArgumentException>(() => AlertReconciler.Reconcile(request));
@@ -321,45 +340,170 @@ public class AlertReconcilerTests
         Assert.Empty(result.Retired);
     }
 
-    // --- carried forward, not resolved -----------------------------------
+    // --- three-valued (ADR-0026) ------------------------------------------
 
-    private static AlertReconciliationResult Raised(params AlertDefinition[] observed) =>
+    private const string Rule = "dropped-packets";
+
+    private static readonly ResolutionPolicy Three = new() { ConsecutiveAbsent = 3 };
+
+    private static ConditionPresent Present(AlertDefinition alert, DateTimeOffset? at = null) => new()
+    {
+        Covers = [alert.Fingerprint],
+        Alerts = [alert],
+        Entity = alert.Entity,
+        EvidenceAtUtc = at ?? Cycle(0),
+    };
+
+    private static ConditionAbsent Gone(AlertDefinition alert, DateTimeOffset at) => new()
+    {
+        Covers = [alert.Fingerprint],
+        Entity = alert.Entity,
+        EvidenceAtUtc = at,
+    };
+
+    private static Unknown NotJudged(AlertDefinition alert) => new()
+    {
+        Covers = [alert.Fingerprint],
+        Entity = alert.Entity,
+        Reason = UnknownReason.NotJudgeable,
+        Detail = "packets below 100/s",
+    };
+
+    private static AlertReconciliationResult Rules(
+        AlertReconciliationResult? previous,
+        DateTimeOffset now,
+        IReadOnlyList<SubjectVerdict> verdicts,
+        IReadOnlyList<AlertDefinition>? observed = null,
+        EvidenceSources? sources = null,
+        TimeSpan? evidenceLimit = null) =>
         AlertReconciler.Reconcile(new AlertReconciliationRequest
         {
-            Scope = AlertScopes.Inventory,
-            Observed = observed,
-            NowUtc = Cycle(0),
+            Scope = AlertScopes.Observation,
+            Observed = observed ?? [],
+            Stored = previous?.Instances ?? [],
+            FlapHistories = previous?.FlapHistories ?? [],
+            NowUtc = now,
+            Evaluations = [new RuleEvaluation(Rule, Three, verdicts)],
+            Sources = sources ?? Reporting,
+            RawRetention = Raw,
+            EvidenceLimit = evidenceLimit,
         });
 
-    private static AlertReconciliationResult Absent(
-        AlertReconciliationResult previous,
-        IReadOnlyCollection<string>? silent = null,
-        IReadOnlyCollection<AlertFingerprint>? unevaluated = null) =>
-        AlertReconciler.Reconcile(new AlertReconciliationRequest
-        {
-            Scope = AlertScopes.Inventory,
-            Observed = [],
-            Stored = previous.Instances,
-            FlapHistories = previous.FlapHistories,
-            NowUtc = Cycle(1),
-            SilentSources = silent ?? [],
-            SourceOf = entity => entity.Value == "esx01" ? "vc-1" : null,
-            Unevaluated = unevaluated ?? [],
-        });
+    private static EvidenceSources Answered(params string[] sources) => new()
+    {
+        Reporting = sources,
+        OwnerOf = entity => entity.Value == "esx01" ? "vc-1" : null,
+    };
 
     [Fact]
-    public void An_alert_on_an_entity_of_a_source_that_did_not_report_is_carried_forward_unchanged()
+    public void A_rule_alert_carries_the_rule_that_raised_it()
+    {
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        Assert.Equal(Rule, Assert.Single(r.Instances).RuleId);
+    }
+
+    [Fact]
+    public void A_rule_alert_resolves_only_after_the_rules_N_fresh_absences()
+    {
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+        r = Rules(r, Cycle(1), [Gone(Psu(), Cycle(1))]);
+        r = Rules(r, Cycle(2), [Gone(Psu(), Cycle(2))]);
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(r.Instances).State);
+
+        r = Rules(r, Cycle(3), [Gone(Psu(), Cycle(3))]);
+
+        Assert.Equal(AlertLifecycleState.Resolved, Assert.Single(r.Instances).State);
+    }
+
+    [Fact]
+    public void An_alert_its_rule_says_nothing_about_stays_open_as_not_reported()
+    {
+        // The flipped default: silence from the rule is not "gone".
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        r = Rules(r, Cycle(1), []);
+
+        var instance = Assert.Single(r.Instances);
+        Assert.Equal(AlertLifecycleState.Open, instance.State);
+        Assert.Equal(UnknownReason.NotReported, instance.StaleReason);
+        Assert.Empty(r.Retired);
+        Assert.DoesNotContain(r.ToNotify, i => i.PendingNotification != AlertNotificationKind.Raised);
+    }
+
+    [Fact]
+    public void An_unknown_between_absences_resets_the_count()
+    {
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+        r = Rules(r, Cycle(1), [Gone(Psu(), Cycle(1))]);
+        r = Rules(r, Cycle(2), [Gone(Psu(), Cycle(2))]);
+        r = Rules(r, Cycle(3), [NotJudged(Psu())]);
+        r = Rules(r, Cycle(4), [Gone(Psu(), Cycle(4))]);
+        r = Rules(r, Cycle(5), [Gone(Psu(), Cycle(5))]);
+
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(r.Instances).State);
+    }
+
+    [Fact]
+    public void Unknown_never_opens_an_alert()
+    {
+        var r = Rules(null, Cycle(0), [NotJudged(Psu())]);
+
+        Assert.Empty(r.Instances);
+    }
+
+    [Fact]
+    public void A_present_verdict_on_a_silent_sources_entity_does_not_open_an_alert()
+    {
+        // The source clamp applies to present verdicts too: a rule reading a
+        // silent vCenter's last-read entities is not evidence of anything now.
+        var r = Rules(null, Cycle(0), [Present(Psu())], sources: Answered("vc-2"));
+
+        Assert.Empty(r.Instances);
+    }
+
+    [Fact]
+    public void An_absent_verdict_on_a_silent_sources_entity_marks_the_alert_stale_and_keeps_it_open()
+    {
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        r = Rules(r, Cycle(1), [Gone(Psu(), Cycle(1)) with { Resolution = ResolutionPolicy.Immediate }],
+            sources: Answered("vc-2"));
+
+        var instance = Assert.Single(r.Instances);
+        Assert.Equal(AlertLifecycleState.Open, instance.State);
+        Assert.Equal(UnknownReason.SourceSilent, instance.StaleReason);
+    }
+
+    [Fact]
+    public void A_verdict_on_evidence_older_than_the_scope_allows_is_input_stale()
+    {
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        r = Rules(
+            r,
+            Cycle(10),
+            [Gone(Psu(), Cycle(1)) with { Resolution = ResolutionPolicy.Immediate }],
+            evidenceLimit: TimeSpan.FromSeconds(84));
+
+        var instance = Assert.Single(r.Instances);
+        Assert.Equal(AlertLifecycleState.Open, instance.State);
+        Assert.Equal(UnknownReason.InputStale, instance.StaleReason);
+    }
+
+    [Fact]
+    public void A_direct_producers_alert_on_a_silent_sources_entity_is_kept_open_not_resolved()
     {
         // EntityGraph.Merge keeps a silent vCenter's entities because we did
         // not look. Resolving their alerts on the same cycle said the opposite
         // about the same machines: every finding closed after one missed read.
-        var first = Raised(Psu());
+        var first = Run([Psu()], now: Cycle(0));
 
-        var second = Absent(first, silent: ["vc-1"]);
+        var second = Rules(first, Cycle(1), [], sources: Answered("vc-2"));
 
         var instance = Assert.Single(second.Instances);
-        Assert.Equal(first.Instances[0], instance);
         Assert.Equal(AlertLifecycleState.Open, instance.State);
+        Assert.Equal(UnknownReason.SourceSilent, instance.StaleReason);
         Assert.Empty(second.Retired);
 
         // Not a cessation either: nobody saw it stop.
@@ -367,28 +511,100 @@ public class AlertReconcilerTests
     }
 
     [Fact]
-    public void An_alert_on_an_entity_of_a_source_that_did_report_still_resolves()
+    public void A_direct_producers_alert_on_a_reporting_sources_entity_still_resolves_at_once()
     {
-        // Only the silent sources are held; another vCenter being down must
-        // not keep this one's findings open.
-        var first = Raised(Psu());
+        var first = Run([Psu()], now: Cycle(0));
 
-        var second = Absent(first, silent: ["vc-2"]);
+        var second = Rules(first, Cycle(1), []);
 
         Assert.Equal(AlertLifecycleState.Resolved, Assert.Single(second.Instances).State);
     }
 
     [Fact]
-    public void An_alert_a_rule_could_not_evaluate_is_carried_forward_unchanged()
+    public void Two_days_without_evidence_move_a_rule_alert_to_unknown_out_of_the_inbox()
     {
-        var first = Raised(Psu(), Fan() with { Severity = AlertSeverity.Critical });
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
 
-        var second = Absent(first, unevaluated: [Psu().Fingerprint]);
+        r = Rules(r, Cycle(1), []);
+        r = Rules(r, Cycle(0) + Raw, []);
 
-        var psu = second.Instances.Single(i => i.Title == "PSU 2 failed");
-        var fan = second.Instances.Single(i => i.Title == "Fan 3 degraded");
+        var instance = Assert.Single(r.Instances);
+        Assert.Equal(AlertLifecycleState.Unknown, instance.State);
+        Assert.Empty(r.Visible);
+        Assert.DoesNotContain(r.ToNotify, i => i.PendingNotification != AlertNotificationKind.Raised);
+    }
 
-        Assert.Equal(first.Instances.Single(i => i.Title == "PSU 2 failed"), psu);
-        Assert.Equal(AlertLifecycleState.Resolved, fan.State);
+    [Fact]
+    public void A_restart_with_an_empty_first_cycle_resolves_nothing_and_notifies_nothing()
+    {
+        // Design note §2's contract: stored open alarms, then one cycle with no
+        // observations and no reporting sources. Today's symptom was a dozen
+        // alarms resolved on this cycle and re-raised, re-notified, on the next.
+        var stored = Run([Psu(), Fan() with { Severity = AlertSeverity.Critical }], now: Cycle(0));
+        stored = Rules(stored, Cycle(1), [Present(Psu()), Present(Fan() with { Severity = AlertSeverity.Critical })]);
+        stored = stored with { Instances = [.. stored.Instances.Select(AlertLifecycle.MarkNotified)] };
+        Assert.Equal(2, stored.Instances.Count(i => i.IsVisible));
+
+        var first = AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = AlertScopes.Observation,
+            Stored = stored.Instances,
+            FlapHistories = stored.FlapHistories,
+            NowUtc = Cycle(2),
+            Evaluations = [new RuleEvaluation(Rule, Three, [Gone(Psu(), Cycle(2)) with { Resolution = ResolutionPolicy.Immediate }])],
+            Sources = Answered(),
+            RawRetention = Raw,
+        });
+
+        Assert.DoesNotContain(first.Instances, i => i.State == AlertLifecycleState.Resolved);
+        Assert.Empty(first.Retired);
+        Assert.Empty(first.ToNotify);
+        Assert.Equal(2, first.Instances.Count(i => i.IsVisible));
+    }
+
+    [Fact]
+    public void A_rule_that_failed_keeps_its_alerts_open_as_rule_failed()
+    {
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        var failed = Analysis.GuardedRule.Run(
+            Rule,
+            () => throw new InvalidOperationException("boom"),
+            [new HeldAlert(Psu().Fingerprint, Psu().Entity)]);
+
+        r = Rules(r, Cycle(1), failed.Verdicts, observed: failed.Failures);
+
+        var psu = r.Instances.Single(i => i.Title == "PSU 2 failed");
+        Assert.Equal(AlertLifecycleState.Open, psu.State);
+        Assert.Equal(UnknownReason.RuleFailed, psu.StaleReason);
+        Assert.Contains(r.Instances, i => i.Title == "Analysis rule failed");
+    }
+
+    [Fact]
+    public void A_resolved_alert_of_a_rule_no_longer_registered_retires_and_an_open_one_stays()
+    {
+        var r = Rules(null, Cycle(0), [Present(Psu()), Present(Fan() with { Severity = AlertSeverity.Critical })]);
+        r = r with
+        {
+            Instances =
+            [
+                .. r.Instances.Select(i => i.Title == "PSU 2 failed"
+                    ? AlertLifecycle.MoveToFinding(i, Cycle(1))
+                    : i),
+            ],
+        };
+
+        var next = AlertReconciler.Reconcile(new AlertReconciliationRequest
+        {
+            Scope = AlertScopes.Observation,
+            Stored = r.Instances,
+            NowUtc = Cycle(2),
+            Evaluations = [],
+            Sources = Reporting,
+            RawRetention = Raw,
+        });
+
+        Assert.Equal([Psu().Fingerprint], next.Retired);
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(next.Instances).State);
     }
 }

@@ -647,6 +647,9 @@ public class StorageLatencyBlindSpotTests
             Observed = observed,
             Stored = stored,
             NowUtc = T0.AddMinutes(minute),
+            Evaluations = [],
+            Sources = EvidenceSources.None,
+            RawRetention = TimeSpan.FromDays(2),
         });
 
     [Fact]

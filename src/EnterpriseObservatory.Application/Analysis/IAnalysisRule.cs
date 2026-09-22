@@ -46,7 +46,18 @@ public interface IAnalysisRule
 
     RuleScope Scope { get; }
 
-    IReadOnlyList<AlertDefinition> Evaluate(RuleContext context);
+    /// <summary>
+    /// How many consecutive fresh absences resolve this rule's alerts (ADR-0026).
+    /// </summary>
+    /// <remarks>
+    /// No default, on purpose: a rule that does not say how sure it must be
+    /// before it calls a condition gone does not compile. N is measured where
+    /// the data exists and a choice where it does not (design note §3).
+    /// </remarks>
+    ResolutionPolicy Resolution { get; }
+
+    /// <summary>What the rule concluded, one verdict per subject. See <see cref="SubjectVerdict"/>.</summary>
+    IReadOnlyList<SubjectVerdict> Evaluate(RuleContext context);
 }
 
 /// <summary>
@@ -91,14 +102,15 @@ public sealed record RuleContext
     public required IEventReader Events { get; init; }
 
     /// <summary>
-    /// Where a rule records the fingerprints it could not evaluate this cycle.
+    /// The alerts a rule holds in this scope, in any state, read-only
+    /// (design note §2, "OpenFingerprints").
     /// </summary>
     /// <remarks>
-    /// Handed to reconciliation, which carries a stored alert with one of
-    /// these fingerprints forward unchanged instead of resolving it: a rule
-    /// that could not read one entity's input has not found that entity's
-    /// problem gone. A rule adding here must also report why, as an alert of
-    /// its own. See <c>AlertReconciliationRequest.Unevaluated</c>.
+    /// Optional to use. A rule that gives a held alert no verdict leaves it
+    /// <see cref="UnknownReason.NotReported"/>, which keeps it open; nothing
+    /// is fabricated either way. The default is "holds nothing", so a context
+    /// built without it can make no alert absent — the forgetful call is the
+    /// safe one.
     /// </remarks>
-    public ICollection<AlertFingerprint> Unevaluated { get; init; } = new List<AlertFingerprint>();
+    public Func<string, IReadOnlyList<HeldAlert>> HeldBy { get; init; } = static _ => [];
 }

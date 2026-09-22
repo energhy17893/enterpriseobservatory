@@ -202,7 +202,20 @@ public sealed class MonitoringCycle(
                 "the capacity readings taken with the inventory",
                 () => _observationStore.Append(samples));
 
-        var unevaluated = new List<AlertFingerprint>();
+        // Guarded like every other rule: a bug in counting paths must cost
+        // the path count and not this cycle's "Collector unreachable".
+        // Given the graph as this cycle merged it rather than the store's
+        // copy, so that a failed write leaves the rules reasoning about
+        // what was actually just read.
+        var analysis = Analyse(AlertScopes.Inventory, RuleScope.Inventory, new RuleContext
+        {
+            Snapshots = cycle.Snapshots,
+            ReadGraph = () => graph,
+            NowUtc = now,
+            Options = options,
+            Series = _observationStore,
+            Events = _events,
+        });
 
         IReadOnlyList<AlertDefinition> observed =
         [
@@ -212,37 +225,25 @@ public sealed class MonitoringCycle(
             .. healthFailure,
             .. graphFailure,
             .. sampleFailure,
-
-            // Guarded like every other rule: a bug in counting paths must cost
-            // the path count and not this cycle's "Collector unreachable".
-            // Given the graph as this cycle merged it rather than the store's
-            // copy, so that a failed write leaves the rules reasoning about
-            // what was actually just read.
-            .. Analyse(RuleScope.Inventory, new RuleContext
-            {
-                Snapshots = cycle.Snapshots,
-                ReadGraph = () => graph,
-                NowUtc = now,
-                Options = options,
-                Series = _observationStore,
-                Events = _events,
-                Unevaluated = unevaluated,
-            }),
+            .. analysis.Failures,
         ];
 
-        // A vCenter that did not answer keeps its alerts as they were, for the
-        // reason EntityGraph.Merge keeps its entities: we did not look. Judged
-        // by the entity's owner in the graph this cycle merged, which is the
-        // same graph that decided the entities stay.
+        // A vCenter that did not answer has told us nothing, for the reason
+        // EntityGraph.Merge keeps its entities: we did not look. Judged by the
+        // entity's owner in the graph this cycle merged, which is the same
+        // graph that decided the entities stay.
         var reconciliation = Reconcile(
             AlertScopes.Inventory,
             observed,
+            analysis.Evaluations,
+            new EvidenceSources
+            {
+                Reporting = reporting,
+                OwnerOf = entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
+            },
             options,
-            now,
-            new CarryForward(
-                silent,
-                entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
-                unevaluated));
+            options.InventoryInterval,
+            now);
 
         await NotifyAsync(AlertScopes.Inventory, reconciliation, cancellationToken)
             .ConfigureAwait(false);
@@ -332,44 +333,43 @@ public sealed class MonitoringCycle(
         // else. Collection sources and storage have always been isolated this
         // way; rules were the one part of the cycle that could still take the
         // whole thing down with them.
-        var unevaluated = new List<AlertFingerprint>();
+        // The store's graph, read by each rule that asks for it inside that
+        // rule's guard: this cycle merged nothing.
+        var analysis = Analyse(AlertScopes.Observation, RuleScope.Metric, new RuleContext
+        {
+            Observations = cycle.Observations,
+            ReadGraph = () => graph,
+            NowUtc = now,
+            Options = options,
+            Series = _observationStore,
+            Events = _events,
+        });
 
         IReadOnlyList<AlertDefinition> observed =
         [
             .. cycle.CollectionAlerts,
             .. healthFailure,
             .. bookkeepingFailures,
-
-            // The store's graph, read by each rule that asks for it inside
-            // that rule's guard: this cycle merged nothing.
-            .. Analyse(RuleScope.Metric, new RuleContext
-            {
-                Observations = cycle.Observations,
-                ReadGraph = () => graph,
-                NowUtc = now,
-                Options = options,
-                Series = _observationStore,
-                Events = _events,
-                Unevaluated = unevaluated,
-            }),
+            .. analysis.Failures,
         ];
 
-        // A source that did not answer keeps its metric alerts as they were,
-        // for the same reason RunInventoryAsync keeps its entities and
-        // coverage: we did not look. A rule evaluates only the observations
-        // this cycle collected, so a source's silence leaves its faults out of
-        // `observed` -- indistinguishable, to reconciliation, from the fault
-        // having cleared -- unless the entity is known here to belong to a
-        // source this cycle could not reach.
+        // A source that did not answer has told us nothing about whether the
+        // fault it reported last cycle is still there -- the same rule
+        // RunInventoryAsync applies to entities and coverage. Only the sources
+        // that answered are evidence; a verdict about an entity of any other
+        // is unknown, which keeps an open alarm open.
         var reconciliation = Reconcile(
             AlertScopes.Observation,
             observed,
+            analysis.Evaluations,
+            new EvidenceSources
+            {
+                Reporting = answered,
+                OwnerOf = entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
+            },
             options,
-            now,
-            new CarryForward(
-                silent,
-                entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
-                unevaluated));
+            options.ObservationInterval,
+            now);
 
         await NotifyAsync(AlertScopes.Observation, reconciliation, cancellationToken)
             .ConfigureAwait(false);
@@ -392,16 +392,50 @@ public sealed class MonitoringCycle(
     /// only that rule.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Collection sources and storage have always been isolated this way;
     /// rules were the one part of the cycle that could still take the whole
     /// thing down with them. Order is registration order — see
     /// <see cref="AnalysisRules"/>.
+    /// </para>
+    /// <para>
+    /// Each rule is told which alerts it holds in this scope — read here, once,
+    /// before any rule runs — so a rule can say they are gone, and so a rule
+    /// that throws keeps them open rather than losing them.
+    /// </para>
     /// </remarks>
-    private static IReadOnlyList<AlertDefinition> Analyse(RuleScope scope, RuleContext context) =>
-    [
-        .. AnalysisRules.For(scope).SelectMany(rule =>
-            GuardedRule.Run(rule.RuleId, () => rule.Evaluate(context))),
-    ];
+    private Analysis Analyse(string alertScope, RuleScope scope, RuleContext context)
+    {
+        var held = _alertStore.InstancesIn(alertScope)
+            .Where(i => i.RuleId is not null)
+            .GroupBy(i => i.RuleId!, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<HeldAlert>)[.. g.Select(i => new HeldAlert(i.Fingerprint, i.Entity))],
+                StringComparer.Ordinal);
+
+        IReadOnlyList<HeldAlert> HeldBy(string ruleId) => held.GetValueOrDefault(ruleId) ?? [];
+
+        context = context with { HeldBy = HeldBy };
+
+        var evaluations = new List<RuleEvaluation>();
+        var failures = new List<AlertDefinition>();
+
+        foreach (var rule in AnalysisRules.For(scope))
+        {
+            var guarded = GuardedRule.Run(rule.RuleId, () => rule.Evaluate(context), HeldBy(rule.RuleId));
+
+            evaluations.Add(new RuleEvaluation(rule.RuleId, rule.Resolution, guarded.Verdicts));
+            failures.AddRange(guarded.Failures);
+        }
+
+        return new Analysis(evaluations, failures);
+    }
+
+    /// <summary>What one scope's rules concluded, and which of them failed.</summary>
+    private sealed record Analysis(
+        IReadOnlyList<RuleEvaluation> Evaluations,
+        IReadOnlyList<AlertDefinition> Failures);
 
     /// <summary>
     /// Dispatches this cycle's notifications and records that it did.
@@ -627,9 +661,11 @@ public sealed class MonitoringCycle(
     private AlertReconciliationResult Reconcile(
         string scope,
         IReadOnlyList<AlertDefinition> observed,
+        IReadOnlyList<RuleEvaluation> evaluations,
+        EvidenceSources sources,
         MonitoringOptions options,
-        DateTimeOffset now,
-        CarryForward carry) =>
+        TimeSpan interval,
+        DateTimeOffset now) =>
         _alertStore.Reconcile(scope, (stored, flaps) => AlertReconciler.Reconcile(
             new AlertReconciliationRequest
             {
@@ -650,25 +686,26 @@ public sealed class MonitoringCycle(
                 // stamped on once.
                 MaintenanceWindows = _maintenance.ActiveAt(now),
                 NowUtc = now,
-                SilentSources = carry.SilentSources,
-                SourceOf = carry.SourceOf,
 
                 // An alarm of a rule that moved to the continuity catalogue
-                // (K2) is no longer raised, and its absence is not "condition
-                // cleared": it is kept as it is until the continuity
-                // evaluation has written its finding and resolves it as moved.
-                Unevaluated =
-                [
-                    .. carry.Unevaluated,
-                    .. stored.Where(Compliance.ContinuityAlarmTransition.AwaitsMove).Select(a => a.Fingerprint),
-                ],
+                // (K2) carries that rule's id and is given no verdict any
+                // more, so it is "not reported" and stays open until the
+                // continuity evaluation resolves it as moved.
+                Evaluations = evaluations,
+                Sources = sources,
+
+                // Read from the retention policy, not copied: if ADR-0017
+                // changes raw retention, the limit moves with it.
+                RawRetention = options.Retention.Raw,
+                EvidenceLimit = EvidenceLimit(options, interval),
             }));
 
-    /// <summary>What reconciliation must keep rather than resolve; see <see cref="AlertReconciliationRequest"/>.</summary>
-    private sealed record CarryForward(
-        IReadOnlyCollection<string> SilentSources,
-        Func<EntityId, string?>? SourceOf,
-        IReadOnlyCollection<AlertFingerprint> Unevaluated);
+    /// <summary>
+    /// The age clamp: 2 × the scope's interval + its read budget (design note
+    /// §1.3). Computed from the collection policy; never a number of its own.
+    /// </summary>
+    internal static TimeSpan EvidenceLimit(MonitoringOptions options, TimeSpan interval) =>
+        (2 * interval) + options.Collection.ForInterval(interval).SourceTimeout;
 
     /// <summary>
     /// Links records that describe the same real machine.
