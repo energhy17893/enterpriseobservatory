@@ -5,6 +5,7 @@ import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/co
 import { SeriesChart } from '@/components/SeriesChart'
 import { AlertActions } from '@/components/AlertActions'
 import { ago, findingLabel, findingStatus, healthBasisLabel, healthStatus, ramp, severityStatus } from '@/lib/ui'
+import { basisLabel } from '@/lib/basis'
 import type {
   ClusterFailoverResourceView,
   ClusterFailoverView,
@@ -338,9 +339,14 @@ function HaScorecard({ card }: { card: HaScorecardView }) {
                   {finding.state === 'NotEvaluated' ? finding.reason : finding.observed ?? '—'}
                   {finding.acceptedBy && ` — accepted by ${finding.acceptedBy}: ${finding.acceptedReason ?? ''}`}
                 </div>
-                {finding.source && (
-                  <div className="mt-1 text-xs text-muted-foreground">Source: {finding.source}</div>
-                )}
+                {/*
+                  K3: labelled "basis:", not "source:" -- on these screens
+                  "source" means the catalogue (Compliance.tsx's SCG /
+                  eo-continuity sections); this is the citation the control's
+                  expectation rests on. Same word, same treatment as the
+                  Compliance screen and the continuity report.
+                */}
+                <div className="mt-1 text-xs text-muted-foreground">basis: {basisLabel(finding.source)}</div>
               </Card>
             </li>
           ))}

@@ -583,6 +583,8 @@ export interface ComplianceExceptionView {
   controlId: string
   /** Null means every entity the control applies to. */
   entityId: string | null
+  /** Null means every subject of the control (and entity, if given). */
+  subject: string | null
   reason: string
   owner: string
   createdBy: string
@@ -612,6 +614,10 @@ export interface ComplianceFindingView {
   catalogueRelease: string
   entityId: string
   entityName: string
+  /** What on the entity the finding is about; empty for the entity itself. */
+  subject: string
+  /** How the subject is shown; display only. */
+  subjectLabel: string | null
   state: FindingState
   reason: string | null
   observed: string | null
@@ -880,6 +886,8 @@ export interface AddExceptionCommand {
   controlId: string
   /** Null for every entity the control applies to. */
   entityId: string | null
+  /** Null or empty for every subject of the control (and entity, if given). */
+  subject?: string | null
   reason: string
   owner: string
   expiresUtc: string
