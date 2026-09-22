@@ -293,4 +293,77 @@ public class SourceConnectionCatalogueTests
         Assert.True(catalogue.Remove("vc-1").Applied);
         Assert.Empty(catalogue.All());
     }
+
+    // --- probing by kind (M6.0a) --------------------------------------------
+
+    /// <summary>Reports exactly the result it is handed, so a test can tell it apart.</summary>
+    private sealed class FakeProbe(ConnectionProbeResult result) : IConnectionProbe
+    {
+        public SourceConnection? Asked { get; private set; }
+
+        public Task<ConnectionProbeResult> ProbeAsync(
+            SourceConnection connection, CancellationToken cancellationToken)
+        {
+            Asked = connection;
+            return Task.FromResult(result);
+        }
+    }
+
+    [Fact]
+    public async Task A_vsphere_connection_resolves_to_the_vsphere_prober()
+    {
+        // The one prober registered today. Proves the kind-keyed lookup picks
+        // it, and that what it returns reaches the caller exactly as given —
+        // no wrapping, no reinterpretation -- which is what "the existing
+        // vCenter path is unchanged" depends on.
+        var expected = new ConnectionProbeResult { Succeeded = true, Detail = "fake vsphere probe" };
+        var vsphereProbe = new FakeProbe(expected);
+
+        var catalogue = new SourceConnectionCatalogue(
+            new FakeStore(), [], new FixedClock(T0),
+            new Dictionary<string, IConnectionProbe>(StringComparer.Ordinal)
+            {
+                ["vsphere"] = vsphereProbe,
+            });
+
+        var connection = Vcenter("vc-1");
+        var result = await catalogue.ProbeAsync(connection, CancellationToken.None);
+
+        Assert.Same(vsphereProbe.Asked, connection);
+        Assert.Same(expected, result);
+        Assert.Null(result.Failure);
+    }
+
+    [Fact]
+    public async Task A_kind_with_no_registered_prober_reports_no_collector_rather_than_throwing()
+    {
+        // redfish and simplivity can be saved before their module exists.
+        // Testing one must be a result on the screen, not a 500.
+        var catalogue = new SourceConnectionCatalogue(
+            new FakeStore(), [], new FixedClock(T0),
+            new Dictionary<string, IConnectionProbe>(StringComparer.Ordinal)
+            {
+                ["vsphere"] = new FakeProbe(new ConnectionProbeResult { Succeeded = true, Detail = "n/a" }),
+            });
+
+        var result = await catalogue.ProbeAsync(
+            Vcenter("ilo-1") with { Kind = "redfish" }, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ConnectionFailure.NoCollector, result.Failure);
+        Assert.False(result.CredentialsRejected);
+    }
+
+    [Fact]
+    public async Task No_probers_registered_at_all_still_reports_no_collector_rather_than_throwing()
+    {
+        // The default: a catalogue built the way every other test here builds
+        // one, with nothing said about probing at all.
+        var catalogue = new SourceConnectionCatalogue(new FakeStore(), [], new FixedClock(T0));
+
+        var result = await catalogue.ProbeAsync(Vcenter("vc-1"), CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ConnectionFailure.NoCollector, result.Failure);
+    }
 }

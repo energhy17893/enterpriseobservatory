@@ -26,9 +26,10 @@ public class VsphereRequestGateTests
     public async Task No_more_requests_than_the_gates_limit_are_in_flight_at_once()
     {
         var server = new CountingVcenter();
-        using var http = new HttpClient(server) { BaseAddress = new Uri("https://vc.invalid") };
+        var options = Connection("vc-1");
         using var gate = new SourceRequestGate(2);
-        using var client = new VsphereClient(http, Connection("vc-1"), gate);
+        using var channel = new VsphereSessionChannel(server, options, gate);
+        var client = new VsphereClient(channel, options);
 
         // Ten concurrent requests against a client whose gate allows two.
         await Task.WhenAll(Enumerable.Range(0, 10)
@@ -45,12 +46,14 @@ public class VsphereRequestGateTests
         var serverA = new CountingVcenter();
         var serverB = new CountingVcenter();
 
-        using var httpA = new HttpClient(serverA) { BaseAddress = new Uri("https://vc-a.invalid") };
-        using var httpB = new HttpClient(serverB) { BaseAddress = new Uri("https://vc-b.invalid") };
+        var optionsA = Connection("vc-a");
+        var optionsB = Connection("vc-b");
         using var gateA = new SourceRequestGate(1);
         using var gateB = new SourceRequestGate(1);
-        using var clientA = new VsphereClient(httpA, Connection("vc-a"), gateA);
-        using var clientB = new VsphereClient(httpB, Connection("vc-b"), gateB);
+        using var channelA = new VsphereSessionChannel(serverA, optionsA, gateA);
+        using var channelB = new VsphereSessionChannel(serverB, optionsB, gateB);
+        var clientA = new VsphereClient(channelA, optionsA);
+        var clientB = new VsphereClient(channelB, optionsB);
 
         var callsA = Enumerable.Range(0, 5).Select(_ => clientA.GetMaxQueryMetricsAsync(CancellationToken.None));
         var callsB = Enumerable.Range(0, 5).Select(_ => clientB.GetMaxQueryMetricsAsync(CancellationToken.None));
@@ -68,8 +71,9 @@ public class VsphereRequestGateTests
         // probe that never runs concurrently with itself is not made to carry
         // a gate it has no use for.
         var server = new CountingVcenter();
-        using var http = new HttpClient(server) { BaseAddress = new Uri("https://vc.invalid") };
-        using var client = new VsphereClient(http, Connection("vc-1"));
+        var options = Connection("vc-1");
+        using var channel = new VsphereSessionChannel(server, options);
+        var client = new VsphereClient(channel, options);
 
         await Task.WhenAll(Enumerable.Range(0, 10)
             .Select(_ => client.GetMaxQueryMetricsAsync(CancellationToken.None)));

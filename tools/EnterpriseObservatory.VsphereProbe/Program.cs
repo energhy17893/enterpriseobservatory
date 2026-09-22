@@ -99,13 +99,63 @@ var options = new VsphereConnectionOptions
     InventoryPageSize = pageSize,
 };
 
-using var handler = VsphereClient.CreateHandler(options);
-using var http = new HttpClient(handler) { BaseAddress = baseAddress };
-using var client = new VsphereClient(http, options);
+using var handler = VsphereSessionChannel.CreateHandler(options);
+using var channel = new VsphereSessionChannel(handler, options);
+var client = new VsphereClient(channel, options);
 using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(3));
 
 try
 {
+    // What this session's views are, if the account is allowed to look. F4
+    // moves server-side cleanup to the runner, and its done-criterion is "no
+    // views accumulate". A read-only account may not be allowed to read the
+    // list at all -- and not being allowed to look is not an empty list, so
+    // this says which of the two it is rather than printing a reassuring 0.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --views
+    if (args.Contains("--views", StringComparer.OrdinalIgnoreCase))
+    {
+        Section("Views");
+
+        // The list is per session, so this cannot see what the service's own
+        // session holds -- only what this probe's does. That makes the useful
+        // question "does a full read leave its view behind", asked by doing
+        // one here and counting before and after.
+        var viewManager = await client.GetViewManagerAsync(cancellation.Token);
+        var before = await client.ReadCandidateObjectsAsync(
+            "ViewManager", [viewManager], "viewList", cancellation.Token);
+
+        await client.RetrieveInventoryAsync(cancellation.Token);
+
+        var views = await client.ReadCandidateObjectsAsync(
+            "ViewManager", [viewManager], "viewList", cancellation.Token);
+
+        if (views.Fault is { } fault)
+        {
+            Console.WriteLine($"  view list                NOT READABLE by this account ({fault})");
+            Console.WriteLine("                           Then F4's \"no views accumulate\" cannot be confirmed");
+            Console.WriteLine("                           from here, and says so rather than reading 0 as proof.");
+            return 0;
+        }
+
+        // A reference array comes back either as repeated structures or as one
+        // joined value, depending on the shape the parser met; count whichever
+        // this vCenter sent rather than assuming.
+        static int Count(VsphereCandidateRead read) => read.Objects.Sum(o =>
+            (o.Structures.TryGetValue("viewList", out var nodes) ? nodes.Count : 0) +
+            (o.Values.TryGetValue("viewList", out var joined)
+                ? PropertyCollectorParser.SplitValues(joined).Count
+                : 0));
+
+        var count = Count(views);
+
+        Console.WriteLine($"  before an inventory read {Count(before)}");
+        Console.WriteLine($"  after one               {count}   (per session: this probe's, not the service's)");
+        Console.WriteLine($"  read in                  {views.Elapsed.TotalMilliseconds:0} ms");
+
+        return 0;
+    }
+
     // Who is signed in as this account, and nothing else. The question it
     // answers is whether the product leaves sessions behind: run it while the
     // service is up, stop the service, run it again.
@@ -126,7 +176,7 @@ try
         // connection is edited or removed, and after every Test.
         if (args.Contains("--confirm-logout", StringComparer.OrdinalIgnoreCase))
         {
-            var ended = await client.LogoutAndConfirmAsync(cancellation.Token);
+            var ended = await channel.LogoutAndConfirmAsync(cancellation.Token);
 
             Console.WriteLine(ended switch
             {
@@ -770,7 +820,7 @@ finally
 {
     // The probe signs in, so it signs out. It used to leave a session behind
     // on every run, which is an odd habit for the tool that checks for them.
-    await client.LogoutAsync(CancellationToken.None);
+    await channel.LogoutAsync(CancellationToken.None);
 }
 
 // Enough of a session key to tell two apart, not enough to be one.

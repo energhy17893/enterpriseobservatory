@@ -64,6 +64,54 @@ public class LayerBoundaryTests
     }
 
     [Fact]
+    public void Only_the_session_channel_owns_a_collector_s_transport()
+    {
+        // F3 gave one type ownership of a source's HttpClient, its session and
+        // its request gate. The rule is worth keeping structurally rather than
+        // by habit: a second type holding an HttpClient is a second place that
+        // decides a connection's lifetime, which is how the client ended up
+        // logging itself back in mid-read before F3 (the #53 shape).
+        //
+        // Declared surface only -- fields, properties, constructor and method
+        // parameters. A local variable inside a method body is invisible to
+        // reflection, so this catches ownership rather than every touch.
+        string[] transport = ["HttpClient", "HttpMessageHandler", "HttpClientHandler", "SocketsHttpHandler"];
+
+        const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic |
+                                 BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+        foreach (var collector in SolutionAssemblies.Collectors)
+        {
+            var holders = new List<string>();
+
+            foreach (var type in collector.GetTypes())
+            {
+                var declared = type.GetFields(Any).Select(f => f.FieldType)
+                    .Concat(type.GetProperties(Any).Select(p => p.PropertyType))
+                    .Concat(type.GetConstructors(Any).SelectMany(c => c.GetParameters()).Select(p => p.ParameterType))
+                    .Concat(type.GetMethods(Any).SelectMany(m => m.GetParameters()).Select(p => p.ParameterType));
+
+                if (declared.Any(t => transport.Contains(t.Name, StringComparer.Ordinal)))
+                {
+                    // Nested and compiler-generated types answer for the type
+                    // that declares them, not for themselves.
+                    var owner = type.DeclaringType ?? type;
+                    holders.Add(owner.Name);
+                }
+            }
+
+            var strangers = holders.Distinct(StringComparer.Ordinal)
+                .Where(n => n != "VsphereSessionChannel")
+                .ToList();
+
+            Assert.True(
+                strangers.Count == 0,
+                $"{SolutionAssemblies.Name(collector)} lets these hold the transport besides the session " +
+                $"channel: {string.Join(", ", strangers)}");
+        }
+    }
+
+    [Fact]
     public void The_api_cannot_see_any_collector()
     {
         // The interface reads one model. An API that could reach a vendor's

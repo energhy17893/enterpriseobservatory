@@ -5,15 +5,49 @@ import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/co
 import { ago, cn } from '@/lib/ui'
 import type { AuthStateView, ConnectionCommand, ConnectionView, ProbeView } from '@/api/types'
 
-const BLANK: ConnectionCommand = {
-  instanceId: '',
-  kind: 'vsphere',
-  baseAddress: '',
-  username: '',
-  password: '',
-  acceptUntrustedCertificate: false,
-  pageSize: 250,
-  isEnabled: true,
+/**
+ * The kinds this screen knows about, in the order they are offered.
+ *
+ * A kind is more than a label: it is what the API validates the command
+ * against (see ConnectionsApi.UnknownKind) and what
+ * SourceConnectionCatalogue.ProbeAsync uses to pick a prober. Redfish and
+ * SimpliVity are listed here before either has a collector, on purpose —
+ * ADR-0015 wants credentials entered through the product, and the prober
+ * arrives in M6.0b. Saving one now means it is ready the day its module lands.
+ */
+const KIND_LABELS: Record<string, string> = {
+  vsphere: 'vSphere',
+  redfish: 'Redfish (iLO/iDRAC)',
+  simplivity: 'SimpliVity',
+}
+
+const KIND_ADDRESS_PLACEHOLDERS: Record<string, string> = {
+  vsphere: 'https://vcenter.example.local',
+  redfish: 'https://ilo-host/',
+  simplivity: 'https://ovc-or-vcenter/',
+}
+
+const KINDS = Object.keys(KIND_LABELS)
+
+function kindLabel(kind: string): string {
+  return KIND_LABELS[kind] ?? kind
+}
+
+function blank(kind: string): ConnectionCommand {
+  return {
+    instanceId: '',
+    kind,
+    baseAddress: '',
+    username: '',
+    password: '',
+    acceptUntrustedCertificate: false,
+    pageSize: 250,
+    // Suggested, not forced: a kind with no collector yet would otherwise be
+    // polled every cycle for nothing but a "no collector for this kind yet"
+    // result. Left editable, because the person entering it may already know
+    // the module is about to land.
+    isEnabled: kind === 'vsphere',
+  }
 }
 
 /**
@@ -80,11 +114,11 @@ export function Connections({ identity }: { identity: AuthStateView }) {
           type="button"
           onClick={() => {
             setIsNew(true)
-            setEditing(BLANK)
+            setEditing(blank('vsphere'))
           }}
           className="rounded-md border border-border bg-primary px-3 py-1.5 text-sm text-primary-on"
         >
-          Add a vCenter
+          Add a connection
         </button>
       </div>
 
@@ -106,12 +140,53 @@ export function Connections({ identity }: { identity: AuthStateView }) {
           </div>
         </Empty>
       ) : (
-        data.map((connection) => (
-          <Row key={connection.instanceId} connection={connection} onEdit={() => edit(connection)} />
+        // Grouped by kind rather than one flat list. An estate with vCenters,
+        // iLOs and SimpliVity controllers in it reads as three different
+        // inventories, not one list where the kind is a word in a footer line.
+        groupByKind(data).map(([kind, connections]) => (
+          <div key={kind} className="space-y-2">
+            <h2 className="text-sm font-medium text-muted-foreground">
+              {kindLabel(kind)} <span className="text-xs">({connections.length})</span>
+            </h2>
+            <div className="space-y-2">
+              {connections.map((connection) => (
+                <Row
+                  key={connection.instanceId}
+                  connection={connection}
+                  onEdit={() => edit(connection)}
+                />
+              ))}
+            </div>
+          </div>
         ))
       )}
     </div>
   )
+}
+
+function groupByKind(connections: ConnectionView[]): [string, ConnectionView[]][] {
+  const byKind = new Map<string, ConnectionView[]>()
+
+  for (const connection of connections) {
+    const group = byKind.get(connection.kind)
+    if (group) {
+      group.push(connection)
+    } else {
+      byKind.set(connection.kind, [connection])
+    }
+  }
+
+  // Known kinds first, in the order they are offered; anything else (a kind
+  // saved before it was removed from the list, say) sorts after them rather
+  // than disappearing.
+  return [...byKind.entries()].sort(([a], [b]) => {
+    const ia = KINDS.indexOf(a)
+    const ib = KINDS.indexOf(b)
+    if (ia === -1 && ib === -1) return a.localeCompare(b)
+    if (ia === -1) return 1
+    if (ib === -1) return -1
+    return ia - ib
+  })
 }
 
 function Row({ connection, onEdit }: { connection: ConnectionView; onEdit: () => void }) {
@@ -262,7 +337,43 @@ function Editor({
   return (
     <Card className="p-4">
       <form onSubmit={submit} className="space-y-3">
-        <h2 className="font-medium">{isNew ? 'Add a vCenter' : `Edit ${command.instanceId}`}</h2>
+        <h2 className="font-medium">
+          {isNew ? `Add a ${kindLabel(command.kind)} connection` : `Edit ${command.instanceId}`}
+        </h2>
+
+        <Field
+          label="Kind"
+          hint={
+            isNew
+              ? 'Which collector reads this connection. Fixed once saved.'
+              : 'Fixed. Set when the connection was added.'
+          }
+        >
+          <select
+            value={command.kind}
+            onChange={(e) => {
+              const kind = e.target.value
+              onChange({
+                ...command,
+                kind,
+                // Page size is vSphere-specific; carrying it across to a kind
+                // that has no use for it would show a stale value nobody set.
+                pageSize: blank(kind).pageSize,
+                // Suggested, not forced -- see blank(). Only nudged here
+                // because the person is actively picking the kind right now.
+                isEnabled: blank(kind).isEnabled,
+              })
+            }}
+            disabled={!isNew}
+            className="w-full rounded-md border border-border bg-page px-2 py-1 disabled:opacity-50"
+          >
+            {KINDS.map((kind) => (
+              <option key={kind} value={kind}>
+                {kindLabel(kind)}
+              </option>
+            ))}
+          </select>
+        </Field>
 
         <Field
           label="Name"
@@ -285,7 +396,7 @@ function Editor({
           <input
             value={command.baseAddress}
             onChange={(e) => set('baseAddress', e.target.value)}
-            placeholder="https://vcenter.example.local"
+            placeholder={KIND_ADDRESS_PLACEHOLDERS[command.kind] ?? 'https://host.example.local'}
             required
             className="w-full rounded-md border border-border bg-page px-2 py-1"
           />
@@ -322,6 +433,18 @@ function Editor({
           />
         </Field>
 
+        {command.kind === 'vsphere' && (
+          <Field label="Page size" hint="Objects per page when listing inventory. vSphere-specific.">
+            <input
+              type="number"
+              min={1}
+              value={command.pageSize}
+              onChange={(e) => set('pageSize', Number(e.target.value))}
+              className="w-full rounded-md border border-border bg-page px-2 py-1"
+            />
+          </Field>
+        )}
+
         <label className="flex items-start gap-2 text-sm">
           <input
             type="checkbox"
@@ -348,11 +471,23 @@ function Editor({
           <span>Poll this connection</span>
         </label>
 
+        {command.kind !== 'vsphere' && (
+          <div className="text-xs text-muted-foreground">
+            There is no collector for {kindLabel(command.kind)} yet. The connection can still be
+            saved — its credentials will be ready the day the module lands — but leaving it
+            unpolled until then avoids a connection that only ever reports "no collector yet".
+          </div>
+        )}
+
         {probe !== null && (
           <div
             className={cn(
               'rounded-md border px-3 py-2 text-sm',
-              probe.succeeded ? 'border-healthy text-healthy-on' : 'border-critical text-critical-on',
+              probe.noCollector
+                ? 'border-border text-muted-foreground'
+                : probe.succeeded
+                  ? 'border-healthy text-healthy-on'
+                  : 'border-critical text-critical-on',
             )}
           >
             {probe.detail}

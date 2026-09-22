@@ -99,6 +99,9 @@ public sealed record ProbeView
     public string? Identified { get; init; }
 
     public required bool CredentialsRejected { get; init; }
+
+    /// <summary>Non-null when there is no collector for this kind yet.</summary>
+    public bool NoCollector { get; init; }
 }
 
 /// <summary>
@@ -148,6 +151,11 @@ public static class ConnectionsApi
                     return Problem(ConnectionResult.Rejected(["The address must be an absolute URL."]));
                 }
 
+                if (!ConnectionKinds.IsKnown(connection.Kind))
+                {
+                    return Problem(ConnectionResult.Rejected([UnknownKind(connection.Kind)]));
+                }
+
                 return Respond(catalogue.Add(connection, actor.AuditName));
             })
             .WithName("AddConnection");
@@ -171,6 +179,11 @@ public static class ConnectionsApi
                     return Problem(ConnectionResult.Rejected(["The address must be an absolute URL."]));
                 }
 
+                if (!ConnectionKinds.IsKnown(connection.Kind))
+                {
+                    return Problem(ConnectionResult.Rejected([UnknownKind(connection.Kind)]));
+                }
+
                 return Respond(catalogue.Update(connection, actor.AuditName));
             })
             .WithName("UpdateConnection");
@@ -185,7 +198,6 @@ public static class ConnectionsApi
         // already stored would mean saving a wrong credential to find out it is
         // wrong, which is the sequence that locks accounts out.
         connections.MapPost("/test", async (
-                IConnectionProbe probe,
                 SourceConnectionCatalogue catalogue,
                 ConnectionCommand command,
                 CancellationToken cancellationToken) =>
@@ -200,6 +212,16 @@ public static class ConnectionsApi
                     });
                 }
 
+                if (!ConnectionKinds.IsKnown(connection.Kind))
+                {
+                    return Results.Ok(new ProbeView
+                    {
+                        Succeeded = false,
+                        Detail = UnknownKind(connection.Kind),
+                        CredentialsRejected = false,
+                    });
+                }
+
                 // An edit form leaves the password blank to mean "unchanged",
                 // so a test from that form has to use the stored one or it
                 // would report a failure the product would never have had.
@@ -210,7 +232,10 @@ public static class ConnectionsApi
                     connection = connection with { Password = stored.Password };
                 }
 
-                var result = await probe.ProbeAsync(connection, cancellationToken).ConfigureAwait(false);
+                // The catalogue picks the prober by kind, and never throws for a
+                // kind that does not have one yet -- see ConnectionFailure.NoCollector.
+                var result = await catalogue.ProbeAsync(connection, cancellationToken)
+                    .ConfigureAwait(false);
 
                 return Results.Ok(new ProbeView
                 {
@@ -218,6 +243,7 @@ public static class ConnectionsApi
                     Detail = result.Detail,
                     Identified = result.Identified,
                     CredentialsRejected = result.CredentialsRejected,
+                    NoCollector = result.Failure == ConnectionFailure.NoCollector,
                 });
             })
             .WithName("TestConnection");
@@ -296,6 +322,10 @@ public static class ConnectionsApi
         ConnectionFailure.Invalid => string.Join(" ", result.Problems),
         _ => "The change was not applied.",
     };
+
+    private static string UnknownKind(string kind) =>
+        $"'{kind}' is not a connection kind this product knows. It must be one of: " +
+        string.Join(", ", ConnectionKinds.All) + ".";
 
     private static ConnectionView ToView(SourceConnection connection) => new()
     {

@@ -2,6 +2,39 @@ using EnterpriseObservatory.Application.Security;
 
 namespace EnterpriseObservatory.Application.Collection;
 
+/// <summary>The known values of <see cref="SourceConnection.Kind"/>.</summary>
+/// <remarks>
+/// <para>
+/// Telegraf's own model for this: the input type is the plugin name and the
+/// credentials it asks for are plugin-specific — <c>inputs.vsphere</c> and
+/// <c>inputs.redfish</c> share little beyond an address, an account and
+/// whether to trust the certificate. This product follows the same shape:
+/// <see cref="SourceConnection"/> carries the common fields for all kinds, and
+/// a kind picks which prober and collector read them.
+/// </para>
+/// <para>
+/// Listed here rather than left as free text so the API and the screen can
+/// both refuse a kind that is not one of these — a typo in this field would
+/// otherwise save silently and never be polled, with nothing on the screen to
+/// say why.
+/// </para>
+/// </remarks>
+public static class ConnectionKinds
+{
+    public const string Vsphere = "vsphere";
+
+    /// <summary>iLO, iDRAC and other Redfish-speaking BMCs.</summary>
+    public const string Redfish = "redfish";
+
+    /// <summary>HPE SimpliVity, via its OmniStack Virtual Controller or vCenter.</summary>
+    public const string Simplivity = "simplivity";
+
+    public static readonly IReadOnlyList<string> All = [Vsphere, Redfish, Simplivity];
+
+    public static bool IsKnown(string? kind) =>
+        kind is not null && All.Contains(kind, StringComparer.Ordinal);
+}
+
 /// <summary>Where a connection's settings came from.</summary>
 /// <remarks>
 /// Kept on the record because it decides what may be done to it. A connection
