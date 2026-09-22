@@ -307,6 +307,27 @@ son okuması (hata henüz düzeltilmemişti); 12:07:40 slotu 8.826 (2 eksik).
 (bkz. §8'in sorguları); alarmlar için `alert_transition`'da kesinti penceresinde
 `reason` dağılımı.
 
+## 10. Yedek tazeliği (M8.8): özel nitelik okuması ve RPO
+
+**Ölçüldü, 22 Eylül 2026.** Ayrıntı: `docs/measurements/backup-freshness-shapes.md`.
+Yalnızca sayı; değer ve ad basılmadı.
+
+- **Okuma, tam envanter isteğinde:** `customValue` 145/145 VM, hata 0; yedek
+  aracının son yedek niteliği 86 VM'de, 86'sı da zamana çevrildi; 59 VM'de
+  hiç özel değer yok.
+- **Olaylardan doğrulama** (`source_event`, ~24 saatlik pencere): son yedek
+  niteliği 70 kez / 47 VM'de değişti, VM başına günde 1,47. Değer ile olay
+  zamanı farkı **70/70'te −3 saat** — değerler UTC+03:00 yerel saat,
+  toplayıcının saat dilimi varsayımı doğru.
+- **RPO'yu ölçüm belirledi:** ardışık iki yedek arası 23 aralığın 10'u 24–30
+  saat, hiçbiri 30 saatin üstünde değil. Sınır 36 saat (günlük + 12 sa).
+- **Beklenen yargılar (son okuma):** 81 Passing, 5 Failing (beşi de 30 günden
+  eski), 59 NotEvaluated ("no backup attribute").
+
+**Nasıl tekrar edilir:** `probe --from-store --candidates-backup` (sonundaki
+"collector's reading" bölümü); olay tarafı için ölçüm belgesindeki (d)
+sorguları 1–3.
+
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
 
 ### Gecikme 1 ms altında görünmüyor

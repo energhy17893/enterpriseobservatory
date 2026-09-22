@@ -140,43 +140,65 @@ SELECT round(extract(epoch FROM created_at_utc - wall) / 3600.0) AS hours_event_
 FROM p GROUP BY 1 ORDER BY 1;
 ```
 
-Sonuçlar: *(Ertuğrul çalıştıracak — buraya sayılar gelecek.)*
+### Sonuçlar (22 Eylül 2026, üretimde salt-okunur, Ertuğrul çalıştırdı)
+
+Olaylar yalnızca 21 Eylül'den beri tutuluyor; pencere
+2026-09-21 15:07Z – 2026-09-22 15:25Z (~24 sa). Yalnızca sayı.
+
+| Sorgu | Sonuç |
+|---|---|
+| 0 — mesaj şekli | yalnızca iki alan: `Last Backup` (değerlerin **tümü** nokta biçimi `99.99.9999 99:99:99`) ve `Backup Status` (iş şablonu); başka şekil yok |
+| 1 — alan başına | `Last Backup` **70 olay / 47 VM**; `Backup Status` **70 / 47**; VM başına günde **1,47** değişiklik |
+| 2 — ardışık iki `Last Backup` değişikliği arası (6 sa kovaları) | 0–6 sa: **2**; 18–24 sa: **11**; 24–30 sa: **10**; 30 sa üstü: **0** (23 aralık) |
+| 3 — olayın UTC zamanı eksi değerin duvar saati | **−3 sa: 70/70** → değerler UTC+03:00 yerel saat; toplayıcının saat dilimi varsayımı **doğrulandı** |
+
+Okuma: günlük takvim, ama 23 aralığın 10'u 24–30 saat — iş her gece aynı
+saatte bitmiyor. RPO sınırı takvimin kendisine konursa sağlıklı VM'ler her
+gece Failing'e düşer. 0–6 saatlik 2 aralık aynı gün ikinci bir çalıştırma
+(yeniden deneme ya da elle tetikleme) olabilir.
 
 ## Tasarım kararları
 
 - **Hangi alan "son yedek":** `managedObjectType` VM ya da boş (her tip) olan
-  ve adında hem `backup` hem de `last`/`time`/`date` geçen alan (büyük-küçük
-  harf duyarsız). Burada yalnızca `Last Backup` (48) seçilir; `Backup Status`
-  (49) tarih taşımadığı için seçilmez. Satıcı adı aranmaz.
+  ve adında hem `backup` hem de `last`/`time`/`date`/`when` geçen alan
+  (büyük-küçük harf duyarsız). Burada yalnızca `Last Backup` (48) seçilir;
+  `Backup Status` (49) tarih taşımadığı için seçilmez. Satıcı adı aranmaz;
+  bulgunun gerekçesi de satıcı adı vermez ("no backup attribute").
 - **Ayrıştırma (yalnızca ölçülen biçimler + ISO):** `d.M.yyyy H:mm[:ss]` (gün
   önce); `M/d/yyyy` ya da `d/M/yyyy` + `H:mm[:ss]` yalnızca **kesin** olduğunda
   (bir parça 12'den büyükse ya da iki parça eşitse); ISO 8601. İki parçası da
   ≤12 ve farklı olan eğik çizgili tarih **okunamadı** sayılır — tahmin yok.
   Okunamayan değer → "okunamadı", asla "yedek yok".
 - **Saat dilimi:** değerde ofset yok. Toplayıcının yerel saat dilimi
-  kullanılır (yedek sunucusu ile Observatory aynı kurumda, bu estate'te
-  UTC+03:00) ve hangi dilimin kullanıldığı ayara yazılır; bulgu bunu söyler.
-  (d) SQL 3 bu varsayımı doğrular ya da çürütür.
-- **RPO:** varsayılan 24 saat, "product policy". Etiketler (CIS REST) ve VM
-  klasörü (`parent`) toplanmıyor → **yalnızca estate geneli varsayılan**, VM
-  başına etiket/klasör geçersiz kılması yok.
+  kullanılır ve hangi dilimin kullanıldığı ayara yazılır; bulgu bunu söyler.
+  (d) sorgu 3 bunu doğruladı: 70/70 olayda −3 saat.
+- **RPO: 36 saat** — kaynak metni "Product policy, measured: 10 of 23 gaps
+  24–30 h (daily schedule), limit = daily + 12 h". Günlük takvim + 12 saat
+  pay; ölçülen en uzun aralık 30 saatin altında. Sınırın tam üstü geçer
+  (yaş = RPO → Passing). Etiketler (CIS REST) ve VM klasörü (`parent`)
+  toplanmıyor → **yalnızca estate geneli varsayılan**, VM başına etiket/klasör
+  geçersiz kılması yok.
 
-## Toplayıcının kendi okuması (tam envanter isteği, customValue içinde)
+## Toplayıcının kendi okuması (tam envanter isteği, `customValue` içinde)
 
 Kapının asıl sınavı: yeni yol **tam** envanter isteğinde, diğer bütün
-yollarla birlikte. probe --candidates-backup sonundaki bölüm:
+yollarla birlikte. `probe --candidates-backup` sonundaki bölüm:
 
-- envanter okundu, 145 VM, hata **0**; customValue kapsamı **145/145**
-- ackup.read 145; son yedek niteliği olan 86; zamana çevrilen **86/86**
+- envanter okundu, 145 VM, hata **0**; `customValue` kapsamı **145/145**
+- `backup.read` 145; son yedek niteliği olan 86; zamana çevrilen **86/86**
   (eğik çizgili tek değer dahil — ay önce, kesin)
-- zaman temeli: collector local time, UTC+03:00 (86)
-- 24 saat içinde **79**, daha eski **7**, gelecekte 0 (ikinci ölçüm, ilkinden
-  saatler sonra: bir VM 24 saat sınırını geçmişti)
+- zaman temeli: `collector local time, UTC+03:00` (86)
+- 36 saatlik RPO ile (22 Eylül akşamı, üçüncü okuma): içinde **81**, daha eski
+  **5** (beşi de 30 günden eski), gelecekte 0
 
-## Bu estate için beklenen (145 VM, ölçüm anına göre)
+## Bu estate için beklenen (145 VM, son okumaya göre)
 
 | Yargı | Sayı | Neden |
 |---|---|---|
-| Passing | 79–80 | son yedek ≤ 24 sa |
-| Failing | 6–7 | 24 saati geçenler; 5 tanesi > 30 gün (kapsamdan çıkmış ama niteliği kalmış VM'ler olabilir — bulgu yaşı söyler) |
+| Passing | 81 | son yedek ≤ 36 sa |
+| Failing | 5 | beşi de > 30 gün (kapsamdan çıkmış ama niteliği kalmış VM'ler olabilir — bulgu yaşı söyler) |
 | NotEvaluated ("no backup attribute") | 59 | hiçbir özel değer yok; "yedeklenmiyor" **denmez** |
+
+Sayılar okuma anına bağlı: gece işi bitmeden önce birkaç VM 24 saati geçer,
+ama 36 saatin altında kalır — tam da RPO'nun 36 saat seçilme sebebi.
+
