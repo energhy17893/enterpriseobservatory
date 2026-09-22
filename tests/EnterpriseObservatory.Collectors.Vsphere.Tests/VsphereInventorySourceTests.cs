@@ -790,6 +790,40 @@ public class VsphereInventorySourceTests
     }
 
     [Fact]
+    public async Task An_alarm_raised_on_the_root_folder_is_an_alert_on_the_vcenter()
+    {
+        // Collection PR 2. vCenter-scoped alarms -- its own licence expiry,
+        // for one -- are raised on the root folder, which is the vCenter as
+        // far as the inventory tree goes. Measured live: 3 of the 4 alarm
+        // states the root folder carried were raised on the folder itself.
+        var snapshot = await Read(Payload(
+            hosts: [Host()],
+            alarms: [Alarm(key: "alarm-7.group-d1", entity: "group-d1", entityType: "Folder", name: "License expiry")])
+            with { RootFolderMoRef = "group-d1" });
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Category == "vCenter");
+
+        Assert.Equal("License expiry", alert.Title);
+        Assert.Equal(EntityId.For("vc-1", "vcenter"), alert.Entity);
+        Assert.Equal(
+            AlertFingerprint.Create("vc-1", "vCenter alarm", "vCenter", "alarm-7.group-d1", "vcenter-alarm"),
+            alert.Fingerprint);
+    }
+
+    [Fact]
+    public async Task An_alarm_on_any_other_folder_is_still_counted_not_attached()
+    {
+        var snapshot = await Read(Payload(
+            hosts: [Host()],
+            alarms: [Alarm(key: "alarm-7.group-v3", entity: "group-v3", entityType: "Folder")])
+            with { RootFolderMoRef = "group-d1" });
+
+        var alert = Assert.Single(snapshot.Alerts, a => a.Category == "vCenter");
+
+        Assert.Equal("vCenter alarms on uncollected objects", alert.Title);
+    }
+
+    [Fact]
     public async Task An_alarm_whose_name_could_not_be_read_is_still_reported()
     {
         // The name needs a second call, and a read-only account may be refused

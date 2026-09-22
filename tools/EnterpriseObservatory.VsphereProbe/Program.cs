@@ -203,6 +203,16 @@ try
         return 0;
     }
 
+    // Collection PR 2's gate: the root folder's triggered alarms and each
+    // host's maximum EVC mode, each read alone.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --candidates-pr2
+    if (args.Contains("--candidates-pr2", StringComparer.OrdinalIgnoreCase))
+    {
+        await EnterpriseObservatory.VsphereProbe.Candidates.RunPr2Async(client, cancellation.Token);
+        return 0;
+    }
+
     // Collection PR 1's gate: every candidate path and call, each read alone,
     // before any of them enters the collector's request list.
     //
