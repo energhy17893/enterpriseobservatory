@@ -1,4 +1,5 @@
 using EnterpriseObservatory.Application.Collection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace EnterpriseObservatory.Application.Tests;
 
@@ -228,26 +229,71 @@ public class EventCollectionPipelineTests
         }
     }
 
+    /// <summary>
+    /// Pumps <paramref name="time"/> forward in generous jumps until
+    /// <paramref name="task"/> completes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every timeout the pipeline and <c>SourceRunner</c> reason about — the
+    /// per-source grace, the hard timeout, the pass deadline — comes from
+    /// <paramref name="time"/> here, not the wall clock, so what decides this
+    /// test is <c>Advance</c>, not how fast this machine happens to be. Before,
+    /// with the real clock, a source cut off right at the deadline left a
+    /// grace-sized sliver (10% of the source timeout) that a fast or lightly
+    /// loaded run did not spend before the next source's own turn, letting it
+    /// slip in and succeed — on a slower or busier run the same sliver was
+    /// gone by the time the loop got there. Jumping in whole seconds, far past
+    /// every threshold in one step, removes that sliver instead of hoping it
+    /// is never there: every source after the stuck one sees the deadline
+    /// already spent, on every run.
+    /// </para>
+    /// <para>
+    /// A due FakeTimeProvider callback still has to be dispatched and, under
+    /// the test host, that dispatch is posted rather than guaranteed to run
+    /// inline within <c>Advance</c> — so the loop also yields real
+    /// (negligible) time between jumps to let it land. That yield decides
+    /// nothing about the test's outcome, only how promptly this loop notices a
+    /// virtual-time transition has already happened; the loop is bounded
+    /// generously so it cannot hang.
+    /// </para>
+    /// </remarks>
+    private static async Task<T> RunToCompletionAsync<T>(FakeTimeProvider time, Task<T> task, TimeSpan step)
+    {
+        var deadline = Environment.TickCount64 + 10_000;
+
+        while (!task.IsCompleted && Environment.TickCount64 < deadline)
+        {
+            time.Advance(step);
+            await Task.Delay(1).ConfigureAwait(false);
+        }
+
+        Assert.True(task.IsCompleted, "Pipeline did not complete after pumping the fake clock forward.");
+        return await task.ConfigureAwait(false);
+    }
+
     [Fact]
     public async Task A_read_past_the_deadline_is_cut_off_and_keeps_its_cursor()
     {
         // One stalled vCenter must not hold the inventory loop: the pass ends
         // at the deadline, does not throw, and leaves the stalled source's
         // cursor untouched so the next cycle asks for the same window again.
+        // A FakeTimeProvider drives every timeout here — see
+        // RunToCompletionAsync — so the second source's fate does not depend
+        // on real elapsed time either.
         var store = new RecordingStore();
         store.Record("vc-slow", [Event(7)], complete: true, Now.AddMinutes(-5));
         var before = Assert.Single(store.Cursors);
-        var pipeline = new EventCollectionPipeline(store, new FixedClock(Now));
+        var time = new FakeTimeProvider();
+        var pipeline = new EventCollectionPipeline(store, new FixedClock(Now), time);
 
         var run = pipeline.RunAsync(
             [new HangingSource("vc-slow"), new ScriptedSource("vc-later", _ => new EventRead { Events = [Event(1)] })],
             TimeSpan.FromMilliseconds(100),
             CancellationToken.None);
 
-        var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(10)));
-        Assert.Same(run, finished);
+        var result = await RunToCompletionAsync(time, run, TimeSpan.FromSeconds(1));
 
-        var result = await run;
         Assert.Equal(["vc-slow", "vc-later"], result.Failures.Select(f => f.Source));
         Assert.Equal(before, store.Cursors.Single(c => c.SourceInstanceId == "vc-slow"));
         Assert.DoesNotContain(store.Cursors, c => c.SourceInstanceId == "vc-later");
