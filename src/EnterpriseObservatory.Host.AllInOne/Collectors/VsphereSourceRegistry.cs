@@ -146,12 +146,17 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     private long _inventoryPasses;
     private long _observationPasses;
 
+    /// <summary>The source-level gap record every observation source is given (T0.4).</summary>
+    private readonly ICollectionGapStore? _gaps;
+
     public VsphereSourceRegistry(
         SourceConnectionCatalogue catalogue,
         IEntityGraphStore graph,
         IClock clock,
-        Action<string, string> reportUnusable)
+        Action<string, string> reportUnusable,
+        ICollectionGapStore? gaps = null)
     {
+        _gaps = gaps;
         _catalogue = catalogue ?? throw new ArgumentNullException(nameof(catalogue));
         _graph = graph ?? throw new ArgumentNullException(nameof(graph));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -514,7 +519,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             client,
             new VsphereInventorySource(client, _clock),
             new VsphereObservationSource(
-                client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock),
+                client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock, _gaps),
             new VsphereEventSource(client, _clock));
     }
 
