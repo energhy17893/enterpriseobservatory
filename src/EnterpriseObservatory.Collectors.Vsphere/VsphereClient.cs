@@ -324,6 +324,37 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             response, byId, TimeSpan.FromSeconds(intervalSeconds));
     }
 
+    public async Task<DateTimeOffset?> GetServerTimeAsync(CancellationToken cancellationToken)
+    {
+        await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+
+        var response = await SendAsync(VsphereSoapRequests.CurrentTime(), cancellationToken).ConfigureAwait(false);
+
+        return VsphereSoapRequests.ParseCurrentTime(response);
+    }
+
+    public async Task<IReadOnlyList<PerfEntitySamples>> QueryPerfWindowsAsync(
+        IReadOnlyList<PerfQueryTarget> targets,
+        VsphereEntityType entityType,
+        IReadOnlyList<VsphereCounter> counters,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        ArgumentNullException.ThrowIfNull(counters);
+
+        var content = await EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var intervalSeconds = VsphereIntervals.IntervalSecondsFor(entityType);
+
+        var response = await SendAsync(
+            VsphereSoapRequests.QueryPerfWindows(
+                content.PerformanceManager, targets, entityType.ToString(), counters, intervalSeconds),
+            cancellationToken,
+            VsphereCallContext.PerformanceQuery).ConfigureAwait(false);
+
+        return PerfResponseParser.ParseSamples(
+            response, counters.ToDictionary(c => c.Id), TimeSpan.FromSeconds(intervalSeconds));
+    }
+
     /// <summary>
     /// A performance query with the sample count and window chosen by the
     /// caller, returning the raw reply beside the parsed samples.

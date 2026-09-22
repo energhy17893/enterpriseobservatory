@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 
@@ -67,12 +68,20 @@ public interface IVsphereSampleTargetProvider
 public sealed class VsphereObservationSource(
     IVsphereApi api,
     IVsphereSampleTargetProvider targets,
-    IClock clock) : IObservationSource
+    IClock clock,
+    ICollectionGapStore? gaps = null) : IObservationSource
 {
     private readonly IVsphereApi _api = api ?? throw new ArgumentNullException(nameof(api));
     private readonly IVsphereSampleTargetProvider _targets =
         targets ?? throw new ArgumentNullException(nameof(targets));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+
+    /// <summary>
+    /// Where the source-level gap record is kept, or null to keep none — the
+    /// live read then still starts at each entity's mark, but a restart forgets
+    /// the marks and an outage is neither recorded nor filled.
+    /// </summary>
+    private readonly ICollectionGapStore? _gaps = gaps;
 
     /// <summary>How long a "nothing is available" answer is taken at its word.</summary>
     /// <remarks>
@@ -190,14 +199,26 @@ public sealed class VsphereObservationSource(
 
         var maxQueryMetrics = await _api.GetMaxQueryMetricsAsync(cancellationToken).ConfigureAwait(false);
 
+        // The server's clock ends every window: sample times are its, so the
+        // local clock being out must not decide what is asked for (§10.3).
+        var serverTime = await _api.GetServerTimeAsync(cancellationToken).ConfigureAwait(false);
+        var serverNow = serverTime ?? now;
+
         var types = _targets.Current.ByType().ToList();
+
+        SeedMarks(types, failures);
+        OpenGapIfBehind(types, serverNow, now, failures);
+        ReportGivenUp(serverNow, failures);
+
+        var live = new LiveRead(serverNow);
+
         for (var i = 0; i < types.Count; i++)
         {
             var (entityType, moRefs) = types[i];
             try
             {
                 await ReadTypeAsync(
-                    entityType, moRefs, byKey, maxQueryMetrics, now,
+                    entityType, moRefs, byKey, maxQueryMetrics, now, live,
                     observations, backfill, failures, cancellationToken).ConfigureAwait(false);
             }
             catch (VsphereApiException ex) when (!EndsTheSession(ex.Kind))
@@ -220,6 +241,29 @@ public sealed class VsphereObservationSource(
 
         ReportUnmeasurableLatency(observations, failures);
 
+        // Only with what the live read left over, and never instead of it: the
+        // live samples are already in hand, and running out of budget here
+        // costs the fill a cycle, not the batch its current values.
+        var filled = new Dictionary<long, CollectionGap>();
+        if (_gaps is not null && live.Fillable.Count > 0 && !cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await FillAsync(live, maxQueryMetrics, now, backfill, filled, failures, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The slice in flight is asked again next cycle.
+            }
+        }
+
+        if (serverTime is { } server)
+        {
+            backfill.Add(ClockSkew(server, now));
+        }
+
+
         return new ObservationBatch
         {
             SourceInstanceId = InstanceId,
@@ -227,8 +271,711 @@ public sealed class VsphereObservationSource(
             Observations = observations,
             Backfill = backfill,
             Failures = failures,
+            Stored = () => Stored(live, filled),
         };
     }
+
+    // --- high-water marks, the gap record and the fill (T0.4, handover 3) ---
+
+    /// <summary>How far back the live read reaches for a real-time entity.</summary>
+    /// <remarks>
+    /// Six samples, two minutes: about four cycles, so an entity whose mark is
+    /// older than this is behind by more than scheduling jitter — the steady
+    /// state has a mark 20-70 s old at read time (the newest sample is up to one
+    /// interval old when read, plus the cycle). Also the threshold for opening
+    /// a source-level gap: a literal "two intervals" would open one on a normal
+    /// cycle. Anything an entity misses beyond this, alone, is lost — the gap
+    /// record covers the whole source only.
+    /// </remarks>
+    private const int LiveLookbackSamples = 6;
+
+    private static readonly TimeSpan RealTimeLookback =
+        TimeSpan.FromSeconds(VsphereIntervals.RealTimeSeconds * LiveLookbackSamples);
+
+    /// <summary>How long a host keeps real-time samples.</summary>
+    /// <remarks>
+    /// A policy constant, not read from the platform: vim25 publishes the
+    /// historical intervals' lengths (<c>PerformanceManager.historicalInterval</c>)
+    /// but not the real-time one, which ESXi fixes at an hour (the m2
+    /// measurement returned exactly 180 samples). Datastores, read from the
+    /// 300 s historical interval, are kept longer; the gap record uses the
+    /// real-time horizon for the whole source, so it can under-claim for them
+    /// but never over-claim.
+    /// </remarks>
+    private static readonly TimeSpan RealTimeRetention = TimeSpan.FromHours(1);
+
+    /// <summary>Kept clear of the retention edge, so a slice does not expire while it is read.</summary>
+    private static readonly TimeSpan RetentionMargin = TimeSpan.FromMinutes(1);
+
+    private readonly HighWaterMarks _marks = new();
+
+    /// <summary>
+    /// The newest sample time of each real-time entity, and how far the
+    /// source as a whole has been accounted for.
+    /// </summary>
+    /// <remarks>
+    /// Seeded once per process from the store's newest timestamp per entity —
+    /// the mark survives a restart because the store is where it lives — then
+    /// moved from what each read returned, and only once that read was stored.
+    /// Locked for the reason <see cref="ProbeMemory"/> is.
+    /// </remarks>
+    private sealed class HighWaterMarks
+    {
+        private readonly Lock _padlock = new();
+        private readonly Dictionary<string, DateTimeOffset> _byMoRef = new(StringComparer.Ordinal);
+
+        /// <summary>Slots returned before their values were in, to be read again.</summary>
+        /// Each with the number of series still without a reading when last read.
+        private readonly Dictionary<string, SortedDictionary<DateTimeOffset, int>> _unfilled = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// The values already stored for slots a read for an unfilled one
+        /// returns again, so each is written once.
+        /// </summary>
+        private readonly Dictionary<string, Dictionary<DateTimeOffset, HashSet<string>>> _written =
+            new(StringComparer.Ordinal);
+
+        private DateTimeOffset? _accountedTo;
+        private bool _seeded;
+
+        public bool IsSeeded()
+        {
+            lock (_padlock)
+            {
+                return _seeded;
+            }
+        }
+
+        public DateTimeOffset? For(string moRef)
+        {
+            lock (_padlock)
+            {
+                return _byMoRef.TryGetValue(moRef, out var mark) ? mark : null;
+            }
+        }
+
+        /// <summary>The newest thing the source has either stored or recorded as a gap.</summary>
+        public DateTimeOffset? SourceMark()
+        {
+            lock (_padlock)
+            {
+                DateTimeOffset? newest = _accountedTo;
+                foreach (var mark in _byMoRef.Values)
+                {
+                    if (newest is not { } n || mark > n)
+                    {
+                        newest = mark;
+                    }
+                }
+
+                return newest;
+            }
+        }
+
+        public void Seed(IEnumerable<KeyValuePair<string, DateTimeOffset>> marks)
+        {
+            lock (_padlock)
+            {
+                foreach (var (moRef, mark) in marks)
+                {
+                    Raise(moRef, mark);
+                }
+
+                _seeded = true;
+            }
+        }
+
+        /// <summary>The oldest slot of this entity returned before its values were in, if any.</summary>
+        public DateTimeOffset? EarliestUnfilled(string moRef)
+        {
+            lock (_padlock)
+            {
+                return _unfilled.TryGetValue(moRef, out var slots) && slots.Count > 0 ? slots.Keys.First() : null;
+            }
+        }
+
+        /// <summary>
+        /// The unfilled slots the live read at <paramref name="serverNow"/> no
+        /// longer reaches: lost for good, per entity.
+        /// </summary>
+        /// <remarks>
+        /// Reported, not removed: they leave the record with the rest of this
+        /// read's bookkeeping, once it is stored (<see cref="Advance"/>), so a
+        /// read that is not stored reports them again rather than never.
+        /// </remarks>
+        public List<(string MoRef, List<UnfilledSlot> Slots)> GivenUp(DateTimeOffset serverNow)
+        {
+            var reach = serverNow - RealTimeLookback;
+
+            lock (_padlock)
+            {
+                return
+                [
+                    .. _unfilled
+                        .Select(pair => (pair.Key, pair.Value
+                            .Where(slot => slot.Key <= reach)
+                            .Select(slot => new UnfilledSlot(slot.Key, slot.Value))
+                            .ToList()))
+                        .Where(pair => pair.Item2.Count > 0)
+                        .OrderBy(pair => pair.Key, StringComparer.Ordinal),
+                ];
+            }
+        }
+
+        /// <summary>Whether this value of this slot is already in the store.</summary>
+        public bool WasWritten(string moRef, DateTimeOffset at, string series)
+        {
+            lock (_padlock)
+            {
+                return _written.TryGetValue(moRef, out var slots) &&
+                       slots.TryGetValue(at, out var written) &&
+                       written.Contains(series);
+            }
+        }
+
+        public void Advance(LiveRead read)
+        {
+            lock (_padlock)
+            {
+                foreach (var (moRef, mark) in read.Seen)
+                {
+                    Raise(moRef, mark);
+                }
+
+                // Given up once the live read no longer reaches it: a value
+                // that never arrives must not hold the entity's read open.
+                var reach = read.ServerNow - RealTimeLookback;
+
+                // Every entity with something unfilled, not only those read this
+                // time: one the budget skipped still gives up on schedule, as
+                // GivenUp reported it.
+                foreach (var moRef in _unfilled.Keys.Union(read.Slots.Keys).ToList())
+                {
+                    if (!_unfilled.TryGetValue(moRef, out var unfilled))
+                    {
+                        _unfilled[moRef] = unfilled = [];
+                    }
+
+                    if (read.Slots.TryGetValue(moRef, out var slots))
+                    {
+                        foreach (var at in slots.Filled)
+                        {
+                            unfilled.Remove(at);
+                        }
+
+                        foreach (var (at, series) in slots.Unfilled)
+                        {
+                            unfilled[at] = series;
+                        }
+                    }
+
+                    foreach (var at in unfilled.Keys.Where(at => at <= reach).ToList())
+                    {
+                        unfilled.Remove(at);
+                    }
+
+                    if (!_written.TryGetValue(moRef, out var written))
+                    {
+                        _written[moRef] = written = [];
+                    }
+
+                    foreach (var (at, series) in slots?.Written ?? [])
+                    {
+                        if (!written.TryGetValue(at, out var set))
+                        {
+                            written[at] = set = new HashSet<string>(StringComparer.Ordinal);
+                        }
+
+                        set.UnionWith(series);
+                    }
+
+                    // Only what a read that goes back for an unfilled slot can
+                    // return again needs remembering; nothing, once none is.
+                    if (unfilled.Count == 0)
+                    {
+                        _unfilled.Remove(moRef);
+                        _written.Remove(moRef);
+                    }
+                    else
+                    {
+                        var oldest = unfilled.Keys.First();
+                        foreach (var at in written.Keys.Where(at => at < oldest).ToList())
+                        {
+                            written.Remove(at);
+                        }
+                    }
+                }
+            }
+        }
+
+        public void Account(DateTimeOffset to)
+        {
+            lock (_padlock)
+            {
+                if (_accountedTo is not { } current || to > current)
+                {
+                    _accountedTo = to;
+                }
+            }
+        }
+
+        private void Raise(string moRef, DateTimeOffset mark)
+        {
+            if (!_byMoRef.TryGetValue(moRef, out var current) || mark > current)
+            {
+                _byMoRef[moRef] = mark;
+            }
+        }
+    }
+
+    /// <summary>What one read's live pass learnt, for the fill and for the marks.</summary>
+    private sealed class LiveRead(DateTimeOffset serverNow)
+    {
+        public DateTimeOffset ServerNow { get; } = serverNow;
+
+        /// <summary>The types the live pass could read, with the counters it used.</summary>
+        public List<(VsphereEntityType Type, IReadOnlyList<string> MoRefs, IReadOnlyList<VsphereCounter> Usable)> Fillable { get; } = [];
+
+        /// <summary>The newest sample time returned per real-time entity.</summary>
+        public Dictionary<string, DateTimeOffset> Seen { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Per real-time entity: which slots came back filled, which not, and what was kept.</summary>
+        public Dictionary<string, SlotsRead> Slots { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Records what a real-time reply returned and takes out what is
+        /// already stored, so a slot read again is written once.
+        /// </summary>
+        /// <remarks>
+        /// The mark still moves to the newest time returned, as H3 made it —
+        /// the gap record reads it — and the next read goes back for an
+        /// unfilled slot on its own account (<see cref="LiveWindow"/>). That
+        /// read returns again whatever lies between; those values were stored
+        /// and are dropped here, by series.
+        /// </remarks>
+        public IReadOnlyList<PerfEntitySamples> Keep(
+            VsphereEntityType entityType, IReadOnlyList<PerfEntitySamples> samples, HighWaterMarks marks)
+        {
+            if (!VsphereIntervals.SupportsRealTime(entityType))
+            {
+                return samples;
+            }
+
+            var kept = new List<PerfEntitySamples>(samples.Count);
+
+            foreach (var entity in samples)
+            {
+                var moRef = entity.EntityMoRef;
+
+                if (entity.SampledAtUtc is { } newest &&
+                    (!Seen.TryGetValue(moRef, out var seen) || newest > seen))
+                {
+                    Seen[moRef] = newest;
+                }
+
+                if (!Slots.TryGetValue(moRef, out var slots))
+                {
+                    Slots[moRef] = slots = new SlotsRead();
+                }
+
+                foreach (var slot in entity.Unfilled)
+                {
+                    slots.Unfilled[slot.At] = slot.Series;
+                }
+
+                var earlier = new List<PerfSampleSet>(entity.Earlier.Count);
+                foreach (var set in entity.Earlier)
+                {
+                    var values = Unwritten(set.SampledAtUtc, set.Values);
+                    if (values.Count > 0)
+                    {
+                        earlier.Add(set with { Values = values });
+                    }
+                }
+
+                kept.Add(entity with
+                {
+                    Values = entity.SampledAtUtc is { } at ? Unwritten(at, entity.Values) : entity.Values,
+                    Earlier = earlier,
+                });
+
+                List<CounterValue> Unwritten(DateTimeOffset at, IReadOnlyList<CounterValue> values)
+                {
+                    if (!entity.Unfilled.Any(slot => slot.At == at))
+                    {
+                        slots.Filled.Add(at);
+                    }
+
+                    var unwritten = values
+                        .Where(v => !marks.WasWritten(moRef, at, SeriesKey(v)))
+                        .ToList();
+
+                    if (!slots.Written.TryGetValue(at, out var written))
+                    {
+                        slots.Written[at] = written = [];
+                    }
+
+                    written.AddRange(unwritten.Select(SeriesKey));
+                    return unwritten;
+                }
+            }
+
+            return kept;
+        }
+
+        private static string SeriesKey(CounterValue value) => $"{value.CounterName}|{value.Instance}";
+    }
+
+    /// <summary>What one live read returned for one real-time entity.</summary>
+    private sealed class SlotsRead
+    {
+        public HashSet<DateTimeOffset> Filled { get; } = [];
+
+        public Dictionary<DateTimeOffset, int> Unfilled { get; } = [];
+
+        public Dictionary<DateTimeOffset, List<string>> Written { get; } = [];
+    }
+
+    /// <summary>The window one entity is read over this cycle.</summary>
+    /// <remarks>
+    /// Real-time: from the entity's own mark (exclusive), but never more than
+    /// <see cref="LiveLookbackSamples"/> back, to the server's now (inclusive).
+    /// Historical (datastores): the rollup-lag window as before — a five-minute
+    /// bucket can be finished after a later one has been read, so a mark would
+    /// skip it.
+    /// </remarks>
+    private PerfQueryTarget LiveWindow(string moRef, VsphereEntityType entityType, DateTimeOffset serverNow)
+    {
+        if (!VsphereIntervals.SupportsRealTime(entityType))
+        {
+            return new PerfQueryTarget(moRef, serverNow - VsphereIntervals.HistoricalWindow, serverNow);
+        }
+
+        var floor = serverNow - RealTimeLookback;
+        var start = _marks.For(moRef) is { } mark && mark > floor ? mark : floor;
+
+        // Back for a slot vCenter returned before its values were in (see
+        // PerfEntitySamples.Unfilled): the mark is past it, and exclusive.
+        // One second before it, since slots are 20 s apart and on the grid.
+        if (_marks.EarliestUnfilled(moRef) is { } unfilled && unfilled - TimeSpan.FromSeconds(1) < start)
+        {
+            start = unfilled - TimeSpan.FromSeconds(1) > floor ? unfilled - TimeSpan.FromSeconds(1) : floor;
+        }
+
+        // Read twice within one sample: ask for the last one again rather than
+        // for an empty window.
+        if (start >= serverNow)
+        {
+            start = serverNow - TimeSpan.FromSeconds(VsphereIntervals.RealTimeSeconds);
+        }
+
+        return new PerfQueryTarget(moRef, start, serverNow);
+    }
+
+    /// <summary>
+    /// Counts as dropped the values of unfilled slots the live read no longer reaches.
+    /// </summary>
+    /// <remarks>
+    /// A slot vCenter returned before its values were in is read again every
+    /// cycle while it is inside the lookback. Past it the missing values are
+    /// lost for good — nothing else will ask for them — and a permanent loss
+    /// is reported, one failure per entity, never left silent.
+    /// </remarks>
+    private void ReportGivenUp(DateTimeOffset serverNow, List<CollectionFailure> failures)
+    {
+        foreach (var (moRef, slots) in _marks.GivenUp(serverNow))
+        {
+            var dropped = slots.Sum(s => s.Series);
+            failures.Add(new CollectionFailure
+            {
+                Kind = CollectionFailureKind.ProtocolError,
+                Target = GivenUpTarget,
+                Entity = _targets.ResolveEntity(moRef),
+                Detail = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{dropped} sample(s) of {moRef} dropped: {slots.Count} real-time slot(s) " +
+                    $"({string.Join(", ", slots.Select(s => s.At.ToString("HH:mm:ss'Z'", CultureInfo.InvariantCulture)))}) " +
+                    $"were returned by vCenter before their values were in and never filled within the " +
+                    $"{LiveLookbackSamples}-sample lookback. Those values are lost; the rest of each slot was stored."),
+            });
+        }
+    }
+
+    /// <summary>The target of a real-time slot given up at the lookback.</summary>
+    public const string GivenUpTarget = "real-time slot never filled within lookback";
+
+    /// <summary>Seeds the marks from the store, once per process.</summary>
+    private void SeedMarks(
+        List<(VsphereEntityType Type, IReadOnlyList<string> MoRefs)> types, List<CollectionFailure> failures)
+    {
+        if (_gaps is null || _marks.IsSeeded())
+        {
+            return;
+        }
+
+        var moRefsOf = new Dictionary<EntityId, List<string>>();
+        foreach (var (entityType, moRefs) in types)
+        {
+            if (!VsphereIntervals.SupportsRealTime(entityType))
+            {
+                continue;
+            }
+
+            foreach (var moRef in moRefs)
+            {
+                if (_targets.ResolveEntity(moRef) is { } entity)
+                {
+                    if (!moRefsOf.TryGetValue(entity, out var list))
+                    {
+                        moRefsOf[entity] = list = [];
+                    }
+
+                    list.Add(moRef);
+                }
+            }
+        }
+
+        if (moRefsOf.Count == 0)
+        {
+            // Nothing to seed yet; asked again once inventory names something.
+            return;
+        }
+
+        try
+        {
+            var latest = _gaps.LatestSampleTimes([.. moRefsOf.Keys]);
+
+            _marks.Seed(latest.SelectMany(pair => moRefsOf[pair.Key]
+                .Select(moRef => new KeyValuePair<string, DateTimeOffset>(moRef, pair.Value))));
+        }
+#pragma warning disable CA1031 // Justified: the gap record is bookkeeping; a
+        // store that cannot answer must cost the record, not the read.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            failures.Add(GapRecordFailed("read the stored high-water marks", ex));
+        }
+    }
+
+    /// <summary>
+    /// Records a source-level gap when the source's mark is older than the live read reaches.
+    /// </summary>
+    private void OpenGapIfBehind(
+        List<(VsphereEntityType Type, IReadOnlyList<string> MoRefs)> types,
+        DateTimeOffset serverNow,
+        DateTimeOffset now,
+        List<CollectionFailure> failures)
+    {
+        if (_gaps is null || !types.Any(t => VsphereIntervals.SupportsRealTime(t.Type)))
+        {
+            return;
+        }
+
+        var liveStart = serverNow - RealTimeLookback;
+
+        if (CollectionGaps.ToOpen(_marks.SourceMark(), liveStart) is not { } gap)
+        {
+            return;
+        }
+
+        try
+        {
+            _gaps.Open(new CollectionGap
+            {
+                SourceInstanceId = InstanceId,
+                FromUtc = gap.From,
+                ToUtc = gap.To,
+                FilledToUtc = gap.From,
+                State = CollectionGapState.Open,
+                OpenedAtUtc = now,
+            });
+
+            // Recorded, so not recorded again: the next cycle's mark is at
+            // least here even if this cycle's samples are never stored.
+            _marks.Account(liveStart);
+        }
+#pragma warning disable CA1031 // Justified: see SeedMarks.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            failures.Add(GapRecordFailed("record a collection gap", ex));
+        }
+    }
+
+    /// <summary>
+    /// Reads the oldest open gaps again, ten minutes at a time, until they
+    /// close or the budget runs out.
+    /// </summary>
+    /// <remarks>
+    /// Oldest gap first, oldest slice first, so a gap that cannot be finished
+    /// before the host forgets it loses its newest end last. Progress is kept
+    /// in <paramref name="filled"/> and written only once the batch is stored;
+    /// what has passed the retention horizon is written at once, since no
+    /// append can change that.
+    /// </remarks>
+    private async Task FillAsync(
+        LiveRead live,
+        int? maxQueryMetrics,
+        DateTimeOffset now,
+        List<Observation> backfill,
+        Dictionary<long, CollectionGap> filled,
+        List<CollectionFailure> failures,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<CollectionGap> open;
+        try
+        {
+            open = _gaps!.OpenGaps(InstanceId);
+        }
+#pragma warning disable CA1031 // Justified: see SeedMarks.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            failures.Add(GapRecordFailed("read the open collection gaps", ex));
+            return;
+        }
+
+        var recoverableAfter = live.ServerNow - RealTimeRetention + RetentionMargin;
+
+        foreach (var recorded in open)
+        {
+            var gap = CollectionGaps.Expire(recorded, recoverableAfter, now);
+            if (!ReferenceEquals(gap, recorded))
+            {
+                try
+                {
+                    _gaps.Update(gap);
+                }
+#pragma warning disable CA1031 // Justified: see SeedMarks.
+                catch (Exception ex)
+#pragma warning restore CA1031
+                {
+                    failures.Add(GapRecordFailed("record what was past retention", ex));
+                    return;
+                }
+            }
+
+            while (gap.State == CollectionGapState.Open)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var (start, end) = CollectionGaps.NextSlice(gap);
+
+                foreach (var (entityType, moRefs, usable) in live.Fillable)
+                {
+                    await FillSliceAsync(
+                        entityType, moRefs, usable, maxQueryMetrics, start, end, backfill, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                gap = CollectionGaps.Advance(gap, end, now);
+                filled[gap.Id] = gap;
+            }
+        }
+    }
+
+    /// <summary>Reads one slice of one entity type, every entity over the same window.</summary>
+    /// <remarks>
+    /// Sized like the live read and shrunk the same way when refused. A batch
+    /// that faults is asked again one entity at a time, and an entity that
+    /// faults alone is skipped: the gap record is about the source, and one
+    /// entity the server will not answer for must not hold the whole fill.
+    /// </remarks>
+    private async Task FillSliceAsync(
+        VsphereEntityType entityType,
+        IReadOnlyList<string> moRefs,
+        IReadOnlyList<VsphereCounter> usable,
+        int? maxQueryMetrics,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        List<Observation> backfill,
+        CancellationToken cancellationToken)
+    {
+        var sizer = new AdaptiveBatchSizer(maxQueryMetrics, usable.Count, _learned.For(entityType, usable.Count));
+        var fallbackInterval = TimeSpan.FromSeconds(VsphereIntervals.IntervalSecondsFor(entityType));
+        var remaining = new Queue<string>(moRefs);
+        var singles = new Stack<List<string>>();
+
+        while (remaining.Count > 0 || singles.Count > 0)
+        {
+            var batch = singles.Count > 0 ? singles.Pop() : Dequeue(remaining, sizer.Current);
+
+            try
+            {
+                var samples = await _api
+                    .QueryPerfWindowsAsync(
+                        [.. batch.Select(moRef => new PerfQueryTarget(moRef, start, end))],
+                        entityType, usable, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // All of it is history: nothing a fill returns is "current".
+                var timed = samples.Where(s => s.SampledAtUtc is not null).ToList();
+                backfill.AddRange(ToObservations(timed, fallbackInterval, end));
+                backfill.AddRange(ToBackfill(timed, fallbackInterval));
+            }
+            catch (VsphereQuerySizeRefusedException)
+            {
+                if (!sizer.Reduce())
+                {
+                    return;
+                }
+
+                Requeue(remaining, batch);
+            }
+            catch (VsphereApiException ex) when (!EndsTheSession(ex.Kind))
+            {
+                if (batch.Count == 1)
+                {
+                    continue;
+                }
+
+                for (var i = batch.Count - 1; i >= 0; i--)
+                {
+                    singles.Push([batch[i]]);
+                }
+            }
+        }
+    }
+
+    /// <summary>Moves the marks and the fill points once the batch is in the store.</summary>
+    private void Stored(LiveRead live, Dictionary<long, CollectionGap> filled)
+    {
+        _marks.Advance(live);
+
+        if (_gaps is null)
+        {
+            return;
+        }
+
+        foreach (var gap in filled.Values)
+        {
+            _gaps.Update(gap);
+        }
+    }
+
+    /// <summary>The server's clock minus ours, as a series on the vCenter.</summary>
+    private Observation ClockSkew(DateTimeOffset serverNow, DateTimeOffset now) => new()
+    {
+        Entity = EntityId.For(InstanceId, "vcenter"),
+        Value = new CounterValue
+        {
+            CounterName = CollectorSelfMetrics.ClockSkewCounter,
+            Raw = (serverNow - now).TotalSeconds,
+            Rollup = RollupType.Latest,
+            Interval = TimeSpan.FromSeconds(VsphereIntervals.RealTimeSeconds),
+            Unit = "second",
+        },
+        SampledAtUtc = now,
+        Source = InstanceId,
+    };
+
+    private static CollectionFailure GapRecordFailed(string what, Exception error) => new()
+    {
+        Kind = CollectionFailureKind.ProtocolError,
+        Target = "collection gap record",
+        Detail = $"Could not {what}: {error.Message} The live read is unaffected; an outage in this period " +
+            "may be neither recorded nor filled until the record can be reached again.",
+    };
 
     /// <summary>
     /// Whether a fault ends the conversation rather than just this question.
@@ -569,6 +1316,7 @@ public sealed class VsphereObservationSource(
         IReadOnlyDictionary<string, VsphereCounter> catalog,
         int? maxQueryMetrics,
         DateTimeOffset now,
+        LiveRead live,
         List<Observation> observations,
         List<Observation> backfill,
         List<CollectionFailure> failures,
@@ -578,7 +1326,7 @@ public sealed class VsphereObservationSource(
         try
         {
             await ReadTypeCoreAsync(
-                entityType, StartingAt(moRefs, _cursor.For(entityType)), catalog, maxQueryMetrics, now,
+                entityType, StartingAt(moRefs, _cursor.For(entityType)), catalog, maxQueryMetrics, now, live,
                 observations, backfill, failures, progress, cancellationToken).ConfigureAwait(false);
 
             // Read to the end: the next cycle starts from the top.
@@ -631,6 +1379,7 @@ public sealed class VsphereObservationSource(
         IReadOnlyDictionary<string, VsphereCounter> catalog,
         int? maxQueryMetrics,
         DateTimeOffset now,
+        LiveRead live,
         List<Observation> observations,
         List<Observation> backfill,
         List<CollectionFailure> failures,
@@ -658,7 +1407,7 @@ public sealed class VsphereObservationSource(
             try
             {
                 available = await _api
-                    .GetAvailableCounterKeysAsync(candidate, entityType, now, cancellationToken)
+                    .GetAvailableCounterKeysAsync(candidate, entityType, live.ServerNow, cancellationToken)
                     .ConfigureAwait(false);
                 break;
             }
@@ -786,6 +1535,10 @@ public sealed class VsphereObservationSource(
             return;
         }
 
+        // What a gap fill may ask this cycle: the types the live read could
+        // ask, with the counters it asked for.
+        live.Fillable.Add((entityType, [.. moRefs.Except(progress.Gone, StringComparer.Ordinal)], usable));
+
         // Started from what this session already learnt, if anything (T1.2).
         var sizer = new AdaptiveBatchSizer(
             maxQueryMetrics, usable.Count, _learned.For(entityType, usable.Count));
@@ -808,8 +1561,15 @@ public sealed class VsphereObservationSource(
             try
             {
                 var samples = await _api
-                    .QueryPerfAsync(batch, entityType, usable, now, cancellationToken)
+                    .QueryPerfWindowsAsync(
+                        [.. batch.Select(moRef => LiveWindow(moRef, entityType, live.ServerNow))],
+                        entityType, usable, cancellationToken)
                     .ConfigureAwait(false);
+
+                // What the server answered, before what is already stored is
+                // taken out: the probe below is judged on the answer.
+                var answered = samples.Any(s => s.Values.Count > 0 || s.Earlier.Count > 0);
+                samples = live.Keep(entityType, samples, _marks);
 
                 progress.Read += batch.Count;
 
@@ -826,7 +1586,7 @@ public sealed class VsphereObservationSource(
                 // wrong here — recorded so the hourly re-check becomes a
                 // permanent one, rather than this measuring an hour apart
                 // forever while the data was there all along.
-                if (ignoreTheProbe && read.Count > 0)
+                if (ignoreTheProbe && answered)
                 {
                     _probe.RecordProbeWasWrong(entityType);
                 }
