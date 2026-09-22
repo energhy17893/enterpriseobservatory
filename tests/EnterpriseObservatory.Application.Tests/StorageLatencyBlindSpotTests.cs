@@ -956,6 +956,122 @@ public class StorageLatencyBlindSpotTests
         Assert.IsType<ConditionPresent>(Windowed(window, Blind(), 2, policy));
     }
 
+    // --- K = 30, P = 90 (the replay's choice) -------------------------------
+
+    /// <summary>
+    /// <see cref="StorageLatencyBlindSpotPolicy.Default"/>'s own K and P, pinned
+    /// directly rather than through a fixture: 385.3 alert flips a day cut to
+    /// 5.5 by the replay (<c>docs/measurements/blind-spot-hysteresis-replay.sql</c>),
+    /// on 2 days of live raw samples across 29 volumes.
+    /// </summary>
+    [Fact]
+    public void Thirty_and_ninety_are_the_shipped_defaults()
+    {
+        Assert.Equal(30, StorageLatencyBlindSpotPolicy.Default.WindowCycles);
+        Assert.Equal(90, StorageLatencyBlindSpotPolicy.Default.MinimumMeasurablePercent);
+    }
+
+    [Fact]
+    public void The_default_window_is_not_judgeable_until_it_holds_thirty_judged_cycles()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        for (var cycle = 0; cycle < 29; cycle++)
+        {
+            var unknown = Assert.IsType<Unknown>(
+                Windowed(window, OnTheLine(), cycle, StorageLatencyBlindSpotPolicy.Default));
+            Assert.Equal(UnknownReason.NotJudgeable, unknown.Reason);
+        }
+    }
+
+    [Fact]
+    public void The_default_window_is_absent_at_exactly_ninety_percent_measurable()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        // Fill the window with thirty measurable cycles first.
+        for (var cycle = 0; cycle < 30; cycle++)
+        {
+            Windowed(window, OnTheLine(), cycle, StorageLatencyBlindSpotPolicy.Default);
+        }
+
+        // Three blind cycles keeps the last thirty at 27/30 = 90 %: still
+        // Absent, the boundary belongs to the working side.
+        for (var cycle = 30; cycle < 33; cycle++)
+        {
+            Assert.IsType<ConditionAbsent>(
+                Windowed(window, Blind(), cycle, StorageLatencyBlindSpotPolicy.Default));
+        }
+
+        // A fourth blind cycle drops the last thirty to 26/30, below 90 %:
+        // Present.
+        Assert.IsType<ConditionPresent>(
+            Windowed(window, Blind(), 33, StorageLatencyBlindSpotPolicy.Default));
+    }
+
+    [Fact]
+    public void The_default_window_neither_counts_nor_resets_on_a_quiet_cycle()
+    {
+        var window = new StorageLatencyBlindSpotWindow();
+
+        // Twenty-nine measurable cycles, one short of the window.
+        for (var cycle = 0; cycle < 29; cycle++)
+        {
+            Windowed(window, OnTheLine(), cycle, StorageLatencyBlindSpotPolicy.Default);
+        }
+
+        // A run of quiet cycles: neither judged nor entered into the window,
+        // so the thirtieth judged cycle -- still the window's first fill --
+        // must not have been pushed further away by them.
+        for (var cycle = 29; cycle < 40; cycle++)
+        {
+            var quiet = Assert.IsType<Unknown>(
+                Windowed(window, Quiet(), cycle, StorageLatencyBlindSpotPolicy.Default));
+            Assert.Contains("quiet cycle", quiet.Detail, StringComparison.Ordinal);
+        }
+
+        Assert.IsType<ConditionAbsent>(
+            Windowed(window, OnTheLine(), 40, StorageLatencyBlindSpotPolicy.Default));
+    }
+
+    [Fact]
+    public void A_restart_empties_the_default_window_for_thirty_judged_cycles()
+    {
+        var options = EnterpriseObservatory.Application.Monitoring.MonitoringOptions.Default;
+
+        RuleContext Context(int cycle) => new()
+        {
+            Observations = Blind(),
+            ReadGraph = () => EntityGraph.Empty,
+            NowUtc = T0.AddSeconds(30 * cycle),
+            Options = options,
+            Series = new NoSeries(),
+            Events = new NoEvents(),
+        };
+
+        var before = new StorageLatencyBlindSpotRule();
+
+        for (var cycle = 0; cycle < 29; cycle++)
+        {
+            before.Evaluate(Context(cycle));
+        }
+
+        Assert.IsType<ConditionPresent>(Assert.Single(before.Evaluate(Context(29))));
+
+        // A fresh rule -- and so a fresh window -- is what a restart leaves
+        // behind. NotJudgeable for the next twenty-nine judged cycles, then
+        // Present again on the thirtieth, exactly as the first run was.
+        var after = new StorageLatencyBlindSpotRule();
+
+        for (var cycle = 30; cycle < 59; cycle++)
+        {
+            Assert.Equal(UnknownReason.NotJudgeable,
+                Assert.IsType<Unknown>(Assert.Single(after.Evaluate(Context(cycle)))).Reason);
+        }
+
+        Assert.IsType<ConditionPresent>(Assert.Single(after.Evaluate(Context(59))));
+    }
+
     private sealed class NoSeries : EnterpriseObservatory.Application.Monitoring.ISeriesReader
     {
         public EnterpriseObservatory.Application.Monitoring.SeriesResult Query(

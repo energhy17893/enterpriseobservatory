@@ -143,22 +143,30 @@ public sealed record StorageLatencyBlindSpotPolicy
     /// NotJudgeable. One is the per-cycle rule.
     /// </para>
     /// <para>
-    /// <b>Placeholder.</b> 20 until the replay
-    /// (<c>docs/measurements/blind-spot-hysteresis-replay.sql</c>) is run on
-    /// the live estate and K is chosen from it.
+    /// Chosen from the replay
+    /// (<c>docs/measurements/blind-spot-hysteresis-replay.sql</c>), run on 1.99
+    /// days of live raw samples across 29 volumes and 91,592 judged cycles:
+    /// K = 1 (the rule before this hysteresis) flapped 385.3 alert flips a day
+    /// across 26 volumes; K = 30 cuts that to 5.5 flips a day across 2 volumes,
+    /// filling the window on 0.9 % of cycles and taking roughly 27 minutes to
+    /// open or resolve at the estate's measured rate of about 1.1 judged cycles
+    /// a minute per volume. Source: "Product policy, measured: 2 days of raw
+    /// samples, 29 volumes, 385 → 5.5 flaps/day (K=30, P=90, ~27 min)".
     /// </para>
     /// </remarks>
-    public int WindowCycles { get; init; } = 20;
+    public int WindowCycles { get; init; } = 30;
 
     /// <summary>
     /// P: the share of the window's judged cycles that must be measurable for
     /// the measurement to count as working, in percent.
     /// </summary>
     /// <remarks>
-    /// At or above it the volume is Absent; below it, Present. <b>Placeholder.</b>
-    /// 50 until the replay is run and P is chosen from it.
+    /// At or above it the volume is Absent; below it, Present. Chosen with K
+    /// from the same replay: P = 90 alongside K = 30 is the pair that took
+    /// flaps from 385.3 to 5.5 a day. Source: "Product policy, measured: 2 days
+    /// of raw samples, 29 volumes, 385 → 5.5 flaps/day (K=30, P=90, ~27 min)".
     /// </remarks>
-    public double MinimumMeasurablePercent { get; init; } = 50d;
+    public double MinimumMeasurablePercent { get; init; } = 90d;
 
     public static StorageLatencyBlindSpotPolicy Default { get; } = new();
 }
@@ -692,9 +700,10 @@ public static class StorageLatencyBlindSpot
 /// (<see cref="AnalysisRules.All"/>). It does not survive a restart, and that
 /// is accepted rather than engineered around: after a restart every volume's
 /// window is empty and the rule says NotJudgeable until K judged cycles have
-/// been seen again — ten minutes at K = 20 and one busy cycle every 30 s. An
-/// alert already open stays open (and stale) meanwhile; nothing is resolved
-/// or raised on an empty window.
+/// been seen again — roughly 27 minutes at K = 30 and the estate's measured
+/// rate of about 1.1 judged cycles a minute per volume. An alert already open
+/// stays open (and stale) meanwhile; nothing is resolved or raised on an
+/// empty window.
 /// </para>
 /// <para>
 /// Bounded twice: each volume keeps at most K entries, and past
