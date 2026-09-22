@@ -94,13 +94,7 @@ public class ConfigIssueSchemaOnlyTests
             verdicts[InventoryVerdicts.ConfigIssueTypes]);
     }
 
-    [Fact(Skip =
-        "Known gap: when a configIssue entry carries no xsi:type (a bare Event, or any element the " +
-        "reader did not expect wrapping the real one), InventoryVerdictParser.ReadConfigIssues falls " +
-        "back to the element's own tag name (\"Event\", or an enclosing wrapper's name) and reports " +
-        "it as the event type. That is a fabricated value, not a silent \"not read\" -- the one case " +
-        "this suite exists to catch. See InventoryVerdictParser.cs, ReadConfigIssues, " +
-        "'i.Type.Length > 0 ? i.Type : i.Name'. Fix belongs in production code, not in this test.")]
+    [Fact]
     public void Unexpected_entry_shape_does_not_fabricate_an_event_type()
     {
         // No xsi:type on the entry: the schema requires every Event array
@@ -123,12 +117,7 @@ public class ConfigIssueSchemaOnlyTests
         Assert.False(verdicts.ContainsKey(InventoryVerdicts.ConfigIssueTypes));
     }
 
-    [Fact(Skip =
-        "Known gap, same root cause as Unexpected_entry_shape_does_not_fabricate_an_event_type: an " +
-        "extra wrapping element around the real Event (a shape vim25 does not document) makes " +
-        "ReadConfigIssues report the wrapper's own tag name (\"issueWrapper\") as the event type, " +
-        "because the reader never checks that the array element it is looking at actually declares " +
-        "an xsi:type. See InventoryVerdictParser.cs, ReadConfigIssues.")]
+    [Fact]
     public void Extra_nesting_around_an_entry_does_not_fabricate_an_event_type()
     {
         var host = SingleHost("""
