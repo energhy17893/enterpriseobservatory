@@ -1296,6 +1296,16 @@ public sealed class ReadModel(
                 SkippedCycles = c.SkippedCycles,
                 ViewsHeld = c.ViewsHeld,
                 ViewsHeldMax = c.ViewsHeldMax,
+                Up = c.Up,
+                LastDurationMs = c.LastDuration?.TotalMilliseconds,
+                RecentDurationsMs = [.. c.RecentDurations.Select(d => d.TotalMilliseconds)],
+                ItemsRead = c.ItemsRead,
+                ItemsUnread = c.ItemsUnread,
+                SessionsWeBelieveWeHold = c.SessionsHeld,
+                ClockSkewSeconds = c.ClockSkewSeconds,
+                FreshnessSeconds = c.LastSuccessUtc is { } last ? (_clock.UtcNow - last).TotalSeconds : null,
+                TotalAttempts = c.TotalAttempts,
+                TotalFailures = c.TotalFailures,
             }),
     ];
 

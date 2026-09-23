@@ -430,6 +430,48 @@ public sealed record CollectorView
     /// null when it has never been read successfully since then.
     /// </summary>
     public int? ViewsHeldMax { get; init; }
+
+    // --- F6: self-metrics the runner produces, never the collector ---------
+
+    /// <summary>
+    /// Whether the last attempt is healthy in Prometheus's sense: false when
+    /// the source could not be reached, and also false when it answered but
+    /// something could not be read or kept (<see cref="PartialFailures"/>
+    /// non-empty) — not only when nothing answered at all.
+    /// </summary>
+    public required bool Up { get; init; }
+
+    /// <summary>How long the last attempt took, start to finish.</summary>
+    public double? LastDurationMs { get; init; }
+
+    /// <summary>The last 32 attempts' durations, oldest first (§10.6, Datadog's check <c>Stats</c>).</summary>
+    public IReadOnlyList<double> RecentDurationsMs { get; init; } = [];
+
+    /// <summary>Items the last attempt read — samples, entities or events, depending on the role.</summary>
+    public int? ItemsRead { get; init; }
+
+    /// <summary>Items the last attempt could not read — the count behind <see cref="PartialFailures"/>.</summary>
+    public int? ItemsUnread { get; init; }
+
+    /// <summary>
+    /// Sessions this source's own channel believes it holds. Named
+    /// deliberately, not "sessions on the platform": a read-only account
+    /// often cannot list the platform's own sessions, so this can never
+    /// confirm or catch one the channel itself lost track of.
+    /// </summary>
+    public int? SessionsWeBelieveWeHold { get; init; }
+
+    /// <summary>The source's clock minus this process's clock, in seconds. Positive means the source is ahead.</summary>
+    public double? ClockSkewSeconds { get; init; }
+
+    /// <summary>How long since the last success, or null if there has never been one.</summary>
+    public double? FreshnessSeconds { get; init; }
+
+    /// <summary>Attempts made since this process started, successful or not.</summary>
+    public long TotalAttempts { get; init; }
+
+    /// <summary>Attempts that failed outright since this process started.</summary>
+    public long TotalFailures { get; init; }
 }
 
 /// <summary>One thing a collector could not read, and what it is.</summary>
