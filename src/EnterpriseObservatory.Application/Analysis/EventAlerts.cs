@@ -421,10 +421,9 @@ public static class EventAlerts
         // not rows here.
         //
         // HPE lets a warning and an error of one family clear each other
-        // (capacity, swap). This table cannot: a type id that both raises and
-        // clears throws in Index. So each level closes only on HPE's own
-        // within-tolerance/clear event or its time to live, and an escalation
-        // shows both the warning and the critical alert until then.
+        // (capacity, swap), each listed as a companion event on the other's
+        // alarm page: the error event closes the warning row and opens the
+        // error row, and the warning event does the reverse.
 
         // GUID-5D995D44 (arbiter.com.lost, red, Cluster) replaces the
         // deprecated GUID-7323B7D5 (arbiter.lost, yellow); the old pair stays
@@ -459,6 +458,22 @@ public static class EventAlerts
             Meaning =
                 "A VM's data has lost its second copy (Storage HA); another node failure " +
                 "can make it unavailable.",
+        },
+
+        // GUID-38BEF73A (yellow, VirtualMachine). Seen live after a Storage
+        // vMotion to a node that does not own the VM's data.
+        new()
+        {
+            Id = "svt.vm.data.access.not.optimized",
+            Title = "SimpliVity VM data access not optimized",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.VirtualMachine,
+            RaisedBy = ["com.simplivity.event.vm.data.access.not.optimized"],
+            ClearedBy = ["com.simplivity.event.vm.data.access.optimized"],
+            Meaning =
+                "A VM runs on a node that does not hold its data, so it lacks the " +
+                "lowest-latency access and performance may degrade.",
         },
 
         // GUID-BAC0CFF2.
@@ -500,7 +515,11 @@ public static class EventAlerts
             Category = SimpliVity,
             About = EventSubject.Host,
             RaisedBy = ["com.simplivity.event.control.phys.capacity.node.warning"],
-            ClearedBy = ["com.simplivity.event.control.phys.capacity.node.within.tolerance"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.phys.capacity.node.within.tolerance",
+                "com.simplivity.event.control.phys.capacity.node.error",
+            ],
             Meaning = "A SimpliVity node has 20% or less of its physical capacity free.",
         },
         new()
@@ -511,7 +530,11 @@ public static class EventAlerts
             Category = SimpliVity,
             About = EventSubject.Host,
             RaisedBy = ["com.simplivity.event.control.phys.capacity.node.error"],
-            ClearedBy = ["com.simplivity.event.control.phys.capacity.node.within.tolerance"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.phys.capacity.node.within.tolerance",
+                "com.simplivity.event.control.phys.capacity.node.warning",
+            ],
             Meaning = "A SimpliVity node has 10% or less of its physical capacity free.",
         },
 
@@ -524,7 +547,11 @@ public static class EventAlerts
             Category = SimpliVity,
             About = EventSubject.Cluster,
             RaisedBy = ["com.simplivity.event.control.phys.capacity.fd.warning"],
-            ClearedBy = ["com.simplivity.event.control.phys.capacity.fd.within.tolerance"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.phys.capacity.fd.within.tolerance",
+                "com.simplivity.event.control.phys.capacity.fd.error",
+            ],
             Meaning = "A SimpliVity cluster has 20% or less of its physical capacity free.",
         },
         new()
@@ -535,7 +562,11 @@ public static class EventAlerts
             Category = SimpliVity,
             About = EventSubject.Cluster,
             RaisedBy = ["com.simplivity.event.control.phys.capacity.fd.error"],
-            ClearedBy = ["com.simplivity.event.control.phys.capacity.fd.within.tolerance"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.phys.capacity.fd.within.tolerance",
+                "com.simplivity.event.control.phys.capacity.fd.warning",
+            ],
             Meaning = "A SimpliVity cluster has 10% or less of its physical capacity free.",
         },
 
@@ -613,8 +644,7 @@ public static class EventAlerts
                 "data may be unavailable.",
         },
 
-        // GUID-96CB4A7F. Departure: HPE also lists commit.failed as a clear, but
-        // it raises svt.upgrade.commit.failed below and Index forbids one type both raising and clearing.
+        // GUID-96CB4A7F: HPE lists all three as green companions.
         new()
         {
             Id = "svt.upgrade.commit.needed",
@@ -626,6 +656,7 @@ public static class EventAlerts
             ClearedBy =
             [
                 "com.simplivity.event.control.upgrade.committed",
+                "com.simplivity.event.control.upgrade.commit.failed",
                 "com.simplivity.event.control.rollback.success",
             ],
             Meaning = "A SimpliVity software upgrade has not yet been committed.",
@@ -658,7 +689,11 @@ public static class EventAlerts
             Category = SimpliVity,
             About = EventSubject.Host,
             RaisedBy = ["com.simplivity.event.control.phys.capacity.swap.usage.warning"],
-            ClearedBy = ["com.simplivity.event.control.phys.capacity.swap.usage.clear"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.phys.capacity.swap.usage.clear",
+                "com.simplivity.event.control.phys.capacity.swap.usage.error",
+            ],
             Meaning =
                 "The Virtual Controller is using at least 1 GB of swap: its memory is not " +
                 "enough for the current load.",
@@ -671,7 +706,11 @@ public static class EventAlerts
             Category = SimpliVity,
             About = EventSubject.Host,
             RaisedBy = ["com.simplivity.event.control.phys.capacity.swap.usage.error"],
-            ClearedBy = ["com.simplivity.event.control.phys.capacity.swap.usage.clear"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.phys.capacity.swap.usage.clear",
+                "com.simplivity.event.control.phys.capacity.swap.usage.warning",
+            ],
             Meaning =
                 "The Virtual Controller is using over 2 GB of swap: the system is " +
                 "over-burdened.",
@@ -889,10 +928,15 @@ public static class EventAlerts
     /// Which condition each type id raises, and which it clears.
     /// </summary>
     /// <remarks>
-    /// A type id that raised two conditions, or both raised and cleared, would
-    /// make the table's meaning depend on the order of its rows. That is a
-    /// broken policy rather than an estate fact, so it throws — and
-    /// <see cref="GuardedRule"/> turns the throw into an alert saying so.
+    /// A type id that raised two conditions, or both raised and cleared the
+    /// same one, would make the table's meaning depend on the order of its
+    /// rows or events. That is a broken policy rather than an estate fact, so
+    /// it throws — and <see cref="GuardedRule"/> turns the throw into an alert
+    /// saying so. A type that raises one row and clears another is allowed:
+    /// each row keeps its own track, and each track keeps only its newest
+    /// report and newest clear, so the outcome depends on neither order. It is
+    /// how HPE escalates a warning to an error — the error event closes the
+    /// warning and opens the error (sd00005179en_us companion events).
     /// </remarks>
     private static (Dictionary<string, EventCondition> Raises, Dictionary<string, List<EventCondition>> Clears)
         Index(IReadOnlyList<EventCondition> conditions)
@@ -920,12 +964,12 @@ public static class EventAlerts
 
                 list.Add(condition);
             }
-        }
 
-        if (raises.Keys.FirstOrDefault(clears.ContainsKey) is { } both)
-        {
-            throw new InvalidOperationException(
-                $"Event type '{both}' both raises and clears a condition.");
+            if (condition.RaisedBy.FirstOrDefault(t => condition.ClearedBy.Contains(t, StringComparer.OrdinalIgnoreCase)) is { } both)
+            {
+                throw new InvalidOperationException(
+                    $"Event type '{both}' both raises and clears '{condition.Id}'.");
+            }
         }
 
         return (raises, clears);
