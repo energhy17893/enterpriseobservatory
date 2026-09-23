@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 
 namespace EnterpriseObservatory.Architecture.Tests;
@@ -109,6 +110,93 @@ public class LayerBoundaryTests
                 $"{SolutionAssemblies.Name(collector)} lets these hold the transport besides the session " +
                 $"channel: {string.Join(", ", strangers)}");
         }
+    }
+
+    [Fact]
+    public void No_collector_writes_a_metric()
+    {
+        // F6 (ADR-0025 §5): duration, items read, sessions held, clock skew
+        // and the rest are the runner's to produce -- from what a read
+        // already returns (SelfMetricsExtras) or a channel already knows
+        // (IVsphereChannelSelfMetrics) -- never a series the collector builds
+        // itself, the shape VsphereObservationSource.ClockSkew used to be.
+        //
+        // Unlike the store-port and transport-ownership rules above, the
+        // thing to catch here is a *name* (a string field's value), which
+        // declared-surface reflection cannot see: a const string inlines at
+        // every call site and leaves no trace of the type that declared it.
+        // CollectorSelfMetrics's field is therefore static readonly, not
+        // const (see its remarks), specifically so a reference to it compiles
+        // to a real field token this test can find by walking every
+        // collector method's IL for a load of a field CollectorSelfMetrics
+        // declares.
+        var selfMetricFields = typeof(CollectorSelfMetrics)
+            .GetFields(BindingFlags.Public | BindingFlags.Static)
+            .ToHashSet();
+
+        const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic |
+                                 BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+        var offenders = new List<string>();
+
+        foreach (var collector in SolutionAssemblies.Collectors)
+        {
+            foreach (var type in collector.GetTypes())
+            {
+                foreach (var method in type.GetMethods(Any).Cast<MethodBase>()
+                    .Concat(type.GetConstructors(Any)))
+                {
+                    var il = method.GetMethodBody()?.GetILAsByteArray();
+                    if (il is null)
+                    {
+                        continue;
+                    }
+
+                    if (ReferencesAnyField(method.Module, il, selfMetricFields))
+                    {
+                        offenders.Add($"{(type.DeclaringType ?? type).Name}.{method.Name}");
+                    }
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"Collectors write a self-metric directly: {string.Join(", ", offenders.Distinct(StringComparer.Ordinal))}");
+    }
+
+    /// <summary>
+    /// Whether this method's IL loads any of <paramref name="fields"/>. A
+    /// byte-level scan for <c>ldsfld</c>/<c>ldsflda</c>/<c>ldfld</c>
+    /// (single-byte opcodes 0x7E/0x7F/0x7B, each followed by a four-byte
+    /// metadata token) rather than a full instruction decoder: good enough to
+    /// catch a direct reference, which is the only way C# emits one.
+    /// </summary>
+    private static bool ReferencesAnyField(Module module, byte[] il, HashSet<FieldInfo> fields)
+    {
+        for (var i = 0; i + 4 < il.Length; i++)
+        {
+            if (il[i] is not (0x7E or 0x7F or 0x7B))
+            {
+                continue;
+            }
+
+            try
+            {
+                var resolved = module.ResolveField(BitConverter.ToInt32(il, i + 1));
+                if (resolved is not null && fields.Contains(resolved))
+                {
+                    return true;
+                }
+            }
+            catch (ArgumentException)
+            {
+                // Not actually a field token at this offset -- the byte just
+                // happened to match one of the three opcodes.
+            }
+        }
+
+        return false;
     }
 
     [Fact]
