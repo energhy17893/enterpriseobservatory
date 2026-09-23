@@ -258,6 +258,27 @@ public class InventoryVerdictParserTests
     }
 
     [Fact]
+    public void Snapshots_are_counted_through_the_whole_tree()
+    {
+        // eo-simplivity: VMware snapshots on a SimpliVity VM, children included.
+        var verdicts = InventoryVerdictParser.Read(Single("VirtualMachine", "vm-1", """
+            <propSet><name>snapshot</name><val xsi:type="VirtualMachineSnapshotInfo">
+              <rootSnapshotList>
+                <snapshot type="VirtualMachineSnapshot">snapshot-1</snapshot><name>a</name>
+                <childSnapshotList><snapshot type="VirtualMachineSnapshot">snapshot-2</snapshot><name>b</name></childSnapshotList>
+              </rootSnapshotList>
+            </val></propSet>
+            """));
+
+        Assert.Equal("2", verdicts[InventoryVerdicts.SnapshotCount]);
+    }
+
+    [Fact]
+    public void A_machine_without_a_snapshot_property_counts_zero() =>
+        // vCenter leaves the property out when there is no snapshot.
+        Assert.Equal("0", InventoryVerdictParser.Read(Single("VirtualMachine", "vm-1", VmRuntime))[InventoryVerdicts.SnapshotCount]);
+
+    [Fact]
     public void Consolidation_and_connection_state_are_carried_as_vCenter_words_them()
     {
         var verdicts = InventoryVerdictParser.Read(Single("VirtualMachine", "vm-1", VmRuntime));

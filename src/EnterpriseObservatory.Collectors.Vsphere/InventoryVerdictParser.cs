@@ -89,6 +89,14 @@ public static class InventoryVerdicts
     /// <summary>VM: legacy LSI Logic Parallel SCSI controllers. See <see cref="LegacyAdapterE1000"/>.</summary>
     public const string LegacyAdapterLsiLogic = "adapter.legacy.lsiLogic";
 
+    /// <summary>
+    /// VM: how many VMware snapshots its <c>snapshot</c> tree holds, <c>0</c> when
+    /// it has none (eo-simplivity). vCenter leaves the property out on a VM
+    /// with no snapshot, which is why a retrieved VM without it counts zero --
+    /// the same reading the stale-snapshot alarm has always made.
+    /// </summary>
+    public const string SnapshotCount = "snapshot.count";
+
     /// <summary>Cluster: <c>true</c> when a current EVC mode is set (M8.4).</summary>
     public const string EvcEnabled = "evc.enabled";
 
@@ -178,6 +186,10 @@ public static class InventoryVerdictParser
                 CopyValue(o, ConsolidationNeededPath, InventoryVerdicts.ConsolidationNeeded, verdicts);
                 ReadCdroms(o, verdicts);
                 ReadLegacyAdapters(o, verdicts);
+                // Absent = 0 is correct here, not a guess: vSphere does not send an
+                // unset property at all, and a VM with no snapshot has 'snapshot' unset.
+                // The property is in the VM request, so a VM that arrived was asked.
+                verdicts[InventoryVerdicts.SnapshotCount] = Count(VsphereClient.ReadSnapshots(o).Count);
                 break;
 
             case "ClusterComputeResource":

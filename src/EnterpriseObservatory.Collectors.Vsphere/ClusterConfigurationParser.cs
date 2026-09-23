@@ -87,6 +87,11 @@ public static class ClusterConfigurationParser
         Set(ClusterHaSettings.VmMonitoring, TextAmong(nodes, "vmMonitoring"));
         Set(ClusterHaSettings.HeartbeatDatastoreCandidatePolicy, TextAmong(nodes, "hBDatastoreCandidatePolicy"));
 
+        // DPM sits beside dasConfig in configurationEx, not inside it; same
+        // reply, no extra path. Absent when vCenter did not report it.
+        Set(ClusterHaSettings.DpmEnabled, cluster.Structures[ConfigurationExPath]
+            .FirstOrDefault(n => Is(n, "dpmConfigInfo"))?.TextOf("enabled"));
+
         // Polymorphic: ClusterFailoverResourceAdmissionControlPolicy,
         // ClusterFailoverHostAdmissionControlPolicy, or the deprecated
         // ClusterFailoverLevelAdmissionControlPolicy. The concrete type is

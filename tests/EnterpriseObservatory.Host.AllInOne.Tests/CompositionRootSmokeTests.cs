@@ -540,7 +540,7 @@ public sealed class CompositionRootSmokeTests : IDisposable
         // every one bound, beside the vendor guide.
         var compliance = _host.Services.GetRequiredService<ComplianceService>();
 
-        Assert.Equal(3, compliance.Catalogues.Count);
+        Assert.Equal(4, compliance.Catalogues.Count);
         Assert.Same(
             _host.Services.GetRequiredService<Domain.Compliance.ComplianceCatalogue>(),
             CatalogueDescriptor.VendorGuide(compliance.Catalogues));
@@ -570,6 +570,24 @@ public sealed class CompositionRootSmokeTests : IDisposable
             bestPractice.Controls.Select(c => c.ControlId));
         Assert.All(
             compliance.Controls().Where(c => c.CatalogueRelease == BestPracticeCatalogue.Release),
+            c => Assert.True(c.IsEvaluated));
+    }
+
+    [Fact]
+    public void The_compliance_service_judges_the_simplivity_catalogue_beside_the_others()
+    {
+        // S2a: eo-simplivity, found by identity, never by position (P2).
+        var compliance = _host.Services.GetRequiredService<ComplianceService>();
+
+        var simplivity = compliance.Catalogues.Single(c =>
+            CatalogueDescriptor.Of(c).Id == CatalogueDescriptor.SimplivityId);
+
+        Assert.Equal(SimplivityCatalogue.Release, simplivity.Release);
+        Assert.Equal(
+            SimplivityCatalogue.Production.Select(c => c.Control.ControlId),
+            simplivity.Controls.Select(c => c.ControlId));
+        Assert.All(
+            compliance.Controls().Where(c => c.CatalogueRelease == SimplivityCatalogue.Release),
             c => Assert.True(c.IsEvaluated));
     }
 

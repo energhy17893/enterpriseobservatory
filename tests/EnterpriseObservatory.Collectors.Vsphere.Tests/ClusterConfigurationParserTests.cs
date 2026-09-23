@@ -212,6 +212,24 @@ public class ClusterConfigurationParserTests
     }
 
     [Fact]
+    public void Dpm_is_read_from_beside_dasConfig_in_the_same_reply()
+    {
+        var settings = ClusterConfigurationParser.ReadHaSettings(Cluster("""
+            <propSet><name>configurationEx</name><val xsi:type="ClusterConfigInfoEx">
+              <dasConfig><enabled>true</enabled></dasConfig>
+              <dpmConfigInfo><enabled>true</enabled><defaultDpmBehavior>automated</defaultDpmBehavior></dpmConfigInfo>
+            </val></propSet>
+            """))!;
+
+        Assert.Equal("true", settings[ClusterHaSettings.DpmEnabled]);
+    }
+
+    [Fact]
+    public void Dpm_not_reported_stays_absent() =>
+        Assert.False(ClusterConfigurationParser.ReadHaSettings(Cluster(WellConfigured))!
+            .ContainsKey(ClusterHaSettings.DpmEnabled));
+
+    [Fact]
     public void A_cluster_with_a_single_heartbeat_datastore_is_counted_as_one()
     {
         // Only flat leaves under dasConfig. Requested on its own this would

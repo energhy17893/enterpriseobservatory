@@ -31,6 +31,15 @@ public static class InventoryVerdictKeys
     /// <summary>VM: vCenter's <c>runtime.consolidationNeeded</c>, <c>true</c>/<c>false</c>.</summary>
     public const string ConsolidationNeeded = "consolidationNeeded";
 
+    /// <summary>VM: how many VMware snapshots it has, <c>0</c> when none (eo-simplivity).</summary>
+    public const string SnapshotCount = "snapshot.count";
+
+    /// <summary>Cluster: <c>configurationEx.dpmConfigInfo.enabled</c>, <c>true</c>/<c>false</c> (eo-simplivity).</summary>
+    public const string ClusterDpmEnabled = "dpmConfigInfo.enabled";
+
+    /// <summary>Cluster: the HA admission control policy's vim25 type name (eo-simplivity).</summary>
+    public const string ClusterAdmissionControlPolicyType = "dasConfig.admissionControlPolicy.type";
+
     /// <summary>Cluster: <c>true</c> when a current EVC mode is set.</summary>
     public const string EvcEnabled = "evc.enabled";
 
@@ -70,6 +79,9 @@ public static class InventoryVerdictKeys
     /// it has none or has not answered for two days.
     /// </summary>
     public const string SimplivityBackupLastUtc = "simplivity.backup.lastUtc";
+
+    /// <summary>The prefix every SimpliVity annotation key carries; its presence scopes eo-simplivity.</summary>
+    public const string SimplivityPrefix = "simplivity.";
 
     // The rest of the SimpliVity annotation (ADR-0027), as the collector
     // writes it and the SimpliVity page reads it. Here rather than in the
