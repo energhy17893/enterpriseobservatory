@@ -21,30 +21,35 @@ const RAMPS = {
     border: 'border-status-healthy-border',
     text: 'text-status-healthy-text',
     solid: 'bg-status-healthy-solid text-status-healthy-solid-on',
+    dot: 'bg-status-healthy-border',
   },
   Warning: {
     surface: 'bg-status-warning-surface',
     border: 'border-status-warning-border',
     text: 'text-status-warning-text',
     solid: 'bg-status-warning-solid text-status-warning-solid-on',
+    dot: 'bg-status-warning-border',
   },
   Critical: {
     surface: 'bg-status-critical-surface',
     border: 'border-status-critical-border',
     text: 'text-status-critical-text',
     solid: 'bg-status-critical-solid text-status-critical-solid-on',
+    dot: 'bg-status-critical-border',
   },
   Info: {
     surface: 'bg-status-info-surface',
     border: 'border-status-info-border',
     text: 'text-status-info-text',
     solid: 'bg-status-info-solid text-status-info-solid-on',
+    dot: 'bg-status-info-border',
   },
   Unknown: {
     surface: 'bg-status-unknown-surface',
     border: 'border-status-unknown-border',
     text: 'text-status-unknown-text',
     solid: 'bg-status-unknown-solid text-status-unknown-solid-on',
+    dot: 'bg-status-unknown-border',
   },
 } as const
 
