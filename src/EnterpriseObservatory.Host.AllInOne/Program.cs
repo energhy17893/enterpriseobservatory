@@ -484,10 +484,10 @@ builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegi
     monitoringOptions.Collection.MaxRequestsPerSource,
     (instance, detail) => HostLog.SessionNotReleased(
         provider.GetRequiredService<ILogger<VsphereSourceRegistry>>(), instance, detail),
-    (instance, annotations, alerts, foldFailures, notSafe) =>
+    (instance, annotations, alerts, foldFailures, notSafe, filled) =>
     {
         var log = provider.GetRequiredService<ILogger<VsphereSourceRegistry>>();
-        HostLog.SimplivityRead(log, instance, annotations, alerts, foldFailures, notSafe);
+        HostLog.SimplivityRead(log, instance, annotations, alerts, foldFailures, notSafe, filled);
     }));
 
 builder.Services.AddHostedService<MonitoringWorker>();

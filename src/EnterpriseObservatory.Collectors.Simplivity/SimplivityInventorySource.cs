@@ -87,16 +87,28 @@ public sealed class SimplivityInventorySource(
             Annotations = read.Annotations,
             Alerts = read.Alerts,
             Failures = read.Failures,
+            Coverage = read.Coverage(),
             ViewsHeld = 0,
         };
     }
 
     /// <summary>Every page of one collection, <c>limit</c> + <c>offset</c>, until <c>count</c>.</summary>
     /// <remarks>
+    /// <para>
+    /// <c>show_optional_fields=true</c> on every list: HPE leaves its
+    /// "optional" fields out of the default reply. Measured live on Kibar
+    /// (23 September 2026, RedfishProbe --fields, reference-approaches §10.7):
+    /// without it ha_status, ha_resynchronization_progress and
+    /// hypervisor_instance_id were on 0/699 VMs and upgrade_state on 0/13
+    /// clusters, so the one DEGRADED VM read as nothing at all. Chosen over an
+    /// explicit fields= list, which would silently drop any field read later.
+    /// </para>
+    /// <para>
     /// A reply without the collection's array is a failure, never an empty
     /// estate. ponytail: offset paging over a list that changes mid-read may
     /// skip or repeat a row; rows are keyed by id downstream, so a repeat is
     /// harmless and a skip is back next cycle.
+    /// </para>
     /// </remarks>
     private async Task<List<JsonElement>> ReadAllAsync(string collection, CancellationToken cancellationToken)
     {
@@ -105,7 +117,7 @@ public sealed class SimplivityInventorySource(
         for (var offset = 0; ;)
         {
             var path = string.Create(
-                CultureInfo.InvariantCulture, $"/api/{collection}?limit={PageLimit}&offset={offset}");
+                CultureInfo.InvariantCulture, $"/api/{collection}?show_optional_fields=true&limit={PageLimit}&offset={offset}");
 
             using var document = await _channel.GetAsync(path, cancellationToken).ConfigureAwait(false);
             var root = document.RootElement;
@@ -185,6 +197,35 @@ public sealed class SimplivityInventorySource(
 
         private readonly HashSet<EntityId> _annotated = [];
 
+        /// <summary>Per (object type, field): objects judged, and how many carried the field.</summary>
+        private readonly Dictionary<(string Type, string Field), (int Asked, int Answered)> _read = [];
+
+        /// <summary>
+        /// Every field a verdict rests on, as coverage (ADR-0026): one missing
+        /// or null is "could not be evaluated", never SAFE and never an alert.
+        /// A field no object carried at all trips the collection-coverage warning.
+        /// </summary>
+        public List<PropertyCoverage> Coverage() =>
+        [
+            .. _read.OrderBy(r => r.Key.Type, StringComparer.Ordinal).ThenBy(r => r.Key.Field, StringComparer.Ordinal)
+                .Select(r => new PropertyCoverage
+                {
+                    ObjectType = r.Key.Type,
+                    Property = r.Key.Field,
+                    Asked = r.Value.Asked,
+                    Answered = r.Value.Answered,
+                }),
+        ];
+
+        /// <summary>Reads a field a verdict rests on, counting whether it was there.</summary>
+        private string? Judged(JsonElement e, string type, string field)
+        {
+            var value = Text(e, field);
+            var (asked, answered) = _read.GetValueOrDefault((type, field));
+            _read[(type, field)] = (asked + 1, answered + (value is null ? 0 : 1));
+            return value;
+        }
+
         public void Hosts(List<JsonElement> hosts)
         {
             foreach (var host in hosts)
@@ -196,13 +237,11 @@ public sealed class SimplivityInventorySource(
                     continue;
                 }
 
-
-
-                var state = Text(host, "state");
+                var state = Judged(host, "hosts", "state");
                 Annotate(id, $"host '{name}'", new()
                 {
                     ["state"] = state,
-                    ["upgrade_state"] = Text(host, "upgrade_state"),
+                    ["upgrade_state"] = Judged(host, "hosts", "upgrade_state"),
                     ["version"] = Text(host, "version"),
                     // The OVC, by name only: the host carries no reference to
                     // its VM. It folds onto its vSphere VM only when
@@ -253,7 +292,7 @@ public sealed class SimplivityInventorySource(
                     continue;
                 }
 
-                var connected = Text(cluster, "arbiter_connected");
+                var connected = Judged(cluster, "omnistack_clusters", "arbiter_connected");
                 var required = Text(cluster, "arbiter_required");
 
                 Annotate(id, $"OmniStack cluster '{name}'", new()
@@ -262,7 +301,7 @@ public sealed class SimplivityInventorySource(
                     ["arbiter_required"] = required,
                     ["arbiter_configured"] = Text(cluster, "arbiter_configured"),
                     ["arbiter_connected"] = connected,
-                    ["upgrade_state"] = Text(cluster, "upgrade_state"),
+                    ["upgrade_state"] = Judged(cluster, "omnistack_clusters", "upgrade_state"),
                     ["version"] = Text(cluster, "version"),
                     ["members"] = members.Count.ToString(CultureInfo.InvariantCulture),
                 });
@@ -312,7 +351,7 @@ public sealed class SimplivityInventorySource(
                     continue;
                 }
 
-                var ha = Text(vm, "ha_status");
+                var ha = Judged(vm, "virtual_machines", "ha_status");
                 var settings = new Dictionary<string, string?>
                 {
                     ["ha_status"] = ha,

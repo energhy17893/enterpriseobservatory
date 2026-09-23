@@ -14,10 +14,25 @@ using EnterpriseObservatory.RedfishProbe;
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --dry --kind redfish
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --dry --kind simplivity
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind redfish --mask
+//   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind simplivity --fields all
 
 var mask = args.Contains("--mask", StringComparer.OrdinalIgnoreCase);
 var dry = args.Contains("--dry", StringComparer.OrdinalIgnoreCase);
 var shapes = args.Contains("--shapes", StringComparer.OrdinalIgnoreCase);
+
+// --fields default|explicit|optional|all (SimpliVity only): how many objects
+// carry each field the collector reads, per query variant -- the default
+// response, an explicit fields= list, or show_optional_fields=true. The live
+// collector read no ha_status at all (23 September 2026, 1051 log line:
+// 0 VMs not SAFE while this probe's fields= read found DEGRADED=1).
+var fieldsIndex = Array.FindIndex(args, a => string.Equals(a, "--fields", StringComparison.OrdinalIgnoreCase));
+var fieldsMode = fieldsIndex >= 0 && fieldsIndex + 1 < args.Length ? args[fieldsIndex + 1].ToLowerInvariant() : null;
+
+if (fieldsMode is not (null or "default" or "explicit" or "optional" or "all"))
+{
+    Console.Error.WriteLine("--fields takes default, explicit, optional or all.");
+    return 2;
+}
 
 var kindIndex = Array.FindIndex(args, a => string.Equals(a, "--kind", StringComparison.OrdinalIgnoreCase));
 var kind = kindIndex >= 0 && kindIndex + 1 < args.Length ? args[kindIndex + 1].ToLowerInvariant() : null;
@@ -82,7 +97,7 @@ Console.WriteLine($"  certificate validation            {(insecure ? "RELAXED (s
 
 return kind == "redfish"
     ? await RunLiveRedfishAsync(baseAddress, user, password, insecure, mask, shapes, cancellation.Token)
-    : await RunLiveSimplivityAsync(baseAddress, user, password, insecure, mask, shapes, cancellation.Token);
+    : await RunLiveSimplivityAsync(baseAddress, user, password, insecure, mask, shapes, fieldsMode, cancellation.Token);
 
 static async Task<int> RunDryRedfish(bool mask, bool shapes)
 {
@@ -295,7 +310,8 @@ static async Task<int> RunLiveRedfishAsync(
 }
 
 static async Task<int> RunLiveSimplivityAsync(
-    Uri baseAddress, string user, string password, bool insecure, bool mask, bool shapes, CancellationToken cancellationToken)
+    Uri baseAddress, string user, string password, bool insecure, bool mask, bool shapes, string? fieldsMode,
+    CancellationToken cancellationToken)
 {
     using var client = new SimplivityClient(baseAddress, insecure);
     var timing = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
@@ -367,6 +383,38 @@ static async Task<int> RunLiveSimplivityAsync(
                 [array] = items,
                 ["count"] = count,
             });
+        }
+
+        if (fieldsMode is not null)
+        {
+            string[] variants = fieldsMode == "all" ? ["default", "explicit", "optional"] : [fieldsMode];
+
+            foreach (var variant in variants)
+            {
+                Console.WriteLine($"=== --fields {variant} ===");
+
+                foreach (var (endpoint, fields) in FieldCoverage.Read)
+                {
+                    var query = variant switch
+                    {
+                        "explicit" => $"?fields={string.Join(',', fields)}",
+                        "optional" => "?show_optional_fields=true",
+                        _ => string.Empty,
+                    };
+
+                    if (await ReadAllAsync($"/api/{endpoint}{query}", endpoint) is not { } all)
+                    {
+                        continue;
+                    }
+
+                    foreach (var line in FieldCoverage.Lines(endpoint, all, fields))
+                    {
+                        Console.WriteLine(line);
+                    }
+                }
+            }
+
+            return 0;
         }
 
         var hosts = await ReadAllAsync("/api/hosts", "hosts");
