@@ -1,5 +1,6 @@
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Collectors.Vsphere;
+using EnterpriseObservatory.Domain;
 
 namespace EnterpriseObservatory.Collectors.Contract.Tests;
 
@@ -21,6 +22,9 @@ public sealed class VsphereInventoryContractFixture : IInventoryContractFixture
     public IInventorySource CreateWithFailures(int hostCount, int failureCount) =>
         new VsphereInventorySource(
             new FixedPayloadApi(InstanceId, Payload(hostCount, failureCount)), new TestClock());
+
+    public IReadOnlyList<string> AcceptedTargets(InventorySnapshot snapshot) =>
+        [.. snapshot.Entities.Where(e => e.Kind == EntityKind.EsxiHost).Select(e => e.Id.Value)];
 
     private static VsphereInventoryPayload Payload(int hostCount, int failureCount) => new()
     {

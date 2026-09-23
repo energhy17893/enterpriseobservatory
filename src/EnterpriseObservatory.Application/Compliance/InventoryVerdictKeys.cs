@@ -63,4 +63,11 @@ public static class InventoryVerdictKeys
 
     /// <summary>VM: which clock the value was read in (it carries no offset of its own).</summary>
     public const string BackupTimeBasis = "backup.timeBasis";
+
+    /// <summary>
+    /// VM: the newest PROTECTED SimpliVity backup's <c>created_at</c>, ISO-8601
+    /// UTC — an annotation from the SimpliVity source (ADR-0027), absent when
+    /// it has none or has not answered for two days.
+    /// </summary>
+    public const string SimplivityBackupLastUtc = "simplivity.backup.lastUtc";
 }

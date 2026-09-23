@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Application\EnterpriseObservatory.Application.csproj" />
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Domain\EnterpriseObservatory.Domain.csproj" />
+    <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Simplivity\EnterpriseObservatory.Collectors.Simplivity.csproj" />
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
   </ItemGroup>
 

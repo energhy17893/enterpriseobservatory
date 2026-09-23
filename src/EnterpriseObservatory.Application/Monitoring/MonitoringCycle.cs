@@ -220,8 +220,11 @@ public sealed class MonitoringCycle(
         var entities = cycle.Snapshots.SelectMany(s => s.Entities).ToList();
         var relationships = cycle.Snapshots.SelectMany(s => s.Relationships).ToList();
 
+        // Annotations fold onto entities other sources own (ADR-0027); they
+        // never open one.
         var graph = _graphStore.Current.Merge(
-            entities, relationships, reporting, now, options.EntityRetention);
+            entities, relationships, reporting, now, options.EntityRetention,
+            [.. cycle.Snapshots.SelectMany(s => s.Annotations)]);
 
         graph = graph with { Relationships = [.. graph.Relationships, .. ResolveIdentity(graph, now)] };
 

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\EnterpriseObservatory.Application\EnterpriseObservatory.Application.csproj" />
+  </ItemGroup>
+
+</Project>

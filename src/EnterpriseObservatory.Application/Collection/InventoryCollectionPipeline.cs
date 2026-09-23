@@ -73,7 +73,7 @@ public sealed class InventoryCollectionPipeline
                 gate,
                 cancellationToken,
                 extras: static snapshot => new SelfMetricsExtras(
-                    ItemsRead: snapshot.Entities.Count,
+                    ItemsRead: snapshot.Entities.Count + snapshot.Annotations.Count,
                     ViewsHeld: snapshot.ViewsHeld)))).ConfigureAwait(false);
 
         return new CollectionCycleResult
@@ -120,6 +120,17 @@ public sealed class InventoryCollectionPipeline
         Entities =
         [
             .. snapshot.Entities.Select(e => e with { SourceInstanceId = snapshot.SourceInstanceId }),
+        ],
+        // Provenance and age for the same reason (ADR-0027): the carry-forward
+        // limit runs from the read, and only the source that said it may
+        // replace it.
+        Annotations =
+        [
+            .. snapshot.Annotations.Select(a => a with
+            {
+                SourceInstanceId = snapshot.SourceInstanceId,
+                ReadAtUtc = snapshot.ReadAtUtc,
+            }),
         ],
         Alerts = [.. snapshot.Alerts.Select(a => a with { Scope = AlertScopes.Inventory })],
         // Provenance again, for the same reason: a sample's source is what an

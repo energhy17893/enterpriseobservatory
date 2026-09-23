@@ -19,13 +19,18 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Domain\EnterpriseObservatory.Domain.csproj" />
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Application\EnterpriseObservatory.Application.csproj" />
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Simplivity\EnterpriseObservatory.Collectors.Simplivity.csproj" />
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Api\EnterpriseObservatory.Api.csproj" />
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Persistence.Postgres\EnterpriseObservatory.Persistence.Postgres.csproj" />
-    <ProjectReference Include="..\..\src\EnterpriseObservatory.Host.AllInOne\EnterpriseObservatory.Host.AllInOne.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      HPE-shaped replies: the RedfishProbe fixtures (built from HPE's published
+      OmniStack schema, see tests/EnterpriseObservatory.RedfishProbe.Tests/
+      Fixtures/SimpliVity/SIMPLIVITY-SOURCES.md) with the references in the
+      composite form measured live on Kibar, 23 September 2026.
+    -->
+    <None Update="Fixtures/*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>

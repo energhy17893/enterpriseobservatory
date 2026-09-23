@@ -7,7 +7,7 @@ namespace EnterpriseObservatory.Collectors.Contract.Tests;
 /// The source-level half of the inventory collector contract suite
 /// (ADR-0025, roadmap T2.1): what <see cref="InventoryCollectionPipeline"/>
 /// guarantees for any <c>IInventorySource</c> plugged into it, proven here
-/// against today's vSphere source.
+/// against every collector that supplies a fixture.
 /// </summary>
 public abstract class InventoryContractTests<TFixture>
     where TFixture : IInventoryContractFixture, new()
@@ -79,7 +79,7 @@ public abstract class InventoryContractTests<TFixture>
                 [source], health, CollectionPolicy.Default, CancellationToken.None);
 
             health = result.Health;
-            entityCounts.Add(result.Snapshots.Single().Entities.Count);
+            entityCounts.Add(fixture.AcceptedTargets(result.Snapshots.Single()).Count);
         }
 
         // A source that keeps answering the same estate must keep reporting
@@ -100,7 +100,7 @@ public abstract class InventoryContractTests<TFixture>
 
         var snapshot = await source.ReadAsync(CancellationToken.None);
 
-        var accepted = snapshot.Entities.Where(e => e.Kind == EntityKind.EsxiHost).ToList();
+        var accepted = fixture.AcceptedTargets(snapshot);
         var dropped = snapshot.Failures;
 
         Assert.Equal(12, accepted.Count);
@@ -108,7 +108,7 @@ public abstract class InventoryContractTests<TFixture>
 
         // No duplicate accepted host and no duplicate dropped target — the
         // other half of "nothing vanishes" is "nothing is counted twice".
-        Assert.Equal(accepted.Count, accepted.Select(e => e.Id).Distinct().Count());
+        Assert.Equal(accepted.Count, accepted.Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(dropped.Count, dropped.Select(f => f.Target).Distinct().Count());
     }
 }

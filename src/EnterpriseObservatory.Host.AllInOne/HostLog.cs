@@ -377,4 +377,15 @@ internal static partial class HostLog
         Level = LogLevel.Error,
         Message = "Rotating the database password failed ({Actor}): {Detail}")]
     public static partial void DatabasePasswordRotationFailed(ILogger logger, string actor, string detail);
+
+    /// <summary>
+    /// A collector could not give its session or token back on close. A
+    /// warning, not an error: the SimpliVity OVC answers every revoke 401
+    /// (measured), and the token idles out ten minutes later anyway.
+    /// </summary>
+    [LoggerMessage(
+        EventId = 1050,
+        Level = LogLevel.Warning,
+        Message = "Connection {InstanceId} closed without giving its session back: {Detail}.")]
+    public static partial void SessionNotReleased(ILogger logger, string instanceId, string detail);
 }

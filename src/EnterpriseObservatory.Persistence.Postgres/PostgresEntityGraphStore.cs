@@ -64,6 +64,11 @@ public sealed class PostgresEntityGraphStore : IEntityGraphStore
             CopyEvidence(connection, graph);
         });
 
+        // Entity settings, and with them ADR-0027's annotations
+        // (EntityGraph.Annotations), are not columns: they live in this
+        // working copy only. After a restart Load() returns none, and every
+        // annotation reads as absent until its source answers again — the
+        // safe direction, and exactly what the owner's own settings do.
         _current = graph;
     }
 

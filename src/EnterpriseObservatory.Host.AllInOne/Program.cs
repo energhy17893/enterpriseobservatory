@@ -452,8 +452,8 @@ builder.Services.AddSingleton<ISourceCapabilityReader>(
 // collector start disagreeing about what is being polled.
 //
 // The probe map is also the catalogue's job: it is what lets it pick a
-// prober by a connection's kind and report "no collector yet" for redfish
-// and simplivity, whose modules have not landed, instead of throwing.
+// prober by a connection's kind and report "no collector yet" for redfish,
+// whose module has not landed, instead of throwing.
 builder.Services.AddSingleton(provider => new SourceConnectionCatalogue(
     provider.GetRequiredService<ISourceConnectionStore>(),
     [.. endpoints.Select(AsConnection)],
@@ -461,6 +461,7 @@ builder.Services.AddSingleton(provider => new SourceConnectionCatalogue(
     new Dictionary<string, IConnectionProbe>(StringComparer.Ordinal)
     {
         [ConnectionKinds.Vsphere] = provider.GetRequiredService<VsphereConnectionProbe>(),
+        [ConnectionKinds.Simplivity] = new SimplivityConnectionProbe(),
     }));
 
 builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegistry(
@@ -469,7 +470,9 @@ builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegi
     provider.GetRequiredService<IClock>(),
     (instance, why) => HostLog.ConnectionNotPolled(
         provider.GetRequiredService<ILogger<VsphereSourceRegistry>>(), instance, why),
-    monitoringOptions.Collection.MaxRequestsPerSource));
+    monitoringOptions.Collection.MaxRequestsPerSource,
+    (instance, detail) => HostLog.SessionNotReleased(
+        provider.GetRequiredService<ILogger<VsphereSourceRegistry>>(), instance, detail)));
 
 builder.Services.AddHostedService<MonitoringWorker>();
 builder.Services.AddHostedService<CompactionWorker>();

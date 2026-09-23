@@ -266,6 +266,26 @@ public class VsphereSourceRegistryTests : IDisposable
             inventory.Single(s => s.InstanceId == "vc-2"));
     }
 
+    // --- S3: a second kind, built through the same registry -----------------
+
+    [Fact]
+    public void A_simplivity_connection_is_read_for_inventory_only()
+    {
+        // Built by kind, not held back as "no collector for kind" any more.
+        // SimpliVity has no metrics and no event stream of its own (its alarms
+        // reach the product through vCenter's events), so it appears in the
+        // inventory list and nowhere else.
+        _connections.Add(Connection("vc-1"));
+        _connections.Add(Connection("svt-1") with { Kind = ConnectionKinds.Simplivity });
+
+        Assert.Equal(
+            ["svt-1", "vc-1"],
+            Registry().Inventory.Select(s => s.InstanceId).OrderBy(id => id, StringComparer.Ordinal));
+        Assert.Equal(["vc-1"], Registry().Observations.Select(s => s.InstanceId));
+        Assert.Equal(["vc-1"], Registry().Events.Select(s => s.InstanceId));
+        Assert.Empty(_logged);
+    }
+
     // --- helpers -----------------------------------------------------------
 
     /// <summary>
