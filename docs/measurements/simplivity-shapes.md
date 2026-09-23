@@ -84,6 +84,28 @@ ayrılmış ilk parçası vCenter'ın `about.instanceUuid`'i, son parçası
 kullanabilir); UUID parçası bunu çözer. Değerlerin eşleşme sayısı
 kolektörde ölçülür, burada yalnız biçim var.
 
+### Donanım ağacı (`GET /api/hosts/{id}/hardware`), 23 Eylül 2026 20:55Z
+
+`RedfishProbe --kind simplivity --from-store KibarHolding-KBSVT --hardware`
+(salt-okunur; yalnız alan adları ve durum kelimeleri). İkincil kaynakların
+şeması doğrulandı: `host.{raid_card, battery, accelerator_card,
+logical_drives[].drive_sets[].physical_drives[]}`; fiziksel sürücüde
+`status`, `health`, `life_remaining`, `percent_rebuilt`, `media_type`,
+`additional_status[]`.
+
+| Ölçü | Değer |
+|---|---|
+| Çağrı süresi | host başına 0,8–1,0 s; 26 host sıralı 19,6 s |
+| `status` sözlüğü | renk: `GREEN` (sarı/kırmızı bu estate'te görülmedi) |
+| `health` sözlüğü | `HEALTHY` |
+| Fiziksel sürücü | 576, hepsi GREEN/HEALTHY, `life_remaining` > %10 |
+| drive_set / logical_drive | 82 / 56, hepsi GREEN/HEALTHY; önbellek `Write Back` 56 |
+| raid_card / battery | 26 / 26 GREEN; battery health HEALTHY |
+| accelerator_card | 18 GREEN, **8 boş `status`** (kartı olmayan host → Unknown, RED değil) |
+
+Kibar için beklenen S4 alarm sayısı: 0. 26 host'luk sıralı okuma 19,6 s —
+her 120 s turunda değil, yavaş kademede ya da paralel okunmalı.
+
 ## İlk soru (canlıda henüz cevapsız)
 
 23 Eylül'de ölçülen: olay akışında `com.simplivity.event.*` **0** (bkz.

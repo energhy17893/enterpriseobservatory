@@ -69,7 +69,7 @@ public class EventCollectionPipelineTests
                 (_cursors.GetValueOrDefault(sourceInstanceId) ?? new EventCursor { SourceInstanceId = sourceInstanceId })
                 with { LastAttemptUtc = attemptedAtUtc, LastFailure = detail };
 
-        public IReadOnlyList<SourceEvent> Recent(int limit, string? sourceInstanceId = null) => Events;
+        public EventPage Recent(int offset, int limit, string? sourceInstanceId = null, string? search = null) => new(Events, Events.Count);
 
         public int Prune(DateTimeOffset createdBeforeUtc)
         {

@@ -104,8 +104,8 @@ public static class ObservatoryApi
         // What vCenter itself reported happening, as it said it. Not the
         // grouped alerts above, which share the word: those are this product's
         // conclusions, these are the source's record.
-        api.MapGet("/vcenter-events", (IEventStore store, string? source, int? limit) =>
-                EventFeed.Build(store, source, limit))
+        api.MapGet("/vcenter-events", (IEventStore store, string? source, string? search, int? offset, int? limit) =>
+                EventFeed.Build(store, source, search, offset, limit))
             .WithName("GetVcenterEvents");
 
         api.MapGet("/collectors", (ReadModel model) => model.Collectors())
@@ -364,7 +364,7 @@ public static class ObservatoryApi
             Applied = result.Applied,
             Requested = result.Requested,
             Missing = result.Missing,
-            Alerts = [.. result.Changed.Select(model.Present)],
+            Alerts = model.Present([.. result.Changed]),
             Refusal = result.Applied ? null : result.Refusal.ToString(),
             RecordedAs = actor.AuditName,
         };

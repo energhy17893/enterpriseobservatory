@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { AlertRow } from '@/components/AlertRow'
@@ -43,7 +43,14 @@ type View = 'incidents' | 'vcenter'
 
 export function Events() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
-  const [view, setView] = useState<View>('incidents')
+  // In the URL with the feed's page and search, so a reload or a shared link
+  // lands on the same page of the same tab.
+  const [params, setParams] = useSearchParams()
+  const view: View = params.get('view') === 'vcenter' ? 'vcenter' : 'incidents'
+
+  function setView(next: View) {
+    setParams(next === 'vcenter' ? { view: next } : {}, { replace: true })
+  }
 
   const { data, isPending, isError, error } = useQuery({
     queryKey: ['events'],
@@ -297,6 +304,10 @@ function Tabs({ view, onChange }: { view: View; onChange: (view: View) => void }
   )
 }
 
+// eo-ux §7: the page size is "to be measured"; 50 is the API's default, the
+// same as the alert list's, until a render measurement says otherwise.
+const EVENT_PAGE_SIZE = 50
+
 /** vCenter's own severity, on this product's status ramp. */
 function eventStatus(severity: string | null): StatusName {
   if (severity === 'error') return 'Critical'
@@ -313,25 +324,34 @@ function eventStatus(severity: string | null): StatusName {
  * ask", and the screen has to say which one it is.
  */
 function VcenterEvents() {
-  const [search, setSearch] = useState('')
+  // E2: paged and searched on the server, the A1 pattern — offset and search
+  // in the URL, "x–y of N" announced. The client used to take the newest 200
+  // and filter those, so "nothing matches" could be false for an older event.
+  const [params, setParams] = useSearchParams()
+  const search = params.get('search') ?? ''
+  const offsetParam = Number(params.get('offset') ?? '0')
+  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0
 
   const { data, isPending, isError, error } = useQuery<EventFeedView>({
-    queryKey: ['vcenter-events'],
-    queryFn: () => api.vcenterEvents(),
+    queryKey: ['vcenter-events', search, offset],
+    queryFn: () => api.vcenterEvents({ search: search || undefined, offset, limit: EVENT_PAGE_SIZE }),
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   })
 
+  function setParam(key: 'search' | 'offset', value: string) {
+    const next = new URLSearchParams(params)
+    if (value === '' || value === '0') next.delete(key)
+    else next.set(key, value)
+    // A new search makes the current page meaningless: back to its start.
+    if (key === 'search') next.delete('offset')
+    setParams(next, { replace: true })
+  }
+
   if (isError) return <LoadFailure what="vCenter events" error={error} />
   if (isPending) return <Loading what="vCenter events" />
 
-  const needle = search.trim().toLowerCase()
-  const shown = needle === ''
-    ? data.events
-    : data.events.filter((e) =>
-        [e.typeId, e.message, e.userName ?? '', e.host?.name ?? '', e.virtualMachine?.name ?? '']
-          .some((text) => text.toLowerCase().includes(needle)),
-      )
+  const total = data.total
 
   return (
     <div className="space-y-3">
@@ -367,21 +387,81 @@ function VcenterEvents() {
         </Card>
       )}
 
-      <input
-        type="search"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        placeholder="Filter by type, message, user, host or VM"
-        className="w-full max-w-md rounded-md border border-border bg-page px-3 py-1.5 text-sm"
-      />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setParam('search', event.target.value)}
+          placeholder="Search type, message, user, host or VM"
+          aria-label="Search vCenter events"
+          className="w-full max-w-md rounded-md border border-border bg-page px-3 py-1.5 text-sm"
+        />
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          {/* WCAG 4.1.3: the range changes on every page or search and is announced. */}
+          <span className="tabular" role="status" aria-live="polite">
+            {total === 0
+              ? '0 of 0'
+              : `${offset + 1}–${Math.min(offset + EVENT_PAGE_SIZE, total)} of ${total}`}
+          </span>
+          <button
+            type="button"
+            aria-label="Previous page of vCenter events"
+            disabled={offset === 0}
+            onClick={() => setParam('offset', String(Math.max(0, offset - EVENT_PAGE_SIZE)))}
+            className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            aria-label="Next page of vCenter events"
+            disabled={offset + EVENT_PAGE_SIZE >= total}
+            onClick={() => setParam('offset', String(offset + EVENT_PAGE_SIZE))}
+            className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
 
-      {shown.length === 0 ? (
-        <Empty>
-          {data.events.length === 0 ? 'No vCenter events recorded.' : 'Nothing matches the filter.'}
-        </Empty>
+      {data.events.length === 0 ? (
+        total > 0 ? (
+          // A kept URL whose page has since aged out: not an empty feed either.
+          <Empty
+            action={
+              <button
+                type="button"
+                onClick={() => setParam('offset', '0')}
+                className="rounded-md border border-border px-3 py-1 text-xs text-foreground"
+              >
+                First page
+              </button>
+            }
+          >
+            This page is past the last of {total} events.
+          </Empty>
+        ) : search !== '' ? (
+          // A2: a search that found nothing is not an empty feed.
+          <Empty
+            action={
+              <button
+                type="button"
+                onClick={() => setParam('search', '')}
+                className="rounded-md border border-border px-3 py-1 text-xs text-foreground"
+              >
+                Clear search
+              </button>
+            }
+          >
+            No vCenter events in the last {data.retentionDays} days match this search.
+            <div className="mt-1">Search: "{search}"</div>
+          </Empty>
+        ) : (
+          <Empty>No vCenter events recorded in the last {data.retentionDays} days.</Empty>
+        )
       ) : (
         <div className="space-y-2">
-          {shown.map((e) => (
+          {data.events.map((e) => (
             <VcenterEvent key={`${e.sourceInstanceId}|${e.key}|${e.createdAtUtc}`} event={e} />
           ))}
         </div>

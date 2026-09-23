@@ -455,6 +455,90 @@ static async Task<int> RunLiveSimplivityAsync(
         }
 
         var hosts = await ReadAllAsync("/api/hosts", "hosts");
+
+        // S4 needs the hardware tree's real shape before any rule is written
+        // (secondary sources only so far, reference §10.8). Three hosts are
+        // timed; the first one's shape is printed deep enough to reach
+        // logical_drives[].drive_sets[].physical_drives[]. Names only.
+        if (Environment.GetCommandLineArgs().Contains("--hardware", StringComparer.OrdinalIgnoreCase))
+        {
+            var ids = hosts is { } h && h.TryGetProperty("hosts", out var list)
+                ? list.EnumerateArray().Select(x => x.GetProperty("id").GetString()!).ToList()
+                : [];
+            // Status words across every host (not identifying): what S4's
+            // alarms would see. Keyed "<part>.<field>=<value>".
+            var tally = new SortedDictionary<string, int>(StringComparer.Ordinal);
+            void Count(string key) => tally[key] = tally.GetValueOrDefault(key) + 1;
+            void Words(string part, JsonElement e)
+            {
+                foreach (var f in new[] { "status", "health", "cache_state" })
+                {
+                    if (e.TryGetProperty(f, out var v) && v.ValueKind == JsonValueKind.String)
+                    {
+                        Count($"{part}.{f}={v.GetString()}");
+                    }
+                }
+            }
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            for (var i = 0; i < ids.Count; i++)
+            {
+                var read = await client.GetAsync($"/api/hosts/{ids[i]}/hardware", cancellationToken);
+                Console.WriteLine($"  GET /api/hosts/{{id}}/hardware host {i + 1}: " +
+                                  (read.Ok ? "ok" : $"FAILED {read.StatusCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? read.Error}") +
+                                  $"  {read.Elapsed.TotalMilliseconds:0} ms");
+                if (i == 0 && read.Ok)
+                {
+                    ShapeDump.Print("GET /api/hosts/{id}/hardware", read.Document!.RootElement, depth: 9);
+
+                    // A masked copy of one real reply, for fixtures: every field
+                    // name and type as received; identifying values replaced by
+                    // fakes of the same shape.
+                    if (Environment.GetEnvironmentVariable("EO_PROBE_DUMP") is { Length: > 0 } dumpPath)
+                    {
+                        var node = System.Text.Json.Nodes.JsonNode.Parse(read.Document!.RootElement.GetRawText())!;
+                        MaskIdentifying(node);
+                        File.WriteAllText(dumpPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                        Console.WriteLine($"  masked reply written to {dumpPath}");
+                    }
+                }
+
+                if (read.Ok && read.Document!.RootElement.TryGetProperty("host", out var hw))
+                {
+                    Words("host", hw);
+                    foreach (var part in new[] { "raid_card", "battery", "accelerator_card" })
+                    {
+                        if (hw.TryGetProperty(part, out var o) && o.ValueKind == JsonValueKind.Object) { Words(part, o); }
+                    }
+                    if (hw.TryGetProperty("logical_drives", out var lds) && lds.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var ld in lds.EnumerateArray())
+                        {
+                            Words("logical_drive", ld);
+                            if (!ld.TryGetProperty("drive_sets", out var dss) || dss.ValueKind != JsonValueKind.Array) { continue; }
+                            foreach (var ds in dss.EnumerateArray())
+                            {
+                                Words("drive_set", ds);
+                                if (!ds.TryGetProperty("physical_drives", out var pds) || pds.ValueKind != JsonValueKind.Array) { continue; }
+                                foreach (var pd in pds.EnumerateArray())
+                                {
+                                    Words("physical_drive", pd);
+                                    if (pd.TryGetProperty("life_remaining", out var lr) && lr.ValueKind == JsonValueKind.Number)
+                                    {
+                                        var pct = lr.GetDouble();
+                                        Count(pct <= 5 ? "physical_drive.life_remaining<=5" : pct <= 10 ? "physical_drive.life_remaining<=10" : "physical_drive.life_remaining>10");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Console.WriteLine($"  hosts read {ids.Count}, total {stopwatch.Elapsed.TotalSeconds:0.0} s (sequential)");
+            foreach (var (k, n) in tally) { Console.WriteLine($"    {k,-55} {n}"); }
+            return 0;
+        }
+
         var clusters = await ReadAllAsync("/api/omnistack_clusters", "omnistack_clusters");
         var vms = await ReadAllAsync(
             "/api/virtual_machines?fields=id,name,state,ha_status,host_id,omnistack_cluster_id", "virtual_machines");
@@ -508,4 +592,33 @@ static JsonElement? LoadSample(string kindFolder, string fileName)
 
     using var document = JsonDocument.Parse(File.ReadAllText(path));
     return document.RootElement.Clone();
+}
+
+static void MaskIdentifying(System.Text.Json.Nodes.JsonNode? node)
+{
+    string[] keys = ["serial_number", "wwn", "host_id", "name", "id"];
+    switch (node)
+    {
+        case System.Text.Json.Nodes.JsonObject o:
+            foreach (var (k, v) in o.ToList())
+            {
+                if (keys.Contains(k, StringComparer.Ordinal) && v is System.Text.Json.Nodes.JsonValue jv && jv.TryGetValue<string>(out var str))
+                {
+                    o[k] = new string([.. str.Select(c => char.IsDigit(c) ? '9' : char.IsLetter(c) ? 'X' : c)]);
+                }
+                else
+                {
+                    MaskIdentifying(v);
+                }
+            }
+
+            break;
+        case System.Text.Json.Nodes.JsonArray a:
+            foreach (var item in a)
+            {
+                MaskIdentifying(item);
+            }
+
+            break;
+    }
 }

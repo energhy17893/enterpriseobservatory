@@ -33,6 +33,20 @@ export function AlertRow({
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={severityStatus(alert.severity)}>{alert.severity}</StatusBadge>
             <span className="font-medium">{alert.title}</span>
+            {/*
+              A8 (Veeam's repeat count): how many lives this alert has had in
+              the kept history. One is the ordinary case and says nothing.
+            */}
+            {alert.repeatCount > 1 && (
+              <span
+                className="tabular rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground"
+                title={`Raised ${alert.repeatCount} times in the kept alert history`}
+              >
+                {/* aria-label is not read on a plain span; the text is. */}
+                <span aria-hidden="true">×{alert.repeatCount}</span>
+                <span className="sr-only">repeated {alert.repeatCount} times</span>
+              </span>
+            )}
             {alert.state !== 'Open' && (
               <span className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
                 {alert.state}

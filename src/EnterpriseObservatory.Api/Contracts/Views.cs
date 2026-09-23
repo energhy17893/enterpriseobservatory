@@ -93,6 +93,17 @@ public sealed record AlertView
     public required DateTimeOffset LastSeenUtc { get; init; }
 
     /// <summary>
+    /// How many lives this fingerprint has had in the kept history, this one
+    /// included (A8; Veeam ONE's "Repeat count", reference §11.5).
+    /// </summary>
+    /// <remarks>
+    /// At least one. Counted once per page, never per alert, on every surface
+    /// that shows an alert (ADR-0007 §5: the same alert reads the same
+    /// everywhere). Bounded by the history's retention.
+    /// </remarks>
+    public required int RepeatCount { get; init; }
+
+    /// <summary>
     /// When the newest input the alert's state rests on was taken (ADR-0026
     /// point 3): the API does not return a state without its freshness.
     /// </summary>
@@ -338,6 +349,49 @@ public sealed record SimplivitySourceView
     public required IReadOnlyList<SimplivityVmView> NotSafeVms { get; init; }
 
     public required SimplivityBackupsView Backups { get; init; }
+
+    /// <summary>Every annotated host's hardware tree (S4), by name; a host whose tree was not read has every field null.</summary>
+    public required IReadOnlyList<SimplivityHardwareView> Hardware { get; init; }
+}
+
+/// <summary>
+/// One host's <c>simplivity.hw.*</c> annotation. Colours are HPE's words
+/// (GREEN/YELLOW/RED); null is Unknown, never GREEN (ADR-0026).
+/// </summary>
+public sealed record SimplivityHardwareView
+{
+    public required string EntityId { get; init; }
+
+    public required string Name { get; init; }
+
+    public string? Status { get; init; }
+
+    public string? RaidStatus { get; init; }
+
+    public string? BatteryStatus { get; init; }
+
+    public string? BatteryHealth { get; init; }
+
+    public int? BatteryPercentCharged { get; init; }
+
+    public string? AcceleratorStatus { get; init; }
+
+    public int? Drives { get; init; }
+
+    /// <summary>Physical drives by <c>status</c>; empty when not read.</summary>
+    public required IReadOnlyDictionary<string, int> DriveStatuses { get; init; }
+
+    /// <summary>Physical drives by <c>health</c>; empty when not read.</summary>
+    public required IReadOnlyDictionary<string, int> DriveHealths { get; init; }
+
+    /// <summary>The lowest SSD life remaining, percent.</summary>
+    public int? MinLifeRemaining { get; init; }
+
+    public int? DrivesRebuilding { get; init; }
+
+    public required bool CarriedForward { get; init; }
+
+    public required DateTimeOffset ReadAtUtc { get; init; }
 }
 
 public sealed record SimplivityClusterView
