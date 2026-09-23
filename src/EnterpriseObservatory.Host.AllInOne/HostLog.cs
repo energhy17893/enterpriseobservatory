@@ -404,9 +404,9 @@ internal static partial class HostLog
     [LoggerMessage(
         EventId = 1051,
         Level = LogLevel.Information,
-        Message = "SimpliVity {Instance}: {Annotations} annotations, {Alerts} alerts, {FoldFailures} fold failures, {NotSafe} VMs not SAFE")]
+        Message = "SimpliVity {Instance}: {Annotations} annotations, {Alerts} alerts, {FoldFailures} fold failures, {NotSafe} VMs not SAFE; filled {Filled}")]
     public static partial void SimplivityRead(
-        ILogger logger, string instance, int annotations, int alerts, int foldFailures, int notSafe);
+        ILogger logger, string instance, int annotations, int alerts, int foldFailures, int notSafe, string filled);
 
     /// <summary>One answering source's alerts through the inventory cycle (S3 follow-up diagnostic).</summary>
     [LoggerMessage(

@@ -73,10 +73,10 @@ public class SimplivityInventorySourceTests
         var snapshot = await ovc.Source(new FakeDirectory([])).ReadAsync(CancellationToken.None);
 
         Assert.Equal(1_201, snapshot.Failures.Count); // none fold: the directory is empty
-        Assert.Contains("GET /api/hosts?limit=500&offset=0", ovc.Requests);
-        Assert.Contains("GET /api/hosts?limit=500&offset=500", ovc.Requests);
-        Assert.Contains("GET /api/hosts?limit=500&offset=1000", ovc.Requests);
-        Assert.DoesNotContain("GET /api/hosts?limit=500&offset=1500", ovc.Requests);
+        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=500&offset=0", ovc.Requests);
+        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=500&offset=500", ovc.Requests);
+        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=500&offset=1000", ovc.Requests);
+        Assert.DoesNotContain("GET /api/hosts?show_optional_fields=true&limit=500&offset=1500", ovc.Requests);
     }
 
     [Fact]
@@ -239,6 +239,57 @@ public class SimplivityInventorySourceTests
 
         Assert.Equal("SAFE", Settings(listed, Vc("vm-900"))["simplivity.ha_status"]);
         Assert.Empty(listed.Failures);
+    }
+
+    // --- optional fields (23 September 2026 live finding) -------------------
+
+    [Fact]
+    public async Task Every_list_request_asks_for_the_optional_fields()
+    {
+        // Without it the OVC leaves ha_status out (measured 0/699), and the
+        // one DEGRADED VM read as nothing. The fake answers default-shaped
+        // unless asked, so the DEGRADED alert below proves the request too.
+        var ovc = FakeOvc.FromFixtures();
+
+        var snapshot = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+
+        var lists = ovc.Requests.Where(r => r.StartsWith("GET /api/", StringComparison.Ordinal)).ToList();
+        Assert.Equal(4, lists.Count);
+        Assert.All(lists, r => Assert.Contains("show_optional_fields=true", r, StringComparison.Ordinal));
+        Assert.Single(snapshot.Alerts, a => a.Entity == Vc("vm-103"));
+        Assert.Contains(snapshot.Coverage, c => c is { ObjectType: "virtual_machines", Property: "ha_status", Asked: 4, Answered: 4 });
+    }
+
+    [Fact]
+    public async Task A_vm_without_ha_status_is_unknown_not_safe_and_raises_no_alert()
+    {
+        // The default-shaped reply (Fixtures/virtual_machines.default.json):
+        // the DEGRADED VM is there, its ha_status is not. Unknown (ADR-0026):
+        // no key, no alert, and counted as not evaluated -- never SAFE.
+        var ovc = FakeOvc.FromFixtures();
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "virtual_machines.default.json")))!;
+        ovc.Collections["virtual_machines"] = [.. json["virtual_machines"]!.AsArray().Select(n => n!.DeepClone())];
+
+        var snapshot = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Title == "SimpliVity storage HA not safe");
+        Assert.False(Settings(snapshot, Vc("vm-103")).ContainsKey("simplivity.ha_status"));
+        Assert.Contains(snapshot.Coverage, c => c is { ObjectType: "virtual_machines", Property: "ha_status", Asked: 4, Answered: 0 });
+    }
+
+    [Fact]
+    public async Task Missing_cluster_and_host_fields_raise_nothing_and_are_counted()
+    {
+        var ovc = FakeOvc.FromFixtures();
+        ovc.Collections["omnistack_clusters"][0]!.AsObject().Remove("arbiter_connected");
+        ovc.Collections["hosts"][2]!.AsObject().Remove("state"); // the FAULTY one
+
+        var snapshot = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(snapshot.Alerts, a => a.Entity == Vc("domain-c7") || a.Entity == Vc("host-23"));
+        Assert.Contains(snapshot.Coverage, c => c is { ObjectType: "omnistack_clusters", Property: "arbiter_connected", Answered: 0 });
+        Assert.Contains(snapshot.Coverage, c => c is { ObjectType: "hosts", Property: "state", Asked: 3, Answered: 2 });
     }
 
     [Fact]

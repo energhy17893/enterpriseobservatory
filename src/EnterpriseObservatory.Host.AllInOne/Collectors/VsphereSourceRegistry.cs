@@ -79,7 +79,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// Instance, annotations, alerts, fold failures, VMs not SAFE — one per
     /// SimpliVity read (S3 follow-up diagnostic).
     /// </summary>
-    private readonly Action<string, int, int, int, int> _reportSimplivityRead;
+    private readonly Action<string, int, int, int, int, string> _reportSimplivityRead;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Built> _built = new(StringComparer.Ordinal);
 
@@ -173,9 +173,9 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         Action<string, string> reportUnusable,
         int maxRequestsPerSource = SourceRequestGate.DefaultLimit,
         Action<string, string>? reportCloseWarning = null,
-        Action<string, int, int, int, int>? reportSimplivityRead = null)
+        Action<string, int, int, int, int, string>? reportSimplivityRead = null)
     {
-        _reportSimplivityRead = reportSimplivityRead ?? ((_, _, _, _, _) => { });
+        _reportSimplivityRead = reportSimplivityRead ?? ((_, _, _, _, _, _) => { });
         _reportCloseWarning = reportCloseWarning ?? ((_, _) => { });
         _catalogue = catalogue ?? throw new ArgumentNullException(nameof(catalogue));
         _graph = graph ?? throw new ArgumentNullException(nameof(graph));
@@ -580,7 +580,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// Counts a SimpliVity snapshot as the collector hands it over, before the
     /// runner or the cycle touch it (S3 follow-up diagnostic).
     /// </summary>
-    private sealed class CountedRead(IInventorySource inner, Action<string, int, int, int, int> report)
+    private sealed class CountedRead(IInventorySource inner, Action<string, int, int, int, int, string> report)
         : IInventorySource
     {
         public string InstanceId => inner.InstanceId;
@@ -596,10 +596,22 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
                 snapshot.Failures.Count,
                 snapshot.Annotations.Count(a =>
                     a.Settings.TryGetValue("simplivity.ha_status", out var ha) &&
-                    !string.Equals(ha, "SAFE", StringComparison.Ordinal)));
+                    !string.Equals(ha, "SAFE", StringComparison.Ordinal)),
+                Filled(snapshot.Coverage));
 
             return snapshot;
         }
+
+        /// <summary>E.g. "virtual_machines.ha_status 699/699, hosts.upgrade_state 26/26".</summary>
+        /// <remarks>
+        /// The fields a verdict rests on: "0 VMs not SAFE" next to
+        /// "ha_status 0/699" is the measurement that found the missing
+        /// show_optional_fields (23 September 2026).
+        /// </remarks>
+        internal static string Filled(IReadOnlyList<PropertyCoverage> coverage) =>
+            coverage.Count == 0
+                ? "nothing measured"
+                : string.Join(", ", coverage.Select(c => $"{c.ObjectType}.{c.Property} {c.Answered}/{c.Asked}"));
     }
 
     /// <summary>

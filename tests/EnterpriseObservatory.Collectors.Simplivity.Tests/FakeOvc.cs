@@ -144,11 +144,37 @@ internal sealed class FakeOvc : HttpMessageHandler
 
         return Json(new JsonObject
         {
-            [name] = new JsonArray([.. all.Skip(offset).Take(limit).Select(n => n.DeepClone())]),
+            [name] = new JsonArray([.. all.Skip(offset).Take(limit).Select(n =>
+                string.Equals(query["show_optional_fields"], "true", StringComparison.Ordinal)
+                    ? n.DeepClone()
+                    : DefaultShaped(name, n))]),
             ["count"] = all.Count,
             ["limit"] = limit,
             ["offset"] = offset,
         });
+    }
+
+    /// <summary>
+    /// HPE's "optional" fields, measured absent from the default reply on Kibar
+    /// (23 September 2026, RedfishProbe --fields; reference-approaches §10.7).
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string[]> OptionalFields = new Dictionary<string, string[]>
+    {
+        ["virtual_machines"] = ["ha_status", "ha_resynchronization_progress", "hypervisor_instance_id"],
+        ["omnistack_clusters"] = ["upgrade_state"],
+    };
+
+    /// <summary>What the OVC answers without <c>show_optional_fields=true</c>.</summary>
+    private static JsonObject DefaultShaped(string collection, JsonNode row)
+    {
+        var copy = row.DeepClone().AsObject();
+
+        foreach (var field in OptionalFields.GetValueOrDefault(collection, []))
+        {
+            copy.Remove(field);
+        }
+
+        return copy;
     }
 
     private static HttpResponseMessage Json(JsonNode body) => new(HttpStatusCode.OK)
