@@ -16,6 +16,20 @@ param([string]$Base = 'origin/main')
 $ErrorActionPreference = 'Continue'
 $results = [ordered]@{}
 
+# --- No orphaned test processes (23 September 2026) ---
+# A testhost or vstest whose parent has exited, left by an earlier run, keeps
+# a worktree's assemblies locked; the build then fails to copy and the gate
+# reported "0 projects / no summary" as if the code were at fault. Counted and
+# named, never killed: a live one may belong to a gate running in parallel.
+$all = Get-CimInstance Win32_Process
+$alive = @{}; $all | ForEach-Object { $alive[[int]$_.ProcessId] = $true }
+$orphans = $all | Where-Object {
+    ($_.Name -eq 'testhost.exe' -or ($_.Name -eq 'dotnet.exe' -and $_.CommandLine -match 'vstest\.console|testhost')) -and
+    -not $alive.ContainsKey([int]$_.ParentProcessId)
+}
+$results['Orphaned test processes'] = if (-not $orphans) { 'pass' }
+    else { "FAIL: $(@($orphans).Count) orphaned, close them first: " + (($orphans | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ') }
+
 # --- Build & test (Release, all projects) + Persistence (PostgreSQL, 0 skipped) ---
 $missing = @('EO_TEST_PG_PASSWORD', 'EO_TEST_PG_ADMIN_USER', 'EO_TEST_PG_ADMIN_PASSWORD') |
     Where-Object { -not [Environment]::GetEnvironmentVariable($_) }
