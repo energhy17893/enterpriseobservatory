@@ -1,0 +1,27 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u0022918DA6A4\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/2",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "2",
+  "Description": "SystemRomActive",
+  "Name": "System ROM",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": "cc822b7a-8e66-824a-ce1c-80dfc8a9dbf9",
+      "DeviceContext": "System Board",
+      "Targets": [
+        "07891029-7006-9414-8533-760457827438",
+        "74810510-3995-9555-6483-446931172554"
+      ]
+    }
+  },
+  "Status": {
+    "Health": "OK",
+    "State": "Enabled"
+  },
+  "Updateable": true,
+  "Version": "U30 v3.64 (02/05/2026)"
+}

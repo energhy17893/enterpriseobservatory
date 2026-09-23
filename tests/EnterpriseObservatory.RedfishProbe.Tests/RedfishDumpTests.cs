@@ -24,7 +24,8 @@ public class RedfishDumpTests
             """)!;
         var iml = JsonNode.Parse("""
             { "Message": "Server CZJ92403X7 at 10.20.30.40 alhcesx04", "Version": "10.54.7.0",
-              "Uuid": "37393150-3636-5a43-4a39-323430335837" }
+              "Uuid": "37393150-3636-5a43-4a39-323430335837",
+              "Boot": "HD(1,GPT,6CF66645-F501-4021-9172-86B6094C6E23,0x40)/MAC(88E9A4807142,0x1)" }
             """)!;
 
         var masker = new DumpMasker();
@@ -54,6 +55,8 @@ public class RedfishDumpTests
         Assert.DoesNotMatch("CZJ92403X7|10\\.20\\.30\\.40|alhcesx04", message);
         Assert.Contains(serial, message);
         Assert.Equal("10.54.7.0", iml["Version"]!.GetValue<string>());
+        Assert.Matches(@"^HD\(1,GPT,[0-9A-F-]{36},0x40\)/MAC\([0-9A-F]{12},0x1\)$", iml["Boot"]!.GetValue<string>());
+        Assert.DoesNotMatch("6CF66645|88E9A4807142", iml["Boot"]!.GetValue<string>());
 
         Assert.Equal("On", system["PowerState"]!.GetValue<string>());
         Assert.Equal(2, system["ProcessorSummary"]!["Count"]!.GetValue<int>());

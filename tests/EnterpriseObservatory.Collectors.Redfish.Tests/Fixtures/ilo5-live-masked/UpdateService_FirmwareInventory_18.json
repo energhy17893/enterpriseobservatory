@@ -1,0 +1,23 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u00220539D502\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/18",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "18",
+  "Description": "1bb000101bb00010",
+  "Name": "PCIe Controller",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": null,
+      "DeviceContext": "PCI-E Slot 1",
+      "DeviceInstance": "PciRoot(0x1)/Pci(0x0,0x0)/Pci(0x0,0x0)",
+      "Targets": [
+        "c8d7a465-984d-9b9c-2cb0-87289fa35506"
+      ]
+    }
+  },
+  "Updateable": false,
+  "Version": "N/A"
+}

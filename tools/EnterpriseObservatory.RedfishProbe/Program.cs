@@ -16,6 +16,7 @@ using EnterpriseObservatory.RedfishProbe;
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind redfish --mask
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind simplivity --fields all
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind redfish --dump <dir>
+//   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --remask <dumpDir> <outDir>
 
 var mask = args.Contains("--mask", StringComparer.OrdinalIgnoreCase);
 var dry = args.Contains("--dry", StringComparer.OrdinalIgnoreCase);
@@ -44,6 +45,18 @@ if (dumpIndex >= 0 && dumpDirectory is null)
 {
     Console.Error.WriteLine("--dump takes a directory.");
     return 2;
+}
+
+var remaskIndex = Array.FindIndex(args, a => string.Equals(a, "--remask", StringComparison.OrdinalIgnoreCase));
+if (remaskIndex >= 0)
+{
+    if (remaskIndex + 2 >= args.Length)
+    {
+        Console.Error.WriteLine("--remask takes an input and an output directory.");
+        return 2;
+    }
+
+    return RedfishDump.Remask(args[remaskIndex + 1], args[remaskIndex + 2]);
 }
 
 var kindIndex = Array.FindIndex(args, a => string.Equals(a, "--kind", StringComparison.OrdinalIgnoreCase));

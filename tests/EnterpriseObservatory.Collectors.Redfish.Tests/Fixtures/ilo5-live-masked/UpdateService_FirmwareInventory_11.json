@@ -1,0 +1,19 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u00221DF5B87E\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/11",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "11",
+  "Description": "SystemRomBackup",
+  "Name": "Redundant System ROM",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": null,
+      "DeviceContext": "System Board"
+    }
+  },
+  "Updateable": true,
+  "Version": "U30 v3.34 (09/30/2024)"
+}

@@ -1,0 +1,60 @@
+{
+  "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000",
+  "@odata.type": "#Storage.v1_15_0.Storage",
+  "Actions": {
+    "#Storage.ResetToDefaults": {
+      "target": "/redfish/v1/Systems/1/Storage/DE082000/Actions/Storage.ResetToDefaults",
+      "ResetType@Redfish.AllowableValues": [
+        "ResetAll",
+        "PreserveVolumes"
+      ]
+    },
+    "#Storage.SetEncryptionKey": {
+      "target": "/redfish/v1/Systems/1/Storage/DE082000/Actions/Storage.SetEncryptionKey",
+      "CurrentEncryptionKey@Redfish.AllowablePattern": "^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!-/:-@[-\u0060{-~])[!-~]{8,32}$",
+      "EncryptionKey@Redfish.AllowablePattern": "^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!-/:-@[-\u0060{-~])[!-~]{8,32}$",
+      "EncryptionKeyIdentifier@Redfish.AllowablePattern": "^[ -~]{0,32}$"
+    }
+  },
+  "Id": "DE082000",
+  "Name": "HPE Smart Array E208i-p SR Gen10",
+  "Status": {
+    "HealthRollup": "OK",
+    "State": "Enabled"
+  },
+  "AutoVolumeCreate": "NonRAID",
+  "@Redfish.WriteableProperties": [
+    "EncryptionMode",
+    "HotspareActivationPolicy"
+  ],
+  "EncryptionMode": "Disabled",
+  "EncryptionMode@Redfish.AllowableValues": [
+    "Disabled",
+    "UseExternalKey"
+  ],
+  "HotspareActivationPolicy": "OnDriveFailure",
+  "HotspareActivationPolicy@Redfish.AllowableValues": [
+    "OnDriveFailure",
+    "OnDrivePredictedFailure"
+  ],
+  "Controllers": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000/Controllers"
+  },
+  "Drives@odata.count": 2,
+  "Drives": [
+    {
+      "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000/Drives/0"
+    },
+    {
+      "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000/Drives/2"
+    }
+  ],
+  "Volumes": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000/Volumes"
+  },
+  "Links": {
+    "Enclosures@odata.count": 0,
+    "Enclosures": []
+  },
+  "@odata.etag": "\u00224D555BCE\u0022"
+}

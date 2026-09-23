@@ -1,0 +1,71 @@
+{
+  "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000/Drives/2",
+  "@odata.type": "#Drive.v1_18_0.Drive",
+  "@Redfish.WriteableProperties": [
+    "LocationIndicatorActive",
+    "HotspareType"
+  ],
+  "Id": "2",
+  "Name": "300GB 12G SAS HDD",
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK",
+    "Conditions": []
+  },
+  "LocationIndicatorActive": false,
+  "Manufacturer": "HPE",
+  "Model": "EG000300JWSJP",
+  "Revision": "HPD6",
+  "SlotCapableProtocols": [
+    "SAS",
+    "SATA"
+  ],
+  "FirmwareVersion": "HPD6",
+  "Protocol": "SAS",
+  "MediaType": "HDD",
+  "RotationSpeedRPM": 10000.0,
+  "CapacityBytes": 300000000000,
+  "BlockSizeBytes": 512,
+  "SerialNumber": "61C4A4DFD0IA",
+  "FailurePredicted": false,
+  "StatusIndicator": "OK",
+  "Identifiers": [
+    {
+      "DurableName": "2994257AC95EFA2A",
+      "DurableNameFormat": "NAA"
+    }
+  ],
+  "DriveFormFactor": "Drive2_5",
+  "PhysicalLocation": {
+    "PartLocation": {
+      "LocationType": "Bay",
+      "LocationOrdinalValue": 2,
+      "ServiceLabel": "Slot=3:Port=1I:Box=6:Bay=2"
+    }
+  },
+  "HotspareType": "None",
+  "HotspareType@Redfish.AllowableValues": [
+    "None"
+  ],
+  "EncryptionAbility": "None",
+  "WriteCacheEnabled": false,
+  "CapableSpeedGbs": 12.0,
+  "NegotiatedSpeedGbs": 12.0,
+  "Operations": [],
+  "Multipath": false,
+  "Links": {
+    "Volumes@odata.count": 1,
+    "Volumes": [
+      {
+        "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000/Volumes/1"
+      }
+    ],
+    "Storage": {
+      "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000"
+    }
+  },
+  "Metrics": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage/DE082000/Drives/2/Metrics"
+  },
+  "@odata.etag": "\u002203CE588F\u0022"
+}

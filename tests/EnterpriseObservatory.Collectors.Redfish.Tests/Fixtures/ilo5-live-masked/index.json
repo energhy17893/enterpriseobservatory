@@ -1,0 +1,506 @@
+[
+  {
+    "path": "/redfish/v1/Systems/1",
+    "file": "Systems_1.json",
+    "status": 200,
+    "elapsedMs": 1020,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Chassis/1/Power",
+    "file": "Chassis_1_Power.json",
+    "status": 200,
+    "elapsedMs": 409,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Chassis/1/Thermal",
+    "file": "Chassis_1_Thermal.json",
+    "status": 200,
+    "elapsedMs": 503,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage",
+    "file": "Systems_1_Storage.json",
+    "status": 200,
+    "elapsedMs": 337,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000",
+    "file": "Systems_1_Storage_DE07C000.json",
+    "status": 200,
+    "elapsedMs": 361,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE082000",
+    "file": "Systems_1_Storage_DE082000.json",
+    "status": 200,
+    "elapsedMs": 437,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/0",
+    "file": "Systems_1_Storage_DE07C000_Drives_0.json",
+    "status": 200,
+    "elapsedMs": 357,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/1",
+    "file": "Systems_1_Storage_DE07C000_Drives_1.json",
+    "status": 200,
+    "elapsedMs": 358,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/2",
+    "file": "Systems_1_Storage_DE07C000_Drives_2.json",
+    "status": 200,
+    "elapsedMs": 423,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/3",
+    "file": "Systems_1_Storage_DE07C000_Drives_3.json",
+    "status": 200,
+    "elapsedMs": 486,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/8",
+    "file": "Systems_1_Storage_DE07C000_Drives_8.json",
+    "status": 200,
+    "elapsedMs": 385,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/9",
+    "file": "Systems_1_Storage_DE07C000_Drives_9.json",
+    "status": 200,
+    "elapsedMs": 420,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/10",
+    "file": "Systems_1_Storage_DE07C000_Drives_10.json",
+    "status": 200,
+    "elapsedMs": 391,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/11",
+    "file": "Systems_1_Storage_DE07C000_Drives_11.json",
+    "status": 200,
+    "elapsedMs": 473,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/12",
+    "file": "Systems_1_Storage_DE07C000_Drives_12.json",
+    "status": 200,
+    "elapsedMs": 362,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/13",
+    "file": "Systems_1_Storage_DE07C000_Drives_13.json",
+    "status": 200,
+    "elapsedMs": 372,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/14",
+    "file": "Systems_1_Storage_DE07C000_Drives_14.json",
+    "status": 200,
+    "elapsedMs": 435,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/15",
+    "file": "Systems_1_Storage_DE07C000_Drives_15.json",
+    "status": 200,
+    "elapsedMs": 432,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE082000/Drives/0",
+    "file": "Systems_1_Storage_DE082000_Drives_0.json",
+    "status": 200,
+    "elapsedMs": 330,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Storage/DE082000/Drives/2",
+    "file": "Systems_1_Storage_DE082000_Drives_2.json",
+    "status": 200,
+    "elapsedMs": 412,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory",
+    "file": "Systems_1_Memory.json",
+    "status": 200,
+    "elapsedMs": 378,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm1",
+    "file": "Systems_1_Memory_proc1dimm1.json",
+    "status": 200,
+    "elapsedMs": 443,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm2",
+    "file": "Systems_1_Memory_proc1dimm2.json",
+    "status": 200,
+    "elapsedMs": 498,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm3",
+    "file": "Systems_1_Memory_proc1dimm3.json",
+    "status": 200,
+    "elapsedMs": 405,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm4",
+    "file": "Systems_1_Memory_proc1dimm4.json",
+    "status": 200,
+    "elapsedMs": 481,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm5",
+    "file": "Systems_1_Memory_proc1dimm5.json",
+    "status": 200,
+    "elapsedMs": 505,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm6",
+    "file": "Systems_1_Memory_proc1dimm6.json",
+    "status": 200,
+    "elapsedMs": 492,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm7",
+    "file": "Systems_1_Memory_proc1dimm7.json",
+    "status": 200,
+    "elapsedMs": 472,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm8",
+    "file": "Systems_1_Memory_proc1dimm8.json",
+    "status": 200,
+    "elapsedMs": 428,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm9",
+    "file": "Systems_1_Memory_proc1dimm9.json",
+    "status": 200,
+    "elapsedMs": 518,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm10",
+    "file": "Systems_1_Memory_proc1dimm10.json",
+    "status": 200,
+    "elapsedMs": 490,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm11",
+    "file": "Systems_1_Memory_proc1dimm11.json",
+    "status": 200,
+    "elapsedMs": 582,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc1dimm12",
+    "file": "Systems_1_Memory_proc1dimm12.json",
+    "status": 200,
+    "elapsedMs": 432,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm1",
+    "file": "Systems_1_Memory_proc2dimm1.json",
+    "status": 200,
+    "elapsedMs": 408,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm2",
+    "file": "Systems_1_Memory_proc2dimm2.json",
+    "status": 200,
+    "elapsedMs": 518,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm3",
+    "file": "Systems_1_Memory_proc2dimm3.json",
+    "status": 200,
+    "elapsedMs": 398,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm4",
+    "file": "Systems_1_Memory_proc2dimm4.json",
+    "status": 200,
+    "elapsedMs": 450,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm5",
+    "file": "Systems_1_Memory_proc2dimm5.json",
+    "status": 200,
+    "elapsedMs": 465,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm6",
+    "file": "Systems_1_Memory_proc2dimm6.json",
+    "status": 200,
+    "elapsedMs": 397,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm7",
+    "file": "Systems_1_Memory_proc2dimm7.json",
+    "status": 200,
+    "elapsedMs": 621,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm8",
+    "file": "Systems_1_Memory_proc2dimm8.json",
+    "status": 200,
+    "elapsedMs": 416,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm9",
+    "file": "Systems_1_Memory_proc2dimm9.json",
+    "status": 200,
+    "elapsedMs": 488,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm10",
+    "file": "Systems_1_Memory_proc2dimm10.json",
+    "status": 200,
+    "elapsedMs": 457,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm11",
+    "file": "Systems_1_Memory_proc2dimm11.json",
+    "status": 200,
+    "elapsedMs": 449,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/Memory/proc2dimm12",
+    "file": "Systems_1_Memory_proc2dimm12.json",
+    "status": 200,
+    "elapsedMs": 555,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory",
+    "file": "UpdateService_FirmwareInventory.json",
+    "status": 200,
+    "elapsedMs": 397,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/1",
+    "file": "UpdateService_FirmwareInventory_1.json",
+    "status": 200,
+    "elapsedMs": 393,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/2",
+    "file": "UpdateService_FirmwareInventory_2.json",
+    "status": 200,
+    "elapsedMs": 384,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/3",
+    "file": "UpdateService_FirmwareInventory_3.json",
+    "status": 200,
+    "elapsedMs": 410,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/4",
+    "file": "UpdateService_FirmwareInventory_4.json",
+    "status": 200,
+    "elapsedMs": 381,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/5",
+    "file": "UpdateService_FirmwareInventory_5.json",
+    "status": 200,
+    "elapsedMs": 409,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/6",
+    "file": "UpdateService_FirmwareInventory_6.json",
+    "status": 200,
+    "elapsedMs": 446,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/7",
+    "file": "UpdateService_FirmwareInventory_7.json",
+    "status": 200,
+    "elapsedMs": 508,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/8",
+    "file": "UpdateService_FirmwareInventory_8.json",
+    "status": 200,
+    "elapsedMs": 397,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/9",
+    "file": "UpdateService_FirmwareInventory_9.json",
+    "status": 200,
+    "elapsedMs": 391,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/10",
+    "file": "UpdateService_FirmwareInventory_10.json",
+    "status": 200,
+    "elapsedMs": 457,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/11",
+    "file": "UpdateService_FirmwareInventory_11.json",
+    "status": 200,
+    "elapsedMs": 351,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/12",
+    "file": "UpdateService_FirmwareInventory_12.json",
+    "status": 200,
+    "elapsedMs": 405,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/13",
+    "file": "UpdateService_FirmwareInventory_13.json",
+    "status": 200,
+    "elapsedMs": 410,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/14",
+    "file": "UpdateService_FirmwareInventory_14.json",
+    "status": 200,
+    "elapsedMs": 348,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/15",
+    "file": "UpdateService_FirmwareInventory_15.json",
+    "status": 200,
+    "elapsedMs": 428,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/16",
+    "file": "UpdateService_FirmwareInventory_16.json",
+    "status": 200,
+    "elapsedMs": 391,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/17",
+    "file": "UpdateService_FirmwareInventory_17.json",
+    "status": 200,
+    "elapsedMs": 483,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/18",
+    "file": "UpdateService_FirmwareInventory_18.json",
+    "status": 200,
+    "elapsedMs": 459,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/19",
+    "file": "UpdateService_FirmwareInventory_19.json",
+    "status": 200,
+    "elapsedMs": 338,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/20",
+    "file": "UpdateService_FirmwareInventory_20.json",
+    "status": 200,
+    "elapsedMs": 526,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/21",
+    "file": "UpdateService_FirmwareInventory_21.json",
+    "status": 200,
+    "elapsedMs": 391,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/22",
+    "file": "UpdateService_FirmwareInventory_22.json",
+    "status": 200,
+    "elapsedMs": 343,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/23",
+    "file": "UpdateService_FirmwareInventory_23.json",
+    "status": 200,
+    "elapsedMs": 528,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/UpdateService/FirmwareInventory/24",
+    "file": "UpdateService_FirmwareInventory_24.json",
+    "status": 200,
+    "elapsedMs": 389,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/LogServices/IML/Entries?$top=5",
+    "file": "Systems_1_LogServices_IML_Entries_top.json",
+    "status": 200,
+    "elapsedMs": 609,
+    "error": null
+  },
+  {
+    "path": "/redfish/v1/Systems/1/LogServices/IML/Entries?$filter=Created%20gt%20%272023-10-06T07%3A49%3A09Z%27",
+    "file": "Systems_1_LogServices_IML_Entries_filter.json",
+    "status": 200,
+    "elapsedMs": 3423,
+    "error": null
+  }
+]

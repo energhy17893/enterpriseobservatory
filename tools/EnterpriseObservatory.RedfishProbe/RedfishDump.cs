@@ -131,6 +131,32 @@ internal static class RedfishDump
         return raw.Any(r => r.Body is null) ? 1 : 0;
     }
 
+    /// <summary>
+    /// <c>--remask &lt;in&gt; &lt;out&gt;</c>: runs an existing dump through
+    /// the masker again, offline -- for a masking rule added after the dump
+    /// was taken. Already-masked values are simply masked once more.
+    /// </summary>
+    public static int Remask(string input, string output)
+    {
+        var files = Directory.GetFiles(input, "*.json")
+            .ToDictionary(f => Path.GetFileName(f), f => JsonNode.Parse(File.ReadAllText(f))!, StringComparer.Ordinal);
+        var masker = new DumpMasker();
+        foreach (var node in files.Values)
+        {
+            masker.Collect(node);
+        }
+
+        Directory.CreateDirectory(output);
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        foreach (var (name, node) in files)
+        {
+            File.WriteAllText(Path.Combine(output, name), masker.Apply(node).ToJsonString(options) + "\n");
+        }
+
+        Console.WriteLine($"=== {files.Count} files re-masked into {Path.GetFullPath(output)} ===");
+        return 0;
+    }
+
     /// <summary><c>/redfish/v1/Systems/1/Storage/DE07C000</c> → <c>Systems_1_Storage_DE07C000.json</c>.</summary>
     internal static string FileNameOf(string path)
     {
@@ -244,11 +270,12 @@ internal sealed partial class DumpMasker
             return whole;
         }
 
-        // Longest first, so a FQDN is replaced before its own first label.
-        foreach (var (original, fake) in _map.OrderByDescending(p => p.Key.Length))
-        {
-            text = text.Replace(original, fake, StringComparison.OrdinalIgnoreCase);
-        }
+        // Patterns first, on the original text, so no fake is masked twice.
+        // Embedded: a GPT partition GUID and a bare MAC inside a UEFI device
+        // path (Systems/1 Boot.UefiTargetBootSourceOverride, live iLO 5).
+        text = EmbeddedUuid().Replace(text, m => Preserve(m.Value));
+        text = Mac().Replace(text, m => Preserve(m.Value));
+        text = UefiMac().Replace(text, m => Preserve(m.Value));
 
         // A dotted-quad firmware version ("10.54.7.0") is not an address.
         if (property is null || !Contains(property, "Version"))
@@ -256,7 +283,13 @@ internal sealed partial class DumpMasker
             text = Ipv4().Replace(text, m => FakeIp(m.Value));
         }
 
-        return Mac().Replace(text, m => Preserve(m.Value));
+        // Longest first, so a FQDN is replaced before its own first label.
+        foreach (var (original, fake) in _map.OrderByDescending(p => p.Key.Length))
+        {
+            text = text.Replace(original, fake, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return text;
     }
 
     private void CollectString(string property, string text)
@@ -325,6 +358,12 @@ internal sealed partial class DumpMasker
 
     [GeneratedRegex(@"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")]
     private static partial Regex Uuid();
+
+    [GeneratedRegex(@"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b")]
+    private static partial Regex EmbeddedUuid();
+
+    [GeneratedRegex(@"(?<=MAC\()[0-9A-Fa-f]{12}")]
+    private static partial Regex UefiMac();
 
     [GeneratedRegex(@"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b")]
     private static partial Regex Mac();

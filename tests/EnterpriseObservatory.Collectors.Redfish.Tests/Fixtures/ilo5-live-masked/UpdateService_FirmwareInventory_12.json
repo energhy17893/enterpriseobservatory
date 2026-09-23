@@ -1,0 +1,19 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u00221DF5B87E\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/12",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "12",
+  "Description": "Intelligent Provisioning",
+  "Name": "Intelligent Provisioning",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": "dc744aeb-ee34-1d14-e80f-30c65c85c7cf",
+      "DeviceContext": "System Board"
+    }
+  },
+  "Updateable": true,
+  "Version": "3.80.3"
+}

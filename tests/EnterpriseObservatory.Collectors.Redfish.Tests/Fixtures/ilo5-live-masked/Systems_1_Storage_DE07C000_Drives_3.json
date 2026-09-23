@@ -1,0 +1,76 @@
+{
+  "@odata.id": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/3",
+  "@odata.type": "#Drive.v1_18_0.Drive",
+  "@Redfish.WriteableProperties": [
+    "LocationIndicatorActive",
+    "HotspareType"
+  ],
+  "Id": "3",
+  "Name": "3.84TB 6G SATA SSD",
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK",
+    "Conditions": []
+  },
+  "LocationIndicatorActive": false,
+  "Model": "VK003840GXAWP",
+  "Revision": "HPG1",
+  "SlotCapableProtocols": [
+    "SAS",
+    "SATA"
+  ],
+  "FirmwareVersion": "HPG1",
+  "Protocol": "SATA",
+  "MediaType": "SSD",
+  "CapacityBytes": 3840755982336,
+  "BlockSizeBytes": 512,
+  "SerialNumber": "52027C95E497",
+  "FailurePredicted": false,
+  "PredictedMediaLifeLeftPercent": 97.0,
+  "StatusIndicator": "OK",
+  "Identifiers": [
+    {
+      "DurableName": "19976EE28665EB58",
+      "DurableNameFormat": "NAA"
+    }
+  ],
+  "DriveFormFactor": "Drive2_5",
+  "PhysicalLocation": {
+    "PartLocation": {
+      "LocationType": "Bay",
+      "LocationOrdinalValue": 1,
+      "ServiceLabel": "Slot=Unknown:Port=1I:Box=3:Bay=1"
+    }
+  },
+  "HotspareType": "None",
+  "HotspareType@Redfish.AllowableValues": [
+    "None"
+  ],
+  "EncryptionAbility": "None",
+  "WriteCacheEnabled": false,
+  "CapableSpeedGbs": 6.0,
+  "NegotiatedSpeedGbs": 6.0,
+  "Operations": [],
+  "Multipath": false,
+  "Links": {
+    "Volumes@odata.count": 3,
+    "Volumes": [
+      {
+        "@odata.id": "/redfish/v1/Systems/1/Storage/DE07C000/Volumes/1"
+      },
+      {
+        "@odata.id": "/redfish/v1/Systems/1/Storage/DE07C000/Volumes/2"
+      },
+      {
+        "@odata.id": "/redfish/v1/Systems/1/Storage/DE07C000/Volumes/3"
+      }
+    ],
+    "Storage": {
+      "@odata.id": "/redfish/v1/Systems/1/Storage/DE07C000"
+    }
+  },
+  "Metrics": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/3/Metrics"
+  },
+  "@odata.etag": "\u002226FAD6F9\u0022"
+}
