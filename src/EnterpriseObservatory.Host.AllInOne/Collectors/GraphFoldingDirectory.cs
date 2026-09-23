@@ -1,4 +1,5 @@
 using EnterpriseObservatory.Application.Monitoring;
+using EnterpriseObservatory.Collectors.Redfish;
 using EnterpriseObservatory.Collectors.Simplivity;
 using EnterpriseObservatory.Domain;
 
@@ -14,12 +15,15 @@ namespace EnterpriseObservatory.Host.AllInOne.Collectors;
 /// marks it with (PR #140), a VM by the instance UUID mark vSphere gives it.
 /// Indexed once per graph, since one read asks about every host and VM.
 /// </remarks>
-public sealed class GraphFoldingDirectory(IEntityGraphStore store) : ISimplivityFoldingDirectory
+public sealed class GraphFoldingDirectory(IEntityGraphStore store) : ISimplivityFoldingDirectory, IRedfishFoldingDirectory
 {
     private readonly IEntityGraphStore _store = store ?? throw new ArgumentNullException(nameof(store));
 
     private sealed record Index(
-        EntityGraph Graph, Dictionary<string, string> Vcenters, Dictionary<string, EntityId> VirtualMachines);
+        EntityGraph Graph,
+        Dictionary<string, string> Vcenters,
+        Dictionary<string, EntityId> VirtualMachines,
+        Dictionary<(IdentityMarkKind, string), EntityId> Hosts);
 
     private Index? _index;
 
@@ -34,6 +38,15 @@ public sealed class GraphFoldingDirectory(IEntityGraphStore store) : ISimplivity
     public EntityId? VirtualMachineByInstanceUuid(string instanceUuid) =>
         Current().VirtualMachines.TryGetValue(instanceUuid.Trim().ToLowerInvariant(), out var id) ? id : null;
 
+    /// <summary>The ESXi host whose <c>hardware.systemInfo.uuid</c> mark this is (Redfish, M6.1).</summary>
+    public EntityId? HostByHardwareUuid(string uuid) => Host(IdentityMarkKind.HardwareUuid, uuid);
+
+    /// <summary>The ESXi host with this serial mark. vSphere emits none today, so this finds nothing until it does.</summary>
+    public EntityId? HostBySerialNumber(string serial) => Host(IdentityMarkKind.SerialNumber, serial);
+
+    private EntityId? Host(IdentityMarkKind kind, string value) =>
+        Current().Hosts.TryGetValue((kind, value.Trim().ToLowerInvariant()), out var id) ? id : null;
+
     private Index Current()
     {
         var graph = _store.Current;
@@ -47,9 +60,18 @@ public sealed class GraphFoldingDirectory(IEntityGraphStore store) : ISimplivity
 
             var vcenters = new Dictionary<string, string>(StringComparer.Ordinal);
             var vms = new Dictionary<string, EntityId>(StringComparer.Ordinal);
+            var hosts = new Dictionary<(IdentityMarkKind, string), EntityId>();
 
             foreach (var entity in graph.Active)
             {
+                if (entity.Kind == EntityKind.EsxiHost)
+                {
+                    foreach (var mark in entity.Marks.Where(m => m.Kind is IdentityMarkKind.HardwareUuid or IdentityMarkKind.SerialNumber))
+                    {
+                        hosts.TryAdd((mark.Kind, mark.Value), entity.Id);
+                    }
+                }
+
                 foreach (var mark in entity.Marks.Where(m => m.Kind == IdentityMarkKind.HardwareUuid))
                 {
                     if (entity.Kind == EntityKind.VCenter)
@@ -63,7 +85,7 @@ public sealed class GraphFoldingDirectory(IEntityGraphStore store) : ISimplivity
                 }
             }
 
-            _index = new Index(graph, vcenters, vms);
+            _index = new Index(graph, vcenters, vms, hosts);
             return _index;
         }
     }

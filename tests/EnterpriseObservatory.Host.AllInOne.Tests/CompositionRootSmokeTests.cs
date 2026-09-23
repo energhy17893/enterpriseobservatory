@@ -267,7 +267,28 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Account("viewer", Role.Viewer);
         var client = await SignedIn(Client(), "viewer");
 
-        var response = await client.GetAsync("/api/vcenter-events");
+        var response = await client.GetAsync("/api/vcenter-events?search=esx&offset=50&limit=25");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // E2: paged and searched on the server, and the page says where it is.
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"total\":0", body, StringComparison.Ordinal);
+        Assert.Contains("\"offset\":50", body, StringComparison.Ordinal);
+        Assert.Contains("\"limit\":25", body, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/api/alerts")]
+    [InlineData("/api/alerts/grouped")]
+    public async Task A_viewer_can_read_the_inbox_both_ways(string path)
+    {
+        // A4/A8 moved ordering and the repeat count into these projections;
+        // proof the composed store answers the batched count without a 500.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync(path);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -1029,7 +1050,7 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
-    public async Task A_redfish_connection_is_saved_and_kept_and_its_test_says_no_collector_yet()
+    public async Task A_redfish_connection_is_saved_and_kept_and_tested_through_its_prober()
     {
         Account("root", Role.Administrator);
         var client = await SignedIn(Client(), "root");
@@ -1038,7 +1059,7 @@ public sealed class CompositionRootSmokeTests : IDisposable
         {
             instanceId = "ilo-1",
             kind = "redfish",
-            baseAddress = "https://ilo-host/",
+            baseAddress = "https://ilo.example.local/",
             username = "observatory",
             password = "hunter2",
             acceptUntrustedCertificate = false,
@@ -1057,9 +1078,10 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, tested.StatusCode);
 
         var probe = await tested.Content.ReadFromJsonAsync<Api.ProbeView>(Json);
+        // Unreachable, but through the real RedfishConnectionProbe (M6.1) --
+        // not the no-collector path.
         Assert.False(probe!.Succeeded);
-        Assert.True(probe.NoCollector);
-        Assert.Contains("no collector", probe.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.False(probe.NoCollector);
     }
 
     [Theory]

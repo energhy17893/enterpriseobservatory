@@ -352,9 +352,9 @@ public class UnpollableConnectionTests : IDisposable
     public async Task A_kind_with_no_collector_never_alerts_and_resolves_what_was_open()
     {
         // The live bug's other half: KibarHolding-alhcesx04-ilo, kind
-        // 'redfish', with no collector built for it yet
-        // (CollectionFailureKind.NotConfigured). Modelled here with any kind
-        // this build cannot read, the same shape the registry gives redfish.
+        // 'redfish', before M6.1 built a collector for it
+        // (CollectionFailureKind.NotConfigured). Modelled here with a kind
+        // this build cannot read, the shape the registry gave redfish then.
         _connections.Add(Connection("ilo-1"));
         var flaky = new FakeInventorySource("ilo-1");
         var cycle = Cycle();
@@ -366,7 +366,7 @@ public class UnpollableConnectionTests : IDisposable
         Assert.Single(Screens().Alerts().Items, a => a.Title == "Collector unreachable (inventory)");
 
         // Turns out to be a kind this build has no collector for.
-        _connections.Replace(Connection("ilo-1") with { Kind = "redfish" });
+        _connections.Replace(Connection("ilo-1") with { Kind = "idrac" });
         _clock.Advance(TimeSpan.FromMinutes(5));
 
         var registry = Registry();

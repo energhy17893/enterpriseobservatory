@@ -201,6 +201,14 @@ export interface SeriesQuery extends Query {
   maxPoints?: number
 }
 
+export interface EventFeedQuery extends Query {
+  source?: string
+  /** Case-insensitive, in message, type id, VM, host and user. */
+  search?: string
+  offset?: number
+  limit?: number
+}
+
 export interface EntityQuery extends Query {
   kind?: string
   health?: string
@@ -230,8 +238,7 @@ export const api = {
   bootstrap: (token: string, username: string, password: string) =>
     post<AuthStateView>('/api/auth/bootstrap', { token, username, password }),
   events: () => get<EventBoardView>('/api/events'),
-  vcenterEvents: (source?: string) =>
-    get<EventFeedView>('/api/vcenter-events', { source, limit: 200 }),
+  vcenterEvents: (query: EventFeedQuery = {}) => get<EventFeedView>('/api/vcenter-events', query),
   maintenanceWindows: () => get<MaintenanceWindowView[]>('/api/maintenance'),
   declareMaintenanceWindow: (command: DeclareWindowCommand) =>
     post<MaintenanceWindowView>('/api/maintenance/declare', command),

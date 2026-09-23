@@ -1,0 +1,27 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u0022918DA6A4\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/1",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "1",
+  "Description": "SystemBMC",
+  "Name": "iLO 5",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": "4a458e3a-b4d9-2c37-acb9-b8b4b634f150",
+      "DeviceContext": "System Board",
+      "Targets": [
+        "9353c920-f561-7ad2-9cb0-453d5c66e648",
+        "a4cde4e3-5747-91fc-fcf2-a28493c4979e"
+      ]
+    }
+  },
+  "Status": {
+    "Health": "OK",
+    "State": "Enabled"
+  },
+  "Updateable": true,
+  "Version": "3.18 Feb 08 2026"
+}

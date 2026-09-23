@@ -1,0 +1,173 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#LogEntryCollection.LogEntryCollection",
+  "@odata.etag": "W/\u002247309BFF\u0022",
+  "@odata.id": "/redfish/v1/Systems/1/LogServices/IML/Entries",
+  "@odata.type": "#LogEntryCollection.LogEntryCollection",
+  "Description": "Integrated Management Logs view",
+  "Name": "Integrated Management Logs view",
+  "Members": [
+    {
+      "@odata.context": "/redfish/v1/$metadata#LogEntry.LogEntry",
+      "@odata.id": "/redfish/v1/Systems/1/LogServices/IML/Entries/1",
+      "@odata.type": "#LogEntry.v1_11_0.LogEntry",
+      "Id": "1",
+      "Created": "2023-10-06T07:29:49Z",
+      "EntryType": "Oem",
+      "Message": "HPE Ethernet 1Gb 4-port 331i Adapter - NIC Connectivity status changed to OK for adapter in slot 0, port 2",
+      "MessageArgs": [],
+      "MessageId": "17.10",
+      "Name": "Integrated Management Log",
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeLogEntry.HpeLogEntry",
+          "@odata.type": "#HpeLogEntry.v2_4_0.HpeLogEntry",
+          "Categories": [
+            "Hardware"
+          ],
+          "Class": 17,
+          "ClassDescription": "Network",
+          "Code": 10,
+          "Count": 1,
+          "EventNumber": 105,
+          "LearnMoreLink": "http://www.hpe.com/support/class0x0011code0x000a-gen10",
+          "RecommendedAction": "If the connection is lost, then check the physical connection from the server to its destination device such as interconnect ,blade, switch etc, including any cables. Refer to the NIC issues flowchart in the Troubleshooting Guide for more information.",
+          "Repaired": true,
+          "Severity": "Repaired",
+          "Updated": "2023-10-06T07:29:49Z"
+        }
+      },
+      "OemRecordFormat": "Hpe-IML",
+      "Severity": "OK"
+    },
+    {
+      "@odata.context": "/redfish/v1/$metadata#LogEntry.LogEntry",
+      "@odata.id": "/redfish/v1/Systems/1/LogServices/IML/Entries/2",
+      "@odata.type": "#LogEntry.v1_11_0.LogEntry",
+      "Id": "2",
+      "Created": "2023-10-06T07:29:50Z",
+      "EntryType": "Oem",
+      "Message": "HPE Eth 10/25Gb 2p 640SFP28 Adptr Connectivity status changed to OK for adapter in slot 4, port 1",
+      "MessageArgs": [],
+      "MessageId": "17.10",
+      "Name": "Integrated Management Log",
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeLogEntry.HpeLogEntry",
+          "@odata.type": "#HpeLogEntry.v2_4_0.HpeLogEntry",
+          "Categories": [
+            "Hardware"
+          ],
+          "Class": 17,
+          "ClassDescription": "Network",
+          "Code": 10,
+          "Count": 1,
+          "EventNumber": 106,
+          "LearnMoreLink": "http://www.hpe.com/support/class0x0011code0x000a-gen10",
+          "RecommendedAction": "If the connection is lost, then check the physical connection from the server to its destination device such as interconnect ,blade, switch etc, including any cables. Refer to the NIC issues flowchart in the Troubleshooting Guide for more information.",
+          "Repaired": true,
+          "Severity": "Repaired",
+          "Updated": "2023-10-06T07:29:50Z"
+        }
+      },
+      "OemRecordFormat": "Hpe-IML",
+      "Severity": "OK"
+    },
+    {
+      "@odata.context": "/redfish/v1/$metadata#LogEntry.LogEntry",
+      "@odata.id": "/redfish/v1/Systems/1/LogServices/IML/Entries/3",
+      "@odata.type": "#LogEntry.v1_11_0.LogEntry",
+      "Id": "3",
+      "Created": "2023-10-06T07:29:50Z",
+      "EntryType": "Oem",
+      "Message": "HPE Eth 10/25Gb 2p 640SFP28 Adptr Connectivity status changed to OK for adapter in slot 4, port 2",
+      "MessageArgs": [],
+      "MessageId": "17.10",
+      "Name": "Integrated Management Log",
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeLogEntry.HpeLogEntry",
+          "@odata.type": "#HpeLogEntry.v2_4_0.HpeLogEntry",
+          "Categories": [
+            "Hardware"
+          ],
+          "Class": 17,
+          "ClassDescription": "Network",
+          "Code": 10,
+          "Count": 1,
+          "EventNumber": 107,
+          "LearnMoreLink": "http://www.hpe.com/support/class0x0011code0x000a-gen10",
+          "RecommendedAction": "If the connection is lost, then check the physical connection from the server to its destination device such as interconnect ,blade, switch etc, including any cables. Refer to the NIC issues flowchart in the Troubleshooting Guide for more information.",
+          "Repaired": true,
+          "Severity": "Repaired",
+          "Updated": "2023-10-06T07:29:50Z"
+        }
+      },
+      "OemRecordFormat": "Hpe-IML",
+      "Severity": "OK"
+    },
+    {
+      "@odata.context": "/redfish/v1/$metadata#LogEntry.LogEntry",
+      "@odata.id": "/redfish/v1/Systems/1/LogServices/IML/Entries/4",
+      "@odata.type": "#LogEntry.v1_11_0.LogEntry",
+      "Id": "4",
+      "Created": "2023-10-06T07:33:23Z",
+      "EntryType": "Oem",
+      "Message": "HPE Ethernet 1Gb 4-port 331i Adapter - NIC Connectivity status changed to OK for adapter in slot 0, port 2",
+      "MessageArgs": [],
+      "MessageId": "17.10",
+      "Name": "Integrated Management Log",
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeLogEntry.HpeLogEntry",
+          "@odata.type": "#HpeLogEntry.v2_4_0.HpeLogEntry",
+          "Categories": [
+            "Hardware"
+          ],
+          "Class": 17,
+          "ClassDescription": "Network",
+          "Code": 10,
+          "Count": 1,
+          "EventNumber": 108,
+          "LearnMoreLink": "http://www.hpe.com/support/class0x0011code0x000a-gen10",
+          "RecommendedAction": "If the connection is lost, then check the physical connection from the server to its destination device such as interconnect ,blade, switch etc, including any cables. Refer to the NIC issues flowchart in the Troubleshooting Guide for more information.",
+          "Repaired": true,
+          "Severity": "Repaired",
+          "Updated": "2023-10-06T07:33:39Z"
+        }
+      },
+      "OemRecordFormat": "Hpe-IML",
+      "Severity": "OK"
+    },
+    {
+      "@odata.context": "/redfish/v1/$metadata#LogEntry.LogEntry",
+      "@odata.id": "/redfish/v1/Systems/1/LogServices/IML/Entries/5",
+      "@odata.type": "#LogEntry.v1_11_0.LogEntry",
+      "Id": "5",
+      "Created": "2023-10-06T07:49:09Z",
+      "EntryType": "Oem",
+      "Message": "Firmware flashed (iLO 5 2.91)",
+      "MessageArgs": [],
+      "MessageId": "32.2",
+      "Name": "Integrated Management Log",
+      "Oem": {
+        "Hpe": {
+          "@odata.context": "/redfish/v1/$metadata#HpeLogEntry.HpeLogEntry",
+          "@odata.type": "#HpeLogEntry.v2_4_0.HpeLogEntry",
+          "Categories": [
+            "Administration"
+          ],
+          "Class": 32,
+          "ClassDescription": "System Revision",
+          "Code": 2,
+          "Count": 1,
+          "EventNumber": 109,
+          "Severity": "Informational",
+          "Updated": "2023-10-06T07:49:09Z"
+        }
+      },
+      "OemRecordFormat": "Hpe-IML",
+      "Severity": "OK"
+    }
+  ],
+  "Members@odata.count": 5
+}

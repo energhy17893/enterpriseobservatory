@@ -135,6 +135,18 @@ public interface IAlertStateStore
     IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc);
 
     /// <summary>
+    /// How many lives each fingerprint has had in the durable history, the
+    /// current one included: the inbox's repeat count (A8, Veeam's
+    /// "Repeat count").
+    /// </summary>
+    /// <remarks>
+    /// One call per page, never per alert. A fingerprint with no history is
+    /// absent from the result. Bounded by the history's retention (90 days
+    /// after an episode ends, ADR-0017), so it counts what is still kept.
+    /// </remarks>
+    IReadOnlyDictionary<AlertFingerprint, int> EpisodeCounts(IReadOnlyCollection<AlertFingerprint> fingerprints);
+
+    /// <summary>
     /// Deletes history older than <paramref name="olderThanUtc"/> of alerts
     /// that no longer exist; returns how many transitions went.
     /// </summary>

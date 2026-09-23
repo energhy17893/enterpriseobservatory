@@ -286,6 +286,23 @@ public class VsphereSourceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void A_redfish_connection_is_read_for_inventory_only()
+    {
+        // M6.1: an iLO is built by kind, inventory only, with a metrics
+        // stand-in that says why and raises nothing.
+        _connections.Add(Connection("vc-1"));
+        _connections.Add(Connection("ilo-1") with { Kind = ConnectionKinds.Redfish });
+
+        Assert.Equal(
+            ["ilo-1", "vc-1"],
+            Registry().Inventory.Select(s => s.InstanceId).OrderBy(id => id, StringComparer.Ordinal));
+        Assert.IsType<EnterpriseObservatory.Collectors.Redfish.RedfishInventorySource>(Registry().Inventory.Single(s => s.InstanceId == "ilo-1"));
+        Assert.IsAssignableFrom<IRoleNotApplicable>(Registry().Observations.Single(s => s.InstanceId == "ilo-1"));
+        Assert.Equal(["vc-1"], Registry().Events.Select(s => s.InstanceId));
+        Assert.Empty(_logged);
+    }
+
+    [Fact]
     public async Task A_simplivity_observation_row_says_inventory_only_and_stays_not_polled()
     {
         // Live, the KBSVT Observation row kept "this build has no collector for

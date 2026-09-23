@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Redfish\EnterpriseObservatory.Collectors.Redfish.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Recorded, not written: the raw replies of KibarHolding-alhcesx04-ilo
+      (iLO 5 v3.18, ProLiant DL380 Gen10), 24 September 2026, taken with
+      the RedfishProbe dump option and re-masked with its remask option. Serials, UUIDs, WWNs
+      and MACs are salted fakes of the same format; host names and IPs are
+      masked; every field name and type is as received. index.json lists each
+      GET with its status and time. The deep walk stopped at the probe's
+      64-link cap, so 24 of the 36 firmware entries are present (the
+      collector reads only the collection's count).
+    -->
+    <None Update="Fixtures\**\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

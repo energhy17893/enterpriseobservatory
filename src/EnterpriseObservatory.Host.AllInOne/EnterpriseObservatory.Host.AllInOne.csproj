@@ -15,6 +15,7 @@
   -->
   <ItemGroup>
     <ProjectReference Include="..\EnterpriseObservatory.Api\EnterpriseObservatory.Api.csproj" />
+    <ProjectReference Include="..\EnterpriseObservatory.Collectors.Redfish\EnterpriseObservatory.Collectors.Redfish.csproj" />
     <ProjectReference Include="..\EnterpriseObservatory.Collectors.Simplivity\EnterpriseObservatory.Collectors.Simplivity.csproj" />
     <ProjectReference Include="..\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
     <ProjectReference Include="..\EnterpriseObservatory.Persistence.Postgres\EnterpriseObservatory.Persistence.Postgres.csproj" />

@@ -573,6 +573,43 @@ public sealed class PostgresAlertStateStore : IAlertStateStore
         });
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// One statement for the whole page, served by the unique key's index
+    /// (fingerprint, episode_first_seen_utc, ordinal) -- no migration.
+    /// Measured in docs/measurements/ux-a4-a8-e2-queries.md.
+    /// </remarks>
+    public IReadOnlyDictionary<AlertFingerprint, int> EpisodeCounts(IReadOnlyCollection<AlertFingerprint> fingerprints)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+
+        if (fingerprints.Count == 0)
+        {
+            return new Dictionary<AlertFingerprint, int>();
+        }
+
+        return _database.Read(connection =>
+        {
+            using var command = Command(connection, """
+                SELECT fingerprint, count(DISTINCT episode_first_seen_utc)::int
+                FROM alert_history
+                WHERE fingerprint = ANY(@fingerprints)
+                GROUP BY fingerprint;
+                """);
+            command.Bind("@fingerprints", fingerprints.Select(f => f.Value).Distinct(StringComparer.Ordinal).ToArray());
+
+            using var reader = command.ExecuteReader();
+            var counts = new Dictionary<AlertFingerprint, int>();
+
+            while (reader.Read())
+            {
+                counts[AlertFingerprint.Restore(reader.GetString(0))] = reader.GetInt32(1);
+            }
+
+            return counts;
+        });
+    }
+
     public int PruneHistory(DateTimeOffset olderThanUtc)
     {
         lock (_gate)

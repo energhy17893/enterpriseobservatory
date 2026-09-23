@@ -1,0 +1,23 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u00220539D502\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/15",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "15",
+  "Description": "15b31015159000d3",
+  "Name": "HPE Eth 10/25Gb 2p 640FLR-SFP28 Adptr",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": null,
+      "DeviceContext": "Embedded ALOM",
+      "DeviceInstance": "PciRoot(0x3)/Pci(0x2,0x0)/Pci(0x0,0x0)",
+      "Targets": [
+        "e7c5a314-421e-5c2a-96b4-0140273278d6"
+      ]
+    }
+  },
+  "Updateable": false,
+  "Version": "14.32.1908"
+}

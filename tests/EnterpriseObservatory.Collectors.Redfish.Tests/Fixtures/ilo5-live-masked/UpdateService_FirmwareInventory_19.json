@@ -1,0 +1,23 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u00220539D502\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/19",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "19",
+  "Description": "9005028f103c0650",
+  "Name": "HPE Smart Array E208i-p SR Gen10",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": null,
+      "DeviceContext": "PCI-E Slot 3",
+      "DeviceInstance": "PciRoot(0x1)/Pci(0x2,0x0)/Pci(0x0,0x0)",
+      "Targets": [
+        "f0f3e879-110f-4f6a-6564-967b176e0942"
+      ]
+    }
+  },
+  "Updateable": true,
+  "Version": "8.00"
+}

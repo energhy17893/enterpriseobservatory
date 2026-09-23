@@ -102,7 +102,7 @@ public class LayerBoundaryTests
             }
 
             var strangers = holders.Distinct(StringComparer.Ordinal)
-                .Where(n => n is not ("VsphereSessionChannel" or "SimplivitySessionChannel"))
+                .Where(n => n is not ("VsphereSessionChannel" or "SimplivitySessionChannel" or "RedfishChannel"))
                 .ToList();
 
             Assert.True(
@@ -206,6 +206,7 @@ public class LayerBoundaryTests
     [Theory]
     [InlineData("Collectors.Vsphere")]
     [InlineData("Collectors.Simplivity")]
+    [InlineData("Collectors.Redfish")]
     public void Every_collector_is_under_the_collector_rules(string collector)
     {
         Assert.Contains(SolutionAssemblies.Layer(collector), SolutionAssemblies.Collectors);

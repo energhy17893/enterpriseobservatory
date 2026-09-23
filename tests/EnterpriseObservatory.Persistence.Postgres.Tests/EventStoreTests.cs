@@ -87,7 +87,7 @@ public class EventStoreTests : IDisposable
         Assert.Equal(T0.AddMinutes(-1), cursor.Mark?.CreatedAtUtc);
         Assert.Equal(T0, cursor.LastSuccessUtc);
 
-        var newest = store.Recent(10)[0];
+        var newest = store.Recent(0, 10).Events[0];
         Assert.Equal(2, newest.Key);
         Assert.Equal("vc-1", newest.SourceInstanceId);
         Assert.Equal("esx.problem.storage.connectivity.lost", newest.TypeId);
@@ -110,7 +110,7 @@ public class EventStoreTests : IDisposable
         store.Record("vc-1", [Event(1, T0)], complete: true, T0);
         store.Record("vc-1", [Event(1, T0), Event(2, T0.AddSeconds(1))], complete: true, T0.AddMinutes(5));
 
-        Assert.Equal(2, store.Recent(10).Count);
+        Assert.Equal(2, store.Recent(0, 10).Events.Count);
     }
 
     [SkippableFact]
@@ -123,7 +123,7 @@ public class EventStoreTests : IDisposable
         store.Record("vc-1", [Event(7, T0.AddDays(-3))], complete: true, T0.AddDays(-3));
         store.Record("vc-1", [Event(7, T0)], complete: true, T0);
 
-        Assert.Equal(2, store.Recent(10).Count);
+        Assert.Equal(2, store.Recent(0, 10).Events.Count);
     }
 
     [SkippableFact]
@@ -219,7 +219,7 @@ public class EventStoreTests : IDisposable
         var removed = store.Prune(T0 - EventCollectionPipeline.Retention);
 
         Assert.Equal(1, removed);
-        Assert.Equal(2, Assert.Single(store.Recent(10)).Key);
+        Assert.Equal(2, Assert.Single(store.Recent(0, 10).Events).Key);
 
         // The cursor is not an event and is not aged out with them.
         Assert.Equal(2, Assert.Single(store.Cursors).Mark?.Key);
@@ -235,9 +235,60 @@ public class EventStoreTests : IDisposable
         store.Record("vc-1", [Event(1, T0.AddMinutes(-3)), Event(2, T0.AddMinutes(-1))], complete: true, T0);
         store.Record("vc-2", [Event(9, T0.AddMinutes(-2))], complete: true, T0);
 
-        Assert.Equal([2L, 9L, 1L], store.Recent(10).Select(e => e.Key));
-        Assert.Equal([9L], store.Recent(10, "vc-2").Select(e => e.Key));
-        Assert.Single(store.Recent(1));
+        Assert.Equal([2L, 9L, 1L], store.Recent(0, 10).Events.Select(e => e.Key));
+        Assert.Equal([9L], store.Recent(0, 10, "vc-2").Events.Select(e => e.Key));
+        Assert.Single(store.Recent(0, 1).Events);
+    }
+
+    [SkippableFact]
+    public void Recent_pages_by_offset_and_reports_the_total()
+    {
+        RequireDatabase();
+
+        var store = new PostgresEventStore(_live.Database);
+
+        store.Record(
+            "vc-1",
+            [.. Enumerable.Range(1, 5).Select(k => Event(k, T0.AddMinutes(-10 + k)))],
+            complete: true,
+            T0);
+
+        var second = store.Recent(offset: 2, limit: 2);
+
+        Assert.Equal(5, second.Total);
+        Assert.Equal([3L, 2L], second.Events.Select(e => e.Key));
+        Assert.Empty(store.Recent(offset: 5, limit: 2).Events);
+        Assert.Equal(5, store.Recent(offset: 5, limit: 2).Total);
+    }
+
+    [SkippableFact]
+    public void Recent_searches_message_type_vm_host_and_user_ignoring_case()
+    {
+        RequireDatabase();
+
+        var store = new PostgresEventStore(_live.Database);
+        var task = Event(3, T0.AddMinutes(-3)) with
+        {
+            EventClass = "TaskEvent",
+            TypeId = "VirtualMachine.createSnapshot",
+            UserName = @"CORP\alice",
+            Host = null,
+            VirtualMachine = new EventObjectRef { MoRef = "vm-1", Name = "fileserver" },
+        };
+        var powerOff = Event(4, T0.AddMinutes(-2)) with { TypeId = "VmPoweredOffEvent", Message = "100% off" };
+
+        store.Record("vc-1", [Event(1, T0.AddMinutes(-5)), task, powerOff], complete: true, T0);
+
+        Assert.Equal([3L], store.Recent(0, 10, search: "FILESERVER").Events.Select(e => e.Key));
+        Assert.Equal([3L], store.Recent(0, 10, search: "createsnapshot").Events.Select(e => e.Key));
+        Assert.Equal([3L], store.Recent(0, 10, search: @"corp\alice").Events.Select(e => e.Key));
+        Assert.Equal([4L, 1L], store.Recent(0, 10, search: "esx01").Events.Select(e => e.Key));
+        Assert.Equal(1, store.Recent(0, 10, search: "event 1").Total);
+
+        // Typed wildcards are literal: "%" finds the one message with a percent sign.
+        Assert.Equal([4L], store.Recent(0, 10, search: "%").Events.Select(e => e.Key));
+        Assert.Equal(0, store.Recent(0, 10, search: "_x_").Total);
+        Assert.Equal(0, store.Recent(0, 10, "vc-2", "fileserver").Total);
     }
 
     [SkippableFact]

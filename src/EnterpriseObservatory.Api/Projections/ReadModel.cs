@@ -204,12 +204,20 @@ public sealed class ReadModel(
     // --- alerts -----------------------------------------------------------
 
     /// <summary>
-    /// The inbox: every visible alert, worst first.
+    /// The inbox: every visible alert, open ones first, then worst first.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// This is the flat list ADR-0007 §5.1 guarantees is always one click away.
     /// Event grouping is a view over it, never a replacement for it: no alert
     /// may live only inside a group.
+    /// </para>
+    /// <para>
+    /// Open first whatever the filter (A4; Dynatrace Problems, reference
+    /// §11.5): acknowledged and silenced alerts are somebody's already. Sorted
+    /// here, over the whole result, because a client sorting one page would
+    /// put page two's open alerts below page one's acknowledged ones.
+    /// </para>
     /// </remarks>
     public Page<AlertView> Alerts(
         AlertSeverity? severity = null,
@@ -236,14 +244,34 @@ public sealed class ReadModel(
             .Where(a => source is null ||
                 string.Equals(a.Source, source, StringComparison.OrdinalIgnoreCase))
             .Where(a => Matches(a, search))
-            // Worst first, then most recent. An operator reads from the top and
-            // must find the thing that matters there.
-            .OrderByDescending(a => a.Severity)
+            // Open first, then worst, then most recent. An operator reads from
+            // the top and must find the thing that matters there.
+            .OrderBy(a => a.State != AlertLifecycleState.Open)
+            .ThenByDescending(a => a.Severity)
             .ThenByDescending(a => a.LastSeenUtc)
             .ToList();
 
-        return Paged(matching, offset, limit, a => ToView(a, graph));
+        var page = Paged(matching, offset, limit, a => a);
+        var repeats = EpisodeCounts(page.Items);
+
+        return new Page<AlertView>
+        {
+            Items = [.. page.Items.Select(a => ToView(a, graph, repeats))],
+            Total = page.Total,
+            Offset = page.Offset,
+            Limit = page.Limit,
+        };
     }
+
+    /// <summary>
+    /// The repeat count (A8) for every alert on one page, in one store call.
+    /// </summary>
+    /// <remarks>
+    /// Every surface that shows an alert asks, so the same alert reads the
+    /// same on the inbox, an entity page and the event board (ADR-0007 §5).
+    /// </remarks>
+    private IReadOnlyDictionary<AlertFingerprint, int> EpisodeCounts(IEnumerable<AlertInstance> onPage) =>
+        _alerts.EpisodeCounts([.. onPage.Select(a => a.Fingerprint).Distinct()]);
 
     /// <summary>
     /// The inbox's default view (A9): the same visible alerts as
@@ -286,32 +314,50 @@ public sealed class ReadModel(
         // remark): grouping those by title alone would fold unrelated
         // problems that happen to say the same thing, so each stays a group
         // of one, keyed by its own fingerprint.
+        //
+        // A group with any open member comes first (A4), and inside a group
+        // the open members lead, the same order as the flat list.
         var groups = matching
             .GroupBy(a => (RuleId: a.RuleId ?? $"fp:{a.Fingerprint.Value}", a.Source))
-            .Select(g =>
-            {
-                var members = g
-                    .OrderByDescending(a => a.Severity)
+            .Select(g => (
+                g.Key,
+                Members: g
+                    .OrderBy(a => a.State != AlertLifecycleState.Open)
+                    .ThenByDescending(a => a.Severity)
                     .ThenByDescending(a => a.LastSeenUtc)
-                    .ToList();
-                var views = members.Select(a => ToView(a, graph)).ToList();
-                var kinds = views.Select(v => v.EntityKind).Distinct().ToList();
-
-                return new AlertGroupView
-                {
-                    Key = $"{g.Key.RuleId}|{g.Key.Source}",
-                    Title = members[0].Title,
-                    Severity = members.Max(a => a.Severity),
-                    EntityKind = kinds.Count == 1 ? kinds[0] : null,
-                    Count = views.Count,
-                    Alerts = views,
-                };
-            })
-            .OrderByDescending(g => g.Severity)
-            .ThenByDescending(g => g.Alerts[0].LastSeenUtc)
+                    .ToList()))
+            .OrderBy(g => g.Members[0].State != AlertLifecycleState.Open)
+            .ThenByDescending(g => g.Members.Max(a => a.Severity))
+            .ThenByDescending(g => g.Members[0].LastSeenUtc)
             .ToList();
 
-        return Paged(groups, offset, limit, g => g);
+        var page = Paged(groups, offset, limit, g => g);
+        var repeats = EpisodeCounts(page.Items.SelectMany(g => g.Members));
+
+        return new Page<AlertGroupView>
+        {
+            Items =
+            [
+                .. page.Items.Select(g =>
+                {
+                    var views = g.Members.Select(a => ToView(a, graph, repeats)).ToList();
+                    var kinds = views.Select(v => v.EntityKind).Distinct().ToList();
+
+                    return new AlertGroupView
+                    {
+                        Key = $"{g.Key.RuleId}|{g.Key.Source}",
+                        Title = g.Members[0].Title,
+                        Severity = g.Members.Max(a => a.Severity),
+                        EntityKind = kinds.Count == 1 ? kinds[0] : null,
+                        Count = views.Count,
+                        Alerts = views,
+                    };
+                }),
+            ],
+            Total = page.Total,
+            Offset = page.Offset,
+            Limit = page.Limit,
+        };
     }
 
     // --- reports ------------------------------------------------------------
@@ -1048,14 +1094,12 @@ public sealed class ReadModel(
         var counts = AlertCountsByEntity();
         var derived = EntityHealth.DeriveAll(graph.Entities.Values, _alerts.All, ReportingSources());
 
-        var entityAlerts =
-        (IReadOnlyList<AlertView>)
-        [
-            .. Visible()
-                .Where(a => a.Entity == entityId)
-                .OrderByDescending(a => a.Severity)
-                .Select(a => ToView(a, graph)),
-        ];
+        var onEntity = Visible()
+            .Where(a => a.Entity == entityId)
+            .OrderByDescending(a => a.Severity)
+            .ToList();
+        var repeats = EpisodeCounts(onEntity);
+        var entityAlerts = (IReadOnlyList<AlertView>)[.. onEntity.Select(a => ToView(a, graph, repeats))];
 
         return new EntityDetailView
         {
@@ -1092,12 +1136,22 @@ public sealed class ReadModel(
     /// </summary>
     private static readonly Dictionary<EntityKind, string[]> JudgedSimplivityKeys = new()
     {
-        [EntityKind.EsxiHost] = [InventoryVerdictKeys.SimplivityState, InventoryVerdictKeys.SimplivityUpgradeState],
+        [EntityKind.EsxiHost] = [InventoryVerdictKeys.SimplivityState, InventoryVerdictKeys.SimplivityUpgradeState, InventoryVerdictKeys.SimplivityHwStatus],
         [EntityKind.Cluster] = [InventoryVerdictKeys.SimplivityArbiterConnected, InventoryVerdictKeys.SimplivityUpgradeState],
         [EntityKind.VirtualMachine] = [InventoryVerdictKeys.SimplivityHaStatus],
     };
 
     private const string SimplivityNamespace = "simplivity";
+
+    /// <summary>The Redfish keys an alert rests on; an iLO annotates only ESXi hosts (M6.1).</summary>
+    private static readonly string[] JudgedRedfishKeys =
+    [
+        InventoryVerdictKeys.RedfishAggregateHealth,
+        InventoryVerdictKeys.RedfishPsuRedundancy,
+        InventoryVerdictKeys.RedfishFanRedundancy,
+    ];
+
+    private const string RedfishNamespace = "redfish";
 
     private const string Unknown = "Unknown";
 
@@ -1110,9 +1164,12 @@ public sealed class ReadModel(
         foreach (var annotation in graph.Annotations.Where(a => a.Entity == entity.Id))
         {
             var prefix = annotation.Namespace + ".";
-            var judged = annotation.Namespace == SimplivityNamespace
-                ? JudgedSimplivityKeys.GetValueOrDefault(entity.Kind, [])
-                : [];
+            var judged = annotation.Namespace switch
+            {
+                SimplivityNamespace => JudgedSimplivityKeys.GetValueOrDefault(entity.Kind, []),
+                RedfishNamespace => JudgedRedfishKeys,
+                _ => [],
+            };
 
             views.AddRange(annotation.Settings.Keys.Union(judged, StringComparer.OrdinalIgnoreCase)
                 .Order(StringComparer.Ordinal)
@@ -1260,6 +1317,29 @@ public sealed class ReadModel(
                                     }),
                             ],
                     },
+                    Hardware =
+                    [
+                        .. mine.Where(x => x.Entity.Kind == EntityKind.EsxiHost)
+                            .Select(x => new SimplivityHardwareView
+                            {
+                                EntityId = x.Entity.Id.Value,
+                                Name = x.Entity.DisplayName,
+                                Status = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwStatus),
+                                RaidStatus = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwRaidStatus),
+                                BatteryStatus = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwBatteryStatus),
+                                BatteryHealth = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwBatteryHealth),
+                                BatteryPercentCharged = Int(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwBatteryCharge)),
+                                AcceleratorStatus = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwAcceleratorStatus),
+                                Drives = Int(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwDrives)),
+                                DriveStatuses = Counts(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwDriveStatus)),
+                                DriveHealths = Counts(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwDriveHealth)),
+                                MinLifeRemaining = Int(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwLifeRemainingMin)),
+                                DrivesRebuilding = Int(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwDrivesRebuilding)),
+                                CarriedForward = carried,
+                                ReadAtUtc = x.Annotation.ReadAtUtc,
+                            })
+                            .OrderBy(h => h.Name, StringComparer.OrdinalIgnoreCase),
+                    ],
                 };
             })
             .ToList();
@@ -1272,6 +1352,16 @@ public sealed class ReadModel(
         };
 
         static string? Get(EntityAnnotation annotation, string key) => annotation.Settings.GetValueOrDefault(key);
+
+        static int? Int(string? value) =>
+            int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : null;
+
+        // The collector's "GREEN=23;RED=1".
+        static Dictionary<string, int> Counts(string? encoded) =>
+            (encoded ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(pair => pair.Split('='))
+                .Where(kv => kv.Length == 2 && Int(kv[1]) is not null)
+                .ToDictionary(kv => kv[0], kv => Int(kv[1])!.Value, StringComparer.Ordinal);
 
         static DateTimeOffset? Utc(string? iso) =>
             DateTimeOffset.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,
@@ -1620,7 +1710,9 @@ public sealed class ReadModel(
 
         var result = EventCorrelator.Correlate(visible, graph, policy ?? CorrelationPolicy.Default);
 
-        AlertView Look(AlertFingerprint fingerprint) => ToView(byFingerprint[fingerprint], graph);
+        var repeats = EpisodeCounts(visible);
+
+        AlertView Look(AlertFingerprint fingerprint) => ToView(byFingerprint[fingerprint], graph, repeats);
 
         return new EventBoardView
         {
@@ -1802,9 +1894,20 @@ public sealed class ReadModel(
     }
 
     /// <summary>Presents one alert instance, for a command's response.</summary>
-    public AlertView Present(AlertInstance alert) => ToView(alert, _graphs.Current);
+    public AlertView Present(AlertInstance alert) => Present([alert])[0];
 
-    private static AlertView ToView(AlertInstance alert, EntityGraph graph)
+    /// <summary>Presents many, for a bulk command's response: one repeat-count query, not one each.</summary>
+    public IReadOnlyList<AlertView> Present(IReadOnlyList<AlertInstance> alerts)
+    {
+        var graph = _graphs.Current;
+        var repeats = EpisodeCounts(alerts);
+        return [.. alerts.Select(a => ToView(a, graph, repeats))];
+    }
+
+    private static AlertView ToView(
+        AlertInstance alert,
+        EntityGraph graph,
+        IReadOnlyDictionary<AlertFingerprint, int> repeats)
     {
         string? name = null;
         EntityKind? kind = null;
@@ -1836,6 +1939,8 @@ public sealed class ReadModel(
             StaleSinceUtc = alert.StaleSinceUtc,
             StaleReason = alert.StaleReason,
             StaleDetail = alert.StaleDetail,
+            // The alert on screen is a life of its own, so never below one.
+            RepeatCount = Math.Max(1, repeats.GetValueOrDefault(alert.Fingerprint)),
         };
     }
 

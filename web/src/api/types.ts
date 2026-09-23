@@ -84,6 +84,8 @@ export interface AlertView {
   suppressedByWindowId: string | null
   firstSeenUtc: string
   lastSeenUtc: string
+  /** Lives of this fingerprint in the kept history, this one included (A8); at least 1. */
+  repeatCount: number
 }
 
 /**
@@ -558,8 +560,11 @@ export interface EventStreamView {
 
 /** Recent vCenter events, with the state of the streams they came from. */
 export interface EventFeedView {
-  /** Newest first. */
+  /** Newest first; one page of `total` (E2: paged and searched on the server). */
   events: SourceEventView[]
+  total: number
+  offset: number
+  limit: number
   streams: EventStreamView[]
   retentionDays: number
 }
@@ -591,8 +596,10 @@ export interface ComplianceControlView {
   installationDefault: string
   baselineValue: string
   assessment: string
-  /** The catalogue the control comes from: 'Broadcom SCG' or 'eo-continuity'. Not the citation. */
+  /** The catalogue's own screen label, collapsed to two values by ownership. Not the citation. Prefer `catalogueName` -- it never collapses. */
   source: string
+  /** The catalogue the control comes from, by its own name (matches CatalogueScorecardView.name). Not the citation. */
+  catalogueName: string
   /** What the expectation/threshold rests on, shown as "basis:"; empty for vendor-guide controls (see lib/basis). */
   citation: string
   /** False when this product cannot judge the control at all. */
@@ -1163,6 +1170,22 @@ export interface SimplivitySourceView {
   vmHaStatuses: Record<string, number>
   notSafeVms: SimplivityVmView[]
   backups: { withBackup: number; withoutBackup: number; olderThanRpo: SimplivityBackupView[] }
+  hardware: SimplivityHardwareView[]
+}
+
+/** One host's hardware tree (S4). HPE colours; null = not read, Unknown. */
+export interface SimplivityHardwareView extends SimplivityRow {
+  status: string | null
+  raidStatus: string | null
+  batteryStatus: string | null
+  batteryHealth: string | null
+  batteryPercentCharged: number | null
+  acceleratorStatus: string | null
+  drives: number | null
+  driveStatuses: Record<string, number>
+  driveHealths: Record<string, number>
+  minLifeRemaining: number | null
+  drivesRebuilding: number | null
 }
 
 export interface SimplivityView {
