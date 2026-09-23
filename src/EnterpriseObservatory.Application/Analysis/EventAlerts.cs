@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using EnterpriseObservatory.Application.Collection;
@@ -174,6 +175,18 @@ public static class EventAlerts
     /// write as <c>server X mount point Y</c> (KB 1009568).
     /// </summary>
     private const string NfsMount = @"server \S+ mount point \S+";
+
+    /// <summary>
+    /// How long one instance pattern may run on one message. A guard against
+    /// catastrophic backtracking should patterns ever come from an operator,
+    /// not a budget: the patterns above take microseconds, and the 100 ms this
+    /// replaced tripped when the test host was merely descheduled under load
+    /// (gate run 2026-09-23).
+    /// </summary>
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(1);
+
+    /// <summary>Built once per pattern, not once per evaluation.</summary>
+    private static readonly ConcurrentDictionary<string, Regex> Patterns = new(StringComparer.Ordinal);
 
     /// <summary>The table the default policy uses.</summary>
     /// <remarks>
@@ -471,21 +484,15 @@ public static class EventAlerts
 
         var conditions = (policy ?? EventAlertPolicy.Default).Conditions;
         var (raises, clears) = Index(conditions);
-        var patterns = conditions
-            .Where(c => c.Instance is not null)
-            .ToDictionary(
-                c => c.Id,
-                c => new Regex(c.Instance!, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)),
-                StringComparer.Ordinal);
 
         var tracks = new Dictionary<TrackKey, Track>();
+        var unreadable = new HashSet<EntityId?>();
 
         foreach (var e in events)
         {
-            if (raises.TryGetValue(e.TypeId, out var raised))
+            if (raises.TryGetValue(e.TypeId, out var raised) && TryKeyFor(raised, e, unreadable, out var raisedKey))
             {
-                var key = KeyFor(raised, e, patterns);
-                var track = tracks.TryGetValue(key, out var existing) ? existing : new Track(raised);
+                var track = tracks.TryGetValue(raisedKey, out var existing) ? existing : new Track(raised);
 
                 if (nowUtc - e.CreatedAtUtc < raised.TimeToLive)
                 {
@@ -498,14 +505,18 @@ public static class EventAlerts
                     track.SubjectName = SubjectOf(raised, e)?.Name;
                 }
 
-                tracks[key] = track;
+                tracks[raisedKey] = track;
             }
 
             if (clears.TryGetValue(e.TypeId, out var cleared))
             {
                 foreach (var condition in cleared)
                 {
-                    var key = KeyFor(condition, e, patterns);
+                    if (!TryKeyFor(condition, e, unreadable, out var key))
+                    {
+                        continue;
+                    }
+
                     var track = tracks.TryGetValue(key, out var existing) ? existing : new Track(condition);
 
                     if (track.LastClear is null || IsNewer(e, track.LastClear))
@@ -596,7 +607,18 @@ public static class EventAlerts
             }
         }
 
-        return verdicts;
+        // An event whose instance could not be read may be the report or the
+        // clear that decides any alert on its subject, so nothing there is
+        // resolved this cycle: unknown, not absent (ADR-0026).
+        return [.. verdicts.Select(v => v is ConditionAbsent && unreadable.Contains(v.Entity)
+            ? new Unknown
+            {
+                Covers = v.Covers,
+                Entity = v.Entity,
+                Reason = UnknownReason.NotJudgeable,
+                Detail = $"an event's instance could not be read from its message within {MatchTimeout.TotalSeconds.ToString(CultureInfo.InvariantCulture)} s",
+            }
+            : v)];
     }
 
     /// <summary>
@@ -655,17 +677,37 @@ public static class EventAlerts
     /// become one alert — and the text still quotes vCenter's own message,
     /// which names the host.
     /// </remarks>
-    private static TrackKey KeyFor(
-        EventCondition condition, SourceEvent e, Dictionary<string, Regex> patterns)
+    /// <remarks>
+    /// False, with the subject added to <paramref name="unreadable"/>, when the
+    /// instance pattern timed out: one message must not fail the whole pass.
+    /// </remarks>
+    private static bool TryKeyFor(
+        EventCondition condition, SourceEvent e, HashSet<EntityId?> unreadable, out TrackKey key)
     {
-        var subject = SubjectOf(condition, e);
+        key = new TrackKey(condition.Id, e.SourceInstanceId, SubjectOf(condition, e)?.MoRef, null);
 
-        var instance = patterns.TryGetValue(condition.Id, out var pattern) &&
-            pattern.Match(e.Message) is { Success: true } match
-                ? match.Value
-                : null;
+        if (condition.Instance is null)
+        {
+            return true;
+        }
 
-        return new TrackKey(condition.Id, e.SourceInstanceId, subject?.MoRef, instance);
+        try
+        {
+            var pattern = Patterns.GetOrAdd(
+                condition.Instance, p => new Regex(p, RegexOptions.CultureInvariant, MatchTimeout));
+
+            if (pattern.Match(e.Message) is { Success: true } match)
+            {
+                key = key with { Instance = match.Value };
+            }
+
+            return true;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            unreadable.Add(EntityFor(key));
+            return false;
+        }
     }
 
     private static EventObjectRef? SubjectOf(EventCondition condition, SourceEvent e)

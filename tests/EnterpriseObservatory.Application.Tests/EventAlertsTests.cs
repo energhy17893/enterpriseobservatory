@@ -488,6 +488,25 @@ public class EventAlertsTests
     }
 
     [Fact]
+    public void A_restoration_whose_instance_cannot_be_read_in_time_is_unknown_not_a_failed_pass()
+    {
+        // Catastrophic backtracking: runs far past the match timeout on a
+        // long run of word characters that ends in something it cannot match.
+        var row = EventAlerts.Catalogue.Single(c => c.Id == "vmnic-link-down") with { Instance = @"^(\w+\s?)*$" };
+        var policy = new EventAlertPolicy { Conditions = [row] };
+        var raised = Assert.Single(EventAlerts.Evaluate(
+            [Event(1, "esx.problem.net.vmnic.linkstate.down", T0.AddMinutes(-20), "vmnic2", Esx01)], T0, policy));
+
+        var verdict = Assert.Single(EventAlerts.Judge(
+            [Event(2, "esx.clear.net.vmnic.linkstate.up", T0.AddMinutes(-10), new string('a', 64) + "!", Esx01)],
+            T0,
+            [new HeldAlert(raised.Fingerprint, raised.Entity)],
+            policy));
+
+        Assert.Equal(UnknownReason.NotJudgeable, Assert.IsType<Unknown>(verdict).Reason);
+    }
+
+    [Fact]
     public void A_stale_source_keeps_the_alert_open_and_a_fresh_absence_then_resolves_it()
     {
         // N = 1 for this rule, so there is no count to reset -- the point is
