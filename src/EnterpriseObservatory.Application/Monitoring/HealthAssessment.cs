@@ -18,25 +18,24 @@ public enum ServiceHealthStatus
     Unhealthy,
 }
 
-/// <summary>How stale a read is allowed to get before <c>/health</c> says so.</summary>
+/// <summary>How stale a role's cycles are allowed to get before <c>/health</c> says so.</summary>
 /// <remarks>
-/// Two independent thresholds because they answer different questions: a
-/// screen showing five-minute-old inventory is merely behind, worth a warning
-/// an external monitor should not page on; a screen showing nothing for fifteen
-/// minutes has stopped, and paging on that is the whole point of this
-/// endpoint existing.
+/// Two independent thresholds because they answer different questions: cycles
+/// running late are merely behind, worth a warning an external monitor should
+/// not page on; no cycle at all for fifteen minutes means the product has
+/// stopped, and paging on that is the whole point of this endpoint existing.
 /// </remarks>
 public sealed record HealthOptions
 {
     /// <summary>
-    /// A role is <see cref="ServiceHealthStatus.Degraded"/> once its last
-    /// successful read is older than this many of its own intervals.
+    /// A role is <see cref="ServiceHealthStatus.Degraded"/> once its most
+    /// recent attempt is older than this many of its own intervals.
     /// </summary>
     public int DegradedAfterIntervals { get; init; } = 3;
 
     /// <summary>
-    /// A role is <see cref="ServiceHealthStatus.Unhealthy"/> once its last
-    /// successful read is at least this old, whatever the interval.
+    /// A role is <see cref="ServiceHealthStatus.Unhealthy"/> once its most
+    /// recent attempt is at least this old, whatever the interval.
     /// </summary>
     /// <remarks>
     /// Configurable per the roadmap: an installation with a five-minute
@@ -48,19 +47,59 @@ public sealed record HealthOptions
     public static HealthOptions Default { get; } = new();
 }
 
+/// <summary>One source's own state, as <c>/health</c> lists it beside the verdict.</summary>
+public enum SourceStatus
+{
+    Healthy,
+    Warning,
+
+    /// <summary>Polled, but the last attempt did not read it (unreachable, refused, ...).</summary>
+    Unknown,
+
+    /// <summary>
+    /// No collector exists for this source's kind
+    /// (<see cref="CollectionFailureKind.NotConfigured"/>): nothing is polled,
+    /// so there is nothing unknown about it either.
+    /// </summary>
+    NotPolled,
+}
+
+/// <summary>One source, as <c>/health</c> lists it.</summary>
+/// <remarks>
+/// Visible, but not part of the verdict: see <see cref="HealthAssessment"/>.
+/// </remarks>
+public sealed record SourceFreshness
+{
+    public required string InstanceId { get; init; }
+
+    public required CollectorRole Role { get; init; }
+
+    public required SourceStatus Status { get; init; }
+
+    public DateTimeOffset? LastSuccessUtc { get; init; }
+
+    public DateTimeOffset? LastAttemptUtc { get; init; }
+}
+
 /// <summary>One role's freshness, as <c>/health</c> reports it.</summary>
 public sealed record RoleFreshness
 {
     public required CollectorRole Role { get; init; }
 
     /// <summary>
-    /// The oldest "last successful read" among this role's configured
-    /// sources — the worst case, because one silent source is one blind spot
-    /// whatever the others are doing.
+    /// The oldest "last successful read" among this role's polled sources.
+    /// Informational: a customer's vCenter being unreachable shows here and in
+    /// <see cref="HealthReport.Sources"/>, not in <see cref="Status"/>.
     /// </summary>
     public DateTimeOffset? OldestLastSuccessUtc { get; init; }
 
-    /// <summary>Null when no source of this role has ever read successfully.</summary>
+    /// <summary>
+    /// The freshest attempt among this role's polled sources — what
+    /// <see cref="Status"/> is judged from.
+    /// </summary>
+    public DateTimeOffset? FreshestAttemptUtc { get; init; }
+
+    /// <summary>Age of <see cref="FreshestAttemptUtc"/>; null when nothing was ever attempted.</summary>
     public TimeSpan? Age { get; init; }
 
     public required ServiceHealthStatus Status { get; init; }
@@ -75,6 +114,15 @@ public sealed record HealthReport
 
     public IReadOnlyList<RoleFreshness> Roles { get; init; } = [];
 
+    /// <summary>Every source's own state, polled or not. Not the verdict.</summary>
+    public IReadOnlyList<SourceFreshness> Sources { get; init; } = [];
+
+    /// <summary>False when the store queue's last write attempt failed.</summary>
+    public bool StoreReachable { get; init; } = true;
+
+    /// <summary>Why the last store write failed; null while the store is taking writes.</summary>
+    public string? StoreFailure { get; init; }
+
     /// <summary>Gaps still being filled, across every source.</summary>
     public int OpenGaps { get; init; }
 
@@ -87,85 +135,141 @@ public sealed record HealthReport
 }
 
 /// <summary>
-/// Judges the product's own freshness from what is already recorded — no new
+/// Judges the product's own health from what is already recorded — no new
 /// collection, no new write, per the roadmap's Package D redefinition
 /// (docs/feature-roadmap.md "D — Öz-izleme"): a health endpoint surfaces
-/// <see cref="ICollectorHealthStore"/> and <see cref="ICollectionGapStore"/>,
-/// it does not invent a probe of its own.
+/// <see cref="ICollectorHealthStore"/>, <see cref="ICollectionGapStore"/> and
+/// the store queue's last write, it does not invent a probe of its own.
 /// </summary>
+/// <remarks>
+/// <para>
+/// The product's health, not the union of its sources' (decided 23 September
+/// 2026, reversing "the worst source decides"). Prometheus draws the same
+/// line: a target's <c>up</c> is not the server's own readiness, which it
+/// reports separately; Kubernetes separates liveness from what a pod depends
+/// on. A customer's vCenter being unreachable is the product working
+/// correctly — it already raises its own "Collector unreachable" alert — and
+/// judging /health by it left /health at 503 permanently on the live estate,
+/// so it could no longer page on the one thing it exists for: the process
+/// itself having stopped (docs/live-verification.md §9).
+/// </para>
+/// <para>
+/// So: Healthy while every role's cycles are running — the freshest attempt
+/// among its polled sources within the thresholds — and the store is taking
+/// writes. Unhealthy only when a role has attempted nothing within
+/// <see cref="HealthOptions.UnhealthyAfter"/> or the store's last write
+/// failed. Sources whose kind has no collector
+/// (<see cref="CollectionFailureKind.NotConfigured"/>) are not polled and
+/// count toward no role.
+/// </para>
+/// </remarks>
 public static class HealthAssessment
 {
+    /// <param name="storeFailure">
+    /// The store queue's last write failure (<see cref="StoreQueueSnapshot.LastFailure"/>);
+    /// null when the store is taking writes or no queue exists.
+    /// </param>
     public static HealthReport Assess(
         IReadOnlyList<CollectorHealth> health,
         MonitoringOptions monitoring,
         HealthOptions healthOptions,
         IReadOnlyDictionary<CollectionGapState, int> gapCounts,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        string? storeFailure = null)
     {
         ArgumentNullException.ThrowIfNull(health);
         ArgumentNullException.ThrowIfNull(monitoring);
         ArgumentNullException.ThrowIfNull(healthOptions);
         ArgumentNullException.ThrowIfNull(gapCounts);
 
+        var polled = health.Where(h => h.LastFailureKind != CollectionFailureKind.NotConfigured).ToList();
+
         var roles = new List<RoleFreshness>
         {
-            AssessRole(CollectorRole.Inventory, health, monitoring.InventoryInterval, healthOptions, nowUtc),
-            AssessRole(CollectorRole.Observation, health, monitoring.ObservationInterval, healthOptions, nowUtc),
+            AssessRole(CollectorRole.Inventory, polled, monitoring.InventoryInterval, healthOptions, nowUtc),
+            AssessRole(CollectorRole.Observation, polled, monitoring.ObservationInterval, healthOptions, nowUtc),
 
             // Events (F1, CollectorRole.Events) reads on the inventory
             // cadence — it runs right after the inventory cycle, on the same
             // vCenters that just answered — so its own collector_health row
             // is judged against that interval too.
-            AssessRole(CollectorRole.Events, health, monitoring.InventoryInterval, healthOptions, nowUtc),
+            AssessRole(CollectorRole.Events, polled, monitoring.InventoryInterval, healthOptions, nowUtc),
         };
 
-        // No sources of a role configured reports that role Healthy (nothing
-        // to be unhealthy about — the same reading
-        // NoteWhetherAnythingIsConfigured gives an empty installation
-        // elsewhere in the product), so it never worsens the overall verdict.
-        // Otherwise the worst role wins: one blind role makes the whole
-        // product's self-report say so, because an operator reading
-        // "Healthy" must be able to trust that every role behind it agrees.
+        // No polled sources of a role reports that role Healthy (nothing to
+        // be unhealthy about — the same reading NoteWhetherAnythingIsConfigured
+        // gives an empty installation elsewhere in the product). Otherwise the
+        // worst role wins: a role whose cycles stopped is the product stopped.
         var overall = roles.Select(r => r.Status).DefaultIfEmpty(ServiceHealthStatus.Healthy).Max();
+
+        if (storeFailure is not null)
+        {
+            overall = ServiceHealthStatus.Unhealthy;
+        }
 
         return new HealthReport
         {
             GeneratedAtUtc = nowUtc,
             Status = overall,
             Roles = roles,
+            Sources = [.. health.Select(ToSource)],
+            StoreReachable = storeFailure is null,
+            StoreFailure = storeFailure,
             OpenGaps = gapCounts.GetValueOrDefault(CollectionGapState.Open),
             UnrecoverableGaps = gapCounts.GetValueOrDefault(CollectionGapState.Unrecoverable),
         };
     }
 
+    private static SourceFreshness ToSource(CollectorHealth h) => new()
+    {
+        InstanceId = h.InstanceId,
+        Role = h.Role,
+        Status = h.LastFailureKind == CollectionFailureKind.NotConfigured
+            ? SourceStatus.NotPolled
+            : h.Health switch
+            {
+                HealthState.Healthy => SourceStatus.Healthy,
+                HealthState.Warning => SourceStatus.Warning,
+                _ => SourceStatus.Unknown,
+            },
+        LastSuccessUtc = h.LastSuccessUtc,
+        LastAttemptUtc = h.LastAttemptUtc,
+    };
+
     private static RoleFreshness AssessRole(
         CollectorRole role,
-        IReadOnlyList<CollectorHealth> health,
+        IReadOnlyList<CollectorHealth> polled,
         TimeSpan interval,
         HealthOptions healthOptions,
         DateTimeOffset nowUtc)
     {
-        var ofRole = health.Where(h => h.Role == role).ToList();
+        var ofRole = polled.Where(h => h.Role == role).ToList();
 
         if (ofRole.Count == 0)
         {
             return new RoleFreshness { Role = role, Status = ServiceHealthStatus.Healthy };
         }
 
-        // The worst source decides, not the average: one vCenter unreachable
-        // for four hours must not be hidden behind nine that are fine.
-        var everSucceeded = ofRole.Where(h => h.LastSuccessUtc is not null).ToList();
+        var oldestSuccess = ofRole.Min(h => h.LastSuccessUtc);
 
-        if (everSucceeded.Count < ofRole.Count)
+        // The freshest attempt decides, not the oldest success: the question
+        // is whether this role's cycles still run, and one source answering —
+        // or failing to, which is still a cycle — says they do. A row from
+        // before LastAttemptUtc existed falls back to its last success.
+        var freshest = ofRole.Max(h => h.LastAttemptUtc ?? h.LastSuccessUtc);
+
+        if (freshest is null)
         {
-            // At least one configured source has never once read
-            // successfully. Nothing to measure an age from, and nothing
-            // healthy about it either.
-            return new RoleFreshness { Role = role, Status = ServiceHealthStatus.Unhealthy };
+            // Polled sources, none ever attempted: no evidence any cycle ran.
+            return new RoleFreshness
+            {
+                Role = role,
+                OldestLastSuccessUtc = oldestSuccess,
+                Status = ServiceHealthStatus.Unhealthy,
+            };
         }
 
-        var oldest = everSucceeded.Min(h => h.LastSuccessUtc!.Value);
-        var age = nowUtc - oldest;
+        var age = nowUtc - freshest.Value;
 
         var degradedAfter = interval * Math.Max(1, healthOptions.DegradedAfterIntervals);
 
@@ -178,7 +282,8 @@ public static class HealthAssessment
         return new RoleFreshness
         {
             Role = role,
-            OldestLastSuccessUtc = oldest,
+            OldestLastSuccessUtc = oldestSuccess,
+            FreshestAttemptUtc = freshest,
             Age = age,
             Status = status,
         };

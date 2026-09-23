@@ -5,10 +5,11 @@ using EnterpriseObservatory.Domain;
 namespace EnterpriseObservatory.Application.Tests;
 
 /// <summary>
-/// Package D's <c>/health</c> judgment: freshness, not process liveness, with
-/// a fake clock standing in for "time passing while nobody reads anything" —
-/// the exact shape of the four-hour outage docs/live-verification.md §9
-/// measured.
+/// Package D's <c>/health</c> judgment: whether the product's cycles run and
+/// its store takes writes — not process liveness, and not the union of its
+/// sources — with a fake clock standing in for "time passing while nobody
+/// attempts anything", the exact shape of the four-hour outage
+/// docs/live-verification.md §9 measured.
 /// </summary>
 public class HealthAssessmentTests
 {
@@ -26,13 +27,20 @@ public class HealthAssessmentTests
         UnhealthyAfter = TimeSpan.FromMinutes(15),
     };
 
+    /// <summary>A source whose last attempt was its last success, unless told otherwise.</summary>
     private static CollectorHealth Of(
-        CollectorRole role, DateTimeOffset? lastSuccess, string instanceId = "vc-1") => new()
+        CollectorRole role,
+        DateTimeOffset? lastSuccess,
+        string instanceId = "vc-1",
+        DateTimeOffset? lastAttempt = null,
+        CollectionFailureKind? failureKind = null) => new()
     {
         InstanceId = instanceId,
         Role = role,
-        Health = lastSuccess is null ? HealthState.Unknown : HealthState.Healthy,
+        Health = failureKind is null && lastSuccess is not null ? HealthState.Healthy : HealthState.Unknown,
         LastSuccessUtc = lastSuccess,
+        LastAttemptUtc = lastAttempt ?? lastSuccess,
+        LastFailureKind = failureKind,
     };
 
     private static readonly IReadOnlyDictionary<CollectionGapState, int> NoGaps =
@@ -86,11 +94,11 @@ public class HealthAssessmentTests
     }
 
     [Fact]
-    public void No_successful_read_for_the_configured_minutes_is_unhealthy()
+    public void No_attempt_for_the_configured_minutes_is_unhealthy()
     {
         // The measured failure: the service was up but blind for hours and
         // nothing outside host.log said so. Fifteen minutes (the default)
-        // without one successful read must flip /health to Unhealthy.
+        // without one attempt must flip /health to Unhealthy.
         var lastSuccess = T0 - TimeSpan.FromMinutes(16);
         var health = new[] { Of(CollectorRole.Inventory, lastSuccess) };
 
@@ -102,8 +110,9 @@ public class HealthAssessmentTests
     }
 
     [Fact]
-    public void A_configured_source_that_has_never_once_succeeded_is_unhealthy()
+    public void A_polled_source_never_attempted_is_unhealthy()
     {
+        // No attempt and no success recorded: no evidence any cycle ran.
         var health = new[] { Of(CollectorRole.Inventory, lastSuccess: null) };
 
         var report = HealthAssessment.Assess(health, Options, Health, NoGaps, T0);
@@ -112,8 +121,11 @@ public class HealthAssessmentTests
     }
 
     [Fact]
-    public void The_worst_of_several_sources_in_a_role_decides_that_roles_status()
+    public void The_freshest_attempt_decides_a_roles_status_not_the_stalest_source()
     {
+        // Reverses "the worst source decides" (2026-09-23): vc-2 silent for
+        // twenty minutes is vc-2's own alert, not the product being down,
+        // while vc-1's attempt just now proves the cycle runs.
         var health = new[]
         {
             Of(CollectorRole.Inventory, T0, "vc-1"),
@@ -123,7 +135,88 @@ public class HealthAssessmentTests
         var report = HealthAssessment.Assess(health, Options, Health, NoGaps, T0);
 
         var inventory = Assert.Single(report.Roles, r => r.Role == CollectorRole.Inventory);
-        Assert.Equal(ServiceHealthStatus.Unhealthy, inventory.Status);
+        Assert.Equal(ServiceHealthStatus.Healthy, inventory.Status);
+        Assert.Equal(T0 - TimeSpan.FromMinutes(20), inventory.OldestLastSuccessUtc);
+    }
+
+    [Fact]
+    public void Unreachable_customer_sources_and_an_unpolled_one_leave_the_product_healthy()
+    {
+        // The live estate on 2026-09-23: two vCenters failing on the
+        // customer's DNS/SSL — attempted a minute ago, last success hours
+        // back — and one connection whose kind has no collector. /health was
+        // 503 permanently; the product was working.
+        var stale = T0 - TimeSpan.FromHours(2);
+        var justNow = T0 - TimeSpan.FromMinutes(1);
+        var health = new[]
+        {
+            Of(CollectorRole.Inventory, stale, "cls-vcenter", justNow, CollectionFailureKind.Unreachable),
+            Of(CollectorRole.Inventory, stale, "svt-vcenter", justNow, CollectionFailureKind.Unreachable),
+            Of(CollectorRole.Inventory, null, "hyperv-1", T0 - TimeSpan.FromHours(3), CollectionFailureKind.NotConfigured),
+        };
+
+        var report = HealthAssessment.Assess(health, Options, Health, NoGaps, T0);
+
+        Assert.Equal(ServiceHealthStatus.Healthy, report.Status);
+        Assert.True(report.StoreReachable);
+
+        var cls = Assert.Single(report.Sources, s => s.InstanceId == "cls-vcenter");
+        Assert.Equal(SourceStatus.Unknown, cls.Status);
+        Assert.Equal(stale, cls.LastSuccessUtc);
+        Assert.Equal(justNow, cls.LastAttemptUtc);
+        Assert.Equal(SourceStatus.Unknown, Assert.Single(report.Sources, s => s.InstanceId == "svt-vcenter").Status);
+
+        var unpolled = Assert.Single(report.Sources, s => s.InstanceId == "hyperv-1");
+        Assert.Equal(SourceStatus.NotPolled, unpolled.Status);
+        Assert.Null(unpolled.LastSuccessUtc);
+    }
+
+    [Fact]
+    public void An_unpolled_source_counts_toward_no_role()
+    {
+        // NotConfigured with no success and a stale attempt would be
+        // Unhealthy under any freshness rule; it is not polled, so it is not
+        // judged at all.
+        var health = new[]
+        {
+            Of(CollectorRole.Observation, null, "hyperv-1", T0 - TimeSpan.FromHours(3), CollectionFailureKind.NotConfigured),
+        };
+
+        var report = HealthAssessment.Assess(health, Options, Health, NoGaps, T0);
+
+        Assert.Equal(ServiceHealthStatus.Healthy, report.Status);
+        Assert.Equal(SourceStatus.NotPolled, Assert.Single(report.Sources).Status);
+    }
+
+    [Fact]
+    public void A_role_with_no_attempt_since_its_sources_last_failed_is_unhealthy()
+    {
+        // Failing is fine; not trying is not. The last attempt sixteen
+        // minutes ago means the cycle stopped, whatever the sources said.
+        var attempt = T0 - TimeSpan.FromMinutes(16);
+        var health = new[]
+        {
+            Of(CollectorRole.Inventory, null, "vc-1", attempt, CollectionFailureKind.Unreachable),
+            Of(CollectorRole.Inventory, T0 - TimeSpan.FromHours(1), "vc-2", attempt, CollectionFailureKind.Timeout),
+        };
+
+        var report = HealthAssessment.Assess(health, Options, Health, NoGaps, T0);
+
+        Assert.Equal(ServiceHealthStatus.Unhealthy, report.Status);
+    }
+
+    [Fact]
+    public void A_store_that_refused_its_last_write_is_unhealthy_even_with_fresh_cycles()
+    {
+        var health = new[] { Of(CollectorRole.Inventory, T0), Of(CollectorRole.Observation, T0) };
+
+        var report = HealthAssessment.Assess(
+            health, Options, Health, NoGaps, T0, storeFailure: "connection refused");
+
+        Assert.Equal(ServiceHealthStatus.Unhealthy, report.Status);
+        Assert.False(report.StoreReachable);
+        Assert.Equal("connection refused", report.StoreFailure);
+        Assert.All(report.Roles, r => Assert.Equal(ServiceHealthStatus.Healthy, r.Status));
     }
 
     [Fact]
