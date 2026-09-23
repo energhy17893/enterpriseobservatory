@@ -1063,6 +1063,8 @@ vCenter'da olduğu ve `hypervisor_object_id`'nin moRef olup olmadığı; IML gir
 sayısı ve `Created` sırası; iLO cevap süreleri (Telegraf 5 sn, Netdata 15 sn
 zaman aşımı kullanıyor).
 
+**Ölçüldü (23 Eylül, KibarHolding-KBVc01, 59 host):** `hardware.systemInfo.uuid` 59/59, `serialNumber` yalnız 33/59, vendor/model 59/59, `otherIdentifyingInfo` 426 giriş. **Karar (M6.2 kimlik katlama):** birincil anahtar UUID ↔ Redfish `Systems/1.UUID`; seri numarası yalnız ikincil doğrulama; eşleşmeyen host `katlanamadı` olarak açık kalır, tahmin yok.
+
 **Bulunamadı:** iLO maksimum oturum sayısı ve rate limit; "GET için LoginPriv
 yeter" açık cümlesi; SimpliVity 5.x API sürüm numarası ve eşzamanlı token sınırı.
 
