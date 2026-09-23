@@ -22,7 +22,7 @@ public sealed class VsphereServiceContentTests
     [Fact]
     public void The_instance_uuid_is_read_from_about()
     {
-        var content = VsphereServiceContent.TryParse(Envelope(
+        var content = VsphereServiceContentParser.TryParse(Envelope(
             "<about><name>vc</name><apiVersion>8.0.3.0</apiVersion><instanceUuid>4c1d2e3f-0a1b</instanceUuid></about>"));
 
         Assert.Equal("4c1d2e3f-0a1b", content!.InstanceUuid);
@@ -30,5 +30,5 @@ public sealed class VsphereServiceContentTests
 
     [Fact]
     public void A_server_that_sends_no_instance_uuid_leaves_it_empty() =>
-        Assert.Equal(string.Empty, VsphereServiceContent.TryParse(Envelope("<about><name>vc</name></about>"))!.InstanceUuid);
+        Assert.Equal(string.Empty, VsphereServiceContentParser.TryParse(Envelope("<about><name>vc</name></about>"))!.InstanceUuid);
 }
