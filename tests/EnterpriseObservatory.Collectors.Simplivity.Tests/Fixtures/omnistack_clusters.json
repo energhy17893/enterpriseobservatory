@@ -1,0 +1,48 @@
+{
+  "omnistack_clusters": [
+    {
+      "id": "10a1b2c3-0000-4000-8000-000000000010",
+      "name": "SVT-Cluster-1",
+      "type": "OMNISTACK",
+      "version": "5.2.0.1234",
+      "upgrade_state": "SUCCESS_MIXED_VERSION",
+      "arbiter_address": "10.10.14.5",
+      "arbiter_configured": true,
+      "arbiter_connected": true,
+      "arbiter_required": false,
+      "hypervisor_type": "VSPHERE",
+      "hypervisor_object_id": "5029a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b:ClusterComputeResource:domain-c7",
+      "hypervisor_object_parent_id": "datacenter-2",
+      "hypervisor_object_parent_name": "Datacenter-1",
+      "hypervisor_management_system": "10.10.10.10",
+      "hypervisor_management_system_name": "vc02.lab.example",
+      "members": [
+        "00a1b2c3-0000-4000-8000-000000000001",
+        "00a1b2c3-0000-4000-8000-000000000002",
+        "00a1b2c3-0000-4000-8000-000000000003"
+      ],
+      "cluster_group_ids": [],
+      "iwo_enabled": false,
+      "iwo_active": false,
+      "time_zone": "UTC",
+      "cluster_feature_level": 8,
+      "allocated_capacity": 65970697666560,
+      "free_space": 23089744183296,
+      "used_capacity": 20891208927744,
+      "used_logical_capacity": 62673626783232,
+      "capacity_savings": 41781417855488,
+      "compression_ratio": "2.0 : 1",
+      "deduplication_ratio": "1.5 : 1",
+      "efficiency_ratio": "3.0 : 1",
+      "stored_compressed_data": 10445604463872,
+      "stored_uncompressed_data": 20891208927744,
+      "stored_virtual_machine_data": 20891208927744,
+      "local_backup_capacity": 2089120892774,
+      "remote_backup_capacity": 0,
+      "infosight_configuration": {
+        "enabled": true
+      }
+    }
+  ],
+  "count": 1
+}

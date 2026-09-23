@@ -1,6 +1,7 @@
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Application.Security;
+using EnterpriseObservatory.Collectors.Simplivity;
 using EnterpriseObservatory.Collectors.Vsphere;
 using EnterpriseObservatory.Domain;
 
@@ -70,6 +71,9 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     private readonly IEntityGraphStore _graph;
     private readonly IClock _clock;
     private readonly Action<string, string> _reportUnusable;
+
+    /// <summary>A session or token that could not be given back on close; a warning, not an error.</summary>
+    private readonly Action<string, string> _reportCloseWarning;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Built> _built = new(StringComparer.Ordinal);
 
@@ -161,8 +165,10 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         IEntityGraphStore graph,
         IClock clock,
         Action<string, string> reportUnusable,
-        int maxRequestsPerSource = SourceRequestGate.DefaultLimit)
+        int maxRequestsPerSource = SourceRequestGate.DefaultLimit,
+        Action<string, string>? reportCloseWarning = null)
     {
+        _reportCloseWarning = reportCloseWarning ?? ((_, _) => { });
         _catalogue = catalogue ?? throw new ArgumentNullException(nameof(catalogue));
         _graph = graph ?? throw new ArgumentNullException(nameof(graph));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -499,12 +505,13 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     public const string VsphereKind = ConnectionKinds.Vsphere;
 
     /// <summary>The kinds this build has a collector for; <see cref="Build"/> answers each.</summary>
-    private static readonly string[] BuiltKinds = [ConnectionKinds.Vsphere];
+    private static readonly string[] BuiltKinds = [ConnectionKinds.Vsphere, ConnectionKinds.Simplivity];
 
     /// <summary>Builds a connection's collectors by its kind.</summary>
     private Built Build(SourceConnection connection, Shape shape) => connection.Kind switch
     {
         ConnectionKinds.Vsphere => BuildVsphere(connection, shape),
+        ConnectionKinds.Simplivity => BuildSimplivity(connection, shape),
         _ => throw new InvalidOperationException(
             $"No collector for kind '{connection.Kind}'; WhyUnusable should have held it back."),
     };
@@ -549,6 +556,57 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             new VsphereObservationSource(
                 client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock),
             new VsphereEventSource(client, _clock));
+    }
+
+    /// <summary>
+    /// SimpliVity: inventory only — no metrics, and its alarms reach the
+    /// product through vCenter's event stream, not this source (§10.7).
+    /// </summary>
+    /// <remarks>
+    /// One token for the connection's life (F3): the channel keeps it across
+    /// cycles and replaces it once on a 401. Folding reads the graph through
+    /// <see cref="GraphFoldingDirectory"/>, never the collector itself
+    /// (ADR-0027 §4).
+    /// </remarks>
+    private Built BuildSimplivity(SourceConnection connection, Shape shape)
+    {
+        var options = new SimplivityConnectionOptions
+        {
+            InstanceId = connection.InstanceId,
+            BaseAddress = connection.BaseAddress,
+            Username = connection.Username,
+            Password = connection.Password,
+            AcceptUntrustedCertificate = connection.AcceptUntrustedCertificate,
+        };
+
+        var channel = new SimplivitySessionChannel(
+            SimplivitySessionChannel.CreateHandler(options), options, new SourceRequestGate(_maxRequestsPerSource));
+
+        return new Built(
+            shape,
+            () => CloseSimplivityAsync(connection.InstanceId, channel),
+            new SimplivityInventorySource(connection.InstanceId, channel, new GraphFoldingDirectory(_graph), _clock),
+            Observation: null,
+            Events: null);
+    }
+
+    /// <summary>
+    /// Revokes the token, then closes the sockets. A refused revoke — the live
+    /// OVC answers 401 — is a warning, never an error: the token idles out.
+    /// </summary>
+    private async Task CloseSimplivityAsync(string instanceId, SimplivitySessionChannel channel)
+    {
+        try
+        {
+            if (await channel.RevokeAsync(CancellationToken.None).ConfigureAwait(false) is { } warning)
+            {
+                _reportCloseWarning(instanceId, warning);
+            }
+        }
+        finally
+        {
+            channel.Dispose();
+        }
     }
 
     private static readonly TimeSpan ShutdownLogoutDeadline = TimeSpan.FromSeconds(5);

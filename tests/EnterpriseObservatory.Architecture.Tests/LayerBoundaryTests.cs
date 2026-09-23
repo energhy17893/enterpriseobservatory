@@ -102,7 +102,7 @@ public class LayerBoundaryTests
             }
 
             var strangers = holders.Distinct(StringComparer.Ordinal)
-                .Where(n => n != "VsphereSessionChannel")
+                .Where(n => n is not ("VsphereSessionChannel" or "SimplivitySessionChannel"))
                 .ToList();
 
             Assert.True(
@@ -197,6 +197,18 @@ public class LayerBoundaryTests
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Every collector the rules above are meant to cover is actually loaded,
+    /// so none of them passes by having nothing to check.
+    /// </summary>
+    [Theory]
+    [InlineData("Collectors.Vsphere")]
+    [InlineData("Collectors.Simplivity")]
+    public void Every_collector_is_under_the_collector_rules(string collector)
+    {
+        Assert.Contains(SolutionAssemblies.Layer(collector), SolutionAssemblies.Collectors);
     }
 
     [Fact]
