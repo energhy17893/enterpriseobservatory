@@ -389,6 +389,41 @@ DEĞİL) bu yüzden var: migrasyon eklemek birinin elle onaylaması gereken bir 
 
 Yayım: pg_dump önce alındı (182 MB), canlıda `schema_version` 14 → 15 sorunsuz uygulandı,
 `skipped_cycles` üç rol için de 0.
+## 14. Üçüncü DNS kesintisi ve terminale bağlı servisin ölümü (23 Eylül 2026)
+
+**Görünen (07:02Z, salt-okunur psql):** son örnek 05:18:09Z; `collector_health`
+Inventory ve Observation `Unknown`, geri çekilmede, hata "Bilinen böyle bir ana
+bilgisayar yok (ebebek-cls-vcenter.ebebek.local:443)"; son deneme 05:37Z;
+süreç listesinde ürün yok; `host.log` 05:40Z'de `^C` ile bitiyor.
+
+**İki ayrı olay:**
+
+| Olay | Kanıt | Ürün davranışı |
+|---|---|---|
+| vCenter DNS kesintisi 05:18Z'den itibaren (22 Eylül'deki iki kesintiyle aynı ad) | `last_failure_detail`, `collection_gap` `open` 05:18:00→07:01:51 | doğru: kaynak "cevap vermedi", kapsadığı her şey Unknown, sahte çözülme yok, olay filigranı korundu ("position was kept"), boşluk açıldı |
+| Servis süreci 05:40Z'de öldü | `host.log` son satırı `^C`; süreç yok | ürün hatası değil: F5 yayımı (01:17Z) terminale bağlı başlatılmış, terminal kapanınca/Ctrl+C ile ölmüş — 22 Eylül'deki ölümle aynı şekil |
+
+DNS 07:02Z'de tekrar çözüyor, 443 açık.
+
+**Yapılan:** 07:03Z WMI ile yeniden başlatma (terminale bağlı değil); ilk
+denemede stdout yönlendirilmediği için log yazılmadı → 07:05Z ikinci
+başlatma `>> host.log` ile. Sonuç: üç rol `Healthy`, ilk 90 sn'de 17 800
+satır (geri doldurma), `/health` 200. Boşluklar: 05:18→07:01:51 (H3 son ~1
+saati dolduracak, öncesi `lost_before` ile bildirilecek — kural: 1 saatten
+uzun kesinti bildirilen kayıptır) ve 07:02:21→07:04:21 (iki başlatma arası,
+doldurulur).
+
+**Sonuçlar:**
+- Kesinti tespiti ve Unknown semantiği üçüncü kez doğru çalıştı; doğrulama
+  bölümü §9'daki ile aynı.
+- **Açık:** ürün bir Windows servisi değil, elle başlatılan bir süreç; bu üç
+  günde üçüncü terminale bağlı ölüm. Yapısal çözüm roadmap'e girdi: **G-SVC**
+  (servis kaydı, otomatik yeniden başlatma, dosya loglaması). Operasyon
+  kuralı o zamana kadar: yalnız WMI + yönlendirme ile başlat.
+- Ölçüm: kesinti süresi 1 sa 22 dk; 1 saatlik gerçek zamanlı pencere aşıldığı
+  için ~22 dakikalık gerçek veri kaybı bekleniyor; `lost_before` ile teyit
+  edilecek.
+
 ## Bilinen sınırlar — ölçülmüş, tahmin edilmemiş
 
 ### Gecikme 1 ms altında görünmüyor
