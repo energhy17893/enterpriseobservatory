@@ -99,7 +99,11 @@ var options = new VsphereConnectionOptions
     InventoryPageSize = pageSize,
 };
 
-using var handler = VsphereSessionChannel.CreateHandler(options);
+// Wrapped in a timing handler the probe owns, not a change to the
+// collector's transport (--time-inventory below); it only records while
+// asked to, so it costs nothing on every other flag.
+using var handler = new EnterpriseObservatory.VsphereProbe.InventoryTimingHandler(
+    VsphereSessionChannel.CreateHandler(options));
 using var channel = new VsphereSessionChannel(handler, options);
 var client = new VsphereClient(channel, options);
 using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(3));
@@ -277,6 +281,20 @@ try
         await EnterpriseObservatory.VsphereProbe.Candidates.RunAsync(
             client, baseAddress, user, password, insecure, cancellation.Token);
         return 0;
+    }
+
+    // Where RetrieveInventoryAsync's time actually goes: SOAP page round
+    // trips, a particular object type, or a relationship read (alarms,
+    // backup fields) -- the read-budget question the 23 Sep 2026 KBVc01
+    // measurement (21-35s evening vs ~7.4s morning, SOAP only, no DB) left
+    // open. Hooked at InventoryTimingHandler, a DelegatingHandler this probe
+    // owns; the collector is not touched and never learns it is there.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --time-inventory
+    if (args.Contains("--time-inventory", StringComparer.OrdinalIgnoreCase))
+    {
+        Section("Inventory call timing");
+        return await EnterpriseObservatory.VsphereProbe.InventoryTiming.RunAsync(client, handler, cancellation.Token);
     }
 
     Section("Connection");
