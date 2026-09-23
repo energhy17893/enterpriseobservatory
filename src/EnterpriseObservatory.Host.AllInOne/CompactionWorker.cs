@@ -135,7 +135,7 @@ public sealed class CompactionWorker(
         {
             HostLog.RetentionDeleted(
                 _logger,
-                (long)finished.DeleteDuration.TotalMilliseconds,
+                (int)finished.DeleteDuration.TotalMilliseconds,
                 finished.SamplesDeleted,
                 finished.BucketsDeleted);
         }

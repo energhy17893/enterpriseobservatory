@@ -121,7 +121,7 @@ internal static partial class HostLog
         Message = "Retention delete took {Milliseconds} ms ({SamplesDeleted} samples, " +
                   "{BucketsDeleted} buckets).")]
     public static partial void RetentionDeleted(
-        ILogger logger, long milliseconds, int samplesDeleted, int bucketsDeleted);
+        ILogger logger, int milliseconds, int samplesDeleted, int bucketsDeleted);
 
     [LoggerMessage(
         EventId = 1015,
