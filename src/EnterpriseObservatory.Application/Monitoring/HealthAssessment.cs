@@ -175,14 +175,21 @@ public static class HealthAssessment
         HealthOptions healthOptions,
         IReadOnlyDictionary<CollectionGapState, int> gapCounts,
         DateTimeOffset nowUtc,
-        string? storeFailure = null)
+        string? storeFailure = null,
+        IReadOnlySet<string>? disabledConnections = null)
     {
         ArgumentNullException.ThrowIfNull(health);
         ArgumentNullException.ThrowIfNull(monitoring);
         ArgumentNullException.ThrowIfNull(healthOptions);
         ArgumentNullException.ThrowIfNull(gapCounts);
 
-        var polled = health.Where(h => h.LastFailureKind != CollectionFailureKind.NotConfigured).ToList();
+        // A connection an operator switched off is as unpolled as one with no
+        // collector for its kind: neither says anything about the product.
+        bool NotPolled(CollectorHealth h) =>
+            h.LastFailureKind == CollectionFailureKind.NotConfigured ||
+            disabledConnections?.Contains(h.InstanceId) == true;
+
+        var polled = health.Where(h => !NotPolled(h)).ToList();
 
         var roles = new List<RoleFreshness>
         {
@@ -212,7 +219,7 @@ public static class HealthAssessment
             GeneratedAtUtc = nowUtc,
             Status = overall,
             Roles = roles,
-            Sources = [.. health.Select(ToSource)],
+            Sources = [.. health.Select(h => ToSource(h, NotPolled(h)))],
             StoreReachable = storeFailure is null,
             StoreFailure = storeFailure,
             OpenGaps = gapCounts.GetValueOrDefault(CollectionGapState.Open),
@@ -220,11 +227,11 @@ public static class HealthAssessment
         };
     }
 
-    private static SourceFreshness ToSource(CollectorHealth h) => new()
+    private static SourceFreshness ToSource(CollectorHealth h, bool notPolled) => new()
     {
         InstanceId = h.InstanceId,
         Role = h.Role,
-        Status = h.LastFailureKind == CollectionFailureKind.NotConfigured
+        Status = notPolled
             ? SourceStatus.NotPolled
             : h.Health switch
             {

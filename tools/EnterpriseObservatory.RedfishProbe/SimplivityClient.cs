@@ -94,13 +94,13 @@ internal sealed class SimplivityClient : IDisposable
 
             await socket.ConnectAsync(host, port, linked.Token);
             stopwatch.Stop();
-            Console.WriteLine($"  TCP connect {host}:{port}                    ok ({stopwatch.Elapsed.TotalMilliseconds:0} ms)");
+            Console.WriteLine($"  TCP connect port {port}                    ok ({stopwatch.Elapsed.TotalMilliseconds:0} ms)");
         }
         catch (Exception ex) when (ex is SocketException or OperationCanceledException)
         {
             stopwatch.Stop();
             Console.WriteLine(
-                $"  TCP connect {host}:{port}                    FAILED " +
+                $"  TCP connect port {port}                    FAILED " +
                 $"({TlsDiagnostics.Classify(ex)}, {stopwatch.Elapsed.TotalMilliseconds:0} ms)");
         }
     }
