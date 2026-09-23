@@ -817,6 +817,30 @@ internal static class PostgresSchema
         ALTER TABLE collector_health ADD COLUMN views_held integer NULL;
         ALTER TABLE collector_health ADD COLUMN views_held_max integer NULL;
         """,
+
+        // Migration 17 (F6, ADR-0025 §5): the rest of the self-metrics --
+        // whether the last attempt is up (Prometheus's sense: false on a parse
+        // or write failure too, not only on no answer), its short last error,
+        // its duration and the last-32 ring of them, items read/unread,
+        // sessions this source's own channel believes it holds, and clock
+        // skew -- as one jsonb column rather than eight more scalar ones, to
+        // avoid stacking further columns onto a row already carrying
+        // skipped_cycles, views_held and views_held_max for the same reason.
+        //
+        // NULL, never an empty object: exactly the views_held rule (16, and
+        // ViewsHeldMax's remarks) applied to the whole blob. Write-only and
+        // never hydrated back on Load -- PostgresCollectorHealthStore's
+        // remarks explain why for views_held and it applies here without
+        // change: a restart starts every one of these fields at null rather
+        // than inheriting a number an earlier build left behind, so a
+        // regression this process introduces is never understated by an old
+        // row. Read with plain SQL (select role, self_metrics from
+        // collector_health) for the same reason those two columns were
+        // persisted at all: this is the only way anyone without a password to
+        // the product's own API can verify these numbers live.
+        """
+        ALTER TABLE collector_health ADD COLUMN self_metrics jsonb NULL;
+        """,
     ];
 
     public static int Current => Migrations.Length;
