@@ -1,6 +1,6 @@
 # ADR-0027: Sahibi olmadığı varlığa kaynak açıklama ekler, yerine geçmez
 
-- **Durum:** Önerildi
+- **Durum:** Kabul edildi
 - **Tarih:** 2026-09-23
 - **Karar verenler:** Ertuğrul Ünal
 - **İlgili:** ADR-0003 (topoloji önce varlık modeli), ADR-0004 (ilişki ve yaşam döngüsü),
