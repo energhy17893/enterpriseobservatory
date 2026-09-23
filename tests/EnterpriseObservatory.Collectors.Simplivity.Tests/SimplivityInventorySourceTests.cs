@@ -68,15 +68,15 @@ public class SimplivityInventorySourceTests
     public async Task Every_page_is_read_by_offset_until_count()
     {
         var ovc = new FakeOvc();
-        ovc.Collections["hosts"] = FakeOvc.Hosts(1_201);
+        ovc.Collections["hosts"] = FakeOvc.Hosts(4_001);
 
         var snapshot = await ovc.Source(new FakeDirectory([])).ReadAsync(CancellationToken.None);
 
-        Assert.Equal(1_201, snapshot.Failures.Count); // none fold: the directory is empty
-        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=500&offset=0", ovc.Requests);
-        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=500&offset=500", ovc.Requests);
-        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=500&offset=1000", ovc.Requests);
-        Assert.DoesNotContain("GET /api/hosts?show_optional_fields=true&limit=500&offset=1500", ovc.Requests);
+        Assert.Equal(4_001, snapshot.Failures.Count); // none fold: the directory is empty
+        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=2000&offset=0", ovc.Requests);
+        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=2000&offset=2000", ovc.Requests);
+        Assert.Contains("GET /api/hosts?show_optional_fields=true&limit=2000&offset=4000", ovc.Requests);
+        Assert.DoesNotContain("GET /api/hosts?show_optional_fields=true&limit=2000&offset=6000", ovc.Requests);
     }
 
     [Fact]
@@ -313,6 +313,102 @@ public class SimplivityInventorySourceTests
 
         await Assert.ThrowsAsync<SimplivityApiException>(
             () => ovc.Source(Estate()).ReadAsync(CancellationToken.None));
+    }
+
+    // --- backup paging (24 September 2026 live finding) ---------------------
+
+    private static readonly EntityId[] FixtureVms = [Vc("vm-101"), Vc("vm-102"), Vc("vm-103"), Vc("vm-104")];
+
+    /// <summary>
+    /// <paramref name="count"/> PROTECTED backups over the fixture's four VMs,
+    /// <paramref name="perTimestamp"/> sharing each hour, newest first: every
+    /// VM's newest is 2026-09-23 04:00, as on Kibar where many share 04:00.
+    /// </summary>
+    private static List<JsonNode> Backups(int count, int perTimestamp) =>
+    [
+        .. Enumerable.Range(0, count).Select(i => JsonNode.Parse($$"""
+            { "id": "b-{{i}}", "state": "PROTECTED", "type": "POLICY",
+              "virtual_machine_id": "20a1b2c3-0000-4000-8000-00000000000{{(i % 4) + 1}}",
+              "created_at": "{{new DateTimeOffset(2026, 9, 23, 4, 0, 0, TimeSpan.Zero).AddHours(-(i / perTimestamp))
+                  .ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture)}}" }
+            """)!),
+    ];
+
+    private static List<string?> NewestPerVm(InventorySnapshot snapshot) =>
+    [
+        .. FixtureVms.Select(vm => snapshot.Annotations.Single(a => a.Entity == vm).Settings
+            .GetValueOrDefault(InventoryVerdictKeys.SimplivityBackupLastUtc)),
+    ];
+
+    [Fact]
+    public async Task An_unstable_default_order_gives_every_read_the_same_newest_backup()
+    {
+        // Kibar's shape: 1481 backups, served in a different order per request.
+        // Paged at 500 that lost a VM's newest row on some reads and not
+        // others -- 30 VMs' newest differed between two back-to-back reads.
+        var ovc = FakeOvc.FromFixtures();
+        ovc.Collections["backups"] = Backups(1_481, perTimestamp: 4);
+        ovc.UnstableOrder = true;
+
+        var first = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+        var second = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+
+        Assert.All(NewestPerVm(first), at => Assert.Equal("2026-09-23T04:00:00.0000000Z", at));
+        Assert.Equal(NewestPerVm(first), NewestPerVm(second));
+        Assert.Empty(first.Failures);
+        // One page per read: 1481 fits in 2000, so there is no boundary at all.
+        Assert.Equal(2, ovc.Requests.Count(r => r.StartsWith("GET /api/backups", StringComparison.Ordinal)));
+        Assert.All(ovc.Requests.Where(r => r.StartsWith("GET /api/backups", StringComparison.Ordinal)),
+            r => Assert.EndsWith("limit=2000&offset=0", r, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Above_one_page_backups_are_read_sorted_with_overlap_so_boundary_ties_lose_nothing()
+    {
+        // 2500 backups, 30 to a timestamp, their order within a tie
+        // reshuffled per request: sorted by created_at alone is not a total
+        // order (513 ties at 04:00 on Kibar), so pages overlap and dedupe.
+        var ovc = FakeOvc.FromFixtures();
+        ovc.Collections["backups"] = Backups(2_500, perTimestamp: 30);
+        ovc.UnstableOrder = true;
+
+        var first = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+        var second = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+
+        Assert.All(NewestPerVm(first), at => Assert.Equal("2026-09-23T04:00:00.0000000Z", at));
+        Assert.Equal(NewestPerVm(first), NewestPerVm(second));
+        Assert.Empty(first.Failures);
+        Assert.Contains(
+            "GET /api/backups?show_optional_fields=true&sort=created_at&order=ascending&limit=2000&offset=1950",
+            ovc.Requests);
+    }
+
+    [Fact]
+    public async Task A_partial_backup_list_sends_no_backup_dates_and_says_so()
+    {
+        var ovc = FakeOvc.FromFixtures();
+        ovc.Collections["backups"] = Backups(1_481, perTimestamp: 4);
+        ovc.CountSurplus["backups"] = 5;
+
+        var snapshot = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+
+        Assert.All(NewestPerVm(snapshot), Assert.Null);
+        Assert.Equal("SAFE", Settings(snapshot, Vc("vm-101"))["simplivity.ha_status"]);
+        var partial = Assert.Single(snapshot.Failures);
+        Assert.Equal("SimpliVity backups", partial.Target);
+        Assert.Contains("1481 distinct of 1486", partial.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_row_served_twice_is_read_once()
+    {
+        var ovc = FakeOvc.FromFixtures();
+        ovc.Collections["virtual_machines"].Add(ovc.Collections["virtual_machines"][0]!.DeepClone());
+
+        var snapshot = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
+
+        Assert.Empty(snapshot.Failures); // not "already annotated by another SimpliVity object"
+        Assert.Equal(8, snapshot.Annotations.Count);
     }
 
     private static IReadOnlyDictionary<string, string> Settings(InventorySnapshot snapshot, EntityId id) =>

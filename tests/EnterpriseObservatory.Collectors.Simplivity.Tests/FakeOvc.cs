@@ -61,6 +61,18 @@ internal sealed class FakeOvc : HttpMessageHandler
     /// <summary>Answer this raw body to every GET instead.</summary>
     public string? RawBody { get; set; }
 
+    /// <summary>
+    /// Serve every list in a new order per request, as the live OVC's default
+    /// order does (24 September 2026: 1481 rows, 1433 distinct across pages);
+    /// with <c>sort=</c>, only rows that tie on the sort field reshuffle.
+    /// </summary>
+    public bool UnstableOrder { get; set; }
+
+    /// <summary>Added to a collection's <c>count</c>: more rows counted than served.</summary>
+    public Dictionary<string, int> CountSurplus { get; } = new(StringComparer.Ordinal);
+
+    private int _orderSeed;
+
     /// <summary>Delay every reply, ignoring cancellation.</summary>
     public TimeSpan Delay { get; set; }
 
@@ -178,7 +190,7 @@ internal sealed class FakeOvc : HttpMessageHandler
         var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
         var limit = int.Parse(query["limit"] ?? "500", System.Globalization.CultureInfo.InvariantCulture);
         var offset = int.Parse(query["offset"] ?? "0", System.Globalization.CultureInfo.InvariantCulture);
-        var all = Collections[name];
+        var all = Order(Collections[name], query["sort"], query["order"]);
 
         return Json(new JsonObject
         {
@@ -186,10 +198,32 @@ internal sealed class FakeOvc : HttpMessageHandler
                 string.Equals(query["show_optional_fields"], "true", StringComparison.Ordinal)
                     ? n.DeepClone()
                     : DefaultShaped(name, n))]),
-            ["count"] = all.Count,
+            ["count"] = all.Count + CountSurplus.GetValueOrDefault(name),
             ["limit"] = limit,
             ["offset"] = offset,
         });
+    }
+
+    private List<JsonNode> Order(List<JsonNode> rows, string? sort, string? order)
+    {
+        if (!UnstableOrder && sort is null)
+        {
+            return rows;
+        }
+
+        var random = new Random(Interlocked.Increment(ref _orderSeed));
+        var keyed = rows.Select(r => (Row: r, Key: random.Next())).ToList();
+
+        if (sort is null)
+        {
+            return [.. keyed.OrderBy(k => k.Key).Select(k => k.Row)];
+        }
+
+        var sorted = string.Equals(order, "ascending", StringComparison.Ordinal)
+            ? keyed.OrderBy(k => (string?)k.Row[sort], StringComparer.Ordinal)
+            : keyed.OrderByDescending(k => (string?)k.Row[sort], StringComparer.Ordinal);
+
+        return [.. (UnstableOrder ? sorted.ThenBy(k => k.Key) : sorted).Select(k => k.Row)];
     }
 
     /// <summary>

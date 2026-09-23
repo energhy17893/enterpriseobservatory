@@ -31,7 +31,7 @@ namespace EnterpriseObservatory.Collectors.Simplivity;
 /// </remarks>
 public sealed class SimplivitySessionChannel : IDisposable
 {
-    /// <summary>Largest reply read; a 500-row backup page is well under a megabyte.</summary>
+    /// <summary>Largest reply read; a 500-row backup page is well under a megabyte, so a 2000-row one (PageLimit) is under four.</summary>
     public const long MaxResponseBytes = 64L * 1024 * 1024;
 
     private static readonly TimeSpan CleanupGrace = TimeSpan.FromSeconds(10);
