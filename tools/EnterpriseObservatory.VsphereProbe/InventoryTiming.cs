@@ -11,7 +11,8 @@ internal sealed record InventoryCallTiming(
     int PageIndex,
     IReadOnlyList<(string Type, int Count)> TypeCounts,
     long Bytes,
-    double Ms)
+    double Ms,
+    IReadOnlyList<PropertyPathBytes> PropertyBytes)
 {
     public int ObjectCount => TypeCounts.Sum(t => t.Count);
 }
@@ -24,6 +25,24 @@ internal sealed record InventoryCallSummary(
     long Bytes,
     double TotalMs,
     IReadOnlyList<(string Type, int Count)> TypeCounts);
+
+/// <summary>
+/// One <c>propSet</c> occurrence: the serialized size of one property path on
+/// one object, attributed to that object's type.
+/// </summary>
+internal sealed record PropertyPathBytes(string Type, string Path, long Bytes);
+
+/// <summary>One property-path row of <see cref="InventoryTiming.SummarizePropertyBytes"/>'s per-type table.</summary>
+internal sealed record TypePropertyBytesRow(string Path, long Bytes, double SharePercent, double AvgBytesPerObject);
+
+/// <summary>Bytes-per-property breakdown for one object type: top 15 paths by bytes, the rest folded into "other".</summary>
+internal sealed record TypePropertyBytesSummary(
+    string Type,
+    int Objects,
+    long TotalBytes,
+    IReadOnlyList<TypePropertyBytesRow> Top,
+    long OtherBytes,
+    int OtherCount);
 
 /// <summary>
 /// A <see cref="DelegatingHandler"/> the probe owns -- not a change to the
@@ -92,8 +111,10 @@ internal sealed class InventoryTimingHandler(HttpMessageHandler inner) : Delegat
         var isPage = callName is "RetrievePropertiesEx" or "ContinueRetrievePropertiesEx";
         var pageIndex = isPage ? _nextPageIndex++ : -1;
         var typeCounts = isPage ? TypeCounts(bytes) : [];
+        var propertyBytes = isPage ? PropertyBytesOf(bytes) : [];
 
-        _calls.Add(new InventoryCallTiming(callName, pageIndex, typeCounts, bytes.LongLength, watch.Elapsed.TotalMilliseconds));
+        _calls.Add(new InventoryCallTiming(
+            callName, pageIndex, typeCounts, bytes.LongLength, watch.Elapsed.TotalMilliseconds, propertyBytes));
 
         return response;
     }
@@ -129,6 +150,56 @@ internal sealed class InventoryTimingHandler(HttpMessageHandler inner) : Delegat
                     .Select(g => (Type: g.Key, Count: g.Count()))
                     .OrderByDescending(t => t.Count),
             ];
+        }
+#pragma warning disable CA1031 // Justified: a probe reports, it does not throw; an unparseable page just shows no breakdown.
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Every <c>propSet</c> in one property-collector page, as the serialized
+    /// size of its value attributed to its object's type and the property's
+    /// path -- a minimal pass over the same reply, kept apart from
+    /// <see cref="PropertyCollectorParser"/> because that parser flattens
+    /// values to text and never carries their original byte size.
+    /// </summary>
+    internal static IReadOnlyList<PropertyPathBytes> PropertyBytesOf(byte[] bytes)
+    {
+        try
+        {
+            var body = System.Text.Encoding.UTF8.GetString(bytes);
+            var document = XDocument.Parse(body);
+            var returnVal = document.Descendants().FirstOrDefault(e => e.Name.LocalName == "returnval");
+            if (returnVal is null)
+            {
+                return [];
+            }
+
+            var entries = new List<PropertyPathBytes>();
+
+            foreach (var objectContent in returnVal.Elements().Where(e => e.Name.LocalName == "objects"))
+            {
+                var type = objectContent.Elements()
+                    .FirstOrDefault(e => e.Name.LocalName == "obj")
+                    ?.Attribute("type")?.Value ?? string.Empty;
+
+                foreach (var propSet in objectContent.Elements().Where(e => e.Name.LocalName == "propSet"))
+                {
+                    var name = propSet.Elements().FirstOrDefault(e => e.Name.LocalName == "name")?.Value;
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        continue;
+                    }
+
+                    entries.Add(new PropertyPathBytes(
+                        type, name, System.Text.Encoding.UTF8.GetByteCount(propSet.ToString())));
+                }
+            }
+
+            return entries;
         }
 #pragma warning disable CA1031 // Justified: a probe reports, it does not throw; an unparseable page just shows no breakdown.
         catch (Exception)
@@ -179,6 +250,55 @@ internal static class InventoryTiming
                     ])),
         ];
 
+    /// <summary>
+    /// Per object type, every property path seen across all pages: total
+    /// bytes, share of that type's bytes, and average bytes per object of
+    /// that type -- sorted by bytes descending, top 15 with the rest folded
+    /// into "other". This is what tells a planner which property to stop
+    /// asking for (see InventoryTiming.cs remarks): the type with the most
+    /// bytes and, inside it, the path carrying most of them.
+    /// </summary>
+    public static IReadOnlyList<TypePropertyBytesSummary> SummarizePropertyBytes(
+        IReadOnlyList<InventoryCallTiming> calls)
+    {
+        var objectsByType = calls
+            .SelectMany(c => c.TypeCounts)
+            .GroupBy(t => t.Type, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Sum(t => t.Count), StringComparer.Ordinal);
+
+        var summaries = new List<TypePropertyBytesSummary>();
+
+        foreach (var typeGroup in calls.SelectMany(c => c.PropertyBytes).GroupBy(p => p.Type, StringComparer.Ordinal))
+        {
+            var objects = objectsByType.GetValueOrDefault(typeGroup.Key);
+
+            List<(string Path, long Bytes)> byPath =
+            [
+                .. typeGroup
+                    .GroupBy(p => p.Path, StringComparer.Ordinal)
+                    .Select(g => (Path: g.Key, Bytes: g.Sum(p => p.Bytes)))
+                    .OrderByDescending(p => p.Bytes),
+            ];
+
+            var totalBytes = byPath.Sum(p => p.Bytes);
+            var top = byPath
+                .Take(15)
+                .Select(p => new TypePropertyBytesRow(
+                    p.Path,
+                    p.Bytes,
+                    totalBytes == 0 ? 0 : 100.0 * p.Bytes / totalBytes,
+                    objects == 0 ? 0 : (double)p.Bytes / objects))
+                .ToList();
+
+            var other = byPath.Skip(15).ToList();
+
+            summaries.Add(new TypePropertyBytesSummary(
+                typeGroup.Key, objects, totalBytes, top, other.Sum(p => p.Bytes), other.Count));
+        }
+
+        return [.. summaries.OrderByDescending(s => s.TotalBytes)];
+    }
+
     private static void Print(IReadOnlyList<InventoryCallTiming> calls)
     {
         foreach (var call in calls)
@@ -213,5 +333,28 @@ internal static class InventoryTiming
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
             $"  TOTAL                        calls {calls.Count,3}   bytes {calls.Sum(c => c.Bytes),10}   " +
             $"total {calls.Sum(c => c.Ms),8:0} ms"));
+
+        Console.WriteLine();
+        Console.WriteLine("  -- bytes per property, by type --");
+
+        foreach (var type in SummarizePropertyBytes(calls))
+        {
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  {type.Type,-24} objects {type.Objects,6}   bytes {type.TotalBytes,10}"));
+
+            foreach (var row in type.Top)
+            {
+                Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                    $"      {row.Path,-40} {row.Bytes,10} bytes   {row.SharePercent,5:0.0}%   " +
+                    $"{row.AvgBytesPerObject,8:0} avg/obj"));
+            }
+
+            if (type.OtherCount > 0)
+            {
+                var label = string.Create(CultureInfo.InvariantCulture, $"(other {type.OtherCount} properties)");
+                Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                    $"      {label,-40} {type.OtherBytes,10} bytes"));
+            }
+        }
     }
 }

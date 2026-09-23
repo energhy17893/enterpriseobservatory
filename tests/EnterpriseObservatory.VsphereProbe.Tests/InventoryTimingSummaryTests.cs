@@ -16,9 +16,9 @@ public sealed class InventoryTimingSummaryTests
     {
         List<InventoryCallTiming> calls =
         [
-            new("RetrievePropertiesEx", 0, [("HostSystem", 3), ("VirtualMachine", 200)], 50_000, 800),
-            new("ContinueRetrievePropertiesEx", 1, [("VirtualMachine", 50)], 12_000, 300),
-            new("RetrieveObjectProperties", -1, [], 900, 40),
+            new("RetrievePropertiesEx", 0, [("HostSystem", 3), ("VirtualMachine", 200)], 50_000, 800, []),
+            new("ContinueRetrievePropertiesEx", 1, [("VirtualMachine", 50)], 12_000, 300, []),
+            new("RetrieveObjectProperties", -1, [], 900, 40, []),
         ];
 
         var summary = InventoryTiming.Summarize(calls);
@@ -43,9 +43,9 @@ public sealed class InventoryTimingSummaryTests
     {
         List<InventoryCallTiming> calls =
         [
-            new("RetrievePropertiesEx", 0, [("HostSystem", 3), ("VirtualMachine", 200)], 50_000, 800),
-            new("ContinueRetrievePropertiesEx", 1, [("VirtualMachine", 50)], 12_000, 300),
-            new("ContinueRetrievePropertiesEx", 2, [("VirtualMachine", 30), ("Datastore", 5)], 9_000, 250),
+            new("RetrievePropertiesEx", 0, [("HostSystem", 3), ("VirtualMachine", 200)], 50_000, 800, []),
+            new("ContinueRetrievePropertiesEx", 1, [("VirtualMachine", 50)], 12_000, 300, []),
+            new("ContinueRetrievePropertiesEx", 2, [("VirtualMachine", 30), ("Datastore", 5)], 9_000, 250, []),
         ];
 
         var summary = InventoryTiming.Summarize(calls);
