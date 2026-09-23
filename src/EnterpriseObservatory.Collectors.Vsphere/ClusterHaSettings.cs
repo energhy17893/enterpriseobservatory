@@ -117,6 +117,15 @@ public static class ClusterHaSettings
     /// </remarks>
     public const string IgnoreRedundantNetworkWarning = "dasConfig.option.das.ignoreRedundantNetWarning";
 
+    /// <summary>
+    /// Whether Distributed Power Management is enabled.
+    /// <c>ClusterConfigInfoEx.dpmConfigInfo.enabled</c> -- a sibling of
+    /// <c>dasConfig</c> in the same <c>configurationEx</c> reply, not an HA
+    /// setting, carried here because it is read from the same blob (eo-simplivity:
+    /// HPE requires DPM off on SimpliVity clusters).
+    /// </summary>
+    public const string DpmEnabled = "dpmConfigInfo.enabled";
+
     /// <summary>What a cluster with no readable HA configuration carries.</summary>
     public static IReadOnlyDictionary<string, string> None { get; } =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

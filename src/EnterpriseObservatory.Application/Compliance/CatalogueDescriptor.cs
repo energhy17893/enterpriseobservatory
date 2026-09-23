@@ -75,6 +75,9 @@ public sealed record CatalogueDescriptor
     /// <summary>The stable id of this product's own best-practice catalogue.</summary>
     public const string BestPracticeId = "eo-bestpractice";
 
+    /// <summary>The stable id of this product's own SimpliVity catalogue.</summary>
+    public const string SimplivityId = "eo-simplivity";
+
     /// <summary>The stable id of any Broadcom SCG edition.</summary>
     public const string ScgId = "scg";
 
@@ -95,11 +98,12 @@ public sealed record CatalogueDescriptor
 
         var isContinuity = string.Equals(catalogue.Name, ContinuityCatalogue.Name, StringComparison.Ordinal);
         var isBestPractice = string.Equals(catalogue.Name, BestPracticeCatalogue.Name, StringComparison.Ordinal);
-        var isProduct = isContinuity || isBestPractice;
+        var isSimplivity = string.Equals(catalogue.Name, SimplivityCatalogue.Name, StringComparison.Ordinal);
+        var isProduct = isContinuity || isBestPractice || isSimplivity;
 
         return new CatalogueDescriptor
         {
-            Id = isContinuity ? ContinuityId : isBestPractice ? BestPracticeId : ScgId,
+            Id = isContinuity ? ContinuityId : isBestPractice ? BestPracticeId : isSimplivity ? SimplivityId : ScgId,
             Name = catalogue.Name,
             Owner = isProduct ? CatalogueOwner.Product : CatalogueOwner.Broadcom,
             Kind = catalogue.BindsById ? CatalogueKind.Computed : CatalogueKind.Passthrough,
