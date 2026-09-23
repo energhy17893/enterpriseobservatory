@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <!--
+      For reading a stored redfish/simplivity connection the same way
+      VsphereProbe reads a vsphere one, so nobody retypes an iLO or OVC
+      password to diagnose one.
+    -->
+    <ProjectReference Include="..\..\src\EnterpriseObservatory.Persistence.Postgres\EnterpriseObservatory.Persistence.Postgres.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Data protection from the shared framework, not the standalone package
+      (see VsphereProbe's csproj for why). The service decrypts the same
+      way; a tool that decrypted differently would be answering a different
+      question about whether a credential works.
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The dry-run switch's bundled sample JSON. The files live once, under
+      the test project's Fixtures folder (recorded sample data belongs with
+      the tests that prove the parsers against it); this link copies them
+      into the probe's own output directory so a dry run needs no network
+      and no sibling project to run.
+    -->
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\power.json" Link="SampleData\Redfish\power.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\thermal.json" Link="SampleData\Redfish\thermal.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\computersystem.json" Link="SampleData\Redfish\computersystem.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\manager.json" Link="SampleData\Redfish\manager.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\storage.json" Link="SampleData\Redfish\storage.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\drive-1.json" Link="SampleData\Redfish\drive-1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\memory-dimm1.json" Link="SampleData\Redfish\memory-dimm1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\logservice.json" Link="SampleData\Redfish\logservice.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\logentries.json" Link="SampleData\Redfish\logentries.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\firmware-bmc.json" Link="SampleData\Redfish\firmware-bmc.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\firmwareinventory-collection.json" Link="SampleData\Redfish\firmwareinventory-collection.json" CopyToOutputDirectory="PreserveNewest" />
+
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\SimpliVity\version.json" Link="SampleData\SimpliVity\version.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\SimpliVity\oauth-token.json" Link="SampleData\SimpliVity\oauth-token.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\SimpliVity\hosts.json" Link="SampleData\SimpliVity\hosts.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\SimpliVity\omnistack_clusters.json" Link="SampleData\SimpliVity\omnistack_clusters.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\SimpliVity\virtual_machines.json" Link="SampleData\SimpliVity\virtual_machines.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\SimpliVity\backups.json" Link="SampleData\SimpliVity\backups.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

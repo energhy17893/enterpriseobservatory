@@ -16,8 +16,10 @@
     <Project Path="tests/EnterpriseObservatory.Domain.Tests/EnterpriseObservatory.Domain.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Host.AllInOne.Tests/EnterpriseObservatory.Host.AllInOne.Tests.csproj" />
     <Project Path="tests/EnterpriseObservatory.Persistence.Postgres.Tests/EnterpriseObservatory.Persistence.Postgres.Tests.csproj" />
+    <Project Path="tests/EnterpriseObservatory.RedfishProbe.Tests/EnterpriseObservatory.RedfishProbe.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/EnterpriseObservatory.VsphereProbe/EnterpriseObservatory.VsphereProbe.csproj" />
+    <Project Path="tools/EnterpriseObservatory.RedfishProbe/EnterpriseObservatory.RedfishProbe.csproj" />
   </Folder>
 </Solution>

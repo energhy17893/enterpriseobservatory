@@ -273,6 +273,17 @@ try
         return 0;
     }
 
+    // M6.0b's gate: hardware.systemInfo and summary.hardware.otherIdentifyingInfo,
+    // each read alone, before either enters a collector or is matched against
+    // an iLO's Systems/1.{SerialNumber,UUID}.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --host-identity
+    if (args.Contains("--host-identity", StringComparer.OrdinalIgnoreCase))
+    {
+        await EnterpriseObservatory.VsphereProbe.Candidates.RunHostIdentityAsync(client, cancellation.Token);
+        return 0;
+    }
+
     // Collection PR 1's gate: every candidate path and call, each read alone,
     // before any of them enters the collector's request list.
     //
