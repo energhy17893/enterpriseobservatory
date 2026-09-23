@@ -60,12 +60,14 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// </param>
     /// <param name="Observation">Null for a kind that reads no metrics.</param>
     /// <param name="Events">Null for a kind that reads no event stream.</param>
+    /// <param name="Configuration">Null for a kind with no configuration tier.</param>
     private sealed record Built(
         Shape Shape,
         Func<Task> Close,
         IInventorySource Inventory,
         IObservationSource? Observation,
-        IEventSource? Events);
+        IEventSource? Events,
+        IConfigurationTierSource? Configuration = null);
 
     private readonly SourceConnectionCatalogue _catalogue;
     private readonly IEntityGraphStore _graph;
@@ -104,16 +106,19 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     {
         Inventory,
         Observations,
+        Configuration,
     }
 
     /// <summary>A client that is no longer handed out, and who still might hold it.</summary>
     /// <param name="Close">Closes the transport and session once nobody can be reading through it.</param>
     /// <param name="AfterInventoryPass">The inventory loop's pass count when it was retired.</param>
     /// <param name="AfterObservationPass">The observation loop's pass count when it was retired.</param>
+    /// <param name="AfterConfigurationPass">The configuration loop's pass count when it was retired.</param>
     private sealed record Retired(
         Func<Task> Close,
         long AfterInventoryPass,
-        long AfterObservationPass);
+        long AfterObservationPass,
+        long AfterConfigurationPass);
 
     /// <summary>
     /// Clients replaced or removed, waiting for both loops to let go.
@@ -159,6 +164,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// <summary>How many times each loop has asked for its sources.</summary>
     private long _inventoryPasses;
     private long _observationPasses;
+    private long _configurationPasses;
 
     /// <summary>
     /// How many requests one source may have in flight at once (F2). Applied
@@ -223,19 +229,39 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         }
     }
 
+    /// <remarks>
+    /// Its own loop and its own pass count: the configuration loop reads
+    /// through the same client as the other two, on a third cadence, so a
+    /// retired client waits for it as well. Unusable connections are left out,
+    /// for the reason <see cref="Events"/> gives.
+    /// </remarks>
+    public IReadOnlyList<IConfigurationTierSource> Configuration
+    {
+        get
+        {
+            var (collectors, _) = Refresh(Reader.Configuration);
+
+            return [.. collectors.Select(b => b.Configuration).OfType<IConfigurationTierSource>()];
+        }
+    }
+
     private (List<Built> Collectors, List<UnusableSource> Unusable) Refresh(Reader reader)
     {
         lock (_gate)
         {
             // Counted before anything is disposed, so that this loop's own
             // arrival is what releases the clients it was holding last pass.
-            if (reader == Reader.Inventory)
+            switch (reader)
             {
-                _inventoryPasses++;
-            }
-            else
-            {
-                _observationPasses++;
+                case Reader.Inventory:
+                    _inventoryPasses++;
+                    break;
+                case Reader.Observations:
+                    _observationPasses++;
+                    break;
+                default:
+                    _configurationPasses++;
+                    break;
             }
 
             DisposeWhatNobodyCanStillBeReading();
@@ -301,7 +327,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// what "move on" is measured against.
     /// </remarks>
     private void Retire(Built built) =>
-        _retired.Add(new Retired(built.Close, _inventoryPasses, _observationPasses));
+        _retired.Add(new Retired(built.Close, _inventoryPasses, _observationPasses, _configurationPasses));
 
     /// <summary>Ends the vCenter session, then closes the sockets under it.</summary>
     /// <remarks>
@@ -349,7 +375,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             var retired = _retired[i];
 
             if (HasMovedOn(_inventoryPasses, retired.AfterInventoryPass) &&
-                HasMovedOn(_observationPasses, retired.AfterObservationPass))
+                HasMovedOn(_observationPasses, retired.AfterObservationPass) &&
+                HasMovedOn(_configurationPasses, retired.AfterConfigurationPass))
             {
                 _ = retired.Close();
                 _retired.RemoveAt(i);
@@ -589,7 +616,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             // No gap store: the runner keeps the gap record now (F5, ADR-0005 §3).
             new VsphereObservationSource(
                 client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock),
-            new VsphereEventSource(client, _clock));
+            new VsphereEventSource(client, _clock),
+            new VsphereConfigurationSource(client));
     }
 
     /// <summary>

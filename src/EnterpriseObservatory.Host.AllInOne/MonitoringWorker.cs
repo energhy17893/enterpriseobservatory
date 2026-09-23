@@ -14,6 +14,8 @@ namespace EnterpriseObservatory.Host.AllInOne;
 /// metrics are a time series with a new sample every interval. Running both at
 /// the metric rate re-reads an entire estate every thirty seconds; running both
 /// at the inventory rate makes the product blind between samples. See ADR-0005.
+/// A third loop reads the configuration tier (heavy, slowly changing
+/// properties) on its own, slower cadence.
 /// </para>
 /// <para>
 /// Neither loop may end. A cycle that throws is logged and the loop continues,
@@ -32,8 +34,12 @@ public sealed class MonitoringWorker(
     IObservationStore series,
     IOperationalMetricsStore selfMetrics,
     ISourceConnectionStore connections,
+    ConfigurationCollectionPipeline configuration,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
+    private readonly ConfigurationCollectionPipeline _configuration =
+        configuration ?? throw new ArgumentNullException(nameof(configuration));
+
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
     private readonly IObservationStore _series = series ?? throw new ArgumentNullException(nameof(series));
 
@@ -165,7 +171,31 @@ public sealed class MonitoringWorker(
             },
             stoppingToken);
 
-        await Task.WhenAll(inventory, observations).ConfigureAwait(false);
+        // The configuration tier (heavy, slowly changing properties) on its
+        // own cadence. Its first pass runs at start like the others; what it
+        // reads reaches the graph with the next inventory cycle, which the
+        // source carries it into. Until that first pass lands, those keys are
+        // absent — "not read", as after any restart.
+        var configuration = RunLoopAsync(
+            "configuration",
+            _options.ConfigurationInterval,
+            async token =>
+            {
+                var result = await _configuration
+                    .RunAsync(
+                        _sources.Configuration,
+                        _options.Collection.ForInterval(_options.ConfigurationInterval),
+                        token)
+                    .ConfigureAwait(false);
+
+                foreach (var (instance, read) in result.Reads)
+                {
+                    HostLog.ConfigurationRead(_logger, instance, read.ObjectsRead, (int)(read.BytesRead / 1024), read.Complete ? "complete" : "partial");
+                }
+            },
+            stoppingToken);
+
+        await Task.WhenAll(inventory, observations, configuration).ConfigureAwait(false);
     }
 
     /// <summary>

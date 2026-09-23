@@ -149,6 +149,17 @@ internal static partial class HostLog
         Message = "Event collection: {Recorded} events recorded, {Pruned} aged out.")]
     public static partial void EventCycle(ILogger logger, int recorded, int pruned);
 
+    /// <summary>
+    /// One source's configuration-tier read: objects, reply bytes, whether it
+    /// finished. Bytes live here because collector_health has no column for
+    /// them and adding one is a migration.
+    /// </summary>
+    [LoggerMessage(
+        EventId = 1061,
+        Level = LogLevel.Information,
+        Message = "Configuration {Instance}: {Objects} objects, {Kilobytes} KB, {Outcome}.")]
+    public static partial void ConfigurationRead(ILogger logger, string instance, int objects, int kilobytes, string outcome);
+
     /// <summary>A source's events could not be read, or could not be kept.</summary>
     /// <remarks>
     /// Its own id rather than 1013, because this is not a cycle failing: the

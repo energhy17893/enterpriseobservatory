@@ -16,8 +16,16 @@ public static class MonitoringIntervalValidation
 {
     public static readonly TimeSpan Floor = TimeSpan.FromSeconds(20);
 
+    /// <summary>
+    /// The configuration tier's own floor: five minutes, Telegraf's inventory
+    /// cadence (docs/reference-approaches.md §10.3). Below it the ~41 MB read
+    /// the tier exists to take off the fast cycle would be back on a fast one.
+    /// </summary>
+    public static readonly TimeSpan ConfigurationFloor = TimeSpan.FromMinutes(5);
+
     /// <summary>What is wrong with these cadences, or empty if nothing is.</summary>
-    public static IReadOnlyList<string> Validate(TimeSpan inventoryInterval, TimeSpan observationInterval)
+    public static IReadOnlyList<string> Validate(
+        TimeSpan inventoryInterval, TimeSpan observationInterval, TimeSpan? configurationInterval = null)
     {
         var problems = new List<string>();
 
@@ -33,6 +41,13 @@ public static class MonitoringIntervalValidation
             problems.Add(
                 $"Monitoring:ObservationIntervalSeconds ({observationInterval.TotalSeconds:0}s) must be " +
                 $"at least {Floor.TotalSeconds:0} seconds.");
+        }
+
+        if (configurationInterval is { } configuration && configuration < ConfigurationFloor)
+        {
+            problems.Add(
+                $"Monitoring:ConfigurationIntervalSeconds ({configuration.TotalSeconds:0}s) must be " +
+                $"at least {ConfigurationFloor.TotalSeconds:0} seconds.");
         }
 
         return problems;
