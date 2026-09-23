@@ -78,6 +78,10 @@ if ($ci) {
 else {
     $w = npm run build 2>&1
     $results['Web interface'] = if ($LASTEXITCODE -eq 0) { 'pass' } else { 'FAIL: ' + (($w | Select-Object -Last 3) -join ' | ') }
+    if ($LASTEXITCODE -eq 0) {
+        $cat = npm run catalogues:check 2>&1
+        $results['Web interface'] = if ($LASTEXITCODE -eq 0) { 'pass' } else { 'FAIL: catalogues:check: ' + (($cat | Select-Object -Last 5) -join ' | ') }
+    }
 }
 Pop-Location
 

@@ -591,8 +591,10 @@ export interface ComplianceControlView {
   installationDefault: string
   baselineValue: string
   assessment: string
-  /** The catalogue the control comes from: 'Broadcom SCG' or 'eo-continuity'. Not the citation. */
+  /** The catalogue's own screen label, collapsed to two values by ownership. Not the citation. Prefer `catalogueName` -- it never collapses. */
   source: string
+  /** The catalogue the control comes from, by its own name (matches CatalogueScorecardView.name). Not the citation. */
+  catalogueName: string
   /** What the expectation/threshold rests on, shown as "basis:"; empty for vendor-guide controls (see lib/basis). */
   citation: string
   /** False when this product cannot judge the control at all. */
