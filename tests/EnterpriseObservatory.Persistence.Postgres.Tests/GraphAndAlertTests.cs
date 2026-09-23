@@ -85,6 +85,36 @@ public class GraphAndAlertTests : IDisposable
     }
 
     [SkippableFact]
+    public void The_same_edge_twice_in_one_graph_is_stored_once_with_the_newest_observation()
+    {
+        RequireDatabase();
+
+        // A customer's vCenter produced the same (from, to, kind) twice in one
+        // inventory; the upsert refused the whole statement (21000) and the
+        // topology was never stored. One row, the later reading.
+        Relationship Edge(DateTimeOffset at) => new()
+        {
+            From = Id("host-1"),
+            To = Id("cluster-1"),
+            Kind = RelationshipKind.PartOf,
+            ObservedAtUtc = at,
+        };
+
+        var store = new PostgresEntityGraphStore(_live.Database);
+
+        store.Replace(new EntityGraph
+        {
+            Entities = new Dictionary<EntityId, Entity> { [Id("host-1")] = Host() },
+            Relationships = [Edge(T0), Edge(T0.AddMinutes(5))],
+        });
+
+        _live.Restart();
+
+        var edge = Assert.Single(new PostgresEntityGraphStore(_live.Database).Current.Relationships);
+        Assert.Equal(T0.AddMinutes(5), edge.ObservedAtUtc);
+    }
+
+    [SkippableFact]
     public void Replacing_the_graph_removes_what_is_no_longer_there()
     {
         RequireDatabase();

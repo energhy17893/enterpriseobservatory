@@ -164,10 +164,17 @@ public sealed class PostgresEntityGraphStore : IEntityGraphStore
 
         // Last observation wins, as the SQLite version's INSERT OR REPLACE did.
         // Two sources reporting the same edge is normal and the later reading
-        // is the one worth keeping.
+        // is the one worth keeping -- and so is one graph carrying the same
+        // edge twice. DO UPDATE refuses to touch one target row twice in a
+        // single statement (21000), and that refusal skipped the whole
+        // topology write: a customer's vCenter read 1,311 objects every cycle
+        // and stored none (23 September 2026). Collapsing the batch on the
+        // conflict key first is PostgreSQL's documented remedy.
         Execute(connection, """
             INSERT INTO relationship (from_id, to_id, kind, observed_at_utc)
-            SELECT from_id, to_id, kind, observed_at_utc FROM incoming_edge
+            SELECT DISTINCT ON (from_id, to_id, kind) from_id, to_id, kind, observed_at_utc
+            FROM incoming_edge
+            ORDER BY from_id, to_id, kind, observed_at_utc DESC
             ON CONFLICT (from_id, to_id, kind) DO UPDATE SET
                 observed_at_utc = EXCLUDED.observed_at_utc;
             """);
