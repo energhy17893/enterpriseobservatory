@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace EnterpriseObservatory.RedfishProbe;
 
@@ -15,6 +16,7 @@ internal sealed record RedfishDocs
     public JsonElement? Power { get; init; }
     public JsonElement? Thermal { get; init; }
     public JsonElement? System { get; init; }
+    public IReadOnlyList<JsonElement> Controllers { get; init; } = [];
     public IReadOnlyList<JsonElement> Drives { get; init; } = [];
     public IReadOnlyList<JsonElement> Memory { get; init; } = [];
     public JsonElement? FirmwareInventoryCollection { get; init; }
@@ -39,11 +41,14 @@ internal static class RedfishReport
         Section(lines, "iLO generation and firmware");
         if (docs.Manager is { } manager)
         {
+            // A product generation and a firmware version are not
+            // customer-identifying -- unlike SerialNumber/UUID below, these
+            // print in full even under --mask.
             var model = TextOf(manager, "Model");
             var managerFirmware = TextOf(manager, "FirmwareVersion");
-            lines.Add($"  Managers/1.Model               {Mask.Show(model, mask)}");
-            lines.Add($"  Managers/1.FirmwareVersion      {(managerFirmware.Length > 0 ? "present" : "ABSENT")}" +
-                       (managerFirmware.Length > 0 ? $"  (value withheld; {managerFirmware.Length} chars)" : string.Empty));
+            lines.Add($"  Managers/1.Model                {(model.Length > 0 ? model : "(none)")}");
+            lines.Add($"  Managers/1.FirmwareVersion       {(managerFirmware.Length > 0 ? managerFirmware : "(none)")}");
+            lines.Add($"  iLO generation                   {DetectGeneration(model, managerFirmware)}");
         }
         else
         {
@@ -60,7 +65,8 @@ internal static class RedfishReport
         DescribeStatusArray(lines, docs.Power, "PowerSupplies", "PSU");
         DescribeStatusArray(lines, docs.Thermal, "Fans", "fan");
 
-        Section(lines, "Drives");
+        Section(lines, "Storage controllers and drives");
+        lines.Add($"  storage controllers read         {docs.Controllers.Count}");
         var predicted = docs.Drives
             .Select(d => BoolOf(d, "FailurePredicted"))
             .ToList();
@@ -68,6 +74,13 @@ internal static class RedfishReport
         lines.Add($"  FailurePredicted = true         {predicted.Count(p => p == true)}");
         lines.Add($"  FailurePredicted = false        {predicted.Count(p => p == false)}");
         lines.Add($"  FailurePredicted absent          {predicted.Count(p => p is null)}");
+        var health = docs.Drives
+            .Select(d => Child(d, "Status") is { } status ? TextOf(status, "Health") : string.Empty)
+            .Select(h => h.Length == 0 ? "(none)" : h)
+            .GroupBy(h => h, StringComparer.Ordinal)
+            .OrderBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => $"{g.Key}={g.Count()}");
+        lines.Add($"  drive Status.Health              {string.Join(", ", health)}");
         var wearStatus = docs.Drives.Count(d => Child(d, "Oem", "Hpe", "WearStatus") is not null);
         lines.Add($"  Oem.Hpe.WearStatus present       {wearStatus} of {docs.Drives.Count}");
 
@@ -162,6 +175,28 @@ internal static class RedfishReport
         }
 
         return lines;
+    }
+
+    // HPE sets Manager.Model to "iLO 5"/"iLO 6" outright, and folds the same
+    // text into FirmwareVersion ("iLO 6 v1.64"). Either one is enough to
+    // name the generation without touching a value that identifies a host.
+    private static readonly Regex GenerationPattern = new(@"iLO\s*\d+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static string DetectGeneration(string model, string firmwareVersion)
+    {
+        var match = GenerationPattern.Match(model);
+        if (!match.Success)
+        {
+            match = GenerationPattern.Match(firmwareVersion);
+        }
+
+        if (!match.Success)
+        {
+            return "unknown";
+        }
+
+        var digits = new string(match.Value.Where(char.IsDigit).ToArray());
+        return digits.Length > 0 ? $"iLO {digits}" : "unknown";
     }
 
     private static bool HasRedundancy(JsonElement? element)

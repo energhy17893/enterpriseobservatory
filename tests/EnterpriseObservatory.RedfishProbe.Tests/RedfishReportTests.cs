@@ -23,6 +23,7 @@ public sealed class RedfishReportTests
         Power = Load("power.json"),
         Thermal = Load("thermal.json"),
         System = Load("computersystem.json"),
+        Controllers = [Load("storage.json")],
         Drives = [Load("drive-1.json")],
         Memory = [Load("memory-dimm1.json")],
         FirmwareInventoryCollection = Load("firmwareinventory-collection.json"),
@@ -33,11 +34,61 @@ public sealed class RedfishReportTests
         lines.Any(l => mustContainAll.All(part => l.Contains(part, StringComparison.Ordinal)));
 
     [Fact]
-    public void Reports_the_managers_firmware_version_as_present()
+    public void Reports_the_managers_model_and_firmware_version_in_full()
+    {
+        // A product generation and firmware version are not
+        // customer-identifying, so they print in full -- unlike
+        // SerialNumber/UUID below, which mask on request.
+        var lines = RedfishReport.Generate(SampleDocs(), mask: false);
+
+        Assert.True(HasLine(lines, "Managers/1.Model", "Joo Janta 200"));
+        Assert.True(HasLine(lines, "Managers/1.FirmwareVersion", "1.45.455b66-rev4"));
+    }
+
+    [Fact]
+    public void Firmware_version_and_model_print_unmasked_even_under_mask()
+    {
+        var lines = RedfishReport.Generate(SampleDocs(), mask: true);
+
+        Assert.True(HasLine(lines, "Managers/1.FirmwareVersion", "1.45.455b66-rev4"));
+    }
+
+    [Fact]
+    public void Detects_the_ilo_generation_from_firmware_version_and_prints_it_even_under_mask()
+    {
+        var docs = SampleDocs() with { Manager = Load("manager-ilo6.json") };
+
+        var masked = RedfishReport.Generate(docs, mask: true);
+        var unmasked = RedfishReport.Generate(docs, mask: false);
+
+        Assert.True(HasLine(masked, "iLO generation", "iLO 6"));
+        Assert.True(HasLine(unmasked, "iLO generation", "iLO 6"));
+    }
+
+    [Fact]
+    public void An_unrecognized_model_and_firmware_report_the_generation_as_unknown()
+    {
+        // The generic DMTF manager sample has neither "iLO 5" nor "iLO 6"
+        // anywhere in it -- the parser must say so, not guess.
+        var lines = RedfishReport.Generate(SampleDocs(), mask: false);
+
+        Assert.True(HasLine(lines, "iLO generation", "unknown"));
+    }
+
+    [Fact]
+    public void Reports_the_storage_controller_count()
     {
         var lines = RedfishReport.Generate(SampleDocs(), mask: false);
 
-        Assert.True(HasLine(lines, "Managers/1.FirmwareVersion", "present"));
+        Assert.True(HasLine(lines, "storage controllers read", "1"));
+    }
+
+    [Fact]
+    public void Drive_health_distribution_matches_the_sample()
+    {
+        var lines = RedfishReport.Generate(SampleDocs(), mask: false);
+
+        Assert.True(HasLine(lines, "drive Status.Health", "OK=1"));
     }
 
     [Fact]

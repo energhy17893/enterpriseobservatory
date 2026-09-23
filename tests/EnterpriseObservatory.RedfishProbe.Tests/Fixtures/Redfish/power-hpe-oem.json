@@ -1,0 +1,26 @@
+{
+    "@odata.type": "#Power.v1_7_3.Power",
+    "Id": "Power",
+    "Name": "Power",
+    "PowerSupplies": [
+        {
+            "MemberId": "0",
+            "Name": "Power Supply Bay 1",
+            "Status": {
+                "State": "Enabled",
+                "Health": "OK"
+            },
+            "Oem": {
+                "Hpe": {
+                    "@odata.type": "#HpePowerSupply.v2_0_0.HpePowerSupply",
+                    "PowerSupplyStatus": {
+                        "State": "Ok"
+                    },
+                    "LineInputStatus": "Normal",
+                    "AveragePowerOutputWatts": 90
+                }
+            }
+        }
+    ],
+    "@odata.id": "/redfish/v1/Chassis/1/Power"
+}

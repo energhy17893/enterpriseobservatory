@@ -35,7 +35,7 @@ using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(3));
 if (dry)
 {
     return kind == "redfish"
-        ? RunDryRedfish(mask, shapes)
+        ? await RunDryRedfish(mask, shapes)
         : RunDrySimplivity(shapes);
 }
 
@@ -84,7 +84,7 @@ return kind == "redfish"
     ? await RunLiveRedfishAsync(baseAddress, user, password, insecure, mask, shapes, cancellation.Token)
     : await RunLiveSimplivityAsync(baseAddress, user, password, insecure, shapes, cancellation.Token);
 
-static int RunDryRedfish(bool mask, bool shapes)
+static async Task<int> RunDryRedfish(bool mask, bool shapes)
 {
     Console.WriteLine("=== --dry: parsers over bundled DMTF sample JSON, no network ===");
 
@@ -92,18 +92,31 @@ static int RunDryRedfish(bool mask, bool shapes)
     var thermal = LoadSample("Redfish", "thermal.json");
     var system = LoadSample("Redfish", "computersystem.json");
     var manager = LoadSample("Redfish", "manager.json");
+    var storageCollection = LoadSample("Redfish", "storage-collection.json");
+    var storageMember = LoadSample("Redfish", "storage.json");
     var drive = LoadSample("Redfish", "drive-1.json");
     var memory = LoadSample("Redfish", "memory-dimm1.json");
     var firmware = LoadSample("Redfish", "firmwareinventory-collection.json");
     var logEntries = LoadSample("Redfish", "logentries.json");
 
+    // Same walk as the live path (StorageWalker), fed from a fixed lookup
+    // instead of the network: the point of --dry is proving the walk, not
+    // just the fixed single document RunDryRedfish used to load.
+    Task<JsonElement?> ReadFixture(string path) => Task.FromResult(path.Contains("/Drives/", StringComparison.Ordinal)
+        ? drive
+        : storageMember);
+
+    var walk = await StorageWalker.WalkAsync(storageCollection, ReadFixture, CancellationToken.None);
+
     if (shapes)
     {
         ShapeDump.Print("Managers/1", manager);
-        ShapeDump.Print("Chassis/1/Power", power);
-        ShapeDump.Print("Chassis/1/Thermal", thermal);
-        ShapeDump.Print("Systems/1", system);
-        ShapeDump.Print("Systems/1/Storage/*/Drives/*", drive);
+        ShapeDump.Print("Chassis/1/Power", power, depth: 6);
+        ShapeDump.Print("Chassis/1/Thermal", thermal, depth: 6);
+        ShapeDump.Print("Systems/1", system, depth: 6);
+        ShapeDump.Print("Systems/1/Storage (collection)", storageCollection);
+        ShapeDump.Print("Systems/1/Storage/* (first controller)", walk.Controllers.Count > 0 ? walk.Controllers[0] : null);
+        ShapeDump.Print("Systems/1/Storage/*/Drives/* (first)", walk.Drives.Count > 0 ? walk.Drives[0] : null);
         ShapeDump.Print("Systems/1/Memory/*", memory);
         ShapeDump.Print("UpdateService/FirmwareInventory", firmware);
         ShapeDump.Print("Systems/1/LogServices/IML/Entries", logEntries);
@@ -116,7 +129,8 @@ static int RunDryRedfish(bool mask, bool shapes)
         Power = power,
         Thermal = thermal,
         System = system,
-        Drives = drive is { } d ? [d] : [],
+        Controllers = walk.Controllers,
+        Drives = walk.Drives,
         Memory = memory is { } m ? [m] : [],
         FirmwareInventoryCollection = firmware,
         LogEntries = logEntries,
@@ -215,19 +229,14 @@ static async Task<int> RunLiveRedfishAsync(
     var firmware = await ReadAsync("/redfish/v1/UpdateService/FirmwareInventory");
     var logEntries = await ReadAsync("/redfish/v1/Systems/1/LogServices/IML/Entries");
 
-    var drives = new List<JsonElement>();
-    var storage = await ReadAsync("/redfish/v1/Systems/1/Storage/1");
-    if (storage is { } storageDoc &&
-        storageDoc.TryGetProperty("Drives", out var driveLinks) && driveLinks.ValueKind == JsonValueKind.Array)
+    // Ids are not fixed across generations -- HPE iLO names a controller
+    // Storage/DE00A000, not Storage/1 -- so the collection's own
+    // Members[].@odata.id is followed instead of a guessed path.
+    var storageCollection = await ReadAsync("/redfish/v1/Systems/1/Storage");
+    var storageWalk = await StorageWalker.WalkAsync(storageCollection, ReadAsync, cancellationToken);
+    if (storageWalk.Capped)
     {
-        foreach (var link in driveLinks.EnumerateArray())
-        {
-            if (link.TryGetProperty("@odata.id", out var id) && id.GetString() is { Length: > 0 } path &&
-                await ReadAsync(path) is { } drive)
-            {
-                drives.Add(drive);
-            }
-        }
+        Console.WriteLine($"  Systems/1/Storage walk capped at {StorageWalker.MaxFollowedLinks} followed links");
     }
 
     var memory = new List<JsonElement>();
@@ -248,10 +257,16 @@ static async Task<int> RunLiveRedfishAsync(
     if (shapes)
     {
         ShapeDump.Print("Managers/1", manager);
-        ShapeDump.Print("Chassis/1/Power", power);
-        ShapeDump.Print("Chassis/1/Thermal", thermal);
-        ShapeDump.Print("Systems/1", system);
-        ShapeDump.Print("Systems/1/Storage/1", storage);
+        ShapeDump.Print("Chassis/1/Power", power, depth: 6);
+        ShapeDump.Print("Chassis/1/Thermal", thermal, depth: 6);
+        ShapeDump.Print("Systems/1", system, depth: 6);
+        ShapeDump.Print("Systems/1/Storage (collection)", storageCollection);
+        ShapeDump.Print(
+            "Systems/1/Storage/* (first controller)",
+            storageWalk.Controllers.Count > 0 ? storageWalk.Controllers[0] : null);
+        ShapeDump.Print(
+            "Systems/1/Storage/*/Drives/* (first)",
+            storageWalk.Drives.Count > 0 ? storageWalk.Drives[0] : null);
         ShapeDump.Print("UpdateService/FirmwareInventory", firmware);
         ShapeDump.Print("Systems/1/LogServices/IML/Entries", logEntries);
         return 0;
@@ -263,7 +278,8 @@ static async Task<int> RunLiveRedfishAsync(
         Power = power,
         Thermal = thermal,
         System = system,
-        Drives = drives,
+        Controllers = storageWalk.Controllers,
+        Drives = storageWalk.Drives,
         Memory = memory,
         FirmwareInventoryCollection = firmware,
         LogEntries = logEntries,
@@ -290,9 +306,10 @@ static async Task<int> RunLiveSimplivityAsync(
         timing["/api/version"] = versionRead.Elapsed;
         var version = versionRead.Ok ? versionRead.Document!.RootElement : (JsonElement?)null;
 
-        var (loggedIn, loginElapsed, loginError) = await client.LoginAsync(user, password, cancellationToken);
-        Console.WriteLine($"  POST /api/oauth/token                       {(loggedIn ? "ok" : "FAILED")}" +
-                          (loginError is null ? string.Empty : $"  ({loginError})"));
+        // LoginAsync prints its own TCP probe and per-attempt diagnostics
+        // (§10.8's live measurement hit a TLS failure with no inner
+        // exception printed anywhere -- this is where that gap closed).
+        var (loggedIn, loginElapsed, _) = await client.LoginAsync(user, password, cancellationToken);
 
         if (!loggedIn)
         {
