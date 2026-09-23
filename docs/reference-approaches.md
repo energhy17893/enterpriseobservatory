@@ -967,6 +967,8 @@ turlar atlanır) ve OTel `block_on_overflow`.
 
 **Depo zaman aşımları (23 Eylül ölçümü, #125 ve sıkıştırma):** havuz varsayılanı 30 sn tek başına yanlış kaldıraç. Üç ifade üç farklı kural: (a) kuyruk merge'i — büyük birikim tek INSERT'te 30 sn'yi aşıp her denemede büyüyordu → 300 sn tavan + parça boşaltma (F5b); (b) fold (FoldOneSlice) — filigran kilidini tutar, her append o kilidi bekler → **30 sn bilinçli**, kaldıraç süre değil dilim boyutu (BucketsPerSlice); (c) saklama silmesi (DeleteAgedSamples/Buckets) — kilit tutmaz, 44,6M satırda `at_utc` öncü sütun olmadığından skip scan → 120 sn kendi zaman aşımı; BRIN(at_utc) ancak ölçüm 60 sn'yi geçerse (migrasyon 18). Kural: zaman aşımını uzatmadan önce ifadenin hangi kilidi tuttuğunu ve EXPLAIN'i oku.
 
+**Envanter baytı (23 Eylül, Kibar, probe `--time-inventory`):** 59 host + 1.100 VM tam okuma 22 çağrı, 29 s, 37–48 MB; altı yol %85 — host `config.option` 11,9 MB (202 KB/host), `config.storageDevice.scsiLun` 5,2, `config.certificate` 3,8, `runtime.healthSystemRuntime` 2,7; VM `config.hardware.device` 11,0 (10 KB/VM), `layoutEx.file` 6,8. Sorun bayt (VPN ~1,3 MB/s akşam), tur sayısı değil. **Karar: iki kademeli envanter** — topoloji/durum 120 s, yapılandırma sınıfı yollar 900 s ayrı rolde (vROps'un özellik/metrik ayrımı, Telegraf 300 s envanter); yavaş anahtarlar okunmadığında `readAt` damgasıyla taşınır. Bütçe büyütülmedi (T1.1 aralıktan türer).
+
 **F6 — öz-ölçü adları ve anlamı:**
 
 | Ürün | Ad / alan | Anlam | Kaynak |
