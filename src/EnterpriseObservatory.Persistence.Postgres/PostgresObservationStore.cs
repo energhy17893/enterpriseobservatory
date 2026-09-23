@@ -1492,8 +1492,10 @@ public static class CompactionSequence
         Func<int> foldFiveMinutes,
         Func<int> foldOneHour,
         Func<int> deleteAgedSamples,
-        Func<int> deleteAgedBuckets)
+        Func<int> deleteAgedBuckets,
+        TimeProvider? time = null)
     {
+        time ??= TimeProvider.System;
         ArgumentNullException.ThrowIfNull(foldFiveMinutes);
         ArgumentNullException.ThrowIfNull(foldOneHour);
         ArgumentNullException.ThrowIfNull(deleteAgedSamples);
@@ -1504,7 +1506,7 @@ public static class CompactionSequence
         // is the whole guarantee. See the remarks.
         var written = foldFiveMinutes() + foldOneHour();
 
-        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var started = time.GetTimestamp();
         var samplesDeleted = deleteAgedSamples();
         var bucketsDeleted = deleteAgedBuckets();
 
@@ -1513,7 +1515,7 @@ public static class CompactionSequence
             BucketsWritten = written,
             SamplesDeleted = samplesDeleted,
             BucketsDeleted = bucketsDeleted,
-            DeleteDuration = System.Diagnostics.Stopwatch.GetElapsedTime(started),
+            DeleteDuration = time.GetElapsedTime(started),
         };
     }
 }
