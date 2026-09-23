@@ -659,8 +659,10 @@ public static partial class PostgresProvisioning
             }
             catch (PostgresException ex) when (
                 attempt < attempts &&
-                ex.SqlState == PostgresErrorCodes.InsufficientPrivilege &&
-                ex.MessageText.Contains("terminate process", StringComparison.Ordinal))
+                // By code only: the message is localized by the server's
+                // lc_messages, and a genuine 42501 still surfaces after the
+                // last attempt, about 1.5 s later.
+                ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
             {
                 Thread.Sleep(TimeSpan.FromMilliseconds(100 * attempt));
             }

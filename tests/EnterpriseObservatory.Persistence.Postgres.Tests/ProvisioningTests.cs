@@ -282,8 +282,7 @@ public sealed class ProvisioningTests : IDisposable
             }
             catch (PostgresException ex) when (
                 attempt < 5 &&
-                ex.SqlState == PostgresErrorCodes.InsufficientPrivilege &&
-                ex.MessageText.Contains("terminate process", StringComparison.Ordinal))
+                ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
             {
                 Thread.Sleep(TimeSpan.FromMilliseconds(100 * attempt));
             }
