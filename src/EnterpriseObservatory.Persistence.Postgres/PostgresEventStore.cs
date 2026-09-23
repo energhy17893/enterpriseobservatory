@@ -143,33 +143,73 @@ public sealed class PostgresEventStore : IEventStore, IEventHistory
         }
     }
 
-    public IReadOnlyList<SourceEvent> Recent(int limit, string? sourceInstanceId = null)
+    /// <inheritdoc />
+    /// <remarks>
+    /// Offset paging, with the count as a second statement of the same read.
+    /// No index serves the text match: it scans the held events (30 days;
+    /// Kibar holds 10,825), which was measured acceptable in
+    /// docs/measurements/ux-a4-a8-e2-queries.md. Revisit with that file if
+    /// the table grows by an order of magnitude.
+    /// </remarks>
+    public EventPage Recent(int offset, int limit, string? sourceInstanceId = null, string? search = null)
     {
         var bounded = Math.Clamp(limit, 1, EventCollectionPipeline.MaxRecent);
+        var skip = Math.Max(offset, 0);
+        var pattern = string.IsNullOrWhiteSpace(search) ? null : "%" + EscapeLike(search.Trim()) + "%";
+
+        string?[] conditions =
+        [
+            sourceInstanceId is null ? null : "source_instance_id = @source",
+            pattern is null
+                ? null
+                : "(message ILIKE @pattern OR type_id ILIKE @pattern OR vm_name ILIKE @pattern " +
+                  "OR host_name ILIKE @pattern OR user_name ILIKE @pattern)",
+        ];
+        var present = conditions.OfType<string>().ToList();
+        var filter = present.Count == 0 ? string.Empty : "WHERE " + string.Join(" AND ", present);
+
+        void BindFilter(NpgsqlCommand command)
+        {
+            if (sourceInstanceId is not null)
+            {
+                command.Bind("source", sourceInstanceId);
+            }
+
+            if (pattern is not null)
+            {
+                command.Bind("pattern", pattern);
+            }
+        }
 
         return _database.Read(connection =>
         {
+            using var count = PgValues.Command(connection, $"SELECT count(*)::int FROM source_event {filter};");
+            BindFilter(count);
+            var total = (int)count.ExecuteScalar()!;
+
             using var command = PgValues.Command(connection, $"""
                 SELECT source_instance_id, event_key, created_at_utc, chain_id,
                        event_class, type_id, severity, message, user_name, datacenter_name,
                        compute_resource_ref, compute_resource_name, host_ref, host_name,
                        vm_ref, vm_name, datastore_ref, datastore_name
                 FROM source_event
-                {(sourceInstanceId is null ? string.Empty : "WHERE source_instance_id = @source")}
+                {filter}
                 ORDER BY created_at_utc DESC, event_key DESC
-                LIMIT @limit;
+                LIMIT @limit OFFSET @offset;
                 """);
-
-            if (sourceInstanceId is not null)
-            {
-                command.Bind("source", sourceInstanceId);
-            }
-
+            BindFilter(command);
             command.Bind("limit", bounded);
+            command.Bind("offset", skip);
 
-            return ReadEvents(command);
+            return new EventPage(ReadEvents(command), total);
         });
     }
+
+    /// <summary>Makes typed text literal inside ILIKE: its own %, _ and \ match themselves.</summary>
+    private static string EscapeLike(string text) =>
+        text.Replace(@"\", @"\\", StringComparison.Ordinal)
+            .Replace("%", @"\%", StringComparison.Ordinal)
+            .Replace("_", @"\_", StringComparison.Ordinal);
 
     /// <inheritdoc />
     /// <remarks>

@@ -287,6 +287,9 @@ public class ReportRendererTests
                     t.AtUtc >= fromUtc && t.AtUtc <= toUtc)),
         ];
 
+        public IReadOnlyDictionary<AlertFingerprint, int> EpisodeCounts(IReadOnlyCollection<AlertFingerprint> fingerprints) =>
+            new Dictionary<AlertFingerprint, int>();
+
         public int PruneHistory(DateTimeOffset olderThanUtc) =>
             throw new NotSupportedException("The read model never writes.");
     }

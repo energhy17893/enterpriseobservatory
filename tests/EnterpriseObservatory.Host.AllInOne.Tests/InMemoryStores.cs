@@ -326,6 +326,18 @@ internal sealed class InMemoryAlertStateStore : IAlertStateStore
         }
     }
 
+    public IReadOnlyDictionary<AlertFingerprint, int> EpisodeCounts(IReadOnlyCollection<AlertFingerprint> fingerprints)
+    {
+        lock (_gate)
+        {
+            var wanted = fingerprints.ToHashSet();
+            return _episodes.Keys
+                .Where(k => wanted.Contains(k.Item1))
+                .GroupBy(k => k.Item1)
+                .ToDictionary(g => g.Key, g => g.Count());
+        }
+    }
+
     public int PruneHistory(DateTimeOffset olderThanUtc)
     {
         lock (_gate)
@@ -627,18 +639,27 @@ internal sealed class InMemoryEventStore : IEventStore, IEventHistory
         }
     }
 
-    public IReadOnlyList<SourceEvent> Recent(int limit, string? sourceInstanceId = null)
+    public EventPage Recent(int offset, int limit, string? sourceInstanceId = null, string? search = null)
     {
+        var needle = search?.Trim() ?? string.Empty;
+
+        bool Matches(SourceEvent e) =>
+            needle.Length == 0 ||
+            new[] { e.Message, e.TypeId, e.VirtualMachine?.Name, e.Host?.Name, e.UserName }
+                .Any(t => t?.Contains(needle, StringComparison.OrdinalIgnoreCase) == true);
+
         lock (_gate)
         {
-            return
-            [
-                .. _events.Values
-                    .Where(e => sourceInstanceId is null || e.SourceInstanceId == sourceInstanceId)
-                    .OrderByDescending(e => e.CreatedAtUtc)
-                    .ThenByDescending(e => e.Key)
-                    .Take(Math.Clamp(limit, 1, EventCollectionPipeline.MaxRecent)),
-            ];
+            var matching = _events.Values
+                .Where(e => sourceInstanceId is null || e.SourceInstanceId == sourceInstanceId)
+                .Where(Matches)
+                .OrderByDescending(e => e.CreatedAtUtc)
+                .ThenByDescending(e => e.Key)
+                .ToList();
+
+            return new EventPage(
+                [.. matching.Skip(Math.Max(offset, 0)).Take(Math.Clamp(limit, 1, EventCollectionPipeline.MaxRecent))],
+                matching.Count);
         }
     }
 

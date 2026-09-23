@@ -254,8 +254,16 @@ public interface IEventStore : IEventReader
     /// <summary>Records a read that could not ask. The mark does not move.</summary>
     void RecordFailure(string sourceInstanceId, string detail, DateTimeOffset attemptedAtUtc);
 
-    /// <summary>The newest events, newest first, optionally for one source.</summary>
-    IReadOnlyList<SourceEvent> Recent(int limit, string? sourceInstanceId = null);
+    /// <summary>
+    /// One page of the held events, newest first, optionally for one source
+    /// and narrowed by text (E2), with how many match in all.
+    /// </summary>
+    /// <remarks>
+    /// The text is matched without regard to case, as a substring of the
+    /// message, type id, user, host or virtual machine name. At most
+    /// <see cref="EventCollectionPipeline.MaxRecent"/> per page.
+    /// </remarks>
+    EventPage Recent(int offset, int limit, string? sourceInstanceId = null, string? search = null);
 
     /// <summary>Removes events created before the cutoff; returns how many.</summary>
     int Prune(DateTimeOffset createdBeforeUtc);
@@ -263,6 +271,12 @@ public interface IEventStore : IEventReader
     /// <summary>One watermark per cursor: every store answers it the same way.</summary>
     IReadOnlyList<EventReadWatermark> IEventReader.ReadWatermarks =>
         [.. Cursors.Select(EventReadWatermark.Of)];
+}
+
+/// <summary>One page of <see cref="IEventStore.Recent"/>: its events and the total that matched.</summary>
+public sealed record EventPage(IReadOnlyList<SourceEvent> Events, int Total)
+{
+    public static readonly EventPage Empty = new([], 0);
 }
 
 /// <summary>

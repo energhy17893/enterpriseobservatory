@@ -22,15 +22,33 @@ namespace EnterpriseObservatory.Api.Projections;
 /// </remarks>
 public static class EventFeed
 {
-    public static EventFeedView Build(IEventStore store, string? source, int? limit)
+    /// <summary>The page size when none is asked for.</summary>
+    public const int DefaultLimit = 50;
+
+    /// <remarks>
+    /// Paged and searched on the server (E2): the client used to ask for the
+    /// newest 200 and filter those, so "nothing matches" could be false for
+    /// an older event still inside the retention window.
+    /// </remarks>
+    public static EventFeedView Build(
+        IEventStore store, string? source, string? search, int? offset, int? limit)
     {
         ArgumentNullException.ThrowIfNull(store);
 
-        var events = store.Recent(limit ?? 200, string.IsNullOrWhiteSpace(source) ? null : source);
+        var safeOffset = Math.Max(offset ?? 0, 0);
+        var safeLimit = Math.Clamp(limit ?? DefaultLimit, 1, EventCollectionPipeline.MaxRecent);
+        var page = store.Recent(
+            safeOffset,
+            safeLimit,
+            string.IsNullOrWhiteSpace(source) ? null : source,
+            string.IsNullOrWhiteSpace(search) ? null : search);
 
         return new EventFeedView
         {
-            Events = [.. events.Select(Present)],
+            Events = [.. page.Events.Select(Present)],
+            Total = page.Total,
+            Offset = safeOffset,
+            Limit = safeLimit,
             Streams =
             [
                 .. store.Cursors

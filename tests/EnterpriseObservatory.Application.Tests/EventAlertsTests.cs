@@ -426,7 +426,7 @@ public class EventAlertsTests
         public void RecordFailure(string sourceInstanceId, string detail, DateTimeOffset attemptedAtUtc) =>
             throw new NotSupportedException();
 
-        public IReadOnlyList<SourceEvent> Recent(int limit, string? sourceInstanceId = null) => [];
+        public EventPage Recent(int offset, int limit, string? sourceInstanceId = null, string? search = null) => EventPage.Empty;
 
         public int Prune(DateTimeOffset createdBeforeUtc) => 0;
 

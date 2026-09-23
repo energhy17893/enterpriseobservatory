@@ -181,6 +181,30 @@ public sealed class AlertHistoryTests : IDisposable
     }
 
     [SkippableFact]
+    public void Episode_counts_are_the_lives_of_each_fingerprint_asked_in_one_call()
+    {
+        RequireDatabase();
+
+        var store = new PostgresAlertStateStore(_live.Database);
+        var psu = Fault("psu");
+        var fan = Fault("fan");
+
+        // Two lives of psu (raised, cleared, retired, raised again), one of fan.
+        Cycle(store, T0, [Present(psu, T0)]);
+        Cycle(store, T0.AddSeconds(30), [Absent(psu, T0.AddSeconds(30))]);
+        Cycle(store, T0.AddSeconds(60), [Absent(psu, T0.AddSeconds(60))]);
+        var later = T0.AddHours(1);
+        Cycle(store, later, [Present(psu, later), Present(fan, later)]);
+
+        var counts = store.EpisodeCounts([psu.Fingerprint, fan.Fingerprint, Fault("never").Fingerprint]);
+
+        Assert.Equal(2, counts[psu.Fingerprint]);
+        Assert.Equal(1, counts[fan.Fingerprint]);
+        Assert.Equal(2, counts.Count);
+        Assert.Empty(store.EpisodeCounts([]));
+    }
+
+    [SkippableFact]
     public void Writing_the_same_instance_again_does_not_duplicate_its_history()
     {
         RequireDatabase();

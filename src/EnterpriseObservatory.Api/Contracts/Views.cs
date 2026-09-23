@@ -93,6 +93,17 @@ public sealed record AlertView
     public required DateTimeOffset LastSeenUtc { get; init; }
 
     /// <summary>
+    /// How many lives this fingerprint has had in the kept history, this one
+    /// included (A8; Veeam ONE's "Repeat count", reference §11.5).
+    /// </summary>
+    /// <remarks>
+    /// At least one. Counted once per page, never per alert, on every surface
+    /// that shows an alert (ADR-0007 §5: the same alert reads the same
+    /// everywhere). Bounded by the history's retention.
+    /// </remarks>
+    public required int RepeatCount { get; init; }
+
+    /// <summary>
     /// When the newest input the alert's state rests on was taken (ADR-0026
     /// point 3): the API does not return a state without its freshness.
     /// </summary>
