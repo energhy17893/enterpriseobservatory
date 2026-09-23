@@ -1151,6 +1151,83 @@ anlamı; `hypervisor_object_id` moRef mi; kaç `com.simplivity.*` olayı geliyor
 adları; host isolation response / datastore heartbeat için HPE önerisi;
 "tek datastore per cluster" kuralı.
 
+## 11. Operatör arayüzü — referans ürünlerin kalıpları (23 Eylül 2026, Şerit 4 U0)
+
+Birincil kaynaklar: Grafana belgeleri ve Saga tasarım sistemi, Dynatrace
+belgeleri ve Strato, Aria Operations 8.16/8.18 kılavuzları, Veeam ONE
+kılavuzu, Datadog/Zabbix/PRTG belgeleri, WCAG 2.2, NN/g, IBM Carbon,
+Atlassian, UK Analysis Function. Bizim ilkeler: tek model çok görünüm
+(ADR-0007), renk asla tek başına (ADR-0008), üç değerli durum (ADR-0026).
+
+**Bilinmiyor / veri yok / değerlendirilemedi nasıl gösteriliyor:**
+
+| Ürün | Kalıp | Kaynak |
+|---|---|---|
+| PRTG | Unknown **gri** ("henüz veri almadı"), Paused **mavi**; ebeveyn birleşiminde en düşük öncelik (Down > Down(Ack) > Warning > Unusual > Up > Paused > Unknown) | [sensor_states](https://www.paessler.com/manuals/prtg/sensor_states) |
+| Datadog | monitör durumu **No Data** ayrı; UNKNOWN grubu NODATA grisi, genel durum OK kalır; No Data için 5 davranış (sıfır say / son durumu göster / NO DATA / bildir / OK) | [service_check](https://docs.datadoghq.com/monitors/types/service_check/), [configuration](https://docs.datadoghq.com/monitors/configuration/) |
+| Grafana | alarm örneği durumları Normal/Pending/Alerting/**No Data**/**Error**; "Keep last state" seçeneği; kural sağlığı (Ok/Error/NoData) kural durumundan **ayrı eksen**; tabloda null → "-" | [state-and-health](https://grafana.com/docs/grafana/latest/alerting/fundamentals/alert-rule-evaluation/state-and-health/) |
+| Dynatrace Strato | 5 seviye: Ideal, Good, **Neutral** (daire + eğik çizgi: "yok, pasif, erişilemez"), Warning (üçgen), Critical (elmas) — her biri renk + şekil + sembol | [status-and-health](https://developer.dynatrace.com/design/patterns/status-and-health/) |
+| vROps | rozet metriği **-1 = Unknown**; toplama durumu ayrı sayfada Green Collecting / **Grey Stopped** / Yellow Warning / Red Failed | [badge-metrics](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-16/vmware-aria-operations-user-guide-8-16/metric-property-and-alert-definitions/metrics-definitions-in-vrealize-operations-manager/calculated-metrics/badge-metrics.html), [collection-status](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-configuration-guide-8-18/-configuring-administration-settings/collection-status.html) |
+| Zabbix | "Not classified" gri (97AAB3); bilinmeyen trigger'ın OK/yeşil görünmesi **açık şikayet** (ZBXNEXT-4116) | [severity](https://www.zabbix.com/documentation/current/en/manual/config/triggers/severity), [ZBXNEXT-4116](https://support.zabbix.com/browse/ZBXNEXT-4116) |
+| IBM Carbon | Unknown = **Gray**, Undefined = mor; durum göstergesi renk + şekil + sembolden en az iki öğe; 3:1 | [status-indicator](https://carbondesignsystem.com/patterns/status-indicator-pattern/) |
+| Veeam ONE | gri/unknown tanımı **bulunamadı** | — |
+
+**Kabul edildi / susturuldu nasıl gösteriliyor:** Veeam ONE **Acknowledged** ayrı
+durum (yalnız Error/Warning, yanıt eylemi durur) ([acknowledge](https://helpcenter.veeam.com/docs/one/userguide/acknowledge_alarms.html));
+PRTG Down (Acknowledged) ayrı, kırmızı/pembe, bildirim durur, birleşimde
+Down'ın altında; Grafana silence değerlendirmeyi durdurmaz, bildirimi keser,
+alarm görünür kalır ([silence](https://grafana.com/docs/grafana/latest/alerting/configure-notifications/create-silence/));
+vROps kontrol durumu Open / Assigned (Take Ownership) / **Suspended** ("sağlık,
+risk, verimlilikten dışlanır") ([understanding-alerts](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-configuration-guide-8-18/configuring-alerts-and-actions/understanding-alerts.html));
+Zabbix ack yeşil ikon, varsayılan renk ack/unack aynı; Datadog Resolve
+**geçici** (bir sonraki değerlendirmede geri döner).
+
+**Liste, tablo, boş durum:**
+
+| Kalıp | Kaynak |
+|---|---|
+| Dynatrace Problems: açık problemler filtreden bağımsız **her zaman üstte**; kart = durum, önem, etki (etkilenen varlık sayısı), kök neden, süre, zaman çizgisi | [problems-app](https://docs.dynatrace.com/docs/dynatrace-intelligence/problems-app) |
+| Dynatrace host sayfası: üstte bildirim şeridi (özellikler, problemler, zafiyetler, erişilebilirlik), altında metrik bölümleri; Smartscape katman sekmesinde "1/33" sağlık sayacı | [host-monitoring](https://docs.dynatrace.com/docs/observe/infrastructure-observability/hosts/monitoring/host-monitoring), [smartscape](https://docs.dynatrace.com/docs/analyze-explore-automate/smartscape-classic) |
+| vROps Alerts: varsayılan gruplama **tanıma göre**, alternatif zaman/kritiklik/nesne tipi; Summary'de "duruma yol açan alarmlar" listesi | [alerts-tab](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-18/vmware-aria-operations-user-guide-8-18/troubleshooting-your-managed-environment/monitoring-and-responding-to-problems/alerts-tab-overview/alerts-tab.html) |
+| Veeam ONE alarm listesi: **Repeat count** sütunu ve ona göre sıralama; ağaçta çocuk hatası ebeveynde aşağı ok | [view_alarms](https://helpcenter.veeam.com/docs/one/userguide/view_alarms.html) |
+| Grafana alert list paneli: önem sırası alerting > no_data > pending > ok > paused; varsayılan en çok 20 öğe; tablo sayfalaması yüksekliğe uyar; No value "-" | [alert-list](https://grafana.com/docs/grafana/latest/panels-visualizations/visualizations/alert-list/), [table](https://grafana.com/docs/grafana/latest/panels-visualizations/visualizations/table/) |
+| NN/g: hedefe yönelik arama işlerinde sonsuz kaydırma **önerilmez**, sayfalama konum hafızası verir; ilk sütun insan-okunur ad; dondurulmuş başlık; kayıt düzenleme modal değil yan panel | [infinite-scrolling](https://www.nngroup.com/articles/infinite-scrolling/), [data-tables](https://www.nngroup.com/articles/data-tables/) |
+| NN/g boş durum: "yükleniyor / yok / filtre engelledi" ayrımı + doğrudan görev yolu; Saga: call-to-action / not-found / completed varyantları; Atlassian: en az bir eylem | [empty-state](https://www.nngroup.com/articles/empty-state-interface-design/), [Saga](https://grafana.com/developers/saga/patterns/empty-state/) |
+| Carbon veri tablosu: 5 satır yüksekliği, sayfalama altta, yalnız sıralı sütunda ikon, toplu eylem çubuğu üstte | [data-table](https://carbondesignsystem.com/components/data-table/usage/) |
+| UK Analysis Function: eksik değer için **[x] mevcut değil**, **[z] uygulanamaz**; "NA" belirsiz olduğu için kullanılmaz | [symbols-in-tables](https://analysisfunction.civilservice.gov.uk/policy-store/symbols-in-tables-definitions-and-help/) |
+| Saga ilkeleri: Task-at-Hand, **Tasteful Friction** (risk arttıkça sürtünme artar), Simple Solutions, Default to Reusability | [design-principles](https://grafana.com/developers/saga/foundations/design-principles/) |
+| WCAG 2.2: 1.4.1 renk tek başına değil; 1.4.3 metin 4.5:1; 1.4.11 durum ikonu 3:1; 2.4.7/2.4.11 odak görünür ve örtülmez | [use-of-color](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html), [non-text-contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html) |
+
+**Benimsenen (eo-ux skill'ine girer):**
+1. Gri ayrı durumdur, asla OK gibi görünmez (ADR-0026 ile aynı; PRTG, Datadog,
+   Carbon, Strato; Zabbix'in aksi davranışı şikayet konusu). Birleşimde en
+   düşük öncelik (PRTG).
+2. "Veri yok" ile "değerlendirme hatası" ayrı; kural sağlığı kural durumundan
+   ayrı eksen (Grafana; bizde F6 `up` ve collector_health bunu verir).
+3. Her durum renk + şekil + metin (Strato, Carbon, WCAG 1.4.1); durum ikonu 3:1.
+4. Kabul/susturma ayrı durum; değerlendirme sürer, bildirim durur, listede
+   görünür kalır (Grafana, Veeam, PRTG). Resolve geçici olamaz (Datadog reddi).
+5. Alarm listesi: açık olanlar her zaman üstte (Dynatrace); varsayılan
+   gruplama kurala göre, alternatif zaman/önem/varlık türü (vROps, Grafana);
+   tekrar sayısı sütunu (Veeam).
+6. Varlık sayfası: üstte durum/özellik/açık alarm şeridi, altında bölümler
+   (Dynatrace, vROps); katman sayacı "1/33".
+7. Tablolar: sayfalama, sonsuz kaydırma yok; ilk sütun ad; dondurulmuş
+   başlık; sayısal sütun sağa; boş hücre "-" ya da [x]/[z], asla boş.
+8. Boş durum üç ayrı mesaj: yükleniyor / hiç yok / filtre engelledi, her biri
+   bir eylemle.
+9. Yıkıcı ya da susturucu eylemde daha çok sürtünme (Saga Tasteful Friction).
+
+**Reddedilen:** yeni/çözülen problemi yanıp söndürme (Zabbix; dikkat yalnız
+anlamlıya); kabul renginin kabul edilmemişle aynı olması (Zabbix varsayılanı);
+Health/Risk/Efficiency üçlü skor (vROps; üç değerli modele ek eksen, Unknown
+görseli bile belgelenmemiş); Unknown için mor (Carbon Undefined); geçici
+Resolve (Datadog).
+
+**Bulunamadı:** Grafana'nın resmi durum renk tablosu; vROps'ta -1 rozetin
+görsel biçimi; Veeam ONE gri durum; Dynatrace'te acknowledge; Strato boş durum
+sayfası; Atlassian tabloda varsayılan satır/sayfa.
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:
