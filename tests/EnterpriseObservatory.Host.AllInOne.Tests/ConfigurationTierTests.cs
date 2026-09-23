@@ -49,6 +49,25 @@ public class ConfigurationTierTests
     }
 
     [Fact]
+    public async Task A_pass_skipped_for_a_fresh_carry_is_not_a_failure()
+    {
+        var health = new InMemoryCollectorHealthStore();
+
+        var result = await new ConfigurationCollectionPipeline(new TestClock(T0), health)
+            .RunAsync(
+                [new Source("vc-1") { Read = new ConfigurationRead { Skipped = true } }],
+                CollectionPolicy.Default,
+                CancellationToken.None);
+
+        var row = Assert.Single(health.Current);
+        Assert.True(row.Up);
+        Assert.Equal(HealthState.Healthy, row.Health);
+        Assert.Null(row.ItemsRead);
+        Assert.Empty(row.PartialFailures);
+        Assert.True(Assert.Single(result.Reads).Read.Skipped);
+    }
+
+    [Fact]
     public async Task Its_health_row_does_not_touch_the_inventory_row()
     {
         var health = new InMemoryCollectorHealthStore();
@@ -62,11 +81,14 @@ public class ConfigurationTierTests
     }
 
     [Fact]
-    public async Task The_first_configuration_read_runs_at_start_without_waiting_an_interval()
+    public async Task The_first_configuration_pass_runs_at_start_once_the_first_inventory_read_is_done()
     {
+        // After it, not beside it: that fast read seeds the carry, and a pass
+        // racing it would read the ~41 MB a second time.
         var clock = new TestClock(T0);
         var health = new InMemoryCollectorHealthStore();
-        var source = new Source("vc-1");
+        var order = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var source = new Source("vc-1") { Order = order };
         var graphs = new InMemoryEntityGraphStore();
         var alerts = new InMemoryAlertStateStore();
         var observations = new InMemoryObservationStore();
@@ -95,7 +117,7 @@ public class ConfigurationTierTests
 
         using var worker = new MonitoringWorker(
             cycle,
-            new Registry(source),
+            new Registry(source, new Inventory("vc-1", order)),
             options,
             new EventCollectionPipeline(events, clock),
             new ComplianceService(
@@ -126,6 +148,7 @@ public class ConfigurationTierTests
         }
 
         Assert.Equal(1, source.Reads);
+        Assert.Equal(["inventory", "configuration"], order.ToArray());
         Assert.Contains(health.Current, h => h.Role == CollectorRole.Configuration && h.InstanceId == "vc-1");
     }
 
@@ -139,16 +162,34 @@ public class ConfigurationTierTests
 
         public int Reads => Volatile.Read(ref _reads);
 
+        public System.Collections.Concurrent.ConcurrentQueue<string>? Order { get; init; }
+
         public Task<ConfigurationRead> ReadAsync(CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _reads);
+            Order?.Enqueue("configuration");
             return Task.FromResult(Read);
         }
     }
 
-    private sealed class Registry(IConfigurationTierSource configuration) : ISourceRegistry
+    private sealed class Inventory(string instanceId, System.Collections.Concurrent.ConcurrentQueue<string> order)
+        : IInventorySource
     {
-        public IReadOnlyList<IInventorySource> Inventory => [];
+        public string InstanceId { get; } = instanceId;
+
+        public async Task<InventorySnapshot> ReadAsync(CancellationToken cancellationToken)
+        {
+            // Slow enough that a pass not waiting for it would come first.
+            await Task.Delay(200, cancellationToken);
+            order.Enqueue("inventory");
+            return new InventorySnapshot { SourceInstanceId = InstanceId, ReadAtUtc = T0 };
+        }
+    }
+
+    private sealed class Registry(IConfigurationTierSource configuration, IInventorySource? inventory = null)
+        : ISourceRegistry
+    {
+        public IReadOnlyList<IInventorySource> Inventory => inventory is null ? [] : [inventory];
 
         public IReadOnlyList<IObservationSource> Observations => [];
 

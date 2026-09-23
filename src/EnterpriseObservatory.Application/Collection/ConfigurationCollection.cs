@@ -33,6 +33,12 @@ public sealed record ConfigurationRead
 
     public bool Complete { get; init; } = true;
 
+    /// <summary>
+    /// Nothing was asked: the carry was younger than the interval. Not a
+    /// failure — the collector is up and its configuration current.
+    /// </summary>
+    public bool Skipped { get; init; }
+
     /// <summary>What could not be read, the cut-off included.</summary>
     public IReadOnlyList<CollectionFailure> Failures { get; init; } = [];
 }
@@ -85,7 +91,8 @@ public sealed class ConfigurationCollectionPipeline(
                 policy,
                 gate,
                 cancellationToken,
-                extras: static read => new SelfMetricsExtras(ItemsRead: read.ObjectsRead)).ConfigureAwait(false))))
+                extras: static read => new SelfMetricsExtras(ItemsRead: read.Skipped ? null : read.ObjectsRead))
+                .ConfigureAwait(false))))
             .ConfigureAwait(false);
 
         IReadOnlyList<CollectorHealth> health = [.. outcomes.Select(o => o.Outcome.Health)];

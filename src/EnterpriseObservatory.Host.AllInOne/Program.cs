@@ -491,7 +491,8 @@ builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegi
     {
         var log = provider.GetRequiredService<ILogger<VsphereSourceRegistry>>();
         HostLog.SimplivityRead(log, instance, annotations, alerts, foldFailures, notSafe, filled);
-    }));
+    },
+    monitoringOptions.ConfigurationInterval));
 
 builder.Services.AddHostedService<MonitoringWorker>();
 builder.Services.AddHostedService<CompactionWorker>();

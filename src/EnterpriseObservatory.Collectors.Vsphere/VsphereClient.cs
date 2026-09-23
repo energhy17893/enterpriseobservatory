@@ -974,6 +974,10 @@ public sealed partial class VsphereClient
     /// runner counts as the failure it is.
     /// </para>
     /// </remarks>
+    public bool ConfigurationYoungerThan(TimeSpan age) =>
+        _configuration.Newest is { } newest && Time.GetUtcNow() - newest < age;
+
+    /// <inheritdoc/>
     public async Task<VsphereConfigurationRead> RetrieveConfigurationAsync(CancellationToken cancellationToken)
     {
         var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);

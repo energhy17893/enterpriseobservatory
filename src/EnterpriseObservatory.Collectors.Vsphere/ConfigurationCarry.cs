@@ -56,6 +56,18 @@ internal sealed class ConfigurationCarry
         }
     }
 
+    /// <summary>The newest reading carried, or null when there is none.</summary>
+    public DateTimeOffset? Newest
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _readAt.Count == 0 ? null : _readAt.Values.Max();
+            }
+        }
+    }
+
     /// <summary>After a complete read: forgets objects vCenter no longer has.</summary>
     public void KeepOnly(IReadOnlySet<string> moRefs)
     {

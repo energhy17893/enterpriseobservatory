@@ -172,6 +172,9 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// </summary>
     private readonly int _maxRequestsPerSource;
 
+    /// <summary>A configuration pass skips a carry younger than this; see <see cref="VsphereConfigurationSource"/>.</summary>
+    private readonly TimeSpan? _configurationInterval;
+
     public VsphereSourceRegistry(
         SourceConnectionCatalogue catalogue,
         IEntityGraphStore graph,
@@ -179,8 +182,10 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         Action<string, string> reportUnusable,
         int maxRequestsPerSource = SourceRequestGate.DefaultLimit,
         Action<string, string>? reportCloseWarning = null,
-        Action<string, int, int, int, int, string>? reportSimplivityRead = null)
+        Action<string, int, int, int, int, string>? reportSimplivityRead = null,
+        TimeSpan? configurationInterval = null)
     {
+        _configurationInterval = configurationInterval;
         _reportSimplivityRead = reportSimplivityRead ?? ((_, _, _, _, _, _) => { });
         _reportCloseWarning = reportCloseWarning ?? ((_, _) => { });
         _catalogue = catalogue ?? throw new ArgumentNullException(nameof(catalogue));
@@ -617,7 +622,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             new VsphereObservationSource(
                 client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock),
             new VsphereEventSource(client, _clock),
-            new VsphereConfigurationSource(client));
+            new VsphereConfigurationSource(client, _configurationInterval));
     }
 
     /// <summary>

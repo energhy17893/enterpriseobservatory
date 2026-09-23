@@ -94,6 +94,32 @@ public class TwoTierInventoryTests
     }
 
     [Fact]
+    public async Task After_the_seeding_fast_read_the_first_configuration_pass_asks_nothing_and_the_next_one_reads()
+    {
+        var time = new ManualTime(T0);
+        var server = new TwoTierServer();
+        var client = Client(server, time);
+        var source = new VsphereConfigurationSource(client, freshFor: TimeSpan.FromMinutes(15));
+
+        await client.RetrieveInventoryAsync(CancellationToken.None);
+        var callsAfterSeed = server.Calls.Count;
+
+        time.Now = T0.AddSeconds(30);
+        var first = await source.ReadAsync(CancellationToken.None);
+
+        Assert.True(first.Skipped);
+        Assert.Empty(first.Failures);
+        Assert.Equal(callsAfterSeed, server.Calls.Count);
+
+        time.Now = T0.AddMinutes(15);
+        var next = await source.ReadAsync(CancellationToken.None);
+
+        Assert.False(next.Skipped);
+        Assert.Equal(2, next.ObjectsRead);
+        Assert.Single(server.SlowBodies);
+    }
+
+    [Fact]
     public void A_configuration_path_is_not_counted_on_an_object_that_tier_has_not_reached()
     {
         // "Not asked yet" is not "blind".

@@ -30,6 +30,12 @@ public interface IVsphereConfigurationApi
     /// keeps what it had read and returns a partial result rather than throw.
     /// </summary>
     Task<VsphereConfigurationRead> RetrieveConfigurationAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Whether the newest configuration reading carried is younger than
+    /// <paramref name="age"/> — true right after a fast read seeded the carry.
+    /// </summary>
+    bool ConfigurationYoungerThan(TimeSpan age);
 }
 
 /// <summary>What one configuration read reached.</summary>

@@ -10,7 +10,15 @@ namespace EnterpriseObservatory.Collectors.Vsphere;
 /// What it reads is carried by the client into the next inventory read; this
 /// only says how far the read got.
 /// </remarks>
-public sealed class VsphereConfigurationSource(IVsphereConfigurationApi api) : IConfigurationTierSource
+/// <param name="api">The client whose carry this fills.</param>
+/// <param name="freshFor">
+/// The configuration interval: a pass that finds the carry younger than this
+/// asks vCenter nothing. That is the case right after start, when the first
+/// fast read has just seeded the carry with both tiers; reading ~41 MB again
+/// seconds later would say nothing new. Null always reads.
+/// </param>
+public sealed class VsphereConfigurationSource(IVsphereConfigurationApi api, TimeSpan? freshFor = null)
+    : IConfigurationTierSource
 {
     private readonly IVsphereConfigurationApi _api = api ?? throw new ArgumentNullException(nameof(api));
 
@@ -18,6 +26,11 @@ public sealed class VsphereConfigurationSource(IVsphereConfigurationApi api) : I
 
     public async Task<ConfigurationRead> ReadAsync(CancellationToken cancellationToken)
     {
+        if (freshFor is { } interval && _api.ConfigurationYoungerThan(interval))
+        {
+            return new ConfigurationRead { Skipped = true };
+        }
+
         var read = await _api.RetrieveConfigurationAsync(cancellationToken).ConfigureAwait(false);
 
         IEnumerable<CollectionFailure> failures = read.Failures.Select(f => new CollectionFailure
