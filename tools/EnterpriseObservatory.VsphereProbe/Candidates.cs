@@ -51,6 +51,34 @@ internal static class Candidates
         ("HostSystem", "configManager.certificateManager"),
     ];
 
+    /// <summary>
+    /// M6.0b's gate: whether vim25's own idea of a host's identity
+    /// (<c>hardware.systemInfo</c> and <c>summary.hardware.otherIdentifyingInfo</c>)
+    /// is readable at all, before any collector or cross-source match against
+    /// Redfish's <c>Systems/1.{SerialNumber,UUID}</c> is written.
+    /// </summary>
+    /// <remarks>
+    /// Both are new property paths: the product's own gate rule is "measure
+    /// before requesting", so this read alone -- names and counts, never a
+    /// value -- is the measurement. <c>otherIdentifyingInfo</c> is an array of
+    /// structures the same shape collection PR 1 already measured for
+    /// <c>config.hardware.device</c> and <c>Datastore.host</c>: read once,
+    /// described by <see cref="Describe"/> and walked by <see cref="Tree"/>
+    /// like every other structure array here.
+    /// </remarks>
+    public static async Task RunHostIdentityAsync(VsphereClient client, CancellationToken cancellationToken)
+    {
+        Section("Host identity candidates (each read alone; names and counts only)");
+
+        var systemInfo = await client.ReadCandidatePathAsync(
+            "HostSystem", "hardware.systemInfo", cancellationToken);
+        Describe(systemInfo);
+
+        var otherIdentifyingInfo = await client.ReadCandidatePathAsync(
+            "HostSystem", "summary.hardware.otherIdentifyingInfo", cancellationToken);
+        Describe(otherIdentifyingInfo);
+    }
+
     public static async Task RunAsync(
         VsphereClient client,
         Uri baseAddress,
