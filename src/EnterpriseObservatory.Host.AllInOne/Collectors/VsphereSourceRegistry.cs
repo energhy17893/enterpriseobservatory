@@ -1,6 +1,7 @@
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Application.Security;
+using EnterpriseObservatory.Collectors.Redfish;
 using EnterpriseObservatory.Collectors.Simplivity;
 using EnterpriseObservatory.Collectors.Vsphere;
 using EnterpriseObservatory.Domain;
@@ -539,13 +540,14 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     public const string VsphereKind = ConnectionKinds.Vsphere;
 
     /// <summary>The kinds this build has a collector for; <see cref="Build"/> answers each.</summary>
-    private static readonly string[] BuiltKinds = [ConnectionKinds.Vsphere, ConnectionKinds.Simplivity];
+    private static readonly string[] BuiltKinds = [ConnectionKinds.Vsphere, ConnectionKinds.Simplivity, ConnectionKinds.Redfish];
 
     /// <summary>Builds a connection's collectors by its kind.</summary>
     private Built Build(SourceConnection connection, Shape shape) => connection.Kind switch
     {
         ConnectionKinds.Vsphere => BuildVsphere(connection, shape),
         ConnectionKinds.Simplivity => BuildSimplivity(connection, shape),
+        ConnectionKinds.Redfish => BuildRedfish(connection, shape),
         _ => throw new InvalidOperationException(
             $"No collector for kind '{connection.Kind}'; WhyUnusable should have held it back."),
     };
@@ -682,6 +684,40 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             // kept the last "no collector for kind" message forever. It stays
             // NotConfigured, so /health keeps it NotPolled, and now says why.
             Observation: new RoleNotApplicable(connection.InstanceId, SimplivityHasNoMetrics),
+            Events: null);
+    }
+
+    internal const string RedfishHasNoMetrics =
+        "Redfish is read for inventory only; this build has no observation collector for it";
+
+    /// <summary>
+    /// One iLO (M6.1): inventory only, Basic auth per request — no session to
+    /// close, so closing is just the sockets. Folding reads the graph through
+    /// <see cref="GraphFoldingDirectory"/> (ADR-0027 §4).
+    /// </summary>
+    private Built BuildRedfish(SourceConnection connection, Shape shape)
+    {
+        var options = new RedfishConnectionOptions
+        {
+            InstanceId = connection.InstanceId,
+            BaseAddress = connection.BaseAddress,
+            Username = connection.Username,
+            Password = connection.Password,
+            AcceptUntrustedCertificate = connection.AcceptUntrustedCertificate,
+        };
+
+        var channel = new RedfishChannel(
+            RedfishChannel.CreateHandler(options), options, new SourceRequestGate(RedfishChannel.Parallelism));
+
+        return new Built(
+            shape,
+            () =>
+            {
+                channel.Dispose();
+                return Task.CompletedTask;
+            },
+            new RedfishInventorySource(connection.InstanceId, channel, new GraphFoldingDirectory(_graph), _clock),
+            Observation: new RoleNotApplicable(connection.InstanceId, RedfishHasNoMetrics),
             Events: null);
     }
 

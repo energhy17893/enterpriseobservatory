@@ -122,4 +122,16 @@ public static class InventoryVerdictKeys
 
     /// <summary>VM: <c>ha_resynchronization_progress</c>.</summary>
     public const string SimplivityHaResyncProgress = "simplivity.ha_resynchronization_progress";
+
+    // The Redfish (iLO) annotation on an ESXi host (ADR-0027, M6.1): the keys
+    // an alert rests on, so the entity page can show one it lacks as Unknown.
+
+    /// <summary>Host: <c>Systems/1.Oem.Hpe.AggregateHealthStatus.AggregateServerHealth</c>.</summary>
+    public const string RedfishAggregateHealth = "redfish.aggregate_health";
+
+    /// <summary>Host: <c>Chassis/1/Power.Redundancy[].Status.Health</c> (OK = redundant).</summary>
+    public const string RedfishPsuRedundancy = "redfish.psu.redundancy";
+
+    /// <summary>Host: <c>AggregateHealthStatus.FanRedundancy</c> (iLO 5's Thermal has no Redundancy[]).</summary>
+    public const string RedfishFanRedundancy = "redfish.fan.redundancy";
 }

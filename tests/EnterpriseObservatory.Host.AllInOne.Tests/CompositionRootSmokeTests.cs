@@ -1029,7 +1029,7 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
-    public async Task A_redfish_connection_is_saved_and_kept_and_its_test_says_no_collector_yet()
+    public async Task A_redfish_connection_is_saved_and_kept_and_tested_through_its_prober()
     {
         Account("root", Role.Administrator);
         var client = await SignedIn(Client(), "root");
@@ -1038,7 +1038,7 @@ public sealed class CompositionRootSmokeTests : IDisposable
         {
             instanceId = "ilo-1",
             kind = "redfish",
-            baseAddress = "https://ilo-host/",
+            baseAddress = "https://ilo.example.local/",
             username = "observatory",
             password = "hunter2",
             acceptUntrustedCertificate = false,
@@ -1057,9 +1057,10 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, tested.StatusCode);
 
         var probe = await tested.Content.ReadFromJsonAsync<Api.ProbeView>(Json);
+        // Unreachable, but through the real RedfishConnectionProbe (M6.1) --
+        // not the no-collector path.
         Assert.False(probe!.Succeeded);
-        Assert.True(probe.NoCollector);
-        Assert.Contains("no collector", probe.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.False(probe.NoCollector);
     }
 
     [Theory]
