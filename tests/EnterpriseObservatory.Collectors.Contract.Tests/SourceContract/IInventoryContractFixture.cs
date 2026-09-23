@@ -37,4 +37,16 @@ public interface IInventoryContractFixture
     /// failures — for the produced = accepted + dropped balance rule.
     /// </summary>
     IInventorySource CreateWithFailures(int hostCount, int failureCount);
+
+    /// <summary>
+    /// The read targets <paramref name="snapshot"/> accepted, one per host,
+    /// by a key unique within the source.
+    /// </summary>
+    /// <remarks>
+    /// The fixture's to answer, not the suite's: a source that owns its
+    /// entities accepts a host as an entity, and one that only annotates an
+    /// entity another source owns (ADR-0027) accepts it as an annotation.
+    /// Counting <c>EsxiHost</c> entities in the suite made it vSphere's.
+    /// </remarks>
+    IReadOnlyList<string> AcceptedTargets(InventorySnapshot snapshot);
 }
