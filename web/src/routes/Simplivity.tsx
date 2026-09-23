@@ -9,6 +9,7 @@ import { ago, cn, healthStatus, type StatusName } from '@/lib/ui'
 import type {
   SimplivityBackupView,
   SimplivityClusterView,
+  SimplivityHardwareView,
   SimplivityHostView,
   SimplivitySourceView,
   SimplivityVmView,
@@ -31,12 +32,16 @@ export function simplivityStatus(value: string | null): StatusName {
       return 'Unknown'
     case 'ALIVE':
     case 'SAFE':
+    case 'GREEN':
+    case 'HEALTHY':
       return 'Healthy'
     case 'FAULTY':
     case 'DEFUNCT':
+    case 'RED':
       return 'Critical'
     case 'SUSPECTED':
     case 'DEGRADED':
+    case 'YELLOW':
       return 'Warning'
     default:
       return 'Info'
@@ -175,6 +180,7 @@ function Source({ source, rpoHours }: { source: SimplivitySourceView; rpoHours: 
       <Federation source={source} />
       <StorageHa rows={source.notSafeVms} />
       <Backups rows={source.backups.olderThanRpo} rpoHours={rpoHours} />
+      <Hardware rows={source.hardware} />
       <SourceAlerts source={source.instanceId} />
     </section>
   )
@@ -439,6 +445,91 @@ function Backups({ rows, rpoHours }: { rows: SimplivityBackupView[]; rpoHours: n
             </>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+/** "RED 1 · GREEN 23": anything not good first; null when nothing was counted. */
+function driveCounts(counts: Record<string, number>) {
+  const good = (word: string) => (simplivityStatus(word) === 'Healthy' ? 1 : 0)
+  const entries = Object.entries(counts).sort(([a], [b]) => good(a) - good(b))
+  return entries.length === 0 ? null : entries.map(([word, n]) => `${word} ${n}`).join(' · ')
+}
+
+/** HPE's SSD wear rule (§10.8): ≤10% warns, ≤5% is critical. */
+function lifeStatus(life: number | null): StatusName {
+  if (life === null) return 'Unknown'
+  return life <= 5 ? 'Critical' : life <= 10 ? 'Warning' : 'Healthy'
+}
+
+/**
+ * svt-hardware-show: per host its tree's colour, RAID card, battery,
+ * accelerator, physical drives and the lowest SSD life. A host whose tree was
+ * not read, or a part HPE answers empty (no accelerator card), is Unknown.
+ */
+function Hardware({ rows }: { rows: SimplivityHardwareView[] }) {
+  return (
+    <div className="space-y-2">
+      <h3 className="text-sm font-medium">Hardware</h3>
+      {rows.length === 0 ? (
+        <Empty>No host's hardware has been read from this connection.</Empty>
+      ) : (
+        <Table
+          head={
+            <>
+              <Th>Host</Th>
+              <Th>Hardware</Th>
+              <Th>RAID · battery</Th>
+              <Th>Accelerator</Th>
+              <Th>Physical drives</Th>
+              <Th right>Min SSD life</Th>
+              <Th right>Rebuilding</Th>
+            </>
+          }
+        >
+          {rows.map((host) => {
+            const statuses = driveCounts(host.driveStatuses)
+            const healths = driveCounts(host.driveHealths)
+            return (
+              <tr key={host.entityId}>
+                <td className="px-3 py-2">
+                  <EntityLink id={host.entityId} name={host.name} /> <RowMark row={host} />
+                </td>
+                <td className="px-3 py-2">
+                  <SimplivityValue value={host.status} />
+                </td>
+                <td className="px-3 py-2">
+                  <SimplivityValue value={host.raidStatus} /> <SimplivityValue value={host.batteryHealth} />
+                  {host.batteryPercentCharged !== null && (
+                    <span className="ml-1 text-xs text-muted-foreground">{host.batteryPercentCharged}%</span>
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  <SimplivityValue value={host.acceleratorStatus} />
+                </td>
+                <td className="px-3 py-2">
+                  {statuses === null ? (
+                    <SimplivityValue value={null} />
+                  ) : (
+                    <>
+                      <span className="tabular">{statuses}</span>
+                      {healths !== null && <div className="text-xs text-muted-foreground">{healths}</div>}
+                    </>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right tabular">
+                  {host.minLifeRemaining === null ? (
+                    <SimplivityValue value={null} />
+                  ) : (
+                    <StatusBadge status={lifeStatus(host.minLifeRemaining)}>{host.minLifeRemaining}%</StatusBadge>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right tabular">{dash(host.drivesRebuilding)}</td>
+              </tr>
+            )
+          })}
+        </Table>
       )}
     </div>
   )

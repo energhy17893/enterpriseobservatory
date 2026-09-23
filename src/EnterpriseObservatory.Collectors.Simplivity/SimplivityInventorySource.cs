@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using EnterpriseObservatory.Application.Collection;
@@ -73,11 +74,13 @@ public sealed class SimplivityInventorySource(
         var clusters = await ReadAllAsync("omnistack_clusters", cancellationToken).ConfigureAwait(false);
         var vms = await ReadAllAsync("virtual_machines", cancellationToken).ConfigureAwait(false);
         var backups = await ReadAllAsync("backups", cancellationToken).ConfigureAwait(false);
-        var now = _clock.UtcNow;
 
         var read = new Read(this);
-        read.Hosts(hosts);
+        var folded = read.Hosts(hosts);
+        var hardware = await ReadHardwareAsync(folded, cancellationToken).ConfigureAwait(false);
+        read.Hardware(folded, hardware.Replies, hardware.Failures);
         read.Clusters(clusters, hosts);
+        var now = _clock.UtcNow;
         read.VirtualMachines(vms, Newest(backups));
 
         return new InventorySnapshot
@@ -151,6 +154,83 @@ public sealed class SimplivityInventorySource(
             }
         }
     }
+
+    /// <summary>Hardware reads in flight at once, per source.</summary>
+    /// <remarks>
+    /// Measured on Kibar (23 September 2026): 0.8–1.0 s a host, 26 hosts
+    /// 19.6–21 s one after another; four at a time is about 6 s. The channel's
+    /// <see cref="SourceRequestGate"/> still caps what is really in flight
+    /// (Collection:MaxRequestsPerSource, default 2).
+    /// </remarks>
+    public const int HardwareParallelism = 4;
+
+    /// <summary>
+    /// <c>GET /api/hosts/{id}/hardware</c> for every folded host, at most
+    /// <see cref="HardwareParallelism"/> at once.
+    /// </summary>
+    /// <remarks>
+    /// One host's tree failing is that host's hardware Unknown and a named
+    /// failure, never the whole read: the list reads above already proved the
+    /// OVC answers. A rejected token still fails the read — that is not one host's.
+    /// </remarks>
+    private async Task<(Dictionary<string, JsonElement> Replies, List<CollectionFailure> Failures)> ReadHardwareAsync(
+        List<FoldedHost> hosts, CancellationToken cancellationToken)
+    {
+        var replies = new ConcurrentDictionary<string, JsonElement>(StringComparer.Ordinal);
+        var failures = new ConcurrentBag<CollectionFailure>();
+
+        await Parallel.ForEachAsync(
+            hosts.Where(h => h.SvtId is not null),
+            new ParallelOptions { MaxDegreeOfParallelism = HardwareParallelism, CancellationToken = cancellationToken },
+            async (host, token) =>
+            {
+                var path = $"/api/hosts/{Uri.EscapeDataString(host.SvtId!)}/hardware?show_optional_fields=true";
+                var target = $"SimpliVity host '{host.Name}' hardware";
+
+                try
+                {
+                    using var document = await _channel.GetAsync(path, token).ConfigureAwait(false);
+
+                    if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                        document.RootElement.TryGetProperty("host", out var tree) &&
+                        tree.ValueKind == JsonValueKind.Object)
+                    {
+                        replies[host.SvtId!] = tree.Clone();
+                    }
+                    else
+                    {
+                        failures.Add(new CollectionFailure
+                        {
+                            Kind = CollectionFailureKind.ProtocolError,
+                            Target = target,
+                            Detail = $"GET {path} answered without a 'host' object.",
+                        });
+                    }
+                }
+                catch (Exception ex) when (
+                    ex is SimplivityApiException { Kind: not CollectionFailureKind.AuthenticationRejected } or HttpRequestException ||
+                    (ex is TaskCanceledException && !token.IsCancellationRequested))
+                {
+                    failures.Add(new CollectionFailure
+                    {
+                        Kind = ex switch
+                        {
+                            SimplivityApiException api => api.Kind,
+                            HttpRequestException => CollectionFailureKind.Unreachable,
+                            _ => CollectionFailureKind.Timeout,
+                        },
+                        Target = target,
+                        Detail = ex.Message,
+                    });
+                }
+            }).ConfigureAwait(false);
+
+        return (new Dictionary<string, JsonElement>(replies, StringComparer.Ordinal),
+            [.. failures.OrderBy(f => f.Target, StringComparer.Ordinal)]);
+    }
+
+    /// <summary>A host that folded, its annotation still open for the hardware read.</summary>
+    private sealed record FoldedHost(EntityId Id, string Name, string? SvtId, Dictionary<string, string?> Settings);
 
     /// <summary>The newest PROTECTED backup per SimpliVity VM id, and its type.</summary>
     private static Dictionary<string, (DateTimeOffset At, string? Type)> Newest(List<JsonElement> backups)
@@ -229,8 +309,10 @@ public sealed class SimplivityInventorySource(
             return value;
         }
 
-        public void Hosts(List<JsonElement> hosts)
+        public List<FoldedHost> Hosts(List<JsonElement> hosts)
         {
+            var folded = new List<FoldedHost>();
+
             foreach (var host in hosts)
             {
                 var name = Text(host, "name") ?? Text(host, "id") ?? "?";
@@ -241,7 +323,7 @@ public sealed class SimplivityInventorySource(
                 }
 
                 var state = Judged(host, "hosts", "state");
-                Annotate(id, $"host '{name}'", new()
+                folded.Add(new FoldedHost(id, name, Text(host, "id"), new()
                 {
                     [Key(InventoryVerdictKeys.SimplivityState)] = state,
                     [Key(InventoryVerdictKeys.SimplivityUpgradeState)] = Judged(host, "hosts", "upgrade_state"),
@@ -252,7 +334,7 @@ public sealed class SimplivityInventorySource(
                     // <uuid>:VirtualMachine:vm-N reference (VirtualMachines
                     // below) — never by matching this name.
                     [Key(InventoryVerdictKeys.SimplivityVirtualControllerName)] = Text(host, "virtual_controller_name"),
-                });
+                }));
 
                 // HPE's svt-federation-show problem indicators: Faulty, Suspected.
                 AlertSeverity? severity = state switch
@@ -268,6 +350,123 @@ public sealed class SimplivityInventorySource(
                         $"SimpliVity reports host '{name}' as {state}.");
                 }
             }
+
+            return folded;
+        }
+
+        /// <summary>The hardware tree onto each folded host, then its annotation (S4).</summary>
+        /// <remarks>
+        /// HPE's colours (svt-hardware-show, reference-approaches §10.8): green
+        /// OK, yellow degraded/warning/rebuilding, red error/missing/offline;
+        /// SSD life ≤10% warns, ≤5% is critical. Empty or missing is Unknown —
+        /// absent, never GREEN, and never an alert (ADR-0026): 8 of Kibar's 26
+        /// hosts answer an empty accelerator_card.status because they have none.
+        /// One alert per host and condition, with the count (principle 4).
+        /// </remarks>
+        public void Hardware(
+            List<FoldedHost> hosts, Dictionary<string, JsonElement> replies, List<CollectionFailure> failures)
+        {
+            Failures.AddRange(failures);
+
+            foreach (var host in hosts)
+            {
+                var answered = host.SvtId is not null && replies.ContainsKey(host.SvtId);
+                var (asked, got) = _read.GetValueOrDefault(("hosts", "hardware"));
+                _read[("hosts", "hardware")] = (asked + 1, got + (answered ? 1 : 0));
+
+                if (answered)
+                {
+                    HostHardware(host, replies[host.SvtId!]);
+                }
+
+                Annotate(host.Id, $"host '{host.Name}'", host.Settings);
+            }
+        }
+
+        private void HostHardware(FoldedHost host, JsonElement tree)
+        {
+            var raid = Word(Child(tree, "raid_card"), "status");
+            var battery = Child(tree, "battery");
+            var batteryHealth = Word(battery, "health");
+            var drives = Items(tree, "logical_drives")
+                .SelectMany(l => Items(l, "drive_sets"))
+                .SelectMany(d => Items(d, "physical_drives"))
+                .ToList();
+            var byStatus = CountBy(drives, "status");
+            var ssdLife = drives
+                .Where(d => Text(d, "media_type") == "SSD")
+                .Select(d => Number(d, "life_remaining"))
+                .Where(l => l is >= 0 and <= 100)
+                .Min();
+            var rebuilding = drives.Count(d => Number(d, "percent_rebuilt") is >= 0 and < 100);
+
+            var s = host.Settings;
+            s[Key(InventoryVerdictKeys.SimplivityHwStatus)] = Word(tree, "status");
+            s[Key(InventoryVerdictKeys.SimplivityHwRaidStatus)] = raid;
+            s[Key(InventoryVerdictKeys.SimplivityHwBatteryStatus)] = Word(battery, "status");
+            s[Key(InventoryVerdictKeys.SimplivityHwBatteryHealth)] = batteryHealth;
+            s[Key(InventoryVerdictKeys.SimplivityHwBatteryCharge)] = Number(battery, "percent_charged") is >= 0 and var c
+                ? c.ToString(CultureInfo.InvariantCulture)
+                : null;
+            s[Key(InventoryVerdictKeys.SimplivityHwAcceleratorStatus)] = Word(Child(tree, "accelerator_card"), "status");
+            s[Key(InventoryVerdictKeys.SimplivityHwDrives)] = drives.Count.ToString(CultureInfo.InvariantCulture);
+            s[Key(InventoryVerdictKeys.SimplivityHwDriveStatus)] = Encode(byStatus);
+            s[Key(InventoryVerdictKeys.SimplivityHwDriveHealth)] = Encode(CountBy(drives, "health"));
+            s[Key(InventoryVerdictKeys.SimplivityHwLifeRemainingMin)] = ssdLife?.ToString(CultureInfo.InvariantCulture);
+            s[Key(InventoryVerdictKeys.SimplivityHwDrivesRebuilding)] = rebuilding.ToString(CultureInfo.InvariantCulture);
+
+            var red = byStatus.GetValueOrDefault("RED");
+            var yellow = byStatus.GetValueOrDefault("YELLOW");
+            if (red + yellow > 0)
+            {
+                Raise(host.Id, red > 0 ? AlertSeverity.Critical : AlertSeverity.Warning,
+                    "SimpliVity physical drives not green", "simplivity-hw-drives",
+                    $"SimpliVity reports {red} RED and {yellow} YELLOW of {drives.Count} physical drives on host '{host.Name}'.");
+            }
+
+            if (raid == "RED")
+            {
+                Raise(host.Id, AlertSeverity.Critical, "SimpliVity RAID controller red", "simplivity-hw-raid",
+                    $"SimpliVity reports the RAID controller on host '{host.Name}' as RED.");
+            }
+
+            if (batteryHealth is not null && batteryHealth != "HEALTHY")
+            {
+                Raise(host.Id, AlertSeverity.Warning, "SimpliVity RAID battery not healthy", "simplivity-hw-battery",
+                    $"SimpliVity reports the RAID battery on host '{host.Name}' as {batteryHealth}.");
+            }
+
+            if (ssdLife is { } life && life <= 10)
+            {
+                Raise(host.Id, life <= 5 ? AlertSeverity.Critical : AlertSeverity.Warning,
+                    "SimpliVity SSD wearing out", "simplivity-hw-ssd-life",
+                    $"An SSD on host '{host.Name}' has {life}% of its life left.");
+            }
+
+            static JsonElement? Child(JsonElement e, string name) =>
+                e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object ? v : null;
+
+            static IEnumerable<JsonElement> Items(JsonElement e, string name) =>
+                e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array
+                    ? v.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object)
+                    : [];
+
+            // Empty is what HPE answers for a part that is not there: Unknown.
+            static string? Word(JsonElement? e, string name) =>
+                e is { } o && Text(o, name) is { Length: > 0 } w ? w : null;
+
+            static int? Number(JsonElement? e, string name) =>
+                e is { } o && o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number &&
+                v.TryGetInt32(out var n) ? n : null;
+
+            static SortedDictionary<string, int> CountBy(List<JsonElement> drives, string name) =>
+                new(drives.Select(d => Word(d, name)).OfType<string>()
+                    .GroupBy(w => w, StringComparer.Ordinal)
+                    .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal), StringComparer.Ordinal);
+
+            static string? Encode(SortedDictionary<string, int> counts) =>
+                counts.Count == 0 ? null
+                    : string.Join(';', counts.Select(c => $"{c.Key}={c.Value.ToString(CultureInfo.InvariantCulture)}"));
         }
 
         public void Clusters(List<JsonElement> clusters, List<JsonElement> hosts)

@@ -44,7 +44,11 @@ public partial class ReadModelTests
             Annotations =
             [
                 Annotation(H1, readAt, (K.SimplivityState, "ALIVE"), (K.SimplivityUpgradeState, "SUCCESS"),
-                    (K.SimplivityVersion, "5.1.0"), (K.SimplivityVirtualControllerName, "OVC-1")),
+                    (K.SimplivityVersion, "5.1.0"), (K.SimplivityVirtualControllerName, "OVC-1"),
+                    (K.SimplivityHwStatus, "GREEN"), (K.SimplivityHwRaidStatus, "GREEN"), (K.SimplivityHwBatteryHealth, "HEALTHY"),
+                    (K.SimplivityHwDrives, "24"), (K.SimplivityHwDriveStatus, "GREEN=23;RED=1"),
+                    (K.SimplivityHwDriveHealth, "HEALTHY=24"), (K.SimplivityHwLifeRemainingMin, "87"),
+                    (K.SimplivityHwDrivesRebuilding, "0")),
                 // state not answered: Unknown, not ALIVE.
                 Annotation(H2, readAt, (K.SimplivityVersion, "5.1.0")),
                 Annotation(C1, readAt, (K.SimplivityName, "SVT-C1"), (K.SimplivityArbiterRequired, "true"),
@@ -131,6 +135,31 @@ public partial class ReadModelTests
         Assert.Equal((2, 2), (source.Backups.WithBackup, source.Backups.WithoutBackup));
         var old = Assert.Single(source.Backups.OlderThanRpo);
         Assert.Equal(("vm-old-backup", T0.AddHours(-40), "POLICY"), (old.Name, old.LastBackupUtc, old.Type));
+    }
+
+    [Fact]
+    public void The_hardware_section_projects_each_hosts_tree_and_leaves_an_unread_one_unknown()
+    {
+        GivenFederation(T0.AddMinutes(-3));
+        GivenCollectors(Health(Svt, CollectorRole.Inventory, T0));
+
+        var hardware = Assert.Single(Model().Simplivity([Svt]).Sources).Hardware;
+
+        Assert.Equal(["vc-1:host-1", "vc-1:host-2"], hardware.Select(h => h.EntityId));
+        var h1 = hardware[0];
+        Assert.Equal(("GREEN", "GREEN", "HEALTHY", 24, 87, 0),
+            (h1.Status, h1.RaidStatus, h1.BatteryHealth, h1.Drives, h1.MinLifeRemaining, h1.DrivesRebuilding));
+        Assert.Equal(new Dictionary<string, int> { ["GREEN"] = 23, ["RED"] = 1 }, h1.DriveStatuses);
+        Assert.Equal(24, h1.DriveHealths["HEALTHY"]);
+        Assert.Null(h1.AcceleratorStatus); // not given: Unknown, not GREEN
+
+        // H2's tree was never read: every field Unknown, nothing counted as good.
+        var h2 = hardware[1];
+        Assert.Equal((null, null, null, (int?)null), (h2.Status, h2.RaidStatus, h2.BatteryHealth, h2.MinLifeRemaining));
+        Assert.Empty(h2.DriveStatuses);
+
+        // The entity page lists the unread hardware status as Unknown, too.
+        Assert.Null(Assert.Single(Model().Entity(H2.Value)!.Annotations, a => a.Key == "hw.status").Value);
     }
 
     [Fact]

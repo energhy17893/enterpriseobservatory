@@ -131,6 +131,12 @@ internal sealed class FakeOmniStack(int hostCount, int strangerCount) : HttpMess
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(raw) };
         }
 
+        // S4: each folded host's hardware tree, reduced to its own status.
+        if (path.EndsWith("/hardware", StringComparison.Ordinal))
+        {
+            return Json(new JsonObject { ["host"] = new JsonObject { ["status"] = "GREEN" } });
+        }
+
         var name = path["/api/".Length..];
         var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
         var limit = int.Parse(query["limit"]!, System.Globalization.CultureInfo.InvariantCulture);

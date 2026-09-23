@@ -1165,6 +1165,22 @@ export interface SimplivitySourceView {
   vmHaStatuses: Record<string, number>
   notSafeVms: SimplivityVmView[]
   backups: { withBackup: number; withoutBackup: number; olderThanRpo: SimplivityBackupView[] }
+  hardware: SimplivityHardwareView[]
+}
+
+/** One host's hardware tree (S4). HPE colours; null = not read, Unknown. */
+export interface SimplivityHardwareView extends SimplivityRow {
+  status: string | null
+  raidStatus: string | null
+  batteryStatus: string | null
+  batteryHealth: string | null
+  batteryPercentCharged: number | null
+  acceleratorStatus: string | null
+  drives: number | null
+  driveStatuses: Record<string, number>
+  driveHealths: Record<string, number>
+  minLifeRemaining: number | null
+  drivesRebuilding: number | null
 }
 
 export interface SimplivityView {

@@ -338,6 +338,49 @@ public sealed record SimplivitySourceView
     public required IReadOnlyList<SimplivityVmView> NotSafeVms { get; init; }
 
     public required SimplivityBackupsView Backups { get; init; }
+
+    /// <summary>Every annotated host's hardware tree (S4), by name; a host whose tree was not read has every field null.</summary>
+    public required IReadOnlyList<SimplivityHardwareView> Hardware { get; init; }
+}
+
+/// <summary>
+/// One host's <c>simplivity.hw.*</c> annotation. Colours are HPE's words
+/// (GREEN/YELLOW/RED); null is Unknown, never GREEN (ADR-0026).
+/// </summary>
+public sealed record SimplivityHardwareView
+{
+    public required string EntityId { get; init; }
+
+    public required string Name { get; init; }
+
+    public string? Status { get; init; }
+
+    public string? RaidStatus { get; init; }
+
+    public string? BatteryStatus { get; init; }
+
+    public string? BatteryHealth { get; init; }
+
+    public int? BatteryPercentCharged { get; init; }
+
+    public string? AcceleratorStatus { get; init; }
+
+    public int? Drives { get; init; }
+
+    /// <summary>Physical drives by <c>status</c>; empty when not read.</summary>
+    public required IReadOnlyDictionary<string, int> DriveStatuses { get; init; }
+
+    /// <summary>Physical drives by <c>health</c>; empty when not read.</summary>
+    public required IReadOnlyDictionary<string, int> DriveHealths { get; init; }
+
+    /// <summary>The lowest SSD life remaining, percent.</summary>
+    public int? MinLifeRemaining { get; init; }
+
+    public int? DrivesRebuilding { get; init; }
+
+    public required bool CarriedForward { get; init; }
+
+    public required DateTimeOffset ReadAtUtc { get; init; }
 }
 
 public sealed record SimplivityClusterView
