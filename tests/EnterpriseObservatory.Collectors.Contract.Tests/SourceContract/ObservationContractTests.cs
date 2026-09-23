@@ -397,6 +397,12 @@ public abstract class ObservationContractTests<TFixture>
             var result = await pipeline.RunAsync([source], health, CollectionPolicy.Default, CancellationToken.None);
             health = result.Health;
 
+            // F5b: the inventory's capacity readings wait in the same queue,
+            // as current state — counted the same way, never a gap.
+            var capacity = Capacity(fixture.InstanceId, clock.UtcNow);
+            produced.AddRange(capacity);
+            queue.EnqueueCurrentState(fixture.InstanceId, capacity);
+
             foreach (var batch in result.Batches)
             {
                 produced.AddRange(batch.Observations);
@@ -413,7 +419,11 @@ public abstract class ObservationContractTests<TFixture>
         Assert.Equal(0, after.Rows);
         Assert.Equal(produced.Count, after.ProducedRows);
         Assert.Equal(after.ProducedRows, after.AcceptedRows + after.DroppedRows);
-        Assert.Equal(smallBudget, after.DroppedRows > 0);
+        Assert.Equal(smallBudget, after.DroppedOverBudgetRows + after.DroppedTooOldRows > 0);
+
+        // While the store was down each newer capacity reading replaced the
+        // one still waiting: dropped as current state, whatever the budget.
+        Assert.True(after.DroppedCurrentStateRows > 0);
 
         // Accepted exactly once: what the store holds is what was counted
         // accepted, each produced row at most once, nothing it never produced.
@@ -422,6 +432,13 @@ public abstract class ObservationContractTests<TFixture>
         var producedSet = produced.ToHashSet(ReferenceEqualityComparer.Instance);
         Assert.All(store.Kept, row => Assert.Contains(row, producedSet));
     }
+
+    /// <summary>Two datastores' used-space readings, as an inventory read carries them.</summary>
+    private static IReadOnlyList<Observation> Capacity(string source, DateTimeOffset at) =>
+    [
+        .. Enumerable.Range(0, 2).Select(i => CapacityCounters.Reading(
+            EntityId.For(source, $"datastore-{i}"), CapacityCounters.DatastoreUsed, 1e9 * (i + 1), at, source)),
+    ];
 
     /// <summary>A store that refuses every write while it is down, and keeps nothing it refused.</summary>
     private sealed class FlakyStore

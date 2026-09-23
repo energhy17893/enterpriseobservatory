@@ -274,6 +274,226 @@ public class ObservationStoreQueueTests
         Assert.Equal(["vc-1", "vc-2"], db.Recorded.Select(g => g.SourceInstanceId).Order(StringComparer.Ordinal));
     }
 
+    // --- F5b: bounded chunks -------------------------------------------------
+
+    /// <summary>A store that counts its writes and can be told to fail one of them.</summary>
+    private sealed class ChunkStore
+    {
+        public List<int> Writes { get; } = [];
+
+        public int Kept { get; private set; }
+
+        /// <summary>The 1-based write that throws, or 0.</summary>
+        public int FailOnWrite { get; set; }
+
+        public void Append(IReadOnlyList<Observation> rows)
+        {
+            if (Writes.Count + 1 == FailOnWrite)
+            {
+                FailOnWrite = 0;
+                throw new TimeoutException("The merge outran its command timeout.");
+            }
+
+            Writes.Add(rows.Count);
+            Kept += rows.Count;
+        }
+    }
+
+    private static readonly StoreQueueLimits Chunked = new()
+    {
+        MaxRowsPerWrite = 10_000,
+        BudgetBytes = 1L << 30,
+    };
+
+    /// <summary>
+    /// The 23 September 2026 backlog: ~260k rows used to go to the store as
+    /// one statement. Now no write carries more than the chunk size, and each
+    /// stored chunk is accounted as accepted on its own.
+    /// </summary>
+    [Fact]
+    public void A_260k_row_backlog_drains_as_bounded_chunks_each_acked_separately()
+    {
+        var clock = new Clock();
+        var store = new ChunkStore();
+        var queue = new ObservationStoreQueue(store.Append, clock, Chunked);
+
+        // One large refill and a few ordinary cycles behind it.
+        queue.Enqueue(Batch("vc-1", T0, 200_000));
+        for (var i = 1; i <= 4; i++)
+        {
+            queue.Enqueue(Batch("vc-1", T0.AddSeconds(30 * i), 15_000));
+        }
+
+        var drained = queue.Drain();
+
+        Assert.Null(drained.Failure);
+        Assert.Equal(260_000, store.Kept);
+        Assert.All(store.Writes, rows => Assert.InRange(rows, 1, Chunked.MaxRowsPerWrite));
+        Assert.Equal(20 + (4 * 2), store.Writes.Count);
+        Assert.Equal(5, drained.Accepted.Count);
+
+        var snapshot = queue.Snapshot();
+        Assert.Equal(260_000, snapshot.AcceptedRows);
+        Assert.Equal(0, snapshot.Rows);
+    }
+
+    /// <summary>
+    /// T1.1's principle, per chunk: what the store took stays taken, what it
+    /// did not stays queued, and the next drain resumes where this one stopped
+    /// instead of starting the backlog over.
+    /// </summary>
+    [Fact]
+    public void A_failed_chunk_keeps_the_rest_queued_and_the_stored_chunks_acked()
+    {
+        var clock = new Clock();
+        var store = new ChunkStore { FailOnWrite = 8 };
+        var queue = new ObservationStoreQueue(store.Append, clock, Chunked);
+
+        queue.Enqueue(Batch("vc-1", T0, 50_000));
+        queue.Enqueue(Batch("vc-1", T0.AddSeconds(30), 50_000));
+
+        var failed = queue.Drain();
+
+        // Chunks 1–5 stored the first batch; 6–7 half the second; 8 failed.
+        Assert.NotNull(failed.Failure);
+        Assert.Equal(T0, Assert.Single(failed.Accepted).ReadAtUtc);
+        var mid = queue.Snapshot();
+        Assert.Equal(70_000, mid.AcceptedRows);
+        Assert.Equal(30_000, mid.Rows);
+        Assert.Equal(1, mid.Length);
+        Assert.NotNull(mid.LastFailure);
+
+        var resumed = queue.Drain();
+
+        Assert.Null(resumed.Failure);
+        Assert.Equal(T0.AddSeconds(30), Assert.Single(resumed.Accepted).ReadAtUtc);
+        Assert.Equal(100_000, store.Kept);
+        Assert.Equal(10, store.Writes.Count);
+        Assert.Equal(100_000, queue.Snapshot().AcceptedRows);
+        Assert.Equal(0, queue.Snapshot().Rows);
+    }
+
+    /// <summary>
+    /// F5's ack-gated rule, per chunk: a batch is handed back for its marks
+    /// to move only once its last chunk is stored. Half a batch stored is not
+    /// the batch stored — moving the marks then would leave the unstored half
+    /// behind them, never asked for again.
+    /// </summary>
+    [Fact]
+    public void Marks_advance_only_for_batches_whose_every_chunk_was_stored()
+    {
+        var clock = new Clock();
+        var store = new ChunkStore { FailOnWrite = 2 };
+        var queue = new ObservationStoreQueue(store.Append, clock, Chunked);
+
+        queue.Enqueue(Batch("vc-1", T0, 25_000));
+
+        var failed = queue.Drain();
+        Assert.Empty(failed.Accepted);
+        Assert.Equal(10_000, queue.Snapshot().AcceptedRows);
+
+        var resumed = queue.Drain();
+        Assert.Single(resumed.Accepted);
+        Assert.Equal(25_000, store.Kept);
+    }
+
+    // --- F5b: current state (capacity) through the queue ----------------------
+
+    private static IReadOnlyList<Observation> Capacity(string source, DateTimeOffset at, double used, int datastores = 2) =>
+    [
+        .. Enumerable.Range(0, datastores).Select(i => new Observation
+        {
+            Entity = EntityId.For(source, $"datastore-{i}"),
+            Value = new CounterValue
+            {
+                CounterName = "datastore.used.latest",
+                Raw = used,
+                Rollup = RollupType.Latest,
+                Interval = TimeSpan.FromMinutes(5),
+                Unit = "bytes",
+            },
+            SampledAtUtc = at,
+            Source = source,
+        }),
+    ];
+
+    /// <summary>
+    /// Capacity is current state: vCenter keeps no history of it, so a
+    /// dropped reading is counted apart and recorded as no gap — a gap would
+    /// send the source to read a history that does not exist.
+    /// </summary>
+    [Fact]
+    public void A_dropped_capacity_row_is_counted_as_current_state_and_records_no_gap()
+    {
+        var clock = new Clock();
+        var db = new Database { Down = true };
+        var queue = new ObservationStoreQueue(db.Append, clock, RowsBudget(10) with { MaxAge = TimeSpan.FromHours(1) }, db);
+
+        queue.EnqueueCurrentState("vc-1", Capacity("vc-1", T0, 1e9));
+        clock.UtcNow = T0.AddSeconds(30);
+        queue.Enqueue(Batch("vc-1", clock.UtcNow, 10));
+
+        var dropped = queue.Snapshot();
+        Assert.Equal(2, dropped.DroppedCurrentStateRows);
+        Assert.Equal(0, dropped.DroppedOverBudgetRows);
+        Assert.Equal(0, dropped.DroppedTooOldRows);
+        Assert.Equal(0, dropped.PendingGapRows);
+        Assert.Equal(0, dropped.CouldNotBeFilledRows);
+        Assert.Equal(T0.AddSeconds(30), dropped.LastDropUtc);
+
+        db.Down = false;
+        queue.Drain();
+
+        Assert.Empty(db.Recorded);
+        var after = queue.Snapshot();
+        Assert.Equal(after.ProducedRows, after.AcceptedRows + after.DroppedRows);
+    }
+
+    [Fact]
+    public void The_newest_capacity_reading_of_a_source_replaces_an_older_one_still_waiting()
+    {
+        var clock = new Clock();
+        var db = new Database { Down = true };
+        var queue = new ObservationStoreQueue(db.Append, clock, gaps: db);
+
+        queue.EnqueueCurrentState("vc-1", Capacity("vc-1", T0, 1e9));
+        queue.EnqueueCurrentState("vc-2", Capacity("vc-2", T0, 5e9));
+        clock.UtcNow = T0.AddMinutes(5);
+        queue.EnqueueCurrentState("vc-1", Capacity("vc-1", clock.UtcNow, 2e9));
+
+        Assert.Equal(2, queue.Snapshot().DroppedCurrentStateRows);
+
+        db.Down = false;
+        var drained = queue.Drain();
+
+        // Current state hands back no batch: it moves no marks.
+        Assert.Empty(drained.Accepted);
+        Assert.Equal([5e9, 5e9, 2e9, 2e9], db.Rows.Select(r => r.Value.Raw));
+        Assert.Empty(db.Recorded);
+    }
+
+    /// <summary>
+    /// The inventory cycle drains only current state: metric batches waiting
+    /// beside it are the metric cycle's to accept, with their marks.
+    /// </summary>
+    [Fact]
+    public void A_current_state_drain_writes_capacity_and_leaves_metric_batches_queued()
+    {
+        var clock = new Clock();
+        var db = new Database();
+        var queue = new ObservationStoreQueue(db.Append, clock, gaps: db);
+
+        queue.Enqueue(Batch("vc-1", T0, 10));
+        queue.EnqueueCurrentState("vc-1", Capacity("vc-1", T0, 1e9));
+
+        var drained = queue.Drain(currentStateOnly: true);
+
+        Assert.Empty(drained.Accepted);
+        Assert.Equal(2, db.Rows.Count);
+        Assert.Equal(10, queue.Snapshot().Rows);
+        Assert.Single(queue.Drain().Accepted);
+    }
+
     [Fact]
     public void Without_a_gap_record_a_drop_is_counted_as_could_not_be_filled()
     {
