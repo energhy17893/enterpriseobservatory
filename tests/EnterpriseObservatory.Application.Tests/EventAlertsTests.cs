@@ -562,7 +562,8 @@ public class EventAlertsTests
     [InlineData(
         "com.simplivity.event.control.node.state.faulty", "com.simplivity.event.control.node.state.faulty.clear", AlertSeverity.Critical,
         "SimpliVity OmniStack system ovc01 in the cluster is unreachable.", "SimpliVity OmniStack system ovc01 is reachable again and isnow active.")]
-    [InlineData("com.simplivity.event.control.phys.capacity.node.warning", "com.simplivity.event.control.phys.capacity.node.within.tolerance", AlertSeverity.Warning, "", "")]
+    [InlineData("com.simplivity.event.vm.data.access.not.optimized", "com.simplivity.event.vm.data.access.optimized", AlertSeverity.Warning, "", "")]
+    [InlineData("com.simplivity.event.control.phys.capacity.node.warning","com.simplivity.event.control.phys.capacity.node.within.tolerance", AlertSeverity.Warning, "", "")]
     [InlineData("com.simplivity.event.control.phys.capacity.node.error", "com.simplivity.event.control.phys.capacity.node.within.tolerance", AlertSeverity.Critical, "", "")]
     [InlineData("com.simplivity.event.control.phys.capacity.fd.warning", "com.simplivity.event.control.phys.capacity.fd.within.tolerance", AlertSeverity.Warning, "", "")]
     [InlineData("com.simplivity.event.control.phys.capacity.fd.error", "com.simplivity.event.control.phys.capacity.fd.within.tolerance", AlertSeverity.Critical, "", "")]
@@ -597,6 +598,20 @@ public class EventAlertsTests
 
         Assert.Equal(severity, alert.Severity);
         Assert.Contains("sends no event when this ends", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Data_access_not_optimized_then_ha_restore_then_optimized_leaves_nothing_open()
+    {
+        // The live sequence on one VM, 11:32–11:33Z.
+        Assert.Empty(Evaluate(
+            Event(1, "com.simplivity.event.vm.data.access.not.optimized", T0.AddMinutes(-3),
+                "Data access is not optimized for db01 on datastore ds-svt. Move the VM to one of the following OmniCube systems for best performance: ovc02",
+                Esx01, Prod, Db01),
+            Event(2, "com.simplivity.event.vm.ha.restore", T0.AddMinutes(-2),
+                "Storage HA protection restored for db01 on datastore ds-svt", Esx01, Prod, Db01),
+            Event(3, "com.simplivity.event.vm.data.access.optimized", T0.AddMinutes(-2),
+                "Data access optimized for db01 on datastore ds-svt", Esx01, Prod, Db01)));
     }
 
     [Fact]

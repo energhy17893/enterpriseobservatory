@@ -460,6 +460,22 @@ public static class EventAlerts
                 "can make it unavailable.",
         },
 
+        // GUID-38BEF73A (yellow, VirtualMachine). Seen live after a Storage
+        // vMotion to a node that does not own the VM's data.
+        new()
+        {
+            Id = "svt.vm.data.access.not.optimized",
+            Title = "SimpliVity VM data access not optimized",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.VirtualMachine,
+            RaisedBy = ["com.simplivity.event.vm.data.access.not.optimized"],
+            ClearedBy = ["com.simplivity.event.vm.data.access.optimized"],
+            Meaning =
+                "A VM runs on a node that does not hold its data, so it lacks the " +
+                "lowest-latency access and performance may degrade.",
+        },
+
         // GUID-BAC0CFF2.
         new()
         {
