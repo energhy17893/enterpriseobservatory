@@ -11,6 +11,7 @@ import { Alerts } from '@/routes/Alerts'
 import { Events } from '@/routes/Events'
 import { Entities } from '@/routes/Entities'
 import { EntityDetail } from '@/routes/EntityDetail'
+import { Simplivity } from '@/routes/Simplivity'
 import { Collectors } from '@/routes/Collectors'
 import { Accounts } from '@/routes/Accounts'
 import { Connections } from '@/routes/Connections'
@@ -90,6 +91,7 @@ function Application() {
           <Route path="alerts" element={<Alerts />} />
           <Route path="entities" element={<Entities />} />
           <Route path="entities/:id" element={<EntityDetail />} />
+          <Route path="simplivity" element={<Simplivity />} />
           <Route path="collectors" element={<Collectors />} />
           <Route path="compliance" element={<Compliance identity={data} />} />
           <Route path="reports" element={<Reports />} />

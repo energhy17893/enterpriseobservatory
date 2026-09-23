@@ -6,7 +6,9 @@ import { SeriesChart } from '@/components/SeriesChart'
 import { AlertActions } from '@/components/AlertActions'
 import { ago, findingLabel, findingStatus, healthBasisLabel, healthStatus, ramp, severityStatus } from '@/lib/ui'
 import { basisLabel } from '@/lib/basis'
+import { CarriedForward, SimplivityValue } from '@/routes/Simplivity'
 import type {
+  AnnotationView,
   ClusterFailoverResourceView,
   ClusterFailoverView,
   HaScorecardView,
@@ -65,7 +67,7 @@ export function EntityDetail() {
 
   if (isPending) return <Loading what="the entity" />
 
-  const { entity, marks, relationships, alerts, timeToFull, haScorecard, clusterFailover } = data
+  const { entity, marks, relationships, alerts, timeToFull, haScorecard, clusterFailover, annotations } = data
 
   return (
     <div className="space-y-6">
@@ -101,6 +103,8 @@ export function EntityDetail() {
           </Card>
         )}
       </div>
+
+      {annotations.length > 0 && <Annotations annotations={annotations} />}
 
       <section className="space-y-2">
         <h2 className="text-sm font-medium">Alerts</h2>
@@ -470,5 +474,57 @@ function Connection({ relationship }: { relationship: RelationshipView }) {
         {relationship.otherHealth}
       </StatusBadge>
     </div>
+  )
+}
+
+/** The status keys HPE's own tools show as a state (reference-approaches §10.8). */
+const SIMPLIVITY_STATES = new Set(['state', 'ha_status'])
+
+/**
+ * What another source says about this entity (ADR-0027) — for SimpliVity, a
+ * strip right under the header (§11.6). A key the source did not answer is
+ * Unknown, never blank; a value kept while the source is silent says
+ * "carried forward" and when it was read.
+ */
+function Annotations({ annotations }: { annotations: AnnotationView[] }) {
+  const groups = new Map<string, AnnotationView[]>()
+  for (const a of annotations) {
+    const key = `${a.namespace} ${a.source}`
+    groups.set(key, [...(groups.get(key) ?? []), a])
+  }
+
+  return (
+    <>
+      {[...groups.entries()].map(([key, values]) => {
+        const first = values[0]!
+        return (
+          <section key={key} className="space-y-2">
+            <h2 className="text-sm font-medium">
+              {first.namespace === 'simplivity' ? (
+                <Link to="/simplivity" className="underline underline-offset-2">
+                  SimpliVity
+                </Link>
+              ) : (
+                first.namespace
+              )}
+            </h2>
+            <Card className="flex flex-wrap items-center gap-x-5 gap-y-2 p-3 text-sm">
+              {values.map((a) => (
+                <div key={a.key} className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">{a.key.replaceAll('_', ' ')}</span>
+                  {a.value === null || SIMPLIVITY_STATES.has(a.key) ? (
+                    <SimplivityValue value={a.value} />
+                  ) : (
+                    <span className="font-mono text-xs">{a.value}</span>
+                  )}
+                </div>
+              ))}
+              <Identifier>from {first.source}</Identifier>
+              {first.carriedForward && <CarriedForward readAtUtc={first.readAtUtc} />}
+            </Card>
+          </section>
+        )
+      })}
+    </>
   )
 }

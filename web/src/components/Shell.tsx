@@ -35,6 +35,8 @@ const GROUPS = [
       { to: '/entities?kind=EsxiHost', label: 'Hosts' },
       { to: '/entities?kind=VirtualMachine', label: 'Virtual machines' },
       { to: '/entities?kind=Datastore', label: 'Datastores' },
+      // A vendor deep view (ADR-0007 tier 3), under Investigate, not a top-level axis.
+      { to: '/simplivity', label: 'SimpliVity' },
     ],
   },
   {
