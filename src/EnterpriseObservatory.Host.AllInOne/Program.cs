@@ -219,7 +219,18 @@ builder.Services.AddSingleton<IEntityGraphStore, PostgresEntityGraphStore>();
 builder.Services.AddSingleton<IAlertStateStore, PostgresAlertStateStore>();
 builder.Services.AddSingleton<ICollectorHealthStore, PostgresCollectorHealthStore>();
 builder.Services.AddSingleton<ICoverageStore, PostgresCoverageStore>();
-builder.Services.AddSingleton<IObservationStore, PostgresObservationStore>();
+// Each fold slice logs its size and time: 65 of 229 sweeps on 23 September
+// 2026 hit the fold's 30 s timeout, and the lever is the slice, not the
+// timeout (it bounds how long an append waits on the watermark lock).
+builder.Services.AddSingleton<IObservationStore>(provider =>
+{
+    var logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger<CompactionWorker>();
+    return new PostgresObservationStore(provider.GetRequiredService<PostgresDatabase>())
+    {
+        SliceCommitted = slice => HostLog.FoldSliceCommitted(
+            logger, slice.Resolution.ToString(), slice.BucketsWritten, (int)slice.Duration.TotalMilliseconds),
+    };
+});
 builder.Services.AddSingleton<ICollectionGapStore, PostgresCollectionGapStore>();
 builder.Services.AddSingleton<IOperationalMetricsStore, OperationalMetricsStore>();
 builder.Services.AddSingleton<IEventStore, PostgresEventStore>();

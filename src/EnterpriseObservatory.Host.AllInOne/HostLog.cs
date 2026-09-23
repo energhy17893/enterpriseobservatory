@@ -116,6 +116,13 @@ internal static partial class HostLog
         ILogger logger, int written, int samplesDeleted, int bucketsDeleted);
 
     [LoggerMessage(
+        EventId = 1060,
+        Level = LogLevel.Information,
+        Message = "Fold slice to {Resolution}: {Buckets} buckets in {Milliseconds} ms.")]
+    public static partial void FoldSliceCommitted(
+        ILogger logger, string resolution, int buckets, int milliseconds);
+
+    [LoggerMessage(
         EventId = 1049,
         Level = LogLevel.Information,
         Message = "Retention delete took {Milliseconds} ms ({SamplesDeleted} samples, " +
