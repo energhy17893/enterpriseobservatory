@@ -51,6 +51,10 @@ değiştiremez; yalnızca kendi ad alanında açıklama ekler.**
 5. Aynı olguyu iki kaynak söylüyorsa (son yedek zamanı) kural **yenisini**
    alır ve hangi kaynağın olduğunu gözlemde yazar.
 
+6. Bir kaynak sahibi olmadığı varlık üzerinde **alarm üretebilir**; alarm onu üreten kaynağa aittir (kaynak kimliği alarmda), o kaynak susunca Unknown'a düşer (ADR-0026), varlığın sahibi susunca düşmez. Sahiplik varlığın yaşam döngüsü içindir, alarmın değil.
+
+Bellek notu (23 Eylül): varlık ayarları (Settings) veritabanında saklanmadığından açıklamalar da bellektedir; yeniden başlatmada `yok` olur, ilk okumada dolar — asla bayat `geçti` değil. Kalıcılık istenirse jsonb sütunu ayrı, eklemeli bir migrasyondur.
+
 Kapsam dışı: metrikler (seriler zaten varlık kimliğiyle kaynak-bağımsız);
 alarmlar (bir anlık görüntü varlığı getirmeden onun üzerinde alarm
 üretebilir — mevcut davranış, `AlertReconciler.cs:599`).
