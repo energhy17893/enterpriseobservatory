@@ -221,10 +221,13 @@ public sealed class MonitoringCycle(
         var relationships = cycle.Snapshots.SelectMany(s => s.Relationships).ToList();
 
         // Annotations fold onto entities other sources own (ADR-0027); they
-        // never open one.
-        var graph = _graphStore.Current.Merge(
-            entities, relationships, reporting, now, options.EntityRetention,
+        // never open one. Two connections to one federation are settled here,
+        // with an alert, rather than by Merge's throw stopping the cycle.
+        var (annotations, duplicateConnections) = AnnotationClaims.Settle(
             [.. cycle.Snapshots.SelectMany(s => s.Annotations)]);
+
+        var graph = _graphStore.Current.Merge(
+            entities, relationships, reporting, now, options.EntityRetention, annotations);
 
         graph = graph with { Relationships = [.. graph.Relationships, .. ResolveIdentity(graph, now)] };
 
@@ -289,6 +292,7 @@ public sealed class MonitoringCycle(
         [
             .. coverageFailures,
             .. cycle.Snapshots.SelectMany(s => s.Alerts),
+            .. duplicateConnections,
             .. cycle.CollectionAlerts,
             .. healthFailure,
             .. graphFailure,
@@ -315,6 +319,7 @@ public sealed class MonitoringCycle(
             .. cycle.Snapshots.Select(s => Wrote($"coverage:{s.SourceInstanceId}")),
             Wrote("collector-health:inventory"),
             Wrote("entity-graph"),
+            ProducerRun.Where(AnnotationClaims.Producer, f => f.HasSource(AnnotationClaims.Producer)),
             .. samples.Count == 0 ? Array.Empty<ProducerRun>() : [Wrote("observations:inventory")],
             RulesRan(RuleScope.Inventory),
         ];

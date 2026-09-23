@@ -169,6 +169,40 @@ public class AnnotatingSourceAlertTests
     }
 
     [Fact]
+    public async Task Two_connections_to_one_federation_still_store_vsphere_and_raise_one_alert()
+    {
+        // Before: EntityGraph.Merge threw on two writers of 'simplivity' on
+        // one VM, which stopped the whole inventory cycle, vSphere included.
+        var second = Simplivity(() => true);
+        var secondAsSvt2 = new FakeInventorySource("svt-2")
+        {
+            Behaviour = () => second.Behaviour!() with { SourceInstanceId = "svt-2", Alerts = [] },
+        };
+        var sources = new List<IInventorySource> { Vsphere(), Simplivity(() => true), secondAsSvt2 };
+        var cycle = Cycle();
+
+        for (var i = 0; i < 2; i++)
+        {
+            await cycle.RunInventoryAsync(sources, Options, CancellationToken.None);
+            _clock.Advance(TimeSpan.FromMinutes(5));
+        }
+
+        Assert.Equal("vc-1", _graphs.Current.Entities[Vm].SourceInstanceId);
+        Assert.Equal("DEGRADED", _graphs.Current.Entities[Vm].Settings["simplivity.ha_status"]);
+        var duplicate = Assert.Single(_alerts.All, a => a.Title.Contains("report the same", StringComparison.Ordinal));
+        Assert.Equal("Connections svt-1 and svt-2 report the same SimpliVity federation", duplicate.Title);
+        Assert.Equal(AlertLifecycleState.Open, duplicate.State);
+
+        // One of them removed: the duplicate is over.
+        sources.Remove(secondAsSvt2);
+        await cycle.RunInventoryAsync(sources, Options, CancellationToken.None);
+
+        Assert.Equal(
+            AlertLifecycleState.Resolved,
+            Assert.Single(_alerts.All, a => a.Title.Contains("report the same", StringComparison.Ordinal)).State);
+    }
+
+    [Fact]
     public async Task The_real_collector_s_degraded_vm_alert_opens_through_the_real_folding_port()
     {
         const string uuid = "5029a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b";
