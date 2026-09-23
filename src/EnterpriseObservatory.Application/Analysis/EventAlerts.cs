@@ -613,7 +613,8 @@ public static class EventAlerts
                 "data may be unavailable.",
         },
 
-        // GUID-96CB4A7F: HPE lists all three as green companions.
+        // GUID-96CB4A7F. Departure: HPE also lists commit.failed as a clear, but
+        // it raises svt.upgrade.commit.failed below and Index forbids one type both raising and clearing.
         new()
         {
             Id = "svt.upgrade.commit.needed",
@@ -625,10 +626,26 @@ public static class EventAlerts
             ClearedBy =
             [
                 "com.simplivity.event.control.upgrade.committed",
-                "com.simplivity.event.control.upgrade.commit.failed",
                 "com.simplivity.event.control.rollback.success",
             ],
             Meaning = "A SimpliVity software upgrade has not yet been committed.",
+        },
+
+        // GUID-148B197A (red, Cluster).
+        new()
+        {
+            Id = "svt.upgrade.commit.failed",
+            Title = "SimpliVity software commit failed",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Cluster,
+            RaisedBy = ["com.simplivity.event.control.upgrade.commit.failed"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.upgrade.committed",
+                "com.simplivity.event.control.rollback.success",
+            ],
+            Meaning = "Committing a SimpliVity software upgrade failed; retry it, then call HPE support.",
         },
 
         // GUID-23DDF176 (≥1 GB), GUID-66842142 (>2 GB). HPE files these on
