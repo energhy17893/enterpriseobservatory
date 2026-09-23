@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { ago, cn, type StatusName } from '@/lib/ui'
 import { basisLabel } from '@/lib/basis'
+import { orderCatalogues } from '@/lib/catalogues'
 import type {
   AuthStateView,
   CatalogueLast7DaysView,
@@ -37,26 +38,14 @@ const ORDER: FindingState[] = ['Failing', 'Accepted', 'Excepted', 'Passing', 'No
 /**
  * K3 §1.1: the catalogue a control comes from, as a first-class, always-
  * visible dimension -- distinct from `control.citation` ("basis:", what the
- * expectation rests on). Fixed order: SCG is the audit-standard catalogue,
- * eo-continuity is the product's own, listed second -- a display rule keyed
- * on ownership, never on the position `catalogues[]` happens to arrive in
- * (P1 removes that assumption on the server; the screen must not reintroduce
- * it). The label matches `ComplianceControlView.source` / `ComplianceSources`
- * on the server exactly.
+ * expectation rests on). One section and one chip per catalogue id, labelled
+ * with the catalogue's own name -- never a two-value constant derived from
+ * `owner`, which collapsed eo-simplivity and eo-bestpractice into
+ * "eo-continuity" and hid them from this screen entirely. Order: Broadcom
+ * first (the audit-standard catalogue), then every product catalogue in the
+ * order the API registered it -- `owner` is used only for ordering.
  */
-function sourceLabel(catalogue: CatalogueScorecardView): string {
-  return catalogue.owner === 'Broadcom' ? 'Broadcom SCG' : 'eo-continuity'
-}
-
-const SOURCE_ORDER = ['Broadcom SCG', 'eo-continuity'] as const
-
-/** `catalogues[]`, labelled and in the screen's fixed display order -- never the API's own order. */
-function sourcesOf(catalogues: CatalogueScorecardView[]): string[] {
-  const labels = new Set(catalogues.map(sourceLabel))
-  return SOURCE_ORDER.filter((label) => labels.has(label))
-}
-
-type SourceFilter = 'All' | (typeof SOURCE_ORDER)[number]
+type SourceFilter = 'All' | string
 
 /**
  * P1, Zabbix's four colours (reference-approaches.md §6): a catalogue's
@@ -105,7 +94,7 @@ function CatalogueScorecard({ catalogue }: { catalogue: CatalogueScorecardView }
     return (
       <Card className="space-y-1 p-4">
         <div className="flex items-center justify-between gap-2">
-          <div className="font-medium">{sourceLabel(catalogue)}</div>
+          <div className="font-medium">{catalogue.name}</div>
           <StatusBadge status="Unknown">Unavailable</StatusBadge>
         </div>
         <div className="text-xs text-muted-foreground">{catalogue.problem}</div>
@@ -120,9 +109,9 @@ function CatalogueScorecard({ catalogue }: { catalogue: CatalogueScorecardView }
     <Card className="space-y-2 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="font-medium">{sourceLabel(catalogue)}</div>
+          <div className="font-medium">{catalogue.name}</div>
           <div className="text-xs text-muted-foreground">
-            <Identifier>{catalogue.name}</Identifier> release <Identifier>{catalogue.release}</Identifier>
+            release <Identifier>{catalogue.release}</Identifier>
           </div>
         </div>
         <StatusBadge status={status}>{label}</StatusBadge>
@@ -241,7 +230,11 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
 
   const evaluated = data.controls.filter((c) => c.evaluated)
   const unevaluated = data.controls.filter((c) => !c.evaluated)
-  const sources = sourcesOf(data.catalogues)
+  // Filter chips and sections: one per loaded catalogue, in display order --
+  // never a fixed list, so eo-simplivity and eo-bestpractice show up as soon
+  // as the API loads them.
+  const orderedCatalogues = orderCatalogues(data.catalogues)
+  const sources = orderedCatalogues.map((c) => c.name)
 
   return (
     <div className="space-y-6">
@@ -259,7 +252,7 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
         (ADR-0026); a zero counter is not hidden.
       */}
       <div className="grid gap-3 sm:grid-cols-2">
-        {data.catalogues.map((catalogue) => (
+        {orderedCatalogues.map((catalogue) => (
           <CatalogueScorecard key={catalogue.id} catalogue={catalogue} />
         ))}
       </div>
@@ -311,16 +304,19 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
         ))}
       </div>
 
-      {sources.filter((source) => sourceFilter === 'All' || sourceFilter === source).map((source) => (
-        <SourceSection
-          key={source}
-          source={source}
-          controls={evaluated.filter((c) => c.source === source)}
-          open={open}
-          onToggle={(id) => setOpen(open === id ? null : id)}
-          canAct={canAct}
-        />
-      ))}
+      {orderedCatalogues
+        .filter((catalogue) => sourceFilter === 'All' || sourceFilter === catalogue.name)
+        .map((catalogue) => (
+          <SourceSection
+            key={catalogue.id}
+            source={catalogue.name}
+            isVendorGuide={catalogue.owner === 'Broadcom'}
+            controls={evaluated.filter((c) => c.catalogueName === catalogue.name)}
+            open={open}
+            onToggle={(id) => setOpen(open === id ? null : id)}
+            canAct={canAct}
+          />
+        ))}
 
       <Exceptions exceptions={data.exceptions} canAct={canAct} />
 
@@ -333,7 +329,7 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
         >
           {showUnevaluated ? '▾' : '▸'} Not evaluated — no data collected{' '}
           <span className="text-muted-foreground">
-            ({unevaluated.filter((c) => sourceFilter === 'All' || sourceFilter === c.source).length})
+            ({unevaluated.filter((c) => sourceFilter === 'All' || sourceFilter === c.catalogueName).length})
           </span>
         </button>
         <div className="text-xs text-muted-foreground">
@@ -343,12 +339,12 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
         {showUnevaluated && (
           <Card className="divide-y divide-border">
             {unevaluated
-              .filter((c) => sourceFilter === 'All' || sourceFilter === c.source)
+              .filter((c) => sourceFilter === 'All' || sourceFilter === c.catalogueName)
               .map((control) => (
                 <div key={control.controlId} className="p-3 text-sm">
                   <div className="flex flex-wrap items-center gap-2">
                     <Identifier>{control.controlId}</Identifier>
-                    <span className="text-xs text-muted-foreground">{control.source}</span>
+                    <span className="text-xs text-muted-foreground">{control.catalogueName}</span>
                     <span className="text-xs text-muted-foreground">{control.priority}</span>
                   </div>
                   <div className="mt-0.5">{control.title}</div>
@@ -370,12 +366,14 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
  */
 function SourceSection({
   source,
+  isVendorGuide,
   controls,
   open,
   onToggle,
   canAct,
 }: {
   source: string
+  isVendorGuide: boolean
   controls: ComplianceControlView[]
   open: string | null
   onToggle: (controlId: string) => void
@@ -407,6 +405,7 @@ function SourceSection({
               <ControlRow
                 key={control.controlId}
                 control={control}
+                isVendorGuide={isVendorGuide}
                 open={open === control.controlId}
                 onToggle={() => onToggle(control.controlId)}
                 canAct={canAct}
@@ -420,11 +419,13 @@ function SourceSection({
 
 function ControlRow({
   control,
+  isVendorGuide,
   open,
   onToggle,
   canAct,
 }: {
   control: ComplianceControlView
+  isVendorGuide: boolean
   open: boolean
   onToggle: () => void
   canAct: boolean
@@ -447,9 +448,9 @@ function ControlRow({
             <Identifier>{control.parameter}</Identifier> — baseline {control.baselineValue}
           </div>
           <div className="mt-0.5 text-xs text-muted-foreground">
-            {control.source}
+            {control.catalogueName}
             {' · basis: '}
-            {control.source === 'Broadcom SCG' && !control.citation
+            {isVendorGuide && !control.citation
               ? 'the guide itself'
               : basisLabel(control.citation)}
           </div>

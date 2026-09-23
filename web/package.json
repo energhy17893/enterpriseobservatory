@@ -10,7 +10,8 @@
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
     "tokens": "node design/generate-css.mjs > src/styles/tokens.css",
-    "tokens:check": "node design/validate-contrast.mjs"
+    "tokens:check": "node design/validate-contrast.mjs",
+    "catalogues:check": "node design/catalogues.check.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
