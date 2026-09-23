@@ -2,9 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
-import { api } from '@/api/client'
+import { ApiError, api } from '@/api/client'
 import { Shell } from '@/components/Shell'
 import { SignIn } from '@/routes/SignIn'
+import { Setup } from '@/routes/Setup'
 import { Overview } from '@/routes/Overview'
 import { Alerts } from '@/routes/Alerts'
 import { Events } from '@/routes/Events'
@@ -46,7 +47,7 @@ const queryClient = new QueryClient({
  * is in front of the whole application rather than around the buttons.
  */
 function Application() {
-  const { data, isPending, isError } = useQuery({
+  const { data, isPending, isError, error } = useQuery({
     queryKey: ['auth'],
     queryFn: api.authState,
     retry: false,
@@ -54,6 +55,13 @@ function Application() {
 
   if (isPending) {
     return <div className="p-6 text-sm text-muted-foreground">Connecting…</div>
+  }
+
+  // 503 is what every endpoint answers while the installation has no database
+  // (first-run setup, G-DB). The page that fixes that is the only one that
+  // makes sense to show, whatever address was opened.
+  if (isError && error instanceof ApiError && error.status === 503) {
+    return <Setup />
   }
 
   if (isError || data === undefined) {

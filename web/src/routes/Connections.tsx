@@ -3,7 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { ago, cn } from '@/lib/ui'
-import type { AuthStateView, ConnectionCommand, ConnectionView, ProbeView } from '@/api/types'
+import type {
+  AuthStateView,
+  ConnectionCommand,
+  ConnectionView,
+  DatabaseActionView,
+  ProbeView,
+} from '@/api/types'
 
 /**
  * The kinds this screen knows about, in the order they are offered.
@@ -122,6 +128,8 @@ export function Connections({ identity }: { identity: AuthStateView }) {
         </button>
       </div>
 
+      <DatabaseCard />
+
       {editing !== null && (
         <Editor
           command={editing}
@@ -161,6 +169,119 @@ export function Connections({ identity }: { identity: AuthStateView }) {
         ))
       )}
     </div>
+  )
+}
+
+/**
+ * The product's own database (G-DB): read-only, and never its password.
+ *
+ * Host, port, database and role, and where they came from — the protected file
+ * first-run setup wrote, or configuration. Test asks through the service's own
+ * pool; rotate has the product's role change its own password, and is offered
+ * only when the product holds that password itself. A password from user
+ * secrets or the environment lives where the product cannot write.
+ */
+function DatabaseCard() {
+  const queryClient = useQueryClient()
+  const [outcome, setOutcome] = useState<DatabaseActionView | null>(null)
+
+  const { data, isPending, isError, error } = useQuery({
+    queryKey: ['database'],
+    queryFn: api.database,
+  })
+
+  const test = useMutation({
+    mutationFn: api.testDatabase,
+    onSuccess: setOutcome,
+    onError: (cause: unknown) =>
+      setOutcome({ succeeded: false, detail: cause instanceof Error ? cause.message : String(cause) }),
+  })
+
+  const rotate = useMutation({
+    mutationFn: api.rotateDatabasePassword,
+    onSuccess: (result) => {
+      setOutcome(result)
+      void queryClient.invalidateQueries({ queryKey: ['database'] })
+    },
+    onError: (cause: unknown) =>
+      setOutcome({ succeeded: false, detail: cause instanceof Error ? cause.message : String(cause) }),
+  })
+
+  if (isError) return <LoadFailure what="The database connection" error={error} />
+  if (isPending) return <Loading what="the database connection" />
+
+  const fromFile = data.source === 'ProtectedFile'
+
+  return (
+    <Card className="p-3">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">Database</span>
+            <span className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
+              {fromFile ? 'set up in the product' : 'from configuration'}
+            </span>
+            {data.requireTls && (
+              <span className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
+                TLS required
+              </span>
+            )}
+          </div>
+
+          <div className="mt-1 text-sm text-muted-foreground">
+            {data.username} at {data.host}:{data.port}/{data.database}
+          </div>
+
+          <Identifier>
+            schema {data.schema}
+            {data.passwordSetUtc !== null && ` · password set ${ago(data.passwordSetUtc)}`}
+          </Identifier>
+
+          {outcome !== null && (
+            <div
+              className={cn(
+                'mt-2 rounded-md border px-3 py-2 text-sm',
+                outcome.succeeded ? 'border-healthy text-healthy-on' : 'border-critical text-critical-on',
+              )}
+            >
+              {outcome.detail}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setOutcome(null)
+              test.mutate()
+            }}
+            disabled={test.isPending}
+            className="rounded-md border border-border px-2 py-1 text-sm"
+          >
+            {test.isPending ? 'Testing…' : 'Test connection'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Give the product a new database password? The old one stops working at once; nothing else needs to change.',
+                )
+              ) {
+                setOutcome(null)
+                rotate.mutate()
+              }
+            }}
+            disabled={!data.canRotate || rotate.isPending}
+            title={data.rotateRefusal ?? undefined}
+            className={cn('rounded-md border border-border px-2 py-1 text-sm', !data.canRotate && 'opacity-40')}
+          >
+            {rotate.isPending ? 'Rotating…' : 'Rotate password'}
+          </button>
+        </div>
+      </div>
+    </Card>
   )
 }
 

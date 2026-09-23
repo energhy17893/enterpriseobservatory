@@ -87,6 +87,21 @@ jobs:
           docker logs eo-postgres
           exit 1
 
+      # The one-time administrator for the first-run setup tests (G-DB): a role
+      # with CREATEDB and CREATEROLE and deliberately NOT superuser, because
+      # that is what an operator is told setup needs, and it is the case
+      # PostgreSQL 16+'s SET rule applies to. `observatory` is this
+      # container's superuser and would pass straight through that rule.
+      # Generated and masked like the password above; gone with the runner.
+      - name: Create the setup administrator
+        run: |
+          admin_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$admin_password"
+          echo "EO_TEST_PG_ADMIN_PASSWORD=$admin_password" >> "$GITHUB_ENV"
+          docker exec eo-postgres psql --username=observatory --dbname=observatory \
+            --set ON_ERROR_STOP=1 \
+            --command "CREATE ROLE eo_test_admin LOGIN CREATEDB CREATEROLE PASSWORD '$admin_password';"
+
       - name: Restore
         run: dotnet restore tests/EnterpriseObservatory.Persistence.Postgres.Tests
 
@@ -99,6 +114,7 @@ jobs:
           EO_TEST_PG_PORT: '5432'
           EO_TEST_PG_DATABASE: observatory
           EO_TEST_PG_USER: observatory
+          EO_TEST_PG_ADMIN_USER: eo_test_admin
         run: |
           dotnet test tests/EnterpriseObservatory.Persistence.Postgres.Tests \
             --no-build -c Release --verbosity normal \

@@ -202,6 +202,53 @@ değiştirebilir (mevcut parolayı sorarak); geri kalanı yöneticiye ait. Ürü
 yöneticinin silinmesini veya rolünün düşürülmesini reddeder — kimsenin
 yönetemediği bir kurulum ancak veritabanı elle düzenlenerek onarılır.
 
+### Veritabanı — ilk kurulum
+
+PostgreSQL gerekir ([ADR-0016](docs/adr/0016-external-infrastructure-dependencies.md),
+"Kurulum artık iki adımdır"). İkinci adım — ürünü veritabanına bağlamak — artık
+ürünün içindedir: hiçbir veritabanı yapılandırılmamış bir kurulumda servis
+**kurulum modunda** açılır ve yalnızca bu makineden erişilebilen tek bir sayfa
+sunar.
+
+1. Servisi başlatın. Log şunu söyler: *No database is configured: the service is
+   in setup mode, on loopback only.*
+2. **Sunucunun kendisinde** (konsolda ya da RDP ile) bir tarayıcıda
+   `http://localhost:<port>/setup` açın. Kurulum modu yalnızca 127.0.0.1 ve ::1
+   dinler; başka bir makineden bağlanılamaz. Diğer her adres 503 "setup
+   required" döner.
+3. İki yoldan birini seçin:
+   - **Veritabanını ve rolü oluştur.** Bir kerelik bir yönetici hesabı girilir;
+     ürün kendi rolünü (süper kullanıcı değil, parolası üretilir ve kimseye
+     gösterilmez) ve o rolün sahibi olduğu veritabanını oluşturur. Yönetici
+     parolası o tek istekte kullanılır; hiçbir yere yazılmaz ve loglanmaz.
+
+     > The setup admin needs CREATEDB and CREATEROLE, not superuser; on
+     > PostgreSQL 16+ the product role owns the database, and setup achieves
+     > that by taking SET on it temporarily.
+
+   - **Var olan bir veritabanını kullan.** DBA'nızın oluşturduğu rol ve
+     parolası girilir. Rol `SUPERUSER`, `CREATEROLE` ya da `CREATEDB` taşıyorsa,
+     ya da şemasında tablo oluşturamıyorsa (PostgreSQL 15+ için rol veritabanının
+     sahibi olmalı ya da `GRANT CREATE ON SCHEMA public` almış olmalı), kurulum
+     DBA'ya iletilecek cümleyle reddeder.
+4. Şema uygulanır, bağlantı anahtar halkasının yanına
+   (`%ProgramData%\EnterpriseObservatory\keys\database-connection.json`, parola
+   DPAPI ile şifreli) yazılır ve yeni bir bağlantıyla doğrulanır. Servis aynı
+   süreçte normal moda geçer; sayfa bir dakika içinde yanıt almazsa servisi
+   yeniden başlatın.
+5. İlk yöneticiyi logdaki tek kullanımlık kurulum jetonuyla oluşturun (yukarıda).
+
+Sonrasında **Yapılandırma → Connections** ekranındaki Veritabanı kartı bağlantıyı
+gösterir (parolayı asla), test eder ve parolayı döndürür — yalnızca
+yöneticiler için (ADR-0010 eki).
+
+Geliştirme ortamı ve yapılandırmayla kurulmuş sunucular **değişmeden** çalışır:
+`Database:*` ve user-secrets'taki parola, dosya yoksa kullanılır.
+
+```bash
+dotnet user-secrets --project src/EnterpriseObservatory.Host.AllInOne set "Database:Password" '...'
+```
+
 ### vCenter bağlantısı
 
 İki yol var ve ikisi de desteklenir.

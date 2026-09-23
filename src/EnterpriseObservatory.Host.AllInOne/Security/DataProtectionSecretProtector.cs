@@ -34,12 +34,25 @@ public sealed class DataProtectionSecretProtector : ISecretProtector
     /// <summary>What these keys are for. Changing it orphans every stored secret.</summary>
     public const string Purpose = "EnterpriseObservatory.SourceConnection.Password.v1";
 
+    /// <summary>
+    /// The purpose for the product's own database password, in the protected
+    /// file beside the key ring (G-DB). Its own purpose for the reason above:
+    /// a value protected for one use cannot be replayed through the other.
+    /// </summary>
+    public const string DatabasePasswordPurpose = "EnterpriseObservatory.Database.Password.v1";
+
     private readonly IDataProtector _protector;
 
     public DataProtectionSecretProtector(IDataProtectionProvider provider)
+        : this(provider, Purpose)
+    {
+    }
+
+    public DataProtectionSecretProtector(IDataProtectionProvider provider, string purpose)
     {
         ArgumentNullException.ThrowIfNull(provider);
-        _protector = provider.CreateProtector(Purpose);
+        ArgumentException.ThrowIfNullOrWhiteSpace(purpose);
+        _protector = provider.CreateProtector(purpose);
     }
 
     public string Protect(Secret secret) =>
