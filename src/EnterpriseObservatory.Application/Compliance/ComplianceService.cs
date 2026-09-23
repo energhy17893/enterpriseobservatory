@@ -278,10 +278,14 @@ public sealed class ComplianceService
     public ComplianceTransitionsPage TransitionsSince(
         DateTimeOffset sinceUtc, DateTimeOffset toUtc, string? controlId = null, EntityId? entity = null)
     {
-        if (Catalogues.Count == 1 || controlId is not null)
+        if (controlId is not null)
         {
-            return _store.TransitionsSince(
-                sinceUtc, toUtc, ReleaseOf(controlId) ?? Catalogues.Single().Release, controlId, entity);
+            // A control no loaded catalogue knows has no history. This used to
+            // fall back to "the only catalogue", which throws once more than
+            // one is loaded -- a mistyped control id became a 500.
+            return ReleaseOf(controlId) is { } release
+                ? _store.TransitionsSince(sinceUtc, toUtc, release, controlId, entity)
+                : new ComplianceTransitionsPage { Transitions = [], Truncated = false };
         }
 
         var pages = Catalogues
