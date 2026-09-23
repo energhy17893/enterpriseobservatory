@@ -3,11 +3,10 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
-import { AlertActions } from '@/components/AlertActions'
+import { AlertRow } from '@/components/AlertRow'
 import { BulkBar } from '@/components/BulkBar'
 import { ago, cn, severityStatus } from '@/lib/ui'
 import type {
-  AlertView,
   EventFeedView,
   EventObjectView,
   EventView,
@@ -120,7 +119,7 @@ export function Events() {
             <section className="space-y-2">
               <h2 className="text-sm font-medium">On their own</h2>
               {data.ungrouped.map((alert) => (
-                <Row
+                <AlertRow
                   key={alert.fingerprint}
                   alert={alert}
                   selected={selected.has(alert.fingerprint)}
@@ -199,7 +198,7 @@ function Incident({
       {open && (
         <div className="space-y-2 border-t border-border p-3">
           {incident.alerts.map((alert) => (
-            <Row
+            <AlertRow
               key={alert.fingerprint}
               alert={alert}
               selected={selected.has(alert.fingerprint)}
@@ -252,7 +251,7 @@ function Suggestion({
       {open && (
         <div className="mt-2 space-y-2">
           {suggestion.alerts.map((alert) => (
-            <Row
+            <AlertRow
               key={alert.fingerprint}
               alert={alert}
               selected={selected.has(alert.fingerprint)}
@@ -261,50 +260,6 @@ function Suggestion({
           ))}
         </div>
       )}
-    </Card>
-  )
-}
-
-function Row({
-  alert,
-  selected,
-  onToggle,
-}: {
-  alert: AlertView
-  selected: boolean
-  onToggle: () => void
-}) {
-  return (
-    <Card className={cn('p-3', selected && 'border-primary')}>
-      <div className="flex flex-wrap items-start gap-3">
-        <input type="checkbox" checked={selected} onChange={onToggle} className="mt-1" />
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={severityStatus(alert.severity)}>{alert.severity}</StatusBadge>
-            <span className="font-medium">{alert.title}</span>
-            {alert.state !== 'Open' && (
-              <span className="text-xs text-muted-foreground">{alert.state}</span>
-            )}
-          </div>
-          <div className="mt-1 text-sm text-muted-foreground">{alert.description}</div>
-          {alert.entityId !== null && (
-            <Link
-              to={`/entities/${encodeURIComponent(alert.entityId)}`}
-              className="text-sm underline underline-offset-2"
-            >
-              {alert.entityName ?? alert.entityId}
-            </Link>
-          )}
-          <Identifier>
-            {' '}
-            {alert.source} · {alert.category}
-          </Identifier>
-          <AlertActions alert={alert} />
-        </div>
-        <div className="shrink-0 text-right text-xs text-muted-foreground">
-          seen {ago(alert.lastSeenUtc)}
-        </div>
-      </div>
     </Card>
   )
 }

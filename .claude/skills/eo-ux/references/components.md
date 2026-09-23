@@ -18,6 +18,7 @@ one or open a proposal to promote a route-local function into
 | `Empty` | `web/src/components/Primitives.tsx:85` | Plain "nothing here" row for a genuinely empty result set. |
 | `Loading` | `web/src/components/Primitives.tsx:91` | Loading placeholder card. |
 | `AlertActions` | `web/src/components/AlertActions.tsx:20` | Acknowledge / silence / resolve controls for one `AlertView`. Every action is attributed (ADR-0013). |
+| `AlertRow` | `web/src/components/AlertRow.tsx` | The one alert row (ADR-0007 §5) — badge/state/`Notification suppressed`/`Derived`, entity link, `AlertActions`, selection checkbox with an accessible name (`Select alert: <title>`). Used by both `Alerts.tsx` (flat inbox) and `Events.tsx` (grouped/ungrouped/suggestions). Props: `alert: AlertView`, `selected: boolean`, `onToggle: () => void`. |
 | `BulkBar` | `web/src/components/BulkBar.tsx:21` | Appears when rows are multi-selected; shows the count before any destructive action (README principle 4 — many rows, one decision, still N audit entries). |
 | `Shell` | `web/src/components/Shell.tsx:69` | App frame / nav shell, takes `identity: AuthStateView`. |
 | `SeriesChart` | `web/src/components/SeriesChart.tsx` | Time-series chart component (binary-detected by grep; not text-inspected in this pass — read it directly if you need its props). |
@@ -58,5 +59,5 @@ route file and duplicated where similar UI is needed elsewhere:
 - `FindingRow` — `web/src/routes/Compliance.tsx:544`
 - `ControlRow` (different one) / `FindingRow` / `RemovedExceptionRow` / `HistoryRow` — `web/src/routes/reports/ComplianceReport.tsx:326,340,388,401`
 - `ClusterRow`, `ControlSummaryRow` — `web/src/routes/reports/ContinuityReport.tsx:256,299`
-- `Row` — `web/src/routes/Accounts.tsx:124`, `web/src/routes/Connections.tsx:313`, `web/src/routes/Events.tsx:268`, `web/src/routes/ScheduledReports.tsx:107` (four unrelated `Row` functions, same name, different shape — don't assume they're interchangeable)
+- `Row` — `web/src/routes/Accounts.tsx:124`, `web/src/routes/Connections.tsx:313`, `web/src/routes/ScheduledReports.tsx:107` (three unrelated `Row` functions, same name, different shape — don't assume they're interchangeable; `Events.tsx`'s former `Row` is now the shared `AlertRow` component, see above)
 - `ReportRow` — `web/src/routes/reports/AlertsReport.tsx:245`, `web/src/routes/reports/CapacityReport.tsx:145`

@@ -2,10 +2,10 @@ import { useState } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
-import { AlertActions } from '@/components/AlertActions'
+import { Empty, LoadFailure, Loading } from '@/components/Primitives'
+import { AlertRow } from '@/components/AlertRow'
 import { BulkBar } from '@/components/BulkBar'
-import { ago, cn, severityStatus } from '@/lib/ui'
+import { cn } from '@/lib/ui'
 
 // eo-ux §7: default page size is "to be measured" against the Kibar-sized
 // estate (a render-time benchmark), not guessed. 50 matches the API's own
@@ -189,69 +189,11 @@ export function Alerts() {
         <ul className="space-y-2">
           {data.items.map((alert) => (
             <li key={alert.fingerprint}>
-              <Card className={cn('p-3', selected.has(alert.fingerprint) && 'border-primary')}>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(alert.fingerprint)}
-                    onChange={() => toggle(alert.fingerprint)}
-                    className="mt-1"
-                    aria-label={`Select ${alert.title}`}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <StatusBadge status={severityStatus(alert.severity)}>
-                        {alert.severity}
-                      </StatusBadge>
-                      <span className="font-medium">{alert.title}</span>
-                      {alert.state !== 'Open' && (
-                        <span className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
-                          {alert.state}
-                        </span>
-                      )}
-                      {/*
-                        Suppression is shown, never hidden. Maintenance stops
-                        the paging, not the reporting — an operator working
-                        inside the window still has to see what they are doing.
-                      */}
-                      {alert.suppressedByWindowId !== null && (
-                        <span className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
-                          Notification suppressed
-                        </span>
-                      )}
-                      {/*
-                        Said out loud, because the product inferred it rather
-                        than observing it. Principle 1: never present a guess as
-                        a measurement.
-                      */}
-                      {alert.isDerived && (
-                        <span className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
-                          Derived
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-1 text-sm text-muted-foreground">{alert.description}</div>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-3">
-                      {alert.entityId !== null && (
-                        <Link
-                          to={`/entities/${encodeURIComponent(alert.entityId)}`}
-                          className="text-sm underline underline-offset-2"
-                        >
-                          {alert.entityName ?? alert.entityId}
-                        </Link>
-                      )}
-                      <Identifier>
-                        {alert.source} · {alert.category}
-                      </Identifier>
-                    </div>
-                    <AlertActions alert={alert} />
-                  </div>
-                  <div className="shrink-0 text-right text-xs text-muted-foreground">
-                    <div>seen {ago(alert.lastSeenUtc)}</div>
-                    <div>since {ago(alert.firstSeenUtc)}</div>
-                  </div>
-                </div>
-              </Card>
+              <AlertRow
+                alert={alert}
+                selected={selected.has(alert.fingerprint)}
+                onToggle={() => toggle(alert.fingerprint)}
+              />
             </li>
           ))}
         </ul>
