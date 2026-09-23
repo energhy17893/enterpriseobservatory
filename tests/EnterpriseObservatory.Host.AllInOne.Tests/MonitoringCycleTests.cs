@@ -77,6 +77,43 @@ public class MonitoringCycleTests : IDisposable
     // --- scoping ----------------------------------------------------------
 
     [Fact]
+    public async Task A_source_scoped_alert_on_an_already_disabled_source_is_unknown_on_the_first_cycle()
+    {
+        // The gap the planner measured live after #164 (CLS 8 / SVT 25 stuck
+        // Open since 08:08, no alert_history transition): a direct producer's
+        // alert -- a hardware fault the inventory read reported, with a
+        // Source but no Entity -- was never covered by the disabled clamp,
+        // which only ever looked at Entity ownership. It stayed "not
+        // reported" and open no matter how long the connection had been
+        // disabled, including on the very first cycle a process ever runs
+        // for it: this reconciliation is stateless per call, so "already
+        // disabled at startup" is not a special case once the source-scoped
+        // check exists -- it is simply this same check, every cycle.
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow, alerts: [HardwareFault("vc-1")]),
+        };
+
+        await Cycle().RunInventoryAsync([inventory], Options, CancellationToken.None);
+        var raised = Assert.Single(_alerts.All);
+        Assert.Equal(AlertLifecycleState.Open, raised.State);
+
+        // A brand new process: a fresh MonitoringCycle over the same
+        // (persisted) alert and graph state, whose very first call for this
+        // connection already finds it disabled -- nothing ever ran it while
+        // this process has been alive.
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        var restarted = Cycle();
+
+        await restarted.RunInventoryAsync(
+            [], Options, CancellationToken.None, disabledInstanceIds: ["vc-1"]);
+
+        var after = Assert.Single(_alerts.All);
+        Assert.Equal(AlertLifecycleState.Open, after.State);
+        Assert.Equal(UnknownReason.SourceDisabled, after.StaleReason);
+    }
+
+    [Fact]
     public async Task The_metric_cycle_does_not_resolve_the_inventory_cycles_alerts()
     {
         // Reconciliation treats what it is given as the whole truth and closes

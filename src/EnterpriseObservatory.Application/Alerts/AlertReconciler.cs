@@ -70,6 +70,23 @@ public sealed record EvidenceSources
         DisabledConnections.Contains(owner, StringComparer.Ordinal)
             ? owner
             : null;
+
+    /// <summary>
+    /// <paramref name="source"/> itself, if it names a disabled connection.
+    /// </summary>
+    /// <remarks>
+    /// A direct producer's alert (a hardware fault the inventory read reported,
+    /// F1's event alerts) carries its source on <see cref="AlertInstance.Source"/>
+    /// and no <see cref="AlertInstance.Entity"/> at all — <see cref="DisabledOwnerOf(EntityId?)"/>
+    /// only ever sees null for one of these and never fires. Missing this was
+    /// N1's own gap (#164 caught the entity-owned and Collector-unreachable
+    /// cases; a plain source-scoped alert kept going "not reported", stale-open,
+    /// whether it had been disabled for a day or ten seconds).
+    /// </remarks>
+    internal string? DisabledOwnerOfSource(string source) =>
+        source.Length > 0 && DisabledConnections.Contains(source, StringComparer.Ordinal)
+            ? source
+            : null;
 }
 
 /// <summary>
@@ -563,9 +580,18 @@ public static class AlertReconciler
             // the deliberate decision, not staleness: unknown now, rather than
             // "not reported" left open until the age clamp eventually catches
             // up (N1, ADR-0026 — the widened case, "Host forwards no logs" on
-            // SVT_Vcenter staying stale-open).
-            if (instance.Entity is { } ownedEntity &&
-                request.Sources.DisabledOwnerOf(ownedEntity) is { } disabledOwner)
+            // SVT_Vcenter staying stale-open). Checked by entity first, then
+            // by the alert's own Source: a direct producer's alert (a
+            // hardware fault the inventory read reported) carries no Entity
+            // at all, and is exactly what #164 missed — its "not reported"
+            // never turns into "disabled" whether disabling happened mid-run
+            // or the connection was already off when the process started,
+            // because this same check runs fresh every cycle regardless.
+            var disabledOwner =
+                (instance.Entity is { } ownedEntity ? request.Sources.DisabledOwnerOf(ownedEntity) : null)
+                ?? request.Sources.DisabledOwnerOfSource(instance.Source);
+
+            if (disabledOwner is not null)
             {
                 decisions[fingerprint] = new Blind(new AlertUnknown
                 {
