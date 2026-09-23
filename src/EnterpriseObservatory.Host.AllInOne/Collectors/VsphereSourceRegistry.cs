@@ -568,6 +568,9 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// <see cref="GraphFoldingDirectory"/>, never the collector itself
     /// (ADR-0027 §4).
     /// </remarks>
+    internal const string SimplivityHasNoMetrics =
+        "SimpliVity is read for inventory only; this build has no observation collector for it";
+
     private Built BuildSimplivity(SourceConnection connection, Shape shape)
     {
         var options = new SimplivityConnectionOptions
@@ -586,7 +589,10 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             shape,
             () => CloseSimplivityAsync(connection.InstanceId, channel),
             new SimplivityInventorySource(connection.InstanceId, channel, new GraphFoldingDirectory(_graph), _clock),
-            Observation: null,
+            // A stand-in, not nothing: without it the Observation health row
+            // kept the last "no collector for kind" message forever. It stays
+            // NotConfigured, so /health keeps it NotPolled, and now says why.
+            Observation: new UnusableSource(connection.InstanceId, SimplivityHasNoMetrics),
             Events: null);
     }
 

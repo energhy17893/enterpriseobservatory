@@ -281,8 +281,26 @@ public class VsphereSourceRegistryTests : IDisposable
         Assert.Equal(
             ["svt-1", "vc-1"],
             Registry().Inventory.Select(s => s.InstanceId).OrderBy(id => id, StringComparer.Ordinal));
-        Assert.Equal(["vc-1"], Registry().Observations.Select(s => s.InstanceId));
         Assert.Equal(["vc-1"], Registry().Events.Select(s => s.InstanceId));
+        Assert.Empty(_logged);
+    }
+
+    [Fact]
+    public async Task A_simplivity_observation_row_says_inventory_only_and_stays_not_polled()
+    {
+        // Live, the KBSVT Observation row kept "this build has no collector for
+        // kind 'simplivity'" from before S3: nothing refreshed it any more.
+        _connections.Add(Connection("svt-1") with { Kind = ConnectionKinds.Simplivity });
+
+        var standIn = Assert.Single(Registry().Observations);
+        var result = await new ObservationCollectionPipeline(_clock).RunAsync(
+            [standIn], [], CollectionPolicy.Default, CancellationToken.None);
+
+        var health = Assert.Single(result.Health);
+        Assert.Equal(CollectionFailureKind.NotConfigured, health.LastFailureKind);
+        Assert.Contains("SimpliVity is read for inventory only", health.LastFailureDetail, StringComparison.Ordinal);
+        Assert.DoesNotContain("no collector for kind", health.LastFailureDetail, StringComparison.Ordinal);
+        Assert.Same(standIn, Assert.Single(Registry().Observations));
         Assert.Empty(_logged);
     }
 
