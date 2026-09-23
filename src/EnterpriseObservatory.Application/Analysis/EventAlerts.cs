@@ -117,6 +117,10 @@ public sealed record EventAlertPolicy
 /// nothing here has yet been seen arriving from a live vCenter.
 /// </para>
 /// <para>
+/// The <c>com.simplivity.event.*</c> rows are from HPE's OmniStack 5.2.0
+/// Events Reference (sd00005179en_us); each row cites its page.
+/// </para>
+/// <para>
 /// <strong>How an alert opens and closes.</strong> An event is a moment, and
 /// an alert is a state, so something has to say how long the moment lasts.
 /// Here it is: for each condition, subject and instance, the newest report is
@@ -175,9 +179,24 @@ public static class EventAlerts
     /// </summary>
     private const string NfsMount = @"server \S+ mount point \S+";
 
+    private const string SimpliVity = "SimpliVity";
+
+    /// <summary>
+    /// The VM directory and datastore, as vm.ha.fail and vm.ha.restore both
+    /// write them: <c>Storage HA protection lost|restored for X on datastore Y</c>.
+    /// </summary>
+    private const string SvtVmHa = @"(?<=Storage HA protection (?:lost|restored) for )\S.*\S";
+
+    /// <summary>
+    /// The node, as node.state.faulty and its clear both write it:
+    /// <c>SimpliVity OmniStack system {node} …</c>.
+    /// </summary>
+    private const string SvtNode = @"(?<=SimpliVity OmniStack system )\S+";
+
     /// <summary>The table the default policy uses.</summary>
     /// <remarks>
-    /// Severities are this product's choice. Critical where virtual machines
+    /// Severities are this product's choice, except the SimpliVity rows,
+    /// which take HPE's alarm colour. Critical where virtual machines
     /// are down or about to be — a failed host, a lost device, an uplink set
     /// with no link left; warning where protection is reduced but nothing has
     /// yet stopped. Every id is cited in the class remarks.
@@ -389,6 +408,273 @@ public static class EventAlerts
             RaisedBy = ["esx.problem.net.dvport.connectivity.lost"],
             ClearedBy = ["esx.clear.net.dvport.connectivity.restored"],
             Meaning = "Distributed switch ports on a host have no working uplink left.",
+        },
+
+        // --- HPE SimpliVity ----------------------------------------------------
+        //
+        // Every id, pairing and severity below is HPE's: OmniStack 5.2.0 Events
+        // Reference (sd00005179en_us), each alarm's "Trigger event" and green
+        // "Companion events"; yellow is Warning, red is Critical. The GUID on
+        // each row is the alarm page (or, where HPE defines no alarm, the event
+        // page). Conditions that do not clear by themselves (DPM, MVA cluster
+        // HA, BIOS, arbiter placement, mixed version) are findings (ADR-0024),
+        // not rows here.
+        //
+        // HPE lets a warning and an error of one family clear each other
+        // (capacity, swap). This table cannot: a type id that both raises and
+        // clears throws in Index. So each level closes only on HPE's own
+        // within-tolerance/clear event or its time to live, and an escalation
+        // shows both the warning and the critical alert until then.
+
+        // GUID-5D995D44 (arbiter.com.lost, red, Cluster) replaces the
+        // deprecated GUID-7323B7D5 (arbiter.lost, yellow); the old pair stays
+        // as a twin for hosts not yet upgraded. No instance: com.ok names no
+        // address, so it could not close an address-keyed alert.
+        new()
+        {
+            Id = "svt.arbiter.lost",
+            Title = "SimpliVity Arbiter communication lost",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Cluster,
+            RaisedBy = ["com.simplivity.event.arbiter.com.lost", "com.simplivity.event.arbiter.lost"],
+            ClearedBy = ["com.simplivity.event.arbiter.com.ok", "com.simplivity.event.arbiter.connected"],
+            Meaning =
+                "HPE OmniStack lost contact with the SimpliVity Arbiter, which breaks ties " +
+                "between the copies of a VM's data when a node fails.",
+        },
+
+        // GUID-54FC3B54. HPE files the alarm on the HostSystem; the VM is in
+        // the message, so the instance keeps two VMs on one host apart.
+        new()
+        {
+            Id = "svt.vm.ha.lost",
+            Title = "SimpliVity Storage HA lost sync",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.VirtualMachine,
+            RaisedBy = ["com.simplivity.event.vm.ha.fail"],
+            ClearedBy = ["com.simplivity.event.vm.ha.restore"],
+            Instance = SvtVmHa,
+            Meaning =
+                "A VM's data has lost its second copy (Storage HA); another node failure " +
+                "can make it unavailable.",
+        },
+
+        // GUID-BAC0CFF2.
+        new()
+        {
+            Id = "svt.node.faulty",
+            Title = "SimpliVity OmniStack unreachable",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Cluster,
+            RaisedBy = ["com.simplivity.event.control.node.state.faulty"],
+            ClearedBy = ["com.simplivity.event.control.node.state.faulty.clear"],
+            Instance = SvtNode,
+            Meaning =
+                "An OmniStack node in the cluster is unreachable; VMs may stop if another " +
+                "node becomes unreachable too.",
+        },
+
+        // GUID-64F48313. HPE defines no clearing event.
+        new()
+        {
+            Id = "svt.storage.critical",
+            Title = "SimpliVity critical storage failure",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.critical.storage.failure"],
+            Meaning =
+                "Storage on a SimpliVity node is unavailable after a critical hardware " +
+                "failure (missing drives, firmware errors).",
+        },
+
+        // GUID-4B75F40B, GUID-8872E5CD: ≤20% and ≤10% physical space free.
+        new()
+        {
+            Id = "svt.capacity.node.warning",
+            Title = "SimpliVity node physical capacity 20% or less",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.control.phys.capacity.node.warning"],
+            ClearedBy = ["com.simplivity.event.control.phys.capacity.node.within.tolerance"],
+            Meaning = "A SimpliVity node has 20% or less of its physical capacity free.",
+        },
+        new()
+        {
+            Id = "svt.capacity.node.error",
+            Title = "SimpliVity node physical capacity 10% or less",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.control.phys.capacity.node.error"],
+            ClearedBy = ["com.simplivity.event.control.phys.capacity.node.within.tolerance"],
+            Meaning = "A SimpliVity node has 10% or less of its physical capacity free.",
+        },
+
+        // GUID-91903902, GUID-56ACA861.
+        new()
+        {
+            Id = "svt.capacity.cluster.warning",
+            Title = "SimpliVity cluster physical capacity 20% or less",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.Cluster,
+            RaisedBy = ["com.simplivity.event.control.phys.capacity.fd.warning"],
+            ClearedBy = ["com.simplivity.event.control.phys.capacity.fd.within.tolerance"],
+            Meaning = "A SimpliVity cluster has 20% or less of its physical capacity free.",
+        },
+        new()
+        {
+            Id = "svt.capacity.cluster.error",
+            Title = "SimpliVity cluster physical capacity 10% or less",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Cluster,
+            RaisedBy = ["com.simplivity.event.control.phys.capacity.fd.error"],
+            ClearedBy = ["com.simplivity.event.control.phys.capacity.fd.within.tolerance"],
+            Meaning = "A SimpliVity cluster has 10% or less of its physical capacity free.",
+        },
+
+        // GUID-4DE23ECF, GUID-DD080BB1. HPE defines no clearing event.
+        new()
+        {
+            Id = "svt.backup.failed",
+            Title = "SimpliVity VM backup failed",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.VirtualMachine,
+            RaisedBy = ["com.simplivity.event.vm.backup.execute.fail"],
+            Meaning = "A VM's SimpliVity backup failed during execution.",
+        },
+        new()
+        {
+            Id = "svt.backup.replication.failed",
+            Title = "SimpliVity VM backup replication failed",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.VirtualMachine,
+            RaisedBy = ["com.simplivity.event.vm.backup.replication.fail"],
+            Meaning = "A VM's SimpliVity backup could not be replicated to its destination.",
+        },
+
+        // GUID-4F778BCB. HPE defines no clearing event.
+        new()
+        {
+            Id = "svt.drive.predictive.failure",
+            Title = "SimpliVity physical drive predictive failure",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.storage.phys.drv.smart.alert"],
+            Meaning =
+                "A physical drive has reported a high number of predictive (SMART) failures " +
+                "and should be replaced as soon as possible.",
+        },
+
+        // HPE defines no alarm and no clearing event for these; severity is the
+        // event's own category (GUID-C587A514 Warning, GUID-C32C1B26 Error).
+        new()
+        {
+            Id = "svt.ssd.wear.warning",
+            Title = "SimpliVity SSD wear level warning",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.storage.ssd.life.warn"],
+            Meaning = "An SSD is wearing out and needs replacing soon.",
+        },
+        new()
+        {
+            Id = "svt.ssd.wear.critical",
+            Title = "SimpliVity SSD wear level critical",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.storage.ssd.life.err"],
+            Meaning = "An SSD has reached critical wear and needs replacing now.",
+        },
+
+        // GUID-2A05190D. HPE defines no clearing event; failover.released is
+        // the counterpart of a successful failover, not of this one.
+        new()
+        {
+            Id = "svt.failover.failed",
+            Title = "SimpliVity Virtual Controller IP failover unsuccessful",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.failover.failure"],
+            Meaning =
+                "One OmniStack host tried to take over another's storage IP and could not; " +
+                "data may be unavailable.",
+        },
+
+        // GUID-96CB4A7F. Departure: HPE also lists commit.failed as a clear, but
+        // it raises svt.upgrade.commit.failed below and Index forbids one type both raising and clearing.
+        new()
+        {
+            Id = "svt.upgrade.commit.needed",
+            Title = "SimpliVity software commit needed",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.Cluster,
+            RaisedBy = ["com.simplivity.event.control.upgrade.commit.needed"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.upgrade.committed",
+                "com.simplivity.event.control.rollback.success",
+            ],
+            Meaning = "A SimpliVity software upgrade has not yet been committed.",
+        },
+
+        // GUID-148B197A (red, Cluster).
+        new()
+        {
+            Id = "svt.upgrade.commit.failed",
+            Title = "SimpliVity software commit failed",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Cluster,
+            RaisedBy = ["com.simplivity.event.control.upgrade.commit.failed"],
+            ClearedBy =
+            [
+                "com.simplivity.event.control.upgrade.committed",
+                "com.simplivity.event.control.rollback.success",
+            ],
+            Meaning = "Committing a SimpliVity software upgrade failed; retry it, then call HPE support.",
+        },
+
+        // GUID-23DDF176 (≥1 GB), GUID-66842142 (>2 GB). HPE files these on
+        // the HostSystem, not the Virtual Controller's VM.
+        new()
+        {
+            Id = "svt.ovc.swap.warning",
+            Title = "SimpliVity Virtual Controller using swap memory",
+            Severity = AlertSeverity.Warning,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.control.phys.capacity.swap.usage.warning"],
+            ClearedBy = ["com.simplivity.event.control.phys.capacity.swap.usage.clear"],
+            Meaning =
+                "The Virtual Controller is using at least 1 GB of swap: its memory is not " +
+                "enough for the current load.",
+        },
+        new()
+        {
+            Id = "svt.ovc.swap.error",
+            Title = "SimpliVity Virtual Controller swap usage high",
+            Severity = AlertSeverity.Critical,
+            Category = SimpliVity,
+            About = EventSubject.Host,
+            RaisedBy = ["com.simplivity.event.control.phys.capacity.swap.usage.error"],
+            ClearedBy = ["com.simplivity.event.control.phys.capacity.swap.usage.clear"],
+            Meaning =
+                "The Virtual Controller is using over 2 GB of swap: the system is " +
+                "over-burdened.",
         },
     ];
 
