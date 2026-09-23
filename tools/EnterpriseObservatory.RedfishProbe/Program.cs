@@ -17,6 +17,7 @@ using EnterpriseObservatory.RedfishProbe;
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind simplivity --fields all
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind redfish --dump <dir>
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --remask <dumpDir> <outDir>
+//   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind simplivity --backup-paging
 
 var mask = args.Contains("--mask", StringComparer.OrdinalIgnoreCase);
 var dry = args.Contains("--dry", StringComparer.OrdinalIgnoreCase);
@@ -70,7 +71,9 @@ if (kind is not ("redfish" or "simplivity"))
 
 var storeIndex = Array.FindIndex(args, a => string.Equals(a, "--from-store", StringComparison.OrdinalIgnoreCase));
 
-using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+// Five full /api/backups reads under --backup-paging need longer than one report.
+using var cancellation = new CancellationTokenSource(
+    TimeSpan.FromMinutes(args.Contains("--backup-paging", StringComparer.OrdinalIgnoreCase) ? 10 : 3));
 
 if (dry)
 {
@@ -420,6 +423,13 @@ static async Task<int> RunLiveSimplivityAsync(
                 [array] = items,
                 ["count"] = count,
             });
+        }
+
+        // --backup-paging: the backup-freshness flap (24 September 2026) --
+        // does offset paging over /api/backups lose a VM's newest backup?
+        if (Environment.GetCommandLineArgs().Contains("--backup-paging", StringComparer.OrdinalIgnoreCase))
+        {
+            return await BackupPaging.RunAsync(ReadAsync);
         }
 
         if (fieldsMode is not null)
