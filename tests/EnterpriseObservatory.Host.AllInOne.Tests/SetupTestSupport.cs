@@ -134,7 +134,13 @@ internal static class SetupTestSupport
         return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
             .Where(path =>
             {
-                var bytes = File.ReadAllBytes(path);
+                // ReadWrite: the host's file log is still open for writing,
+                // and it is one of the files a credential must not reach.
+                using var stream = new FileStream(
+                    path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var copy = new MemoryStream();
+                stream.CopyTo(copy);
+                var bytes = copy.ToArray();
                 return bytes.AsSpan().IndexOf(utf8) >= 0 || bytes.AsSpan().IndexOf(utf16) >= 0;
             })
             .ToList();
