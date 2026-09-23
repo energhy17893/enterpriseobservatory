@@ -549,6 +549,73 @@ public class EventAlertsTests
         }).Instances;
     }
 
+    // --- HPE SimpliVity (sd00005179en_us) ---------------------------------------
+
+    private static readonly EventObjectRef Db01 = new() { MoRef = "vm-9", Name = "db01" };
+
+    [Theory]
+    [InlineData("com.simplivity.event.arbiter.com.lost", "com.simplivity.event.arbiter.com.ok", AlertSeverity.Critical, "", "")]
+    [InlineData("com.simplivity.event.arbiter.lost", "com.simplivity.event.arbiter.connected", AlertSeverity.Critical, "", "")]
+    [InlineData(
+        "com.simplivity.event.vm.ha.fail", "com.simplivity.event.vm.ha.restore", AlertSeverity.Warning,
+        "Storage HA protection lost for db01 on datastore ds-svt", "Storage HA protection restored for db01 on datastore ds-svt")]
+    [InlineData(
+        "com.simplivity.event.control.node.state.faulty", "com.simplivity.event.control.node.state.faulty.clear", AlertSeverity.Critical,
+        "SimpliVity OmniStack system ovc01 in the cluster is unreachable.", "SimpliVity OmniStack system ovc01 is reachable again and isnow active.")]
+    [InlineData("com.simplivity.event.control.phys.capacity.node.warning", "com.simplivity.event.control.phys.capacity.node.within.tolerance", AlertSeverity.Warning, "", "")]
+    [InlineData("com.simplivity.event.control.phys.capacity.node.error", "com.simplivity.event.control.phys.capacity.node.within.tolerance", AlertSeverity.Critical, "", "")]
+    [InlineData("com.simplivity.event.control.phys.capacity.fd.warning", "com.simplivity.event.control.phys.capacity.fd.within.tolerance", AlertSeverity.Warning, "", "")]
+    [InlineData("com.simplivity.event.control.phys.capacity.fd.error", "com.simplivity.event.control.phys.capacity.fd.within.tolerance", AlertSeverity.Critical, "", "")]
+    [InlineData("com.simplivity.event.control.upgrade.commit.needed", "com.simplivity.event.control.upgrade.committed", AlertSeverity.Warning, "", "")]
+    [InlineData("com.simplivity.event.control.upgrade.commit.needed", "com.simplivity.event.control.upgrade.commit.failed", AlertSeverity.Warning, "", "")]
+    [InlineData("com.simplivity.event.control.upgrade.commit.needed", "com.simplivity.event.control.rollback.success", AlertSeverity.Warning, "", "")]
+    [InlineData("com.simplivity.event.control.phys.capacity.swap.usage.warning", "com.simplivity.event.control.phys.capacity.swap.usage.clear", AlertSeverity.Warning, "", "")]
+    [InlineData("com.simplivity.event.control.phys.capacity.swap.usage.error", "com.simplivity.event.control.phys.capacity.swap.usage.clear", AlertSeverity.Critical, "", "")]
+    public void A_simplivity_condition_raises_and_its_hpe_companion_clears_it(
+        string raise, string clear, AlertSeverity severity, string raiseMessage, string clearMessage)
+    {
+        var raised = Event(1, raise, T0.AddMinutes(-20), raiseMessage, Esx01, Prod, Db01);
+
+        var alert = Assert.Single(Evaluate(raised));
+        Assert.Equal(severity, alert.Severity);
+        Assert.Equal("SimpliVity", alert.Category);
+
+        Assert.Empty(Evaluate(raised, Event(2, clear, T0.AddMinutes(-10), clearMessage, Esx01, Prod, Db01)));
+    }
+
+    [Theory]
+    [InlineData("com.simplivity.event.critical.storage.failure", AlertSeverity.Critical)]
+    [InlineData("com.simplivity.event.vm.backup.execute.fail", AlertSeverity.Warning)]
+    [InlineData("com.simplivity.event.vm.backup.replication.fail", AlertSeverity.Warning)]
+    [InlineData("com.simplivity.event.storage.phys.drv.smart.alert", AlertSeverity.Critical)]
+    [InlineData("com.simplivity.event.storage.ssd.life.warn", AlertSeverity.Warning)]
+    [InlineData("com.simplivity.event.storage.ssd.life.err", AlertSeverity.Critical)]
+    [InlineData("com.simplivity.event.failover.failure", AlertSeverity.Critical)]
+    public void A_simplivity_condition_hpe_never_clears_is_raised_and_says_so(string raise, AlertSeverity severity)
+    {
+        var alert = Assert.Single(Evaluate(Event(1, raise, host: Esx01, cluster: Prod, vm: Db01)));
+
+        Assert.Equal(severity, alert.Severity);
+        Assert.Contains("sends no event when this ends", alert.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void One_simplivity_node_coming_back_does_not_close_another()
+    {
+        Assert.Single(Evaluate(
+            Event(1, "com.simplivity.event.control.node.state.faulty", T0.AddMinutes(-20),
+                "SimpliVity OmniStack system ovc01 in the cluster is unreachable.", cluster: Prod),
+            Event(2, "com.simplivity.event.control.node.state.faulty.clear", T0.AddMinutes(-10),
+                "SimpliVity OmniStack system ovc02 is reachable again and isnow active.", cluster: Prod)));
+    }
+
+    [Fact]
+    public void The_informational_edrsi_event_raises_nothing()
+    {
+        // Measured: the live event table holds it eleven times.
+        Assert.Empty(Evaluate(Event(1, "com.simplivity.event.control.edrsi.active", host: Esx01, cluster: Prod)));
+    }
+
     private sealed class SteppingReader : IEventReader
     {
         public IReadOnlyList<SourceEvent> Events { get; set; } = [];
