@@ -108,4 +108,18 @@ public class CompactionOrderingTests
         Assert.Equal(6, report.BucketsDeleted);
         Assert.True(report.DidSomething);
     }
+
+    [Fact]
+    public void A_sweep_times_the_deletes_and_not_the_folds()
+    {
+        // The duration decides whether sample needs an index on its age, so a
+        // slow fold counted in it would argue for the wrong fix.
+        var report = CompactionSequence.Run(
+            () => { Thread.Sleep(1000); return 0; },
+            () => 0,
+            () => { Thread.Sleep(50); return 0; },
+            () => 0);
+
+        Assert.InRange(report.DeleteDuration, TimeSpan.FromMilliseconds(45), TimeSpan.FromMilliseconds(900));
+    }
 }
