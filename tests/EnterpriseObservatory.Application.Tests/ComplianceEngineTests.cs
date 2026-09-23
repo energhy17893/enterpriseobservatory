@@ -461,6 +461,9 @@ public class ComplianceEngineTests
             TransitionReleases.Add(catalogueRelease);
             return ComplianceTransitionsPage.Empty;
         }
+
+        public IReadOnlyList<ComplianceTransition> LastTransitionsAtOrBefore(
+            string catalogueRelease, DateTimeOffset atUtc) => [];
     }
 
     private readonly Clock _clock = new(T0);

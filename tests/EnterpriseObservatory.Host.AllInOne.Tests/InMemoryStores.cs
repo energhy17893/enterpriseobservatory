@@ -826,6 +826,10 @@ internal sealed class InMemoryComplianceStore : IComplianceStore
         string? catalogueRelease = null,
         string? controlId = null,
         EntityId? entity = null) => ComplianceTransitionsPage.Empty;
+
+    /// <summary>Always empty, for the same reason as <see cref="TransitionsSince"/> above.</summary>
+    public IReadOnlyList<ComplianceTransition> LastTransitionsAtOrBefore(
+        string catalogueRelease, DateTimeOffset atUtc) => [];
 }
 
 /// <summary>SMTP settings, held only for the life of the test.</summary>

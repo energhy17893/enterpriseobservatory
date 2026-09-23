@@ -98,6 +98,16 @@ public interface IComplianceStore
         string? catalogueRelease = null,
         string? controlId = null,
         EntityId? entity = null);
+
+    /// <summary>
+    /// For every (control, entity, subject) of <paramref name="catalogueRelease"/>
+    /// with at least one transition at or before <paramref name="atUtc"/>, the
+    /// latest such transition -- what "verdict at start" reads (P2's net-change
+    /// delta, <see cref="ComplianceService.DeltaSince"/>). A finding with no row
+    /// here did not exist yet at <paramref name="atUtc"/>: it is new in the
+    /// window, never assigned an invented starting verdict.
+    /// </summary>
+    IReadOnlyList<ComplianceTransition> LastTransitionsAtOrBefore(string catalogueRelease, DateTimeOffset atUtc);
 }
 
 /// <summary>Why a compliance command was refused.</summary>
@@ -310,31 +320,72 @@ public sealed class ComplianceService
     }
 
     /// <summary>
-    /// Verdict changes into Failing, out of Failing, and into NotEvaluated for
-    /// one catalogue since <paramref name="sinceUtc"/> -- a COUNT over the
-    /// append-only transition log, never a replay and never a snapshot table
-    /// (ADR-0026's "derive from the log" principle).
+    /// One catalogue's NET posture change since <paramref name="sinceUtc"/>:
+    /// findings that went Passing -> Failing (worsened) or Failing -> Passing
+    /// (improved), counted only for findings evaluated at both ends, plus
+    /// findings new in the window and findings NotEvaluated now (ADR-0026: a
+    /// round trip through NotEvaluated, e.g. a vCenter outage, is not a
+    /// posture change -- see the type this returns).
     /// </summary>
     /// <remarks>
-    /// Counts transition rows, not (release, control, entity) groups: two
-    /// subjects of the same control and entity changing are two transitions,
-    /// and an entity-level transition (empty subject) is one -- the miscount
-    /// a coarser key would have caused before subject was part of a
-    /// transition's identity (migration 11).
+    /// "Verdict at start" is never invented: it is the <c>to_verdict</c> of the
+    /// last <c>compliance_transition</c> row at or before <paramref name="sinceUtc"/>
+    /// (<see cref="IComplianceStore.LastTransitionsAtOrBefore"/>). A finding
+    /// with no such row did not exist yet at <paramref name="sinceUtc"/> and is
+    /// counted as new, not as worsened or improved. Acceptance and exceptions
+    /// are not posture: both <c>compliance_transition</c> rows and
+    /// <see cref="ComplianceFinding.Verdict"/> already carry the evaluated
+    /// verdict alone (Failing/Passing/NotEvaluated), never the acceptance or
+    /// exception state layered on top of it, so no separate mapping is needed
+    /// here -- comparing verdicts already ignores acceptance.
     /// </remarks>
     public ComplianceCatalogueDelta DeltaSince(ComplianceCatalogue catalogue, DateTimeOffset sinceUtc)
     {
         ArgumentNullException.ThrowIfNull(catalogue);
 
-        var now = _clock.UtcNow;
-        var page = TransitionsSince(sinceUtc, now, catalogue, controlId: null, entity: null);
+        var startVerdicts = _store
+            .LastTransitionsAtOrBefore(catalogue.Release, sinceUtc)
+            .ToDictionary(t => (t.ControlId, t.Entity, t.Subject), t => t.To);
+
+        var worsened = 0;
+        var improved = 0;
+        var newCount = 0;
+        var notEvaluatedNow = 0;
+
+        foreach (var finding in Findings().Where(f => string.Equals(f.CatalogueRelease, catalogue.Release, StringComparison.Ordinal)))
+        {
+            if (finding.Verdict == ComplianceVerdict.NotEvaluated)
+            {
+                notEvaluatedNow++;
+                continue;
+            }
+
+            if (!startVerdicts.TryGetValue((finding.ControlId, finding.Entity, finding.Subject), out var startVerdict))
+            {
+                newCount++;
+                continue;
+            }
+
+            if (startVerdict == ComplianceVerdict.Passing && finding.Verdict == ComplianceVerdict.Failing)
+            {
+                worsened++;
+            }
+            else if (startVerdict == ComplianceVerdict.Failing && finding.Verdict == ComplianceVerdict.Passing)
+            {
+                improved++;
+            }
+
+            // Otherwise: unchanged (Passing -> Passing, Failing -> Failing), or
+            // NotEvaluated at start -- not evaluated at both ends, so not a
+            // posture change either way (the outage round trip).
+        }
 
         return new ComplianceCatalogueDelta
         {
-            FailingIn = page.Transitions.Count(t => t.To == ComplianceVerdict.Failing),
-            FailingOut = page.Transitions.Count(
-                t => t.From == ComplianceVerdict.Failing && t.To != ComplianceVerdict.Failing),
-            NotEvaluatedIn = page.Transitions.Count(t => t.To == ComplianceVerdict.NotEvaluated),
+            Worsened = worsened,
+            Improved = improved,
+            New = newCount,
+            NotEvaluatedNow = notEvaluatedNow,
         };
     }
 
@@ -558,16 +609,25 @@ public sealed class ComplianceService
 }
 
 /// <summary>
-/// One catalogue's verdict deltas over a window (P2): how many subjects
-/// entered Failing, left Failing, and entered NotEvaluated. A count over
+/// One catalogue's NET posture change over a window (P2, revised): findings
+/// that worsened (Passing -> Failing) or improved (Failing -> Passing),
+/// findings new in the window, and findings NotEvaluated now -- counted from
 /// <c>compliance_transition</c>, not a second, independently-maintained
-/// total -- see <see cref="ComplianceService.DeltaSince"/>.
+/// total. See <see cref="ComplianceService.DeltaSince"/> and ADR-0026: a
+/// round trip through NotEvaluated is not a posture change, so it never
+/// contributes to <see cref="Worsened"/> or <see cref="Improved"/>.
 /// </summary>
 public sealed record ComplianceCatalogueDelta
 {
-    public required int FailingIn { get; init; }
+    /// <summary>Findings evaluated at both ends that went Passing -> Failing.</summary>
+    public required int Worsened { get; init; }
 
-    public required int FailingOut { get; init; }
+    /// <summary>Findings evaluated at both ends that went Failing -> Passing.</summary>
+    public required int Improved { get; init; }
 
-    public required int NotEvaluatedIn { get; init; }
+    /// <summary>Findings with no verdict at the start of the window -- new, not worsened or improved.</summary>
+    public required int New { get; init; }
+
+    /// <summary>Findings whose verdict now is NotEvaluated -- counted apart, in neither +/- bucket.</summary>
+    public required int NotEvaluatedNow { get; init; }
 }

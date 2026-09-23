@@ -368,6 +368,59 @@ public sealed class PostgresComplianceStore : IComplianceStore
             return new ComplianceTransitionsPage { Transitions = transitions, Truncated = truncated };
         });
 
+    /// <summary>
+    /// The latest transition at or before <paramref name="atUtc"/> for every
+    /// (control, entity, subject) of <paramref name="catalogueRelease"/> that
+    /// has one -- P2's "verdict at start" for the posture scorecard's net
+    /// change delta (<see cref="ComplianceService.DeltaSince"/>).
+    /// </summary>
+    /// <remarks>
+    /// <c>DISTINCT ON</c> picks the one row per identity that a caller
+    /// grouping <see cref="TransitionsSince"/>'s output in memory would
+    /// otherwise have to compute itself, on a scan the index below keeps
+    /// narrow.
+    /// </remarks>
+    public IReadOnlyList<ComplianceTransition> LastTransitionsAtOrBefore(
+        string catalogueRelease, DateTimeOffset atUtc) =>
+        _database.Read(connection =>
+        {
+            using var command = Command(connection, """
+                SELECT DISTINCT ON (control_id, entity_id, subject)
+                       control_id, entity_id, subject, subject_label, from_verdict, to_verdict,
+                       observed, evidence_utc, at_utc, accepted_by, accepted_reason
+                FROM compliance_transition
+                WHERE catalogue_release = @release AND at_utc <= @at
+                ORDER BY control_id, entity_id, subject, at_utc DESC, id DESC;
+                """);
+
+            command.Bind("@release", catalogueRelease);
+            command.BindTime("@at", atUtc);
+
+            using var reader = command.ExecuteReader();
+            var transitions = new List<ComplianceTransition>();
+
+            while (reader.Read())
+            {
+                transitions.Add(new ComplianceTransition
+                {
+                    CatalogueRelease = catalogueRelease,
+                    ControlId = reader.GetString(0),
+                    Entity = new EntityId(reader.GetString(1)),
+                    Subject = reader.GetString(2),
+                    SubjectLabel = ReadTextOrNull(reader, 3),
+                    From = ReadEnumOrNull<ComplianceVerdict>(reader, 4),
+                    To = ReadEnumOrNull<ComplianceVerdict>(reader, 5),
+                    Observed = ReadTextOrNull(reader, 6),
+                    EvidenceUtc = ReadTimeOrNull(reader, 7),
+                    AtUtc = ReadTime(reader, 8),
+                    AcceptedBy = ReadTextOrNull(reader, 9),
+                    AcceptedReason = ReadTextOrNull(reader, 10),
+                });
+            }
+
+            return transitions;
+        });
+
     private static bool InRelease(ComplianceFinding finding, string release) =>
         string.Equals(finding.CatalogueRelease, release, StringComparison.Ordinal);
 
