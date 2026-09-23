@@ -254,7 +254,7 @@ public class SimplivityInventorySourceTests
         var snapshot = await ovc.Source(Estate()).ReadAsync(CancellationToken.None);
 
         var lists = ovc.Requests.Where(r => r.StartsWith("GET /api/", StringComparison.Ordinal)).ToList();
-        Assert.Equal(4, lists.Count);
+        Assert.Equal(4 + 3, lists.Count); // four lists, and the three folded hosts' hardware (S4)
         Assert.All(lists, r => Assert.Contains("show_optional_fields=true", r, StringComparison.Ordinal));
         Assert.Single(snapshot.Alerts, a => a.Entity == Vc("vm-103"));
         Assert.Contains(snapshot.Coverage, c => c is { ObjectType: "virtual_machines", Property: "ha_status", Asked: 4, Answered: 4 });

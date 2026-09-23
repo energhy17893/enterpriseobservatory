@@ -30,6 +30,25 @@ internal sealed class FakeOvc : HttpMessageHandler
 
     public List<string> Requests { get; } = [];
 
+    /// <summary>
+    /// GET /api/hosts/{id}/hardware per SimpliVity host id; a host not listed
+    /// answers the one real Kibar reply (masked, 23 September 2026).
+    /// </summary>
+    public Dictionary<string, JsonNode> Hardware { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Delay every hardware reply, to see how many are in flight.</summary>
+    public TimeSpan HardwareDelay { get; set; }
+
+    /// <summary>The most hardware requests ever in flight at once.</summary>
+    public int MaxHardwareInFlight { get; private set; }
+
+    private int _hardwareInFlight;
+
+    /// <summary>The real reply's <c>host</c> object, a fresh copy to edit.</summary>
+    public static JsonNode LiveHardware() =>
+        JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "host-hardware.live-masked.json")))!["host"]!
+            .DeepClone();
+
     public int TokenPosts { get; private set; }
 
     public HttpStatusCode TokenStatus { get; set; } = HttpStatusCode.OK;
@@ -134,6 +153,25 @@ internal sealed class FakeOvc : HttpMessageHandler
         if (RawBody is { } raw)
         {
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(raw) };
+        }
+
+        if (path.EndsWith("/hardware", StringComparison.Ordinal))
+        {
+            var id = Uri.UnescapeDataString(path.Split('/')[3]);
+
+            lock (_gate)
+            {
+                MaxHardwareInFlight = Math.Max(MaxHardwareInFlight, ++_hardwareInFlight);
+            }
+
+            await Task.Delay(HardwareDelay, CancellationToken.None);
+
+            lock (_gate)
+            {
+                _hardwareInFlight--;
+            }
+
+            return Json(new JsonObject { ["host"] = Hardware.GetValueOrDefault(id)?.DeepClone() ?? LiveHardware() });
         }
 
         var name = path["/api/".Length..];

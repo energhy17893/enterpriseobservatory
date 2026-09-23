@@ -122,4 +122,40 @@ public static class InventoryVerdictKeys
 
     /// <summary>VM: <c>ha_resynchronization_progress</c>.</summary>
     public const string SimplivityHaResyncProgress = "simplivity.ha_resynchronization_progress";
+
+    // Host hardware (S4), from GET /api/hosts/{id}/hardware. A colour
+    // (GREEN/YELLOW/RED) or HPE's health word; empty or missing is absent.
+
+    /// <summary>Host: the hardware tree's own <c>host.status</c> colour.</summary>
+    public const string SimplivityHwStatus = "simplivity.hw.status";
+
+    /// <summary>Host: <c>raid_card.status</c>.</summary>
+    public const string SimplivityHwRaidStatus = "simplivity.hw.raid_status";
+
+    /// <summary>Host: <c>battery.status</c>.</summary>
+    public const string SimplivityHwBatteryStatus = "simplivity.hw.battery_status";
+
+    /// <summary>Host: <c>battery.health</c> (HEALTHY…).</summary>
+    public const string SimplivityHwBatteryHealth = "simplivity.hw.battery_health";
+
+    /// <summary>Host: <c>battery.percent_charged</c>; absent when HPE answers -1.</summary>
+    public const string SimplivityHwBatteryCharge = "simplivity.hw.battery_percent_charged";
+
+    /// <summary>Host: <c>accelerator_card.status</c>; absent on a host without the card.</summary>
+    public const string SimplivityHwAcceleratorStatus = "simplivity.hw.accelerator_status";
+
+    /// <summary>Host: physical drives in the tree.</summary>
+    public const string SimplivityHwDrives = "simplivity.hw.drives";
+
+    /// <summary>Host: physical drives by <c>status</c>, "GREEN=11;RED=1"; a drive without one is not counted.</summary>
+    public const string SimplivityHwDriveStatus = "simplivity.hw.drive_status";
+
+    /// <summary>Host: physical drives by <c>health</c>, "HEALTHY=12".</summary>
+    public const string SimplivityHwDriveHealth = "simplivity.hw.drive_health";
+
+    /// <summary>Host: the lowest SSD <c>life_remaining</c>, percent.</summary>
+    public const string SimplivityHwLifeRemainingMin = "simplivity.hw.life_remaining_min";
+
+    /// <summary>Host: drives whose <c>percent_rebuilt</c> is 0–99 (HPE answers -1 when not rebuilding).</summary>
+    public const string SimplivityHwDrivesRebuilding = "simplivity.hw.drives_rebuilding";
 }
