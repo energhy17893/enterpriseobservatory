@@ -361,7 +361,7 @@ public class EventAlertsTests
     }
 
     [Fact]
-    public void A_type_that_both_raises_and_clears_is_a_broken_table()
+    public void A_type_that_both_raises_and_clears_the_same_row_is_a_broken_table()
     {
         var row = EventAlerts.Catalogue[0];
         var policy = new EventAlertPolicy { Conditions = [row with { ClearedBy = [row.RaisedBy[0]] }] };
@@ -566,8 +566,7 @@ public class EventAlertsTests
     [InlineData("com.simplivity.event.control.phys.capacity.node.error", "com.simplivity.event.control.phys.capacity.node.within.tolerance", AlertSeverity.Critical, "", "")]
     [InlineData("com.simplivity.event.control.phys.capacity.fd.warning", "com.simplivity.event.control.phys.capacity.fd.within.tolerance", AlertSeverity.Warning, "", "")]
     [InlineData("com.simplivity.event.control.phys.capacity.fd.error", "com.simplivity.event.control.phys.capacity.fd.within.tolerance", AlertSeverity.Critical, "", "")]
-    [InlineData("com.simplivity.event.control.upgrade.commit.needed", "com.simplivity.event.control.upgrade.committed", AlertSeverity.Warning, "", "")]
-    [InlineData("com.simplivity.event.control.upgrade.commit.failed", "com.simplivity.event.control.upgrade.committed", AlertSeverity.Critical, "", "")]
+    [InlineData("com.simplivity.event.control.upgrade.commit.needed", "com.simplivity.event.control.upgrade.committed", AlertSeverity.Warning, "", "")]    [InlineData("com.simplivity.event.control.upgrade.commit.failed", "com.simplivity.event.control.upgrade.committed", AlertSeverity.Critical, "", "")]
     [InlineData("com.simplivity.event.control.upgrade.commit.failed", "com.simplivity.event.control.rollback.success", AlertSeverity.Critical, "", "")]
     [InlineData("com.simplivity.event.control.upgrade.commit.needed", "com.simplivity.event.control.rollback.success", AlertSeverity.Warning, "", "")]
     [InlineData("com.simplivity.event.control.phys.capacity.swap.usage.warning", "com.simplivity.event.control.phys.capacity.swap.usage.clear", AlertSeverity.Warning, "", "")]
@@ -601,15 +600,59 @@ public class EventAlertsTests
     }
 
     [Fact]
-    public void A_failed_commit_raises_its_own_alert_and_leaves_commit_needed_open()
+    public void A_failed_commit_closes_commit_needed_and_opens_commit_failed()
     {
-        var alerts = Evaluate(
+        var alert = Assert.Single(Evaluate(
             Event(1, "com.simplivity.event.control.upgrade.commit.needed", T0.AddMinutes(-30), cluster: Prod),
-            Event(2, "com.simplivity.event.control.upgrade.commit.failed", T0.AddMinutes(-20), cluster: Prod));
+            Event(2, "com.simplivity.event.control.upgrade.commit.failed", T0.AddMinutes(-20), cluster: Prod)));
 
-        Assert.Equal(
-            [("SimpliVity software commit failed", AlertSeverity.Critical), ("SimpliVity software commit needed", AlertSeverity.Warning)],
-            alerts.Select(a => (a.Title, a.Severity)).OrderBy(t => t.Title));
+        Assert.Equal("SimpliVity software commit failed", alert.Title);
+        Assert.Equal(AlertSeverity.Critical, alert.Severity);
+    }
+
+    [Fact]
+    public void A_capacity_error_closes_the_warning_and_opens_the_error_and_back()
+    {
+        const string P = "com.simplivity.event.control.phys.capacity.node.";
+        var warning = Event(1, P + "warning", T0.AddMinutes(-40), host: Esx01, cluster: Prod);
+        var error = Event(2, P + "error", T0.AddMinutes(-30), host: Esx01, cluster: Prod);
+
+        var escalated = Assert.Single(Evaluate(warning, error));
+        Assert.Equal(AlertSeverity.Critical, escalated.Severity);
+
+        var eased = Assert.Single(Evaluate(warning, error, Event(3, P + "warning", T0.AddMinutes(-20), host: Esx01, cluster: Prod)));
+        Assert.Equal(AlertSeverity.Warning, eased.Severity);
+    }
+
+    [Fact]
+    public void Cross_clears_do_not_depend_on_the_order_of_the_rows()
+    {
+        const string P = "com.simplivity.event.control.phys.capacity.";
+        SourceEvent[] events =
+        [
+            Event(1, P + "node.warning", T0.AddMinutes(-50), host: Esx01, cluster: Prod),
+            Event(2, P + "node.error", T0.AddMinutes(-40), host: Esx01, cluster: Prod),
+            Event(3, P + "swap.usage.error", T0.AddMinutes(-35), host: Esx02, cluster: Prod),
+            Event(4, P + "swap.usage.warning", T0.AddMinutes(-30), host: Esx02, cluster: Prod),
+            Event(5, P + "fd.warning", T0.AddMinutes(-25), cluster: Prod),
+            Event(6, "com.simplivity.event.control.upgrade.commit.needed", T0.AddMinutes(-20), cluster: Prod),
+            Event(7, "com.simplivity.event.control.upgrade.commit.failed", T0.AddMinutes(-10), cluster: Prod),
+        ];
+
+        string[] Open(IReadOnlyList<EventCondition> rows) =>
+            [.. EventAlerts.Evaluate(events, T0, new EventAlertPolicy { Conditions = rows })
+                .Select(a => $"{a.Fingerprint.Value}|{a.Severity}").Order(StringComparer.Ordinal)];
+
+        var expected = Open(EventAlerts.Catalogue);
+        Assert.Equal(4, expected.Length);
+        Assert.Equal(expected, Open([.. EventAlerts.Catalogue.Reverse()]));
+
+        for (var seed = 1; seed <= 5; seed++)
+        {
+            var shuffled = EventAlerts.Catalogue.ToArray();
+            new Random(seed).Shuffle(shuffled);
+            Assert.Equal(expected, Open(shuffled));
+        }
     }
 
     [Fact]
