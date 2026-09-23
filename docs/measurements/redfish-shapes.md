@@ -69,3 +69,29 @@ $ dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --dry --kind 
 (bkz. RedfishProbe --dry çıktısı; docs/measurements/ içine canlı koşu
  çalıştırılınca gerçek host'un raporu buraya gelecek)
 ```
+
+## Yeniden ölçüm, 23 Eylül 2026 13:10 (probe #134 ile)
+
+Aynı iLO, düzeltilmiş probe (depolama koleksiyondan gezilir, `Oem.Hpe`
+derinliği 6, nesil maskesiz). Yukarıdaki tablonun "ölçülmedi" satırlarının
+cevabı:
+
+| Konu | Sonuç |
+|---|---|
+| Nesil / firmware | **iLO 5**, `iLO 5 v3.18` |
+| Power / Thermal `Redundancy[]` | Power var, Thermal **yok** |
+| PSU / fan | 2 (OK=2) / 6 (OK=6) |
+| Depolama | 2 denetleyici (`DE07C000`, `DE082000` — `1` değil), 14 sürücü, Health OK=14, `FailurePredicted=true` 0, `Oem.Hpe.WearStatus` 0/14 |
+| DIMM | 24, `Oem.Hpe.DIMMStatus` 24/24 |
+| Firmware envanteri | 36 |
+| IML | 207 girdi, en yeni `Created` 2026-06-09, `Oem.Hpe.Severity` 207/207, `Repaired` 153/207 |
+| `AggregateHealthStatus` | **iLO 5'te de var** (13 alan: `AggregateServerHealth`, `FanRedundancy`, `PowerSupplyRedundancy`, `BiosOrHardwareHealth`, `Memory`, `Network` …); probe başlığındaki "iLO 6 only" yanlış |
+| `AgentlessManagementService` | `Ready` |
+| Seri / UUID | ikisi de var (maskeli); vim25 eşleşmesi tek hostta sayılmadı |
+| Uç nokta süresi | tek çağrı 0,32–0,82 s, IML 2,6 s; tam okuma ~50 çağrı, sıralı **~25 s / iLO** |
+
+Kolektör için sonuç: `AggregateHealthStatus` tek çağrıda (`Systems/1`) sunucu,
+fan, PSU yedekliliği, bellek ve ağ özetini veriyor; DIMM/sürücü başına gezinti
+(~40 çağrı) yalnız özet sağlıksızken gerekir. 59 host × 25 s sıralı okuma bir
+envanter aralığına sığmaz — özet-önce okuma ya da host başına paralellik
+kararı kolektör tasarımında.

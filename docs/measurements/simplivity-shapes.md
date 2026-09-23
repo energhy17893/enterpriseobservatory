@@ -21,6 +21,15 @@ bu yüzden hâlâ boş; `hypervisor_object_id` ↔ moRef eşleşmesi de
 sayılamadı. Sonraki adım: OVC'nin kabul ettiği TLS sürümünü ağ tarafında
 görmek (probe'un iç istisnayı yazması yeterli olur).
 
+Yeniden deneme (probe #134, 13:08): TCP 443 **açık** (2 ms). Token isteği
+varsayılan TLS ile de, zorunlu TLS 1.2 ile de el sıkışma sırasında **sunucu
+tarafından kapatıldı** (`SocketException`: uzak ana bilgisayar bağlantıyı
+zorla kapattı). Ağ yolu değil; OVC, Windows'un önerdiği şifre takımlarından
+hiçbirini kabul etmiyor gibi. Sonraki adım: OVC'nin kabul ettiği takımları
+görmek (ör. `openssl s_client -connect <ovc>:443 -tls1_2` başka bir
+makineden ya da OVC yöneticisinden), ardından Windows'ta o takımın açık olup
+olmadığı.
+
 ## İlk soru (canlıda henüz cevapsız)
 
 23 Eylül'de ölçülen: olay akışında `com.simplivity.event.*` **0** (bkz.
