@@ -13,6 +13,8 @@ namespace EnterpriseObservatory.Application.Compliance;
 /// </remarks>
 public static class InventoryVerdictKeys
 {
+    /// <summary>Host or VM: when the configuration tier read the carried keys, ISO-8601 UTC.</summary>
+    public const string ConfigurationReadAtUtc = "configuration.readAtUtc";
     /// <summary>VM: CD/DVD drives currently connected, any backing.</summary>
     public const string ConnectedCdroms = "cdrom.connected";
 

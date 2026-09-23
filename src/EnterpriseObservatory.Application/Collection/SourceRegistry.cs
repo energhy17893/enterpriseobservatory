@@ -33,4 +33,10 @@ public interface ISourceRegistry
     /// here would put two alerts in front of an operator for one fault.
     /// </remarks>
     IReadOnlyList<IEventSource> Events { get; }
+
+    /// <summary>
+    /// Sources for the configuration tier. Only connections that can be
+    /// polled and have one, for the reason <see cref="Events"/> gives.
+    /// </summary>
+    IReadOnlyList<IConfigurationTierSource> Configuration => [];
 }

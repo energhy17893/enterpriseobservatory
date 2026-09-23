@@ -221,6 +221,17 @@ public sealed record MonitoringOptions
     /// <summary>How often metrics are sampled.</summary>
     public TimeSpan ObservationInterval { get; init; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>How often the configuration tier (heavy, slowly changing properties) is re-read.</summary>
+    /// <remarks>
+    /// vROps reads properties and metrics on separate cadences, and Telegraf
+    /// reads inventory every 300 s against metrics every 20 s
+    /// (docs/reference-approaches.md §10.3). Fifteen minutes: ~41 MB of the
+    /// measured ~48 MB inventory read (#173) is advanced settings,
+    /// certificates, device lists and file layouts, which change when
+    /// somebody changes them.
+    /// </remarks>
+    public TimeSpan ConfigurationInterval { get; init; } = TimeSpan.FromMinutes(15);
+
     public CollectionPolicy Collection { get; init; } = CollectionPolicy.Default;
 
     public HysteresisPolicy Hysteresis { get; init; } = HysteresisPolicy.Default;

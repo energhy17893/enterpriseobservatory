@@ -465,6 +465,15 @@ public enum CollectorRole
     /// text, so no migration.
     /// </summary>
     Events,
+
+    /// <summary>
+    /// The configuration tier: heavy, slowly changing properties read on
+    /// their own cadence (<c>MonitoringOptions.ConfigurationInterval</c>) and
+    /// carried into every inventory read. Its own record so a slow or refused
+    /// configuration read backs off without touching inventory's count.
+    /// Stored as text, so no migration.
+    /// </summary>
+    Configuration,
 }
 
 /// <summary>

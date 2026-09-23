@@ -131,6 +131,19 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
         return merged;
     }
 
+    /// <summary>
+    /// Adds when the carried configuration keys were read, so a screen can say
+    /// "read 15 min ago" rather than present them as this cycle's (ADR-0027).
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> Dated(
+        IReadOnlyDictionary<string, string> verdicts, DateTimeOffset? readAtUtc) =>
+        readAtUtc is not { } at
+            ? verdicts
+            : new Dictionary<string, string>(verdicts, StringComparer.OrdinalIgnoreCase)
+            {
+                [InventoryVerdicts.ConfigurationReadAtUtc] = at.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
+            };
+
     private void AddClusters(
         VsphereInventoryPayload payload,
         Func<string, EntityId> id,
@@ -298,7 +311,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                 // Carried, not judged -- same contract as the path table
                 // above. Which settings arrive is decided in
                 // AdvancedSettings; what they mean is a rule's business.
-                Settings = WithVerdicts(host.AdvancedSettings, host.Verdicts),
+                Settings = WithVerdicts(host.AdvancedSettings, Dated(host.Verdicts, host.ConfigurationReadAtUtc)),
                 // Same contract again, and null passes through as null: a
                 // host whose services were not read must not reach a rule
                 // looking like a host with none.
@@ -790,7 +803,7 @@ public sealed class VsphereInventorySource(IVsphereInventoryApi api, IClock cloc
                         {
                             [PowerStateSetting] = vm.PowerState,
                         },
-                    vm.Verdicts),
+                    Dated(vm.Verdicts, vm.ConfigurationReadAtUtc)),
             });
 
             AddSnapshotAlert(vm, datastores, id(vm.MoRef), now, alerts, snapshotFindings);

@@ -16,6 +16,37 @@ public interface IVsphereInventoryApi
     Task<VsphereInventoryPayload> RetrieveInventoryAsync(CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// The configuration tier: the heavy, slowly changing properties, read on
+/// their own cadence and carried into every inventory read.
+/// </summary>
+public interface IVsphereConfigurationApi
+{
+    string InstanceId { get; }
+
+    /// <summary>
+    /// Reads the configuration properties and keeps them for the next
+    /// inventory reads. Cut off by <paramref name="cancellationToken"/>, it
+    /// keeps what it had read and returns a partial result rather than throw.
+    /// </summary>
+    Task<VsphereConfigurationRead> RetrieveConfigurationAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>What one configuration read reached.</summary>
+public sealed record VsphereConfigurationRead
+{
+    /// <summary>Objects whose configuration was read and is now carried.</summary>
+    public int Objects { get; init; }
+
+    /// <summary>Reply bytes, for the self-metrics log line.</summary>
+    public long Bytes { get; init; }
+
+    /// <summary>False when the read was cut off before its last page.</summary>
+    public bool Complete { get; init; } = true;
+
+    public IReadOnlyList<VsphereReadFailure> Failures { get; init; } = [];
+}
+
 /// <summary>Inventory as one vCenter reports it, before any interpretation.</summary>
 /// <remarks>
 /// Deliberately close to the wire. Turning it into entities and relationships
@@ -168,6 +199,12 @@ public sealed record VsphereTriggeredAlarm
 public sealed record VsphereHost
 {
     /// <summary>
+    /// When the configuration tier last read this host, or null when its
+    /// configuration is not being carried (not read yet, or past the limit).
+    /// </summary>
+    public DateTimeOffset? ConfigurationReadAtUtc { get; init; }
+
+    /// <summary>
     /// Verdicts and M8.4/M8.7 inputs, keyed by <see cref="InventoryVerdicts"/>;
     /// merged into <c>Entity.Settings</c>. A missing key means not read.
     /// </summary>
@@ -301,6 +338,9 @@ public sealed record VsphereStoragePath
 /// <summary>A virtual machine as vCenter sees it.</summary>
 public sealed record VsphereVirtualMachine
 {
+    /// <summary>See <see cref="VsphereHost.ConfigurationReadAtUtc"/>.</summary>
+    public DateTimeOffset? ConfigurationReadAtUtc { get; init; }
+
     /// <summary>
     /// Verdicts and M8.4/M8.7 inputs, keyed by <see cref="InventoryVerdicts"/>;
     /// merged into <c>Entity.Settings</c>. A missing key means not read.

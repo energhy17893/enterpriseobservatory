@@ -78,6 +78,13 @@ internal sealed class InventoryTimingHandler(HttpMessageHandler inner) : Delegat
 
     public IReadOnlyList<InventoryCallTiming> Calls => _calls;
 
+    /// <summary>Forgets what was recorded, so the next tier is measured on its own.</summary>
+    public void Clear()
+    {
+        _calls.Clear();
+        _nextPageIndex = 0;
+    }
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -216,10 +223,25 @@ internal static class InventoryTiming
     public static async Task<int> RunAsync(
         VsphereClient client, InventoryTimingHandler handler, CancellationToken cancellationToken)
     {
+        // Configuration first, so the fast read measured below carries it
+        // exactly as the collector's does after its first slow pass.
+        Console.WriteLine("== SLOW tier: configuration (Monitoring:ConfigurationIntervalSeconds) ==");
+        await MeasureAsync(handler, () => client.RetrieveConfigurationAsync(cancellationToken)).ConfigureAwait(false);
+
+        Console.WriteLine();
+        Console.WriteLine("== FAST tier: topology and state (Monitoring:InventoryIntervalSeconds) ==");
+        await MeasureAsync(handler, () => client.RetrieveInventoryAsync(cancellationToken)).ConfigureAwait(false);
+
+        return 0;
+    }
+
+    private static async Task MeasureAsync(InventoryTimingHandler handler, Func<Task> read)
+    {
+        handler.Clear();
         handler.Enabled = true;
         try
         {
-            await client.RetrieveInventoryAsync(cancellationToken).ConfigureAwait(false);
+            await read().ConfigureAwait(false);
         }
         finally
         {
@@ -227,7 +249,6 @@ internal static class InventoryTiming
         }
 
         Print(handler.Calls);
-        return 0;
     }
 
     /// <summary>Rolls every call up by name: pages/calls, objects, bytes, total ms, and the object types seen.</summary>
