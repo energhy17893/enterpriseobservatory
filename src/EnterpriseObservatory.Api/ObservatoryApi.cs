@@ -63,6 +63,21 @@ public static class ObservatoryApi
             model.Alerts(severity, state, category, source, search, offset ?? 0, limit ?? 50))
             .WithName("GetAlerts");
 
+        // The inbox's default view (A9): same filters, folded by rule and
+        // source. Paged by group so an 84-member rule cannot be split across
+        // pages the way folding a flat page client-side would.
+        api.MapGet("/alerts/grouped", (
+                ReadModel model,
+                AlertSeverity? severity,
+                AlertLifecycleState? state,
+                string? category,
+                string? source,
+                string? search,
+                int? offset,
+                int? limit) =>
+            model.AlertGroups(severity, state, category, source, search, offset ?? 0, limit ?? 50))
+            .WithName("GetAlertGroups");
+
         api.MapGet("/entities", (
                 ReadModel model,
                 EntityKind? kind,

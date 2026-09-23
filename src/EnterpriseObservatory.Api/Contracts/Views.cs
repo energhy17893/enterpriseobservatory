@@ -71,6 +71,10 @@ public sealed record AlertView
     /// </remarks>
     public string? EntityName { get; init; }
 
+    /// <summary>That entity's kind, resolved here for the same reason as <see cref="EntityName"/>.</summary>
+    /// <remarks>Used by the grouped view (A9) to word a group's count, e.g. "84 datastores".</remarks>
+    public EntityKind? EntityKind { get; init; }
+
     /// <summary>Whether the platform inferred this rather than observing it.</summary>
     public required bool IsDerived { get; init; }
 
@@ -105,6 +109,36 @@ public sealed record AlertView
 
     /// <summary>What was missing, in words; null while fresh.</summary>
     public string? StaleDetail { get; init; }
+}
+
+/// <summary>
+/// The inbox's default view: alerts with the same rule and the same source
+/// folded into one row (A9, docs/reference-approaches.md §11).
+/// </summary>
+/// <remarks>
+/// A list concern only -- ADR-0021 keeps alert identity per-datastore (or
+/// whatever the rule's subject is); grouping folds the presentation, never the
+/// fingerprints. A rule that has raised only one visible alert is still a
+/// group of one; the client renders that case as a plain row rather than a
+/// disclosure with nothing to disclose. See <see cref="ReadModel.AlertGroups"/>.
+/// </remarks>
+public sealed record AlertGroupView
+{
+    /// <summary>The rule id and source, or a single alert's own fingerprint when it has no rule.</summary>
+    public required string Key { get; init; }
+
+    public required string Title { get; init; }
+
+    /// <summary>The worst severity among the members.</summary>
+    public required AlertSeverity Severity { get; init; }
+
+    /// <summary>The entity kind shared by every member, or null when they are not all the same (or have none).</summary>
+    public EntityKind? EntityKind { get; init; }
+
+    public required int Count { get; init; }
+
+    /// <summary>Every member, worst first. Never a sample -- see ADR-0007 §5.1's rule for <see cref="EventView"/>.</summary>
+    public required IReadOnlyList<AlertView> Alerts { get; init; }
 }
 
 /// <summary>An entity as the explorer lists it (tier 1 of ADR-0007).</summary>

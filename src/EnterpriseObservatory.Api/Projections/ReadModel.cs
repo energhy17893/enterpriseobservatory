@@ -244,6 +244,75 @@ public sealed class ReadModel(
         return Paged(matching, offset, limit, a => ToView(a, graph));
     }
 
+    /// <summary>
+    /// The inbox's default view (A9): the same visible alerts as
+    /// <see cref="Alerts"/>, folded by rule and source so one rule firing on
+    /// 84 datastores is one row instead of 84.
+    /// </summary>
+    /// <remarks>
+    /// Paged by group, not by alert -- a client paging the flat list at 50
+    /// alerts per page would split an 84-member group across two pages.
+    /// Grouping here is presentation only (ADR-0021): the fingerprints
+    /// underneath are untouched, and every alert an operator could act on
+    /// individually through <see cref="Alerts"/> is still reachable, in full,
+    /// inside its group.
+    /// </remarks>
+    public Page<AlertGroupView> AlertGroups(
+        AlertSeverity? severity = null,
+        AlertLifecycleState? state = null,
+        string? category = null,
+        string? source = null,
+        string? search = null,
+        int offset = 0,
+        int limit = 50)
+    {
+        var graph = _graphs.Current;
+
+        var pool = state == AlertLifecycleState.Unknown
+            ? [.. _alerts.All.Where(a => a.IsConfirmed && a.State == AlertLifecycleState.Unknown)]
+            : Visible();
+
+        var matching = pool
+            .Where(a => severity is null || a.Severity == severity)
+            .Where(a => state is null || a.State == state)
+            .Where(a => category is null ||
+                string.Equals(a.Category, category, StringComparison.OrdinalIgnoreCase))
+            .Where(a => source is null ||
+                string.Equals(a.Source, source, StringComparison.OrdinalIgnoreCase))
+            .Where(a => Matches(a, search));
+
+        // No rule id means a direct producer (AlertInstance.RuleId's own
+        // remark): grouping those by title alone would fold unrelated
+        // problems that happen to say the same thing, so each stays a group
+        // of one, keyed by its own fingerprint.
+        var groups = matching
+            .GroupBy(a => (RuleId: a.RuleId ?? $"fp:{a.Fingerprint.Value}", a.Source))
+            .Select(g =>
+            {
+                var members = g
+                    .OrderByDescending(a => a.Severity)
+                    .ThenByDescending(a => a.LastSeenUtc)
+                    .ToList();
+                var views = members.Select(a => ToView(a, graph)).ToList();
+                var kinds = views.Select(v => v.EntityKind).Distinct().ToList();
+
+                return new AlertGroupView
+                {
+                    Key = $"{g.Key.RuleId}|{g.Key.Source}",
+                    Title = members[0].Title,
+                    Severity = members.Max(a => a.Severity),
+                    EntityKind = kinds.Count == 1 ? kinds[0] : null,
+                    Count = views.Count,
+                    Alerts = views,
+                };
+            })
+            .OrderByDescending(g => g.Severity)
+            .ThenByDescending(g => g.Alerts[0].LastSeenUtc)
+            .ToList();
+
+        return Paged(groups, offset, limit, g => g);
+    }
+
     // --- reports ------------------------------------------------------------
 
     /// <summary>How far back a report looks when no range is given.</summary>
@@ -1732,10 +1801,12 @@ public sealed class ReadModel(
     private static AlertView ToView(AlertInstance alert, EntityGraph graph)
     {
         string? name = null;
+        EntityKind? kind = null;
 
         if (alert.Entity is { } entityId && graph.Entities.TryGetValue(entityId, out var entity))
         {
             name = entity.DisplayName;
+            kind = entity.Kind;
         }
 
         return new AlertView
@@ -1749,6 +1820,7 @@ public sealed class ReadModel(
             Source = alert.Source,
             EntityId = alert.Entity?.Value,
             EntityName = name,
+            EntityKind = kind,
             IsDerived = alert.IsDerived,
             SuppressedByWindowId = alert.SuppressedByWindowId,
             FirstSeenUtc = alert.FirstSeenUtc,

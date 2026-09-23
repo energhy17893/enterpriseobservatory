@@ -256,6 +256,104 @@ public partial class ReadModelTests
         Assert.Equal(ReadModel.MaxLimit, Model().Alerts(limit: 100_000).Limit);
     }
 
+    // --- the inbox, grouped by rule (A9) -----------------------------------
+
+    [Fact]
+    public void Alerts_with_the_same_rule_and_source_fold_into_one_group()
+    {
+        GivenAlerts(
+            Alert("ds1", AlertSeverity.Warning) with { RuleId = "storage-latency-blind-spot", Source = "vc-1" },
+            Alert("ds2", AlertSeverity.Warning) with { RuleId = "storage-latency-blind-spot", Source = "vc-1" });
+
+        var group = Assert.Single(Model().AlertGroups().Items);
+
+        Assert.Equal(2, group.Count);
+        Assert.Equal(2, group.Alerts.Count);
+    }
+
+    [Fact]
+    public void A_group_reports_its_worst_members_severity()
+    {
+        GivenAlerts(
+            Alert("ds1", AlertSeverity.Warning) with { RuleId = "r1", Source = "vc-1" },
+            Alert("ds2", AlertSeverity.Critical) with { RuleId = "r1", Source = "vc-1" });
+
+        var group = Assert.Single(Model().AlertGroups().Items);
+
+        Assert.Equal(AlertSeverity.Critical, group.Severity);
+    }
+
+    [Fact]
+    public void The_same_rule_on_a_different_source_is_a_different_group()
+    {
+        GivenAlerts(
+            Alert("a", AlertSeverity.Warning) with { RuleId = "r1", Source = "vc-1" },
+            Alert("b", AlertSeverity.Warning) with { RuleId = "r1", Source = "vc-2" });
+
+        Assert.Equal(2, Model().AlertGroups().Total);
+    }
+
+    [Fact]
+    public void An_alert_with_no_rule_id_is_a_group_of_one_never_folded_with_another()
+    {
+        // A direct producer's own signal (AlertInstance.RuleId's remark):
+        // folding these by title alone would merge unrelated problems that
+        // happen to say the same thing.
+        GivenAlerts(
+            Alert("a", AlertSeverity.Warning) with { RuleId = null, Title = "Collector unreachable" },
+            Alert("b", AlertSeverity.Warning) with { RuleId = null, Title = "Collector unreachable" });
+
+        Assert.Equal(2, Model().AlertGroups().Total);
+        Assert.All(Model().AlertGroups().Items, g => Assert.Equal(1, g.Count));
+    }
+
+    [Fact]
+    public void Grouping_never_drops_or_duplicates_an_alert()
+    {
+        // ADR-0007 §5.1's rule for events, held to the same standard here: no
+        // alert lives only inside a group, and none is counted twice.
+        GivenAlerts(
+            Alert("a", AlertSeverity.Critical) with { RuleId = "r1", Source = "vc-1" },
+            Alert("b", AlertSeverity.Warning) with { RuleId = "r1", Source = "vc-1" },
+            Alert("c", AlertSeverity.Warning) with { RuleId = "r2", Source = "vc-1" });
+
+        var flat = Model().Alerts(limit: 100).Items;
+        var grouped = Model().AlertGroups(limit: 100).Items.SelectMany(g => g.Alerts).ToList();
+
+        Assert.Equal(flat.Select(a => a.Fingerprint).OrderBy(f => f), grouped.Select(a => a.Fingerprint).OrderBy(f => f));
+    }
+
+    [Fact]
+    public void A_group_carries_the_shared_entity_kind_for_the_clients_wording()
+    {
+        GivenEntities(Host("h1", HealthState.Critical), Host("h2", HealthState.Critical));
+        GivenAlerts(
+            Alert("a", AlertSeverity.Warning) with { RuleId = "r1", Source = "vc-1", Entity = new EntityId("h1") },
+            Alert("b", AlertSeverity.Warning) with { RuleId = "r1", Source = "vc-1", Entity = new EntityId("h2") });
+
+        var group = Assert.Single(Model().AlertGroups().Items);
+
+        Assert.Equal(EntityKind.EsxiHost, group.EntityKind);
+    }
+
+    [Fact]
+    public void Groups_are_paged_so_a_large_group_cannot_be_split_across_pages()
+    {
+        // The scenario A9 exists for: one rule, 84 members. A client paging
+        // the flat list at 50 would see the group cut in half; paging groups
+        // instead means the group is whole on whichever page it lands on.
+        GivenAlerts(
+            [.. Enumerable.Range(0, 84).Select(i =>
+                Alert($"ds{i}", AlertSeverity.Warning) with { RuleId = "storage-latency-blind-spot", Source = "vc-1" })]);
+
+        var page = Model().AlertGroups(limit: 50);
+
+        Assert.Equal(1, page.Total);
+        var group = Assert.Single(page.Items);
+        Assert.Equal(84, group.Count);
+        Assert.Equal(84, group.Alerts.Count);
+    }
+
     // --- alert report (M5.1) -----------------------------------------------
 
     [Fact]
