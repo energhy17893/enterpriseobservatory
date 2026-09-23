@@ -596,7 +596,13 @@ public static class AlertReconciler
             });
         }
 
-        return request.Sources.SilentOwnerOf(instance.Entity) is { } silent
+        // Owned by the source that raised it (ADR-0027): one that answered and
+        // did not see it again has looked, whoever owns the entity. SimpliVity
+        // raises on a VM vSphere owns; a silent vCenter says nothing about it.
+        var raiserAnswered = instance.Source.Length > 0 &&
+                             request.Sources.Reporting.Contains(instance.Source, StringComparer.Ordinal);
+
+        return !raiserAnswered && request.Sources.SilentOwnerOf(instance.Entity) is { } silent
             ? new Blind(new AlertUnknown
             {
                 Reason = UnknownReason.SourceSilent,
