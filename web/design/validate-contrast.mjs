@@ -106,6 +106,9 @@ function rulesFor(theme) {
             // nokta, kenarlık, bar dolgusu — metin değil
             { label: `${s}: border / card`, fg: st.border, bg: theme.card, min: 3.0 },
             { label: `${s}: border / page`, fg: st.border, bg: theme.page, min: 3.0 },
+            // StatusBadge'in noktası kart ya da sayfa üzerinde değil, pill'in
+            // kendi `surface`'ı üzerinde durur (X1) — o çift ayrı kontrol edilmeli.
+            { label: `${s}: border / surface (dot)`, fg: st.border, bg: st.surface, min: 3.0 },
             // yüksek vurgulu rozet
             { label: `${s}: solidOn / solid`, fg: st.solidOn, bg: st.solid, min: 4.5 },
         );

@@ -23,8 +23,15 @@ export function StatusBadge({ status, children }: { status: StatusName; children
         A dot as well as the colour. Colour alone fails for the roughly one in
         twelve men with a colour vision deficiency, and this product's entire
         job is communicating status.
+
+        Uses the `border` role, not `solid`: `solid` is tuned against its own
+        `solidOn` text, not against `surface`, and on this badge's own
+        background it drops as low as 2.57:1 (dark Info) — under WCAG 2.2
+        1.4.11's 3:1 floor for a non-text mark. `border` is the role ADR-0008
+        §1 names for "dot, border, bar fill" and measures >= 3.68:1 against
+        `surface` in every set and theme (validate-contrast.mjs checks this).
       */}
-      <span className={cn('size-1.5 rounded-full', tone.solid)} aria-hidden="true" />
+      <span className={cn('size-1.5 rounded-full', tone.dot)} aria-hidden="true" />
       {children}
     </span>
   )
