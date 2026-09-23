@@ -27,7 +27,8 @@ public static class BestPracticeControls
     [
         Check(MemoryLimitBelowConfigured, "Virtual Machine", "Memory limit is not below configured memory",
             PerformanceGuide, new MemoryLimitCheck()),
-        Check(LegacyVirtualAdapters, "Virtual Machine", "No legacy virtual network or storage adapters",
+        Check(LegacyVirtualAdapters, "Virtual Machine",
+            "No legacy E1000/E1000e network adapters or LSI Logic Parallel SCSI controllers",
             PerformanceGuide + "; VMware KB 438023 (rightsizing)", new LegacyVirtualAdapterCheck()),
     ];
 

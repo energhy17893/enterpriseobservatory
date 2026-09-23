@@ -66,7 +66,7 @@ public sealed class MemoryLimitCheck : IComplianceCheck
 /// <remarks>
 /// <para>
 /// Entity = vCenter, subject = the adapter type (<c>E1000</c>, <c>E1000e</c>,
-/// <c>LSI Logic</c>): one finding per type across the whole estate, carrying
+/// <c>LSI Logic Parallel</c>): one finding per type across the whole estate, carrying
 /// how many adapters and, in <see cref="CheckVerdict.Observed"/>, a few of the
 /// virtual machines that carry one -- never one finding per virtual machine
 /// (reference-approaches, product principle 4).
@@ -85,7 +85,8 @@ public sealed class LegacyVirtualAdapterCheck : IComplianceCheck
     [
         new(InventoryVerdictKeys.LegacyAdapterE1000, "E1000", "legacy E1000 network adapter"),
         new(InventoryVerdictKeys.LegacyAdapterE1000e, "E1000e", "legacy E1000e network adapter"),
-        new(InventoryVerdictKeys.LegacyAdapterLsiLogic, "LSI Logic", "legacy LSI Logic Parallel SCSI controller"),
+        new(InventoryVerdictKeys.LegacyAdapterLsiLogic, "LSI Logic Parallel",
+            "legacy LSI Logic Parallel SCSI controller (not LSI Logic SAS, which is still supported)"),
     ];
 
     public EntityKind AppliesTo => EntityKind.VCenter;

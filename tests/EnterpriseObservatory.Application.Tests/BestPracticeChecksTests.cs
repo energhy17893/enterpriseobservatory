@@ -172,7 +172,7 @@ public class BestPracticeChecksTests
 
         Assert.Equal(ComplianceVerdict.Passing, One(findings, LegacyVirtualAdapters, "E1000").Verdict);
         Assert.Equal(ComplianceVerdict.Failing, One(findings, LegacyVirtualAdapters, "E1000e").Verdict);
-        Assert.Equal(ComplianceVerdict.Failing, One(findings, LegacyVirtualAdapters, "LSI Logic").Verdict);
+        Assert.Equal(ComplianceVerdict.Failing, One(findings, LegacyVirtualAdapters, "LSI Logic Parallel").Verdict);
     }
 
     [Fact]
@@ -184,7 +184,7 @@ public class BestPracticeChecksTests
 
         Assert.Equal(ComplianceVerdict.NotEvaluated, One(findings, LegacyVirtualAdapters, "E1000").Verdict);
         Assert.Equal(ComplianceVerdict.NotEvaluated, One(findings, LegacyVirtualAdapters, "E1000e").Verdict);
-        Assert.Equal(ComplianceVerdict.NotEvaluated, One(findings, LegacyVirtualAdapters, "LSI Logic").Verdict);
+        Assert.Equal(ComplianceVerdict.NotEvaluated, One(findings, LegacyVirtualAdapters, "LSI Logic Parallel").Verdict);
     }
 
     [Fact]
