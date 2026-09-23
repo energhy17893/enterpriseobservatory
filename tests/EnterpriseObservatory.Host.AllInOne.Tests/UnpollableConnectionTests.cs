@@ -175,12 +175,13 @@ public class UnpollableConnectionTests : IDisposable
     [Fact]
     public async Task The_reason_a_connection_cannot_be_polled_reaches_the_operator()
     {
-        // The three reasons are three different errands. Lost key material
-        // sends someone to their backup procedure, a blank password sends them
-        // to a form, and a kind this build cannot read sends them to whoever
-        // deploys the service. A single "not collecting" would send all three
-        // to the wrong place while the estate is unread, which is precisely the
-        // distinction PasswordUnreadable was added to preserve.
+        // The three reasons are three different errands, and only two of them
+        // are the operator's to fix. Lost key material sends someone to their
+        // backup procedure and a blank password sends them to a form -- both
+        // stay alarms until they do. A kind this build cannot read sends them
+        // to whoever deploys the service instead, and paging about a gap in
+        // the product nobody here can close is what N1 (ADR-0026) stops: it
+        // still reaches the collectors screen and the log, just not the inbox.
         _connections.Add(Connection("no-key-ring") with { PasswordUnreadable = true });
         _connections.Add(Connection("never-entered") with { Password = Secret.Empty });
         _connections.Add(Connection("wrong-kind") with { Kind = "netapp" });
@@ -196,10 +197,14 @@ public class UnpollableConnectionTests : IDisposable
             "no password has been entered",
             described["never-entered"].First().Description,
             StringComparison.Ordinal);
+        Assert.DoesNotContain("wrong-kind", described.SelectMany(g => g).Select(a => a.Description));
+
+        var collectors = Screens().Collectors();
         Assert.Contains(
-            "no collector for kind 'netapp'",
-            described["wrong-kind"].First().Description,
-            StringComparison.Ordinal);
+            collectors,
+            c => c.InstanceId == "wrong-kind" &&
+                 c.LastFailureDetail != null &&
+                 c.LastFailureDetail.Contains("no collector for kind 'netapp'", StringComparison.Ordinal));
     }
 
     // --- it clears itself --------------------------------------------------
@@ -310,6 +315,93 @@ public class UnpollableConnectionTests : IDisposable
         Assert.Equal(0, Screens().Overview().FailingCollectors);
         Assert.Empty(_logged);
     }
+
+    // --- N1: not polled is not an alarm (ADR-0026) -------------------------
+
+    [Fact]
+    public async Task Disabling_a_connection_resolves_the_unreachable_alert_it_left_open()
+    {
+        // The live bug: CLS-Vcenter and SVT_Vcenter, disabled, still carried
+        // "Collector unreachable" because the registry stops handing them to
+        // the cycle the moment they are disabled -- nothing was left to sign
+        // for their fingerprint, so it stayed open and stale forever instead
+        // of resolving.
+        _connections.Add(Connection("vc-1"));
+        var flaky = new FakeInventorySource("vc-1"); // throws every read
+        var cycle = Cycle();
+
+        // Twice: a Warning confirms on its second consecutive observation.
+        await cycle.RunInventoryAsync([flaky], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([flaky], Options, CancellationToken.None);
+
+        Assert.Single(Screens().Alerts().Items, a => a.Title == "Collector unreachable (inventory)");
+
+        _connections.Replace(Connection("vc-1") with { IsEnabled = false });
+        _clock.Advance(TimeSpan.FromMinutes(5));
+
+        var registry = Registry();
+        Assert.Empty(registry.Inventory); // the registry builds nothing for it once disabled
+
+        await cycle.RunInventoryAsync(registry.Inventory, Options, CancellationToken.None, DisabledIds());
+
+        Assert.Empty(Screens().Alerts().Items);
+    }
+
+    [Fact]
+    public async Task A_kind_with_no_collector_never_alerts_and_resolves_what_was_open()
+    {
+        // The live bug's other half: KibarHolding-alhcesx04-ilo, kind
+        // 'redfish', with no collector built for it yet
+        // (CollectionFailureKind.NotConfigured). Modelled here with any kind
+        // this build cannot read, the same shape the registry gives redfish.
+        _connections.Add(Connection("ilo-1"));
+        var flaky = new FakeInventorySource("ilo-1");
+        var cycle = Cycle();
+
+        await cycle.RunInventoryAsync([flaky], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await cycle.RunInventoryAsync([flaky], Options, CancellationToken.None);
+
+        Assert.Single(Screens().Alerts().Items, a => a.Title == "Collector unreachable (inventory)");
+
+        // Turns out to be a kind this build has no collector for.
+        _connections.Replace(Connection("ilo-1") with { Kind = "redfish" });
+        _clock.Advance(TimeSpan.FromMinutes(5));
+
+        var registry = Registry();
+        await cycle.RunInventoryAsync(registry.Inventory, Options, CancellationToken.None);
+        await cycle.RunObservationsAsync(registry.Observations, Options, CancellationToken.None);
+
+        Assert.Empty(Screens().Alerts().Items);
+
+        // And it never comes back while the registry keeps standing in for it.
+        _clock.Advance(TimeSpan.FromHours(1));
+        await cycle.RunInventoryAsync(registry.Inventory, Options, CancellationToken.None);
+        Assert.Empty(Screens().Alerts().Items);
+    }
+
+    [Fact]
+    public async Task An_enabled_connection_that_really_fails_still_raises_unreachable()
+    {
+        // KBVc01: a DNS failure on an enabled, polled vSphere connection is
+        // exactly what "Collector unreachable" exists to report. N1 narrows
+        // the alarm to sources deliberately not polled; it must not touch
+        // this one.
+        _connections.Add(Connection("kbvc01"));
+        var dnsFailure = new FakeInventorySource("kbvc01"); // default: throws, unclassified
+        var cycle = Cycle();
+
+        await cycle.RunInventoryAsync([dnsFailure], Options, CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        var result = await cycle.RunInventoryAsync([dnsFailure], Options, CancellationToken.None);
+
+        Assert.Contains(result.Visible, a => a.Title == "Collector unreachable (inventory)");
+    }
+
+    /// <summary>What <see cref="MonitoringWorker"/> would compute and pass in, live.</summary>
+    private IReadOnlyCollection<string> DisabledIds() =>
+        [.. _connections.All.Where(c => !c.IsEnabled).Select(c => c.InstanceId)];
 
     [Fact]
     public async Task Nothing_said_about_an_unpollable_connection_says_the_password()

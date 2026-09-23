@@ -42,6 +42,14 @@ public sealed record EvidenceSources
     public Func<EntityId, bool> IsVanished { get; init; } = static _ => false;
 
     /// <summary>
+    /// Connections an operator switched off (N1, ADR-0026). An alert owned by
+    /// one of these is unknown while it holds, not stale-open and not
+    /// resolved: the decision is deliberate, but it is still not evidence
+    /// either way about the condition underneath.
+    /// </summary>
+    public IReadOnlyCollection<string> DisabledConnections { get; init; } = [];
+
+    /// <summary>
     /// For a scope whose alerts belong to no source, such as compaction: nothing
     /// reported, and nothing is owned.
     /// </summary>
@@ -52,6 +60,14 @@ public sealed record EvidenceSources
         entity is { } id &&
         OwnerOf(id) is { } owner &&
         !Reporting.Contains(owner, StringComparer.Ordinal)
+            ? owner
+            : null;
+
+    /// <summary>The source that owns <paramref name="entity"/> and is disabled, if there is one.</summary>
+    internal string? DisabledOwnerOf(EntityId? entity) =>
+        entity is { } id &&
+        OwnerOf(id) is { } owner &&
+        DisabledConnections.Contains(owner, StringComparer.Ordinal)
             ? owner
             : null;
 }
@@ -542,6 +558,23 @@ public static class AlertReconciler
                 continue;
             }
 
+            // Nothing spoke for this alert at all this cycle — no verdict, no
+            // producer signature. If its owner is disabled, that silence is
+            // the deliberate decision, not staleness: unknown now, rather than
+            // "not reported" left open until the age clamp eventually catches
+            // up (N1, ADR-0026 — the widened case, "Host forwards no logs" on
+            // SVT_Vcenter staying stale-open).
+            if (instance.Entity is { } ownedEntity &&
+                request.Sources.DisabledOwnerOf(ownedEntity) is { } disabledOwner)
+            {
+                decisions[fingerprint] = new Blind(new AlertUnknown
+                {
+                    Reason = UnknownReason.SourceDisabled,
+                    Detail = $"source '{disabledOwner}' is disabled",
+                });
+                continue;
+            }
+
             decisions[fingerprint] = instance.RuleId is { } ruleId
                 // The flipped default: a rule that said nothing about an alert
                 // it holds has not found the condition gone.
@@ -639,6 +672,14 @@ public static class AlertReconciler
         if (request.Sources.Reporting.Count == 0)
         {
             return Unknown(verdict, UnknownReason.SourceSilent, "no source reported this cycle");
+        }
+
+        // Checked before silence: a disabled connection never answers either,
+        // and "the operator switched it off" is the truer, more permanent
+        // reason — not "we could not reach it this cycle".
+        if (request.Sources.DisabledOwnerOf(verdict.Entity) is { } disabledOwner)
+        {
+            return Unknown(verdict, UnknownReason.SourceDisabled, $"source '{disabledOwner}' is disabled");
         }
 
         if (request.Sources.SilentOwnerOf(verdict.Entity) is { } silent)

@@ -155,6 +155,16 @@ public enum CollectionFailureKind
     /// <summary>The platform can supply this, but is not configured to. See the vSphere statistics level.</summary>
     InsufficientDetailLevel,
     NotConfigured,
+
+    /// <summary>
+    /// The connection has no usable password — never entered, or its stored
+    /// one cannot be decrypted (ADR-0015). Distinct from
+    /// <see cref="NotConfigured"/> (N1): that one is the estate honestly
+    /// saying "not polled", never a reason to raise "Collector unreachable"
+    /// (unknown is not an alarm, ADR-0026); a missing credential is an
+    /// operator's own fix waiting, and stays an alarm until they make it.
+    /// </summary>
+    CredentialsUnavailable,
 }
 
 /// <summary>Whether asking again could plausibly give a different answer.</summary>
@@ -178,7 +188,8 @@ public static class CollectionFailures
     public static bool IsWorthRetrying(CollectionFailureKind kind) =>
         kind is not (CollectionFailureKind.AuthenticationRejected
             or CollectionFailureKind.AuthorizationDenied
-            or CollectionFailureKind.NotConfigured);
+            or CollectionFailureKind.NotConfigured
+            or CollectionFailureKind.CredentialsUnavailable);
 }
 
 /// <summary>An exception that already knows why collection failed.</summary>
