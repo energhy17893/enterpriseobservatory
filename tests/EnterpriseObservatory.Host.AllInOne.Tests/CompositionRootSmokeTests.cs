@@ -341,6 +341,30 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_viewer_can_read_the_simplivity_view()
+    {
+        // S5, the positive beside the 401 below: wired, and its shape — the
+        // RPO read from the M8.8 check, no source configured, nothing invented.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync("/api/simplivity");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"backupRpoHours\":36", body, StringComparison.Ordinal);
+        Assert.Contains("\"sources\":[]", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_anonymous_caller_is_refused_the_simplivity_view_with_401()
+    {
+        var response = await Client().GetAsync("/api/simplivity");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task A_viewer_who_tries_to_change_something_is_refused_with_403()
     {
         Account("viewer", Role.Viewer);

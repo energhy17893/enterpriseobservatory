@@ -176,6 +176,9 @@ public sealed class SimplivityInventorySource(
         return newest;
     }
 
+    /// <summary>A shared key without its namespace, as <see cref="Read.Annotate"/> adds it back.</summary>
+    private static string Key(string key) => key[(Namespace.Length + 1)..];
+
     private static string? Text(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) ? v.ValueKind switch
         {
@@ -240,15 +243,15 @@ public sealed class SimplivityInventorySource(
                 var state = Judged(host, "hosts", "state");
                 Annotate(id, $"host '{name}'", new()
                 {
-                    ["state"] = state,
-                    ["upgrade_state"] = Judged(host, "hosts", "upgrade_state"),
-                    ["version"] = Text(host, "version"),
+                    [Key(InventoryVerdictKeys.SimplivityState)] = state,
+                    [Key(InventoryVerdictKeys.SimplivityUpgradeState)] = Judged(host, "hosts", "upgrade_state"),
+                    [Key(InventoryVerdictKeys.SimplivityVersion)] = Text(host, "version"),
                     // The OVC, by name only: the host carries no reference to
                     // its VM. It folds onto its vSphere VM only when
                     // /api/virtual_machines lists it with a
                     // <uuid>:VirtualMachine:vm-N reference (VirtualMachines
                     // below) — never by matching this name.
-                    ["virtual_controller_name"] = Text(host, "virtual_controller_name"),
+                    [Key(InventoryVerdictKeys.SimplivityVirtualControllerName)] = Text(host, "virtual_controller_name"),
                 });
 
                 // HPE's svt-federation-show problem indicators: Faulty, Suspected.
@@ -297,13 +300,13 @@ public sealed class SimplivityInventorySource(
 
                 Annotate(id, $"OmniStack cluster '{name}'", new()
                 {
-                    ["name"] = name,
-                    ["arbiter_required"] = required,
-                    ["arbiter_configured"] = Text(cluster, "arbiter_configured"),
-                    ["arbiter_connected"] = connected,
-                    ["upgrade_state"] = Judged(cluster, "omnistack_clusters", "upgrade_state"),
-                    ["version"] = Text(cluster, "version"),
-                    ["members"] = members.Count.ToString(CultureInfo.InvariantCulture),
+                    [Key(InventoryVerdictKeys.SimplivityName)] = name,
+                    [Key(InventoryVerdictKeys.SimplivityArbiterRequired)] = required,
+                    [Key(InventoryVerdictKeys.SimplivityArbiterConfigured)] = Text(cluster, "arbiter_configured"),
+                    [Key(InventoryVerdictKeys.SimplivityArbiterConnected)] = connected,
+                    [Key(InventoryVerdictKeys.SimplivityUpgradeState)] = Judged(cluster, "omnistack_clusters", "upgrade_state"),
+                    [Key(InventoryVerdictKeys.SimplivityVersion)] = Text(cluster, "version"),
+                    [Key(InventoryVerdictKeys.SimplivityMembers)] = members.Count.ToString(CultureInfo.InvariantCulture),
                 });
 
                 if (connected == "false")
@@ -354,14 +357,14 @@ public sealed class SimplivityInventorySource(
                 var ha = Judged(vm, "virtual_machines", "ha_status");
                 var settings = new Dictionary<string, string?>
                 {
-                    ["ha_status"] = ha,
-                    ["ha_resynchronization_progress"] = Text(vm, "ha_resynchronization_progress"),
+                    [Key(InventoryVerdictKeys.SimplivityHaStatus)] = ha,
+                    [Key(InventoryVerdictKeys.SimplivityHaResyncProgress)] = Text(vm, "ha_resynchronization_progress"),
                 };
 
                 if (Text(vm, "id") is { } svtId && newestBackup.TryGetValue(svtId, out var backup))
                 {
-                    settings[InventoryVerdictKeys.SimplivityBackupLastUtc[(Namespace.Length + 1)..]] = backup.At.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
-                    settings["backup.type"] = backup.Type;
+                    settings[Key(InventoryVerdictKeys.SimplivityBackupLastUtc)] = backup.At.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+                    settings[Key(InventoryVerdictKeys.SimplivityBackupType)] = backup.Type;
                 }
 
                 Annotate(id, target, settings);

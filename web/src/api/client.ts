@@ -9,6 +9,7 @@ import type {
   SelfMetricsView,
   SeriesOptionView,
   SeriesView,
+  SimplivityView,
 } from './types'
 import type {
   AccountView,
@@ -217,6 +218,7 @@ export const api = {
   entity: (id: string) => get<EntityDetailView>(`/api/entities/${encodeURIComponent(id)}`),
   collectors: () => get<CollectorView[]>('/api/collectors'),
   coverage: () => get<CoverageView[]>('/api/coverage'),
+  simplivity: () => get<SimplivityView>('/api/simplivity'),
   seriesFor: (entityId: string) =>
     get<SeriesOptionView[]>(`/api/entities/${encodeURIComponent(entityId)}/series`),
   authState: () => get<AuthStateView>('/api/auth/state'),

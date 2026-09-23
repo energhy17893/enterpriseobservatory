@@ -132,6 +132,8 @@ export interface EntityDetailView {
    * two live hosts, which N+1 cannot be asked of.
    */
   clusterFailover?: ClusterFailoverView | null
+  /** What other sources say about it (ADR-0027), e.g. SimpliVity on a vSphere host. */
+  annotations: AnnotationView[]
 }
 
 /**
@@ -1075,4 +1077,78 @@ export interface DatabaseView {
 export interface DatabaseActionView {
   succeeded: boolean
   detail: string
+}
+
+/**
+ * One annotated value (ADR-0027). `value` null = could not be evaluated
+ * (Unknown, ADR-0026); `carriedForward` = the source was silent this cycle and
+ * this is its word from `readAtUtc`.
+ */
+export interface AnnotationView {
+  namespace: string
+  key: string
+  value: string | null
+  source: string
+  readAtUtc: string
+  carriedForward: boolean
+}
+
+/** Every row carries whether it is carried forward and when it was read. */
+interface SimplivityRow {
+  entityId: string
+  name: string
+  carriedForward: boolean
+  readAtUtc: string
+}
+
+export interface SimplivityHostView extends SimplivityRow {
+  state: string | null
+  upgradeState: string | null
+  version: string | null
+  virtualControllerName: string | null
+}
+
+export interface SimplivityClusterView extends SimplivityRow {
+  arbiterRequired: boolean | null
+  arbiterConfigured: boolean | null
+  arbiterConnected: boolean | null
+  upgradeState: string | null
+  version: string | null
+  members: number | null
+  hosts: SimplivityHostView[]
+}
+
+export interface SimplivityVmView extends SimplivityRow {
+  haStatus: string | null
+  resynchronizationProgress: string | null
+}
+
+export interface SimplivityBackupView extends SimplivityRow {
+  lastBackupUtc: string
+  type: string | null
+}
+
+export interface SimplivitySourceView {
+  instanceId: string
+  collectorHealth: HealthState | null
+  lastSuccessUtc: string | null
+  lastFailureDetail: string | null
+  partialFailures: number
+  reporting: boolean
+  readAtUtc: string | null
+  clusters: SimplivityClusterView[]
+  otherHosts: SimplivityHostView[]
+  /** A missing value is counted under "Unknown", never under the good state. */
+  hostStates: Record<string, number>
+  arbitersConnected: Record<string, number>
+  vmHaStatuses: Record<string, number>
+  notSafeVms: SimplivityVmView[]
+  backups: { withBackup: number; withoutBackup: number; olderThanRpo: SimplivityBackupView[] }
+}
+
+export interface SimplivityView {
+  generatedAtUtc: string
+  /** The M8.8 backup-freshness RPO, from the check itself; null when absent. */
+  backupRpoHours: number | null
+  sources: SimplivitySourceView[]
 }

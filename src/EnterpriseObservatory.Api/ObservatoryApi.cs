@@ -98,7 +98,18 @@ public static class ObservatoryApi
         api.MapGet("/coverage", (ReadModel model) => model.Coverage())
             .WithName("GetCoverage");
 
-        api.MapGet("/entities/{id}/series", (ReadModel model, string id) => model.SeriesFor(id))
+        // The SimpliVity deep view (ADR-0007 tier 3): the simplivity.*
+        // annotations per configured SimpliVity connection. Read-only.
+        api.MapGet("/simplivity", (ReadModel model, ISourceConnectionStore connections) =>
+                model.Simplivity(
+                [
+                    .. connections.All
+                        .Where(c => string.Equals(c.Kind, ConnectionKinds.Simplivity, StringComparison.Ordinal))
+                        .Select(c => c.InstanceId),
+                ]))
+            .WithName("GetSimplivity");
+
+        api.MapGet("/entities/{id}/series",(ReadModel model, string id) => model.SeriesFor(id))
             .WithName("GetEntitySeries");
 
         api.MapGet("/entities/{id}/series/{counter}", (
