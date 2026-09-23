@@ -62,6 +62,7 @@ const GROUPS = [
       { to: '/reports/scheduled', label: 'Scheduled reports' },
       { to: '/email', label: 'Email' },
       { to: '/accounts', label: 'Accounts' },
+      { to: '/appearance', label: 'Appearance' },
     ],
   },
 ] as const

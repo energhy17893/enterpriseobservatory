@@ -13,7 +13,9 @@
  *   - Bileşende ham palet rengi kullanılmaz
  */
 
-import { themes } from './tokens.mjs';
+import { sets } from './tokens.mjs';
+
+const { classic: themes, ...others } = sets;
 
 const STATUSES = ['healthy', 'warning', 'critical', 'info', 'unknown'];
 const ROLES = ['surface', 'border', 'solid', 'solidOn', 'text'];
@@ -82,7 +84,23 @@ ${emitTheme(themes.dark)}
 .light {
 ${emitTheme(themes.light)}
 }
+${Object.entries(others).map(([name, set]) => {
+    // classic yukarıda özniteliksiz: varsayılan ve bugünkü çıktıyla birebir aynı.
+    // Diğer setler <html data-theme-set="..."> ile seçilir; özgüllük (0,2,0) /
+    // (0,3,0) classic'in :root ve .light kurallarını geçer.
+    const sel = `:root[data-theme-set="${name}"]`;
+    return `
+/* Token seti: ${name} */
+${sel} {
+${emitTheme(set.dark)}
+}
 
+${sel}.light,
+${sel} .light {
+${emitTheme(set.light)}
+}
+`;
+}).join('')}
 @theme inline {
 ${emitThemeInline()}
 }
