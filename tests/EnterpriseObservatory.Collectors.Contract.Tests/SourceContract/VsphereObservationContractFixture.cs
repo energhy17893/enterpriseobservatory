@@ -87,8 +87,14 @@ public sealed class VsphereObservationContractFixture : IObservationContractFixt
         public void Accept(ObservationBatch batch) => _slot.Accept(batch);
     }
 
-    private sealed class LateApi(string instanceId) : IVsphereApi
+    private sealed class LateApi(string instanceId) : IVsphereApi, IVsphereChannelSelfMetrics
     {
+        // F6: this fixture's late-value scenario steps ServerNow by hand to
+        // drive the fill window, so it must keep offering GetServerTimeAsync
+        // through the self-metrics channel interface — VsphereObservationSource
+        // no longer calls IVsphereApi for it at all.
+        public int SessionsHeld => 1;
+
         private static readonly TimeSpan FillDelay = TimeSpan.FromSeconds(3);
 
         private static readonly VsphereCounter Cpu = new()

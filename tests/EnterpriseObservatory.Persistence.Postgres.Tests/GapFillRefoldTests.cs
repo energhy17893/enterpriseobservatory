@@ -155,8 +155,12 @@ public class GapFillRefoldTests : IDisposable
     }
 
     /// <summary>One host sampling every 20 s and keeping an hour.</summary>
-    private sealed class OneTimeline : IVsphereApi
+    private sealed class OneTimeline : IVsphereApi, IVsphereChannelSelfMetrics
     {
+        // F6: VsphereObservationSource now reads GetServerTimeAsync through
+        // this channel interface, not IVsphereApi.
+        public int SessionsHeld => 1;
+
         private static readonly VsphereCounter Cpu = new()
         {
             Id = 1, Group = "cpu", Name = "usage", Rollup = RollupType.Average, Unit = "percent", Level = 1,

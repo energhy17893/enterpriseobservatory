@@ -146,6 +146,27 @@ public sealed class VsphereSessionChannel : IDisposable
     public int Generation => Volatile.Read(ref _generation);
 
     /// <summary>
+    /// Sessions this channel believes it holds right now — 0 or 1, since one
+    /// channel ever opens one session at a time (F6, ADR-0025 §5).
+    /// </summary>
+    /// <remarks>
+    /// "Believes", not "vCenter confirms": <c>_loggedIn</c> is this channel's
+    /// own bookkeeping, not a read of the server's session list — the
+    /// read-only account this product runs as cannot list it at all
+    /// (measured: <c>NoPermission</c>, docs/reference-approaches.md §10.6). A
+    /// session vCenter's idle timeout already collected without this channel
+    /// finding out would still read as 1 here; nothing on a read-only account
+    /// can catch that.
+    /// </remarks>
+    /// <remarks>
+    /// Read without the mutex, the same way <see cref="EnsureSessionAsync(int?, CancellationToken)"/>'s
+    /// own fast path already reads <c>_loggedIn</c>: a self-metric a health
+    /// endpoint polls every cycle must not contend with every real call for a
+    /// number that is 0 or 1 either way.
+    /// </remarks>
+    public int SessionsHeld => _loggedIn ? 1 : 0;
+
+    /// <summary>
     /// Ensures a usable session and returns its service content, logging in
     /// or rebuilding as needed. See the type remarks for the model.
     /// </summary>

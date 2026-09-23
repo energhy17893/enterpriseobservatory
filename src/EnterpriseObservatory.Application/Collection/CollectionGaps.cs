@@ -111,19 +111,25 @@ public interface ICollectionGapStore
     IReadOnlyDictionary<CollectionGapState, int> CountsByState();
 }
 
-/// <summary>Series a collector writes about itself rather than about the estate.</summary>
+/// <summary>Series a collector once wrote about itself rather than about the estate.</summary>
+/// <remarks>
+/// F6 (ADR-0025 §5) moved clock skew off this path entirely — it is now
+/// <see cref="CollectorHealth.ClockSkewSeconds"/>, produced by the runner from
+/// data a source's read never itself computes into an <see cref="Observation"/>.
+/// The name below is kept, unrenamed, only because it is a series identity: it
+/// may still exist in stored history, and renaming a constant nobody writes to
+/// any more would still orphan whatever was written under it before F6.
+/// </remarks>
 public static class CollectorSelfMetrics
 {
     /// <summary>
-    /// The source's clock minus this process's clock, in seconds, once a cycle.
+    /// The historical series name a collector used to write for clock skew,
+    /// kept as a <c>static readonly</c> field (not <c>const</c>) so a
+    /// collector referencing it again is visible to
+    /// <c>LayerBoundaryTests.No_collector_writes_a_metric</c> — a <c>const</c>
+    /// inlines at every call site and leaves no trace for that test to find.
     /// </summary>
-    /// <remarks>
-    /// One series, on the source's own entity (for vSphere, the vCenter), so
-    /// whatever reports collector health reads it from one place. Positive
-    /// means the source is ahead. Sample times are the source's, so this is
-    /// how far "now" on a chart and "now" in the product can disagree.
-    /// </remarks>
-    public const string ClockSkewCounter = "collector.clockSkew.latest";
+    public static readonly string ClockSkewCounter = "collector.clockSkew.latest";
 }
 
 /// <summary>The arithmetic of the gap record, apart from where it is kept.</summary>

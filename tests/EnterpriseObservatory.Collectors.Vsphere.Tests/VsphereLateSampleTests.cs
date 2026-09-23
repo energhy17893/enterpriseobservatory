@@ -235,8 +235,13 @@ public class VsphereLateSampleTests
     /// A vCenter that lists a 20-second slot as soon as its time has passed
     /// and fills it three seconds later; until then the chosen series read -1.
     /// </summary>
-    internal sealed class PublishingVcenter(Func<string, bool> placeholders, DateTimeOffset? neverFills) : IVsphereApi
+    internal sealed class PublishingVcenter(Func<string, bool> placeholders, DateTimeOffset? neverFills)
+        : IVsphereApi, IVsphereChannelSelfMetrics
     {
+        // F6: VsphereObservationSource now reads GetServerTimeAsync through
+        // this channel interface, not IVsphereApi.
+        public int SessionsHeld => 1;
+
         private static readonly TimeSpan FillDelay = TimeSpan.FromSeconds(3);
 
         private static readonly VsphereCounter Cpu = new()

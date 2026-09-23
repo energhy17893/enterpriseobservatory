@@ -9,6 +9,30 @@ namespace EnterpriseObservatory.Collectors.Vsphere;
 /// HTTP stack. Those decisions are where the bugs live; the transport is
 /// mechanical.
 /// </remarks>
+/// <summary>
+/// What the channel behind a vSphere API instance can say about itself, for
+/// self-metrics the runner produces (F6, ADR-0025 §5) — never part of a
+/// business read.
+/// </summary>
+/// <remarks>
+/// Separate from <see cref="IVsphereApi"/> on purpose: these answer
+/// <see cref="IObservationSource.SessionsHeld"/> and
+/// <see cref="IObservationSource.GetServerTimeAsync"/>, which
+/// <see cref="VsphereObservationSource"/> forwards without adding them to its
+/// own read. A fake that implements only <see cref="IVsphereApi"/> — every
+/// existing test fixture — simply does not offer this, and the source reports
+/// nothing for either self-metric, exactly like a Redfish source that has not
+/// implemented them yet.
+/// </remarks>
+public interface IVsphereChannelSelfMetrics
+{
+    /// <summary>Sessions this channel believes it holds — 0 or 1; see <see cref="VsphereSessionChannel"/>.</summary>
+    int SessionsHeld { get; }
+
+    /// <summary>The vCenter's own clock (<c>ServiceInstance.CurrentTime</c>), or null when it could not be read.</summary>
+    Task<DateTimeOffset?> GetServerTimeAsync(CancellationToken cancellationToken);
+}
+
 public interface IVsphereApi
 {
     /// <summary>Identifies this vCenter, for provenance and health tracking.</summary>
@@ -62,20 +86,6 @@ public interface IVsphereApi
         IReadOnlyList<VsphereCounter> counters,
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken);
-
-    /// <summary>
-    /// The vCenter's own clock (<c>ServiceInstance.CurrentTime</c>), or null
-    /// when this implementation cannot say.
-    /// </summary>
-    /// <remarks>
-    /// The end of every read window, and the reference the high-water marks
-    /// are compared against: sample times are the server's, so the local clock
-    /// being a few minutes out must not decide what is asked for. Null falls
-    /// back to the local clock — the default, for implementations that are not
-    /// talking to a server at all.
-    /// </remarks>
-    Task<DateTimeOffset?> GetServerTimeAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<DateTimeOffset?>(null);
 
     /// <summary>Reads samples for a batch of entities, each over its own window.</summary>
     /// <remarks>

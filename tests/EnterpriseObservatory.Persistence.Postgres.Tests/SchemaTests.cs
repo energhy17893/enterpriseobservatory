@@ -68,8 +68,8 @@ public class SchemaTests : IDisposable
         // says it is", which passes even if the migration list were truncated
         // by accident. The literal makes adding a migration an event somebody
         // has to acknowledge here -- which is exactly what it did when the
-        // coverage table arrived as migration 3, again when the event tables arrived as 4, when the event read indexes arrived as 5, when the compliance tables arrived as 6, when compliance history, staleness and exception withdrawal arrived as 7, when the scheduled email report tables arrived as 8, when the compaction late-sample marker arrived as 9, when the report subscription audit columns arrived as 10, when the compliance finding subject arrived as 11, when the collection gap record arrived as 13 -- with 12 held back for the K2 package, which had not landed when this did -- and when the three-valued alert state and the durable alert history arrived as 14, when F2's per-source skipped-cycle count arrived as 15, and when F4's views_held and views_held_max self-metric columns arrived as 16.
-        Assert.Equal(16, Version());
+        // coverage table arrived as migration 3, again when the event tables arrived as 4, when the event read indexes arrived as 5, when the compliance tables arrived as 6, when compliance history, staleness and exception withdrawal arrived as 7, when the scheduled email report tables arrived as 8, when the compaction late-sample marker arrived as 9, when the report subscription audit columns arrived as 10, when the compliance finding subject arrived as 11, when the collection gap record arrived as 13 -- with 12 held back for the K2 package, which had not landed when this did -- and when the three-valued alert state and the durable alert history arrived as 14, when F2's per-source skipped-cycle count arrived as 15, when F4's views_held and views_held_max self-metric columns arrived as 16, and when F6's self_metrics jsonb column arrived as 17.
+        Assert.Equal(17, Version());
 
         // Measurements and state both, from the same open. The two used to be
         // separate SQLite files and a half-applied schema would now be a
@@ -129,7 +129,7 @@ public class SchemaTests : IDisposable
 
         _live.Restart();
 
-        Assert.Equal(16, Version());
+        Assert.Equal(17, Version());
         Assert.Equal(tablesBefore, TableCount());
         Assert.NotNull(new PostgresUserAccountStore(_live.Database).Find("ertugrul"));
     }
@@ -244,7 +244,7 @@ public class SchemaTests : IDisposable
     {
         RequireDatabase();
 
-        Assert.Equal(16, Version());
+        Assert.Equal(17, Version());
 
         RewindTo13();
 
@@ -291,7 +291,7 @@ public class SchemaTests : IDisposable
 
         _live.Restart();
 
-        Assert.Equal(16, Version());
+        Assert.Equal(17, Version());
         Assert.Equal(0, Count("information_schema.tables WHERE table_schema = current_schema() AND table_name = 'alert_transition'"));
 
         var store = new PostgresAlertStateStore(_live.Database);
@@ -338,6 +338,7 @@ public class SchemaTests : IDisposable
         ALTER TABLE collector_health DROP COLUMN skipped_cycles;
         ALTER TABLE collector_health DROP COLUMN views_held;
         ALTER TABLE collector_health DROP COLUMN views_held_max;
+        ALTER TABLE collector_health DROP COLUMN self_metrics;
         DROP TABLE alert_history;
         DROP INDEX ix_alert_rule;
         ALTER TABLE alert_instance
@@ -374,7 +375,7 @@ public class SchemaTests : IDisposable
 
         _live.Restart();
 
-        Assert.Equal(16, Version());
+        Assert.Equal(17, Version());
 
         // Evidence is never discarded for lacking an instance: both rows are
         // there, in an episode dated by their first transition, and nothing is

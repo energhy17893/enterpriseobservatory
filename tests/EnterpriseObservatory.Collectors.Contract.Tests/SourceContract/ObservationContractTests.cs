@@ -40,6 +40,16 @@ public abstract class ObservationContractTests<TFixture>
 
     // --- case: self-metrics are present after every result -----------------
 
+    /// <summary>
+    /// F6, ADR-0025 §5: §10.2's minimum list -- answered, duration, items
+    /// read/unread, skipped cycles, total attempts -- exists after a healthy
+    /// read and after a failed one, produced entirely by the runner. Held
+    /// sessions and clock skew are asserted separately below
+    /// (<see cref="Self_metrics_are_produced_by_the_runner_even_when_the_collector_emits_none"/>):
+    /// they are null here whenever the fixture's fake does not offer
+    /// <c>IVsphereChannelSelfMetrics</c>, and null is exactly what "the
+    /// collector emits none" must read as, not a failure of this case.
+    /// </summary>
     [Fact]
     public async Task Self_metrics_are_present_after_every_result_healthy_or_not()
     {
@@ -53,9 +63,201 @@ public abstract class ObservationContractTests<TFixture>
 
         var okHealth = Assert.Single(healthy.Health);
         Assert.NotNull(okHealth.LastAttemptUtc);
+        Assert.True(okHealth.Up);
+        Assert.NotNull(okHealth.LastDuration);
+        Assert.NotEmpty(okHealth.RecentDurations);
+        Assert.NotNull(okHealth.ItemsRead);
+        Assert.NotNull(okHealth.ItemsUnread);
+        Assert.Equal(1, okHealth.TotalAttempts);
+        Assert.Equal(0, okHealth.TotalFailures);
 
         var slowHealth = Assert.Single(slow.Health);
         Assert.NotNull(slowHealth.LastAttemptUtc);
+        Assert.False(slowHealth.Up);
+        Assert.NotNull(slowHealth.LastDuration);
+        Assert.NotEmpty(slowHealth.RecentDurations);
+        // Not reached, so nothing was read -- null, not zero (§10.6's rule).
+        Assert.Null(slowHealth.ItemsRead);
+        Assert.Null(slowHealth.ItemsUnread);
+        Assert.Equal(1, slowHealth.TotalAttempts);
+        Assert.Equal(1, slowHealth.TotalFailures);
+    }
+
+    /// <summary>
+    /// F6's own new case: the runner's self-metrics exist even for a source
+    /// that offers none of its own -- no <see cref="IObservationSource.SessionsHeld"/>,
+    /// no <see cref="IObservationSource.GetServerTimeAsync"/> -- proving these
+    /// numbers are the runner's to produce, not a courtesy a collector has to
+    /// remember to supply. <typeparamref name="TFixture"/>'s own healthy
+    /// source already is this case today (its fakes do not implement
+    /// <c>IVsphereChannelSelfMetrics</c>); a source with literally the
+    /// interface's bare defaults proves it independent of any one collector.
+    /// </summary>
+    [Fact]
+    public async Task Self_metrics_are_produced_by_the_runner_even_when_the_collector_emits_none()
+    {
+        var pipeline = new ObservationCollectionPipeline(new TestClock());
+
+        var result = await pipeline.RunAsync(
+            [new BareSource()], [], CollectionPolicy.Default, CancellationToken.None);
+
+        var health = Assert.Single(result.Health);
+        Assert.True(health.Up);
+        Assert.NotNull(health.LastAttemptUtc);
+        Assert.NotNull(health.LastDuration);
+        Assert.Equal(1, health.TotalAttempts);
+
+        // Exactly what "emits none" means: not invented as zero.
+        Assert.Null(health.SessionsHeld);
+        Assert.Null(health.ClockSkewSeconds);
+    }
+
+    /// <summary>An observation source offering nothing beyond what <see cref="IObservationSource"/> requires.</summary>
+    private sealed class BareSource : IObservationSource
+    {
+        public string InstanceId => "bare";
+
+        public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
+            Task.FromResult(new ObservationBatch { SourceInstanceId = InstanceId, ReadAtUtc = DateTimeOffset.UtcNow });
+    }
+
+    // --- case: up means Prometheus's up, not the Health rollup -------------
+
+    /// <summary>
+    /// A live estate reads Observation as permanently Warning because Storage
+    /// I/O Control is off everywhere, so <c>datastore.datastoreVMObservedLatency.latest</c>
+    /// is <see cref="CollectionFailureKind.NotConfigured"/> on every cycle.
+    /// That is a fact about the estate, not a failed scrape: <c>up</c> must
+    /// stay true, with the shortfall visible through <c>ItemsUnread</c>/
+    /// <c>PartialFailures</c> instead — the whole reason <c>up</c> is not
+    /// simply <c>Health == Healthy</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_read_with_only_a_configuration_partial_failure_is_up_with_items_unread()
+    {
+        var pipeline = new ObservationCollectionPipeline(new TestClock());
+
+        var result = await pipeline.RunAsync(
+            [new PartiallyConfiguredSource()], [], CollectionPolicy.Default, CancellationToken.None);
+
+        var health = Assert.Single(result.Health);
+        Assert.True(health.Up);
+        Assert.Equal(HealthState.Warning, health.Health);
+        Assert.True(health.ItemsUnread > 0);
+        Assert.Contains(health.PartialFailures, f => f.Kind == CollectionFailureKind.NotConfigured);
+    }
+
+    /// <summary>A source estate-wide not configured for one counter, otherwise clean.</summary>
+    private sealed class PartiallyConfiguredSource : IObservationSource
+    {
+        public string InstanceId => "partially-configured";
+
+        public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
+            Task.FromResult(new ObservationBatch
+            {
+                SourceInstanceId = InstanceId,
+                ReadAtUtc = DateTimeOffset.UtcNow,
+                Observations =
+                [
+                    new Observation
+                    {
+                        Entity = EntityId.For(InstanceId, "host-1"),
+                        Value = new CounterValue
+                        {
+                            CounterName = "cpu.usage.average",
+                            Raw = 10,
+                            Rollup = RollupType.Average,
+                            Interval = TimeSpan.FromSeconds(20),
+                            Unit = "percent",
+                        },
+                        SampledAtUtc = DateTimeOffset.UtcNow,
+                        Source = InstanceId,
+                    },
+                ],
+                Failures =
+                [
+                    new CollectionFailure
+                    {
+                        Kind = CollectionFailureKind.NotConfigured,
+                        Target = "datastore.datastoreVMObservedLatency.latest",
+                        Detail = "Storage I/O Control is not active on this datastore.",
+                    },
+                ],
+            });
+    }
+
+    /// <summary>A source whose one entity type fails to parse — this fixture's stand-in for a bad reply.</summary>
+    /// <remarks>
+    /// <see cref="IObservationContractFixture.CreateWithOneFailingEntityType"/>
+    /// already is this case: the vSphere fixture reports it with
+    /// <see cref="CollectionFailureKind.ProtocolError"/> (a vCenter fault that
+    /// is neither a rejected credential nor a permission problem, the same
+    /// bucket a genuinely malformed reply falls into), which is not an
+    /// environment condition and must not read as up.
+    /// </remarks>
+    [Fact]
+    public async Task A_parse_failure_is_not_up()
+    {
+        var fixture = new TFixture();
+        var pipeline = new ObservationCollectionPipeline(new TestClock());
+
+        var result = await pipeline.RunAsync(
+            [fixture.CreateWithOneFailingEntityType()], [], CollectionPolicy.Default, CancellationToken.None);
+
+        var health = Assert.Single(result.Health);
+        Assert.False(health.Up);
+    }
+
+    /// <summary>
+    /// The read itself succeeds, but bookkeeping it depended on — here, the
+    /// collection-gap record — refuses to write. §10.6's "the store refuses
+    /// the write" case: reached and parsed is not enough for <c>up</c> if
+    /// what the read produced could not be kept.
+    /// </summary>
+    [Fact]
+    public async Task A_write_the_read_depended_on_being_refused_is_not_up()
+    {
+        var fixture = new TFixture();
+        var pipeline = new ObservationCollectionPipeline(new TestClock(), gaps: new ThrowingGapStore());
+
+        var result = await pipeline.RunAsync(
+            [fixture.CreateHealthy(3)], [], CollectionPolicy.Default, CancellationToken.None);
+
+        var health = Assert.Single(result.Health);
+        Assert.False(health.Up);
+    }
+
+    /// <summary>A gap store that refuses every call, for the "store refuses the write" case.</summary>
+    private sealed class ThrowingGapStore : ICollectionGapStore
+    {
+        public IReadOnlyDictionary<EntityId, DateTimeOffset> LatestSampleTimes(IReadOnlyCollection<EntityId> entities) =>
+            throw new InvalidOperationException("The gap store is unreachable.");
+
+        public IReadOnlyList<CollectionGap> OpenGaps(string sourceInstanceId) =>
+            throw new InvalidOperationException("The gap store is unreachable.");
+
+        public IReadOnlyList<CollectionGap> Gaps(string sourceInstanceId) => [];
+
+        public CollectionGap Open(CollectionGap gap) => throw new InvalidOperationException("The gap store is unreachable.");
+
+        public void Update(CollectionGap gap) => throw new InvalidOperationException("The gap store is unreachable.");
+
+        public IReadOnlyDictionary<CollectionGapState, int> CountsByState() =>
+            new Dictionary<CollectionGapState, int>();
+    }
+
+    /// <summary>The abandoned-read case from <see cref="Self_metrics_are_present_after_every_result_healthy_or_not"/>, named on its own.</summary>
+    [Fact]
+    public async Task An_abandoned_read_is_not_up()
+    {
+        var fixture = new TFixture();
+        var pipeline = new ObservationCollectionPipeline(new TestClock());
+
+        var result = await pipeline.RunAsync(
+            [fixture.CreateSlow()], [], FastTimeoutPolicy, CancellationToken.None);
+
+        var health = Assert.Single(result.Health);
+        Assert.False(health.Up);
     }
 
     // --- case: state and memory stay constant over a long run --------------

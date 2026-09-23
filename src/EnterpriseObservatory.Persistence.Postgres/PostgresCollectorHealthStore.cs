@@ -1,7 +1,10 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Domain;
 using Npgsql;
+using NpgsqlTypes;
 using static EnterpriseObservatory.Persistence.Postgres.PgValues;
 
 namespace EnterpriseObservatory.Persistence.Postgres;
@@ -23,7 +26,7 @@ namespace EnterpriseObservatory.Persistence.Postgres;
 /// that fail independently. See ADR-0009.
 /// </para>
 /// </remarks>
-public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
+public sealed partial class PostgresCollectorHealthStore : ICollectorHealthStore
 {
     private readonly PostgresDatabase _database;
     private readonly Lock _gate = new();
@@ -101,9 +104,9 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                     instance_id, role, health, last_success_utc,
                     consecutive_failures, is_backing_off, last_failure_detail,
                     last_attempt_utc, last_failure_kind, skipped_cycles,
-                    views_held, views_held_max)
+                    views_held, views_held_max, self_metrics)
                 VALUES (@instance, @role, @health, @success, @failures, @backing, @detail,
-                        @attempt, @kind, @skipped, @views, @viewsMax)
+                        @attempt, @kind, @skipped, @views, @viewsMax, @selfMetrics)
                 ON CONFLICT (instance_id, role) DO UPDATE SET
                     health = EXCLUDED.health,
                     last_success_utc = EXCLUDED.last_success_utc,
@@ -114,7 +117,8 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                     last_failure_kind = EXCLUDED.last_failure_kind,
                     skipped_cycles = EXCLUDED.skipped_cycles,
                     views_held = EXCLUDED.views_held,
-                    views_held_max = EXCLUDED.views_held_max;
+                    views_held_max = EXCLUDED.views_held_max,
+                    self_metrics = EXCLUDED.self_metrics;
                 """);
 
             foreach (var entry in health)
@@ -132,6 +136,10 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
                 command.Bind("@skipped", entry.SkippedCycles);
                 command.Bind("@views", entry.ViewsHeld);
                 command.Bind("@viewsMax", entry.ViewsHeldMax);
+                command.Parameters.Add(new NpgsqlParameter("@selfMetrics", NpgsqlDbType.Jsonb)
+                {
+                    Value = (object?)SelfMetricsJson(entry) ?? DBNull.Value,
+                });
                 command.ExecuteNonQuery();
             }
 
@@ -142,6 +150,69 @@ public sealed class PostgresCollectorHealthStore : ICollectorHealthStore
             WritePartialFailures(connection, health);
         });
     }
+
+    /// <summary>
+    /// The write-only half of F6: everything <see cref="Load"/> deliberately
+    /// never reads back, as one blob rather than eight more scalar columns
+    /// (planner's decision, 23 September 2026 — the same trade
+    /// <c>views_held</c>/<c>views_held_max</c> already made in migration 16).
+    /// </summary>
+    /// <remarks>
+    /// <c>up</c> follows <see cref="CollectorHealth.Up"/> — Prometheus's
+    /// meaning, false on a parse or write failure too. <c>last_error</c> is
+    /// deliberately short: <see cref="CollectorHealth.LastFailureDetail"/>
+    /// already avoids credentials (ADR-0010: the password leaves its wrapper
+    /// only inside the login request, nowhere a fault message is built from
+    /// it) and every full response body this product decodes (SOAP faults,
+    /// Redfish's own) already reduces to a fixed sentence plus the fault kind
+    /// before it reaches <see cref="CollectorHealth"/> at all — this only
+    /// bounds it further, so a future message that got wordy cannot make this
+    /// row wide.
+    /// </remarks>
+    private static string? SelfMetricsJson(CollectorHealth entry)
+    {
+        // Nothing measured this process yet: NULL, not an object of zeros —
+        // the same "not allowed to look is not empty" rule ViewsHeldMax's
+        // remarks state, applied to the whole blob.
+        if (entry.TotalAttempts == 0)
+        {
+            return null;
+        }
+
+        var row = new SelfMetricsRow(
+            Up: entry.Up,
+            LastError: entry.LastFailureDetail is { } detail
+                ? detail.Length <= 200 ? detail : detail[..200]
+                : null,
+            DurationMs: entry.LastDuration?.TotalMilliseconds,
+            RecentDurationsMs: entry.RecentDurations.Count == 0
+                ? null
+                : [.. entry.RecentDurations.Select(d => d.TotalMilliseconds)],
+            ItemsRead: entry.ItemsRead,
+            ItemsUnread: entry.ItemsUnread,
+            SessionsWeBelieveWeHold: entry.SessionsHeld,
+            ClockSkewSeconds: entry.ClockSkewSeconds,
+            TotalAttempts: entry.TotalAttempts,
+            TotalFailures: entry.TotalFailures);
+
+        return JsonSerializer.Serialize(row, SelfMetricsJsonContext.Default.SelfMetricsRow);
+    }
+
+    /// <summary>The self_metrics jsonb shape (F6, planner review 23 September 2026).</summary>
+    private sealed record SelfMetricsRow(
+        [property: JsonPropertyName("up")] bool Up,
+        [property: JsonPropertyName("last_error")] string? LastError,
+        [property: JsonPropertyName("duration_ms")] double? DurationMs,
+        [property: JsonPropertyName("recent_durations_ms")] IReadOnlyList<double>? RecentDurationsMs,
+        [property: JsonPropertyName("items_read")] int? ItemsRead,
+        [property: JsonPropertyName("items_unread")] int? ItemsUnread,
+        [property: JsonPropertyName("sessions_we_believe_we_hold")] int? SessionsWeBelieveWeHold,
+        [property: JsonPropertyName("clock_skew_seconds")] double? ClockSkewSeconds,
+        [property: JsonPropertyName("total_attempts")] long TotalAttempts,
+        [property: JsonPropertyName("total_failures")] long TotalFailures);
+
+    [JsonSerializable(typeof(SelfMetricsRow))]
+    private sealed partial class SelfMetricsJsonContext : JsonSerializerContext;
 
     private static void WritePartialFailures(
         NpgsqlConnection connection, IReadOnlyList<CollectorHealth> health)

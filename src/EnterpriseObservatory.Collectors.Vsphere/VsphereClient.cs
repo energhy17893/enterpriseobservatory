@@ -73,7 +73,7 @@ public sealed record VsphereAvailableMetric
 /// handling are the kind of thing that only a real server settles.
 /// </para>
 /// </remarks>
-public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi
+public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi, IVsphereChannelSelfMetrics
 {
     /// <summary>Samples per series; see <see cref="VsphereSoapRequests.QueryPerf"/>.</summary>
     private const int MaxSample = 3;
@@ -341,6 +341,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             response, byId, TimeSpan.FromSeconds(intervalSeconds));
     }
 
+    // --- IVsphereChannelSelfMetrics (F6): the channel's own state, never a business read ---
+
+    /// <inheritdoc/>
+    public int SessionsHeld => _channel.SessionsHeld;
+
+    /// <inheritdoc/>
     public async Task<DateTimeOffset?> GetServerTimeAsync(CancellationToken cancellationToken)
     {
         await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);

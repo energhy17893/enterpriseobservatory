@@ -72,7 +72,9 @@ public sealed class InventoryCollectionPipeline
                 policy,
                 gate,
                 cancellationToken,
-                viewsHeld: static snapshot => snapshot.ViewsHeld))).ConfigureAwait(false);
+                extras: static snapshot => new SelfMetricsExtras(
+                    ItemsRead: snapshot.Entities.Count,
+                    ViewsHeld: snapshot.ViewsHeld)))).ConfigureAwait(false);
 
         return new CollectionCycleResult
         {

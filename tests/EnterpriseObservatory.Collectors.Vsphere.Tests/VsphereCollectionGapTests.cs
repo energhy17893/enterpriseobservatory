@@ -157,14 +157,18 @@ public class VsphereCollectionGapTests
     [Fact]
     public async Task Clock_skew_is_recorded_once_a_cycle_on_the_vcenter()
     {
+        // F6: clock skew is the runner's self-metric now (ObservationBatch.
+        // ClockSkewSeconds, filled by ObservationSourceSlot from the
+        // channel's own server-time probe), not an Observation the collector
+        // adds to Backfill under CollectorSelfMetrics.ClockSkewCounter -- see
+        // that constant's remarks for why the name is still kept around.
         var fixture = new Fixture(lastStored: S0.AddMinutes(-1));
 
         var batch = await fixture.ReadAsync(S0, queriesAllowed: 100);
 
-        var skew = Assert.Single(batch.Backfill, o => o.Value.CounterName == CollectorSelfMetrics.ClockSkewCounter);
-        Assert.Equal(EntityId.For("vc-1", "vcenter"), skew.Entity);
-        Assert.Equal(5, skew.Value.Raw);
-        Assert.Equal(S0 - Skew, skew.SampledAtUtc);
+        Assert.Equal(Skew.TotalSeconds, batch.ClockSkewSeconds);
+        Assert.DoesNotContain(
+            batch.Backfill, o => o.Value.CounterName == CollectorSelfMetrics.ClockSkewCounter);
     }
 
     [Fact]
@@ -194,7 +198,7 @@ public class VsphereCollectionGapTests
 
             Gaps = new InMemoryGaps(Marks);
             Source = new VsphereObservationSource(Api, new Targets(), Clock);
-            Slot = new ObservationSourceSlot("vc-1", Gaps);
+            Slot = new ObservationSourceSlot("vc-1", Gaps, Clock);
         }
 
         /// <summary>The runner's slot: the source's learned state and its gap record (F5).</summary>
@@ -279,8 +283,12 @@ public class VsphereCollectionGapTests
     }
 
     /// <summary>A vCenter whose hosts sample every 20 s and keep an hour.</summary>
-    internal sealed class TimelineVcenter : IVsphereApi
+    internal sealed class TimelineVcenter : IVsphereApi, IVsphereChannelSelfMetrics
     {
+        // F6: VsphereObservationSource now reads GetServerTimeAsync through
+        // this channel interface, not IVsphereApi.
+        public int SessionsHeld => 1;
+
         public string InstanceId => "vc-1";
 
         public DateTimeOffset ServerNow { get; set; }
