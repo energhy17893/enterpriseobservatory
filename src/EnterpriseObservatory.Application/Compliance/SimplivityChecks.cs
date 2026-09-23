@@ -53,7 +53,12 @@ public sealed class SimplivityClusterSettingCheck(SimplivityClusterSettingCheck.
     }
 
     /// <summary>The "Cluster resource percentage" policy HPE's formula is written for.</summary>
-    public const string ResourcePercentagePolicy = "ClusterFailoverResourceAdmissionControlPolicy";
+    /// <remarks>
+    /// vim25's own type name, plural "Resources" — the first version of this
+    /// check spelled it singular, matched nothing vSphere sends, and failed
+    /// the four Kibar clusters that use exactly this policy (23 September 2026).
+    /// </remarks>
+    public const string ResourcePercentagePolicy = "ClusterFailoverResourcesAdmissionControlPolicy";
 
     private static readonly ClusterHighAvailabilityPolicy Ha = ClusterHighAvailabilityPolicy.Default;
 

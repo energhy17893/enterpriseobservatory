@@ -476,7 +476,7 @@ public sealed record HaScorecardView
 
     /// <summary>
     /// The concrete admission control policy's vim25 type name, e.g.
-    /// <c>ClusterFailoverResourceAdmissionControlPolicy</c>.
+    /// <c>ClusterFailoverResourcesAdmissionControlPolicy</c>.
     /// </summary>
     public string? AdmissionControlPolicyType { get; init; }
 

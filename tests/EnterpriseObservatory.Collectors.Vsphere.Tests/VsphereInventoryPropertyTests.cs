@@ -385,7 +385,7 @@ public class VsphereInventoryPropertyTests
                     <val xsi:type="ClusterConfigInfoEx">
                       <dasConfig>
                         <enabled>true</enabled>
-                        <admissionControlPolicy xsi:type="ClusterFailoverResourceAdmissionControlPolicy"><x>1</x></admissionControlPolicy>
+                        <admissionControlPolicy xsi:type="ClusterFailoverResourcesAdmissionControlPolicy"><x>1</x></admissionControlPolicy>
                       </dasConfig>
                       <drsConfig><enabled>true</enabled></drsConfig>
                       <group xsi:type="ClusterVmGroup"><name>db</name><vm type="VirtualMachine">vm-1</vm></group>
