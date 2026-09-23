@@ -118,9 +118,9 @@ internal static partial class HostLog
     [LoggerMessage(
         EventId = 1060,
         Level = LogLevel.Information,
-        Message = "Fold slice to {Resolution}: {Buckets} buckets in {Milliseconds} ms.")]
+        Message = "Fold slice to {Resolution}: {Buckets} buckets in {Milliseconds:0} ms.")]
     public static partial void FoldSliceCommitted(
-        ILogger logger, string resolution, int buckets, int milliseconds);
+        ILogger logger, EnterpriseObservatory.Domain.SeriesResolution resolution, int buckets, double milliseconds);
 
     [LoggerMessage(
         EventId = 1049,

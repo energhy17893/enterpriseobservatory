@@ -228,7 +228,7 @@ builder.Services.AddSingleton<IObservationStore>(provider =>
     return new PostgresObservationStore(provider.GetRequiredService<PostgresDatabase>())
     {
         SliceCommitted = slice => HostLog.FoldSliceCommitted(
-            logger, slice.Resolution.ToString(), slice.BucketsWritten, (int)slice.Duration.TotalMilliseconds),
+            logger, slice.Resolution, slice.BucketsWritten, slice.Duration.TotalMilliseconds),
     };
 });
 builder.Services.AddSingleton<ICollectionGapStore, PostgresCollectionGapStore>();
