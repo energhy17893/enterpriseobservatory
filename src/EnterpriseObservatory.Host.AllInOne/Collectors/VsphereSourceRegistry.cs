@@ -52,13 +52,19 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         bool AcceptUntrustedCertificate,
         int PageSize);
 
+    /// <summary>One connection's collectors, whatever its kind.</summary>
+    /// <param name="Close">
+    /// Ends the session the kind holds, then closes its sockets. Called once,
+    /// when nobody can still be reading through it; never throws.
+    /// </param>
+    /// <param name="Observation">Null for a kind that reads no metrics.</param>
+    /// <param name="Events">Null for a kind that reads no event stream.</param>
     private sealed record Built(
         Shape Shape,
-        VsphereSessionChannel Channel,
-        VsphereClient Client,
+        Func<Task> Close,
         IInventorySource Inventory,
-        IObservationSource Observation,
-        IEventSource Events);
+        IObservationSource? Observation,
+        IEventSource? Events);
 
     private readonly SourceConnectionCatalogue _catalogue;
     private readonly IEntityGraphStore _graph;
@@ -91,11 +97,11 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     }
 
     /// <summary>A client that is no longer handed out, and who still might hold it.</summary>
-    /// <param name="Channel">The transport and session to close once nobody can be reading through it.</param>
+    /// <param name="Close">Closes the transport and session once nobody can be reading through it.</param>
     /// <param name="AfterInventoryPass">The inventory loop's pass count when it was retired.</param>
     /// <param name="AfterObservationPass">The observation loop's pass count when it was retired.</param>
     private sealed record Retired(
-        VsphereSessionChannel Channel,
+        Func<Task> Close,
         long AfterInventoryPass,
         long AfterObservationPass);
 
@@ -180,7 +186,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         {
             var (collectors, unusable) = Refresh(Reader.Observations);
 
-            return [.. collectors.Select(b => b.Observation), .. unusable];
+            return [.. collectors.Select(b => b.Observation).OfType<IObservationSource>(), .. unusable];
         }
     }
 
@@ -199,7 +205,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         {
             var (collectors, _) = Refresh(Reader.Inventory);
 
-            return [.. collectors.Select(b => b.Events)];
+            return [.. collectors.Select(b => b.Events).OfType<IEventSource>()];
         }
     }
 
@@ -281,7 +287,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// what "move on" is measured against.
     /// </remarks>
     private void Retire(Built built) =>
-        _retired.Add(new Retired(built.Channel, _inventoryPasses, _observationPasses));
+        _retired.Add(new Retired(built.Close, _inventoryPasses, _observationPasses));
 
     /// <summary>Ends the vCenter session, then closes the sockets under it.</summary>
     /// <remarks>
@@ -299,7 +305,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// and is closed before this returns.
     /// </para>
     /// </remarks>
-    private static async Task CloseAsync(VsphereSessionChannel channel)
+    private static async Task CloseVsphereAsync(VsphereSessionChannel channel)
     {
         try
         {
@@ -331,7 +337,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             if (HasMovedOn(_inventoryPasses, retired.AfterInventoryPass) &&
                 HasMovedOn(_observationPasses, retired.AfterObservationPass))
             {
-                _ = CloseAsync(retired.Channel);
+                _ = retired.Close();
                 _retired.RemoveAt(i);
             }
         }
@@ -399,7 +405,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// </remarks>
     private static string? WhyUnusable(SourceConnection connection)
     {
-        if (!string.Equals(connection.Kind, VsphereKind, StringComparison.Ordinal))
+        if (!BuiltKinds.Contains(connection.Kind, StringComparer.Ordinal))
         {
             return $"this build has no collector for kind '{connection.Kind}'; " +
                    "remove the connection, or deploy a build that reads that kind";
@@ -489,10 +495,21 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         public CollectionFailureKind Kind => CollectionFailureKind.NotConfigured;
     }
 
-    /// <summary>The only collector kind this build knows.</summary>
-    public const string VsphereKind = "vsphere";
+    /// <summary>The vSphere collector's kind.</summary>
+    public const string VsphereKind = ConnectionKinds.Vsphere;
 
-    private Built Build(SourceConnection connection, Shape shape)
+    /// <summary>The kinds this build has a collector for; <see cref="Build"/> answers each.</summary>
+    private static readonly string[] BuiltKinds = [ConnectionKinds.Vsphere];
+
+    /// <summary>Builds a connection's collectors by its kind.</summary>
+    private Built Build(SourceConnection connection, Shape shape) => connection.Kind switch
+    {
+        ConnectionKinds.Vsphere => BuildVsphere(connection, shape),
+        _ => throw new InvalidOperationException(
+            $"No collector for kind '{connection.Kind}'; WhyUnusable should have held it back."),
+    };
+
+    private Built BuildVsphere(SourceConnection connection, Shape shape)
     {
         var options = new VsphereConnectionOptions
         {
@@ -526,8 +543,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
 
         return new Built(
             shape,
-            channel,
-            client,
+            () => CloseVsphereAsync(channel),
             new VsphereInventorySource(client, _clock),
             // No gap store: the runner keeps the gap record now (F5, ADR-0005 §3).
             new VsphereObservationSource(
@@ -548,8 +564,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             // Logged out as well as closed, together and against one short
             // deadline: a host that is stopping cannot wait on a vCenter that
             // is not answering, and the idle timeout is still the backstop.
-            var closing = _retired.Select(r => CloseAsync(r.Channel))
-                .Concat(_built.Values.Select(b => CloseAsync(b.Channel)))
+            var closing = _retired.Select(r => r.Close())
+                .Concat(_built.Values.Select(b => b.Close()))
                 .ToArray();
 
             Task.WhenAll(closing).Wait(ShutdownLogoutDeadline);
