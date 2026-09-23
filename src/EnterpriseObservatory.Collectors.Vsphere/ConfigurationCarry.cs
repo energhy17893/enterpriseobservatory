@@ -47,6 +47,15 @@ internal sealed class ConfigurationCarry
         }
     }
 
+    /// <summary>Whether nothing is carried that is still inside <see cref="Limit"/>.</summary>
+    public bool IsEmpty(DateTimeOffset nowUtc)
+    {
+        lock (_gate)
+        {
+            return !_readAt.Values.Any(at => nowUtc - at <= Limit);
+        }
+    }
+
     /// <summary>After a complete read: forgets objects vCenter no longer has.</summary>
     public void KeepOnly(IReadOnlySet<string> moRefs)
     {

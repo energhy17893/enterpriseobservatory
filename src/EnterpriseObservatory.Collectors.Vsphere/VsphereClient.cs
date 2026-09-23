@@ -812,6 +812,29 @@ public sealed partial class VsphereClient
         ],
     };
 
+    /// <summary>Both tiers in one retrieval, for a fast read with nothing carried.</summary>
+    private static readonly Dictionary<string, IReadOnlyList<string>> BothTiers =
+        InventoryProperties.ToDictionary(
+            p => p.Key,
+            p => (IReadOnlyList<string>)[.. p.Value, .. ConfigurationPropertiesFor(p.Key)],
+            StringComparer.Ordinal);
+
+    /// <summary>
+    /// Only an object's configuration paths, so a seeding read carries none of
+    /// its fast values: a fast path absent next cycle (a deleted snapshot) must
+    /// not be filled in from the carry.
+    /// </summary>
+    private static PropertyObject OnlyConfiguration(PropertyObject o)
+    {
+        var paths = ConfigurationPropertiesFor(o.Type);
+
+        return o with
+        {
+            Values = o.Values.Where(v => paths.Contains(v.Key)).ToDictionary(StringComparer.Ordinal),
+            Structures = o.Structures.Where(s => paths.Contains(s.Key)).ToDictionary(StringComparer.Ordinal),
+        };
+    }
+
     /// <summary>What is asked of one managed object type, by either tier, for a test to check.</summary>
     /// <remarks>
     /// Exposed because a forgotten property path is not an error. vCenter
@@ -841,13 +864,26 @@ public sealed partial class VsphereClient
 
         try
         {
-            var (fast, pages) = await RetrieveAllPagesAsync(content, viewMoRef, scope, cancellationToken)
+            // Nothing carried yet — the first read after start, or the carry
+            // expired: this read asks for both tiers and seeds the carry, so
+            // no fast snapshot ever lacks the configuration keys and a restart
+            // leaves no "not read" window in the finding history.
+            var now = Time.GetUtcNow();
+            var seed = _configuration.IsEmpty(now);
+
+            var (fast, pages) = await RetrieveAllPagesAsync(
+                    content, viewMoRef, seed ? BothTiers : InventoryProperties, scope, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (seed)
+            {
+                _configuration.Store(fast.Where(o => ConfigurationProperties.ContainsKey(o.Type)).Select(OnlyConfiguration), now);
+            }
 
             // The configuration tier's last reading, overlaid before anything
             // is mapped, so every parser sees what it always saw (see
             // ConfigurationCarry for why here and not on the graph).
-            var (objects, configurationReadAt) = _configuration.Overlay(fast, Time.GetUtcNow());
+            var (objects, configurationReadAt) = _configuration.Overlay(fast, now);
 
             foreach (var missing in objects.SelectMany(o => o.Missing.Select(m => (o, m))))
             {

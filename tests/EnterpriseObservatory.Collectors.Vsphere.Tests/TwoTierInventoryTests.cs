@@ -62,22 +62,53 @@ public class TwoTierInventoryTests
     }
 
     [Fact]
-    public async Task Before_the_first_configuration_read_its_paths_are_absent_and_not_counted_as_blind()
+    public async Task A_fresh_collector_s_first_fast_read_asks_both_tiers_and_the_next_only_the_fast_one()
     {
-        var client = Client(new TwoTierServer(), new ManualTime(T0));
+        // No "not read" window after a restart: with nothing carried, the
+        // fast read seeds the carry itself.
+        var time = new ManualTime(T0);
+        var server = new TwoTierServer();
+        var client = Client(server, time);
 
-        var payload = await client.RetrieveInventoryAsync(CancellationToken.None);
+        var first = await client.RetrieveInventoryAsync(CancellationToken.None);
 
-        var host = Assert.Single(payload.Hosts);
-        Assert.Null(host.ConfigurationReadAtUtc);
-        Assert.Empty(host.AdvancedSettings);
-        Assert.All(host.StoragePaths, p => Assert.Equal(string.Empty, p.StorageDeviceId));
-        Assert.Null(Assert.Single(payload.VirtualMachines).SnapshotBytes);
+        var host = Assert.Single(first.Hosts);
+        Assert.Equal("udp://10.0.0.5:514", host.AdvancedSettings["Syslog.global.logHost"]);
+        Assert.Equal("naa.600508b1001cb7368fc569b9146949ad", host.StoragePaths[0].StorageDeviceId);
+        Assert.Equal(T0, host.ConfigurationReadAtUtc);
+        Assert.Equal(42949672960L + 8589934592L, Assert.Single(first.VirtualMachines).SnapshotBytes);
+        Assert.True(first.Coverage.Single(c => c.Property == "config.option").IsComplete);
+        Assert.Contains("config.option", PathsOf(server.FastBodies[0]));
+        Assert.Contains("layoutEx.file", PathsOf(server.FastBodies[0]));
 
+        time.Now = T0.AddMinutes(2);
+        var second = await client.RetrieveInventoryAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(PathsOf(server.FastBodies[1]), p =>
+            VsphereClient.ConfigurationPropertiesFor("HostSystem").Contains(p) ||
+            VsphereClient.ConfigurationPropertiesFor("VirtualMachine").Contains(p));
+        var carried = Assert.Single(second.Hosts);
+        Assert.Equal("udp://10.0.0.5:514", carried.AdvancedSettings["Syslog.global.logHost"]);
+        Assert.Equal(T0, carried.ConfigurationReadAtUtc);
+        Assert.Empty(server.SlowBodies);
+    }
+
+    [Fact]
+    public void A_configuration_path_is_not_counted_on_an_object_that_tier_has_not_reached()
+    {
         // "Not asked yet" is not "blind".
-        Assert.DoesNotContain(payload.Coverage, c => c.Property == "config.option");
-        Assert.DoesNotContain(payload.Coverage, c => c.Property == "config.hardware.device");
-        Assert.Contains(payload.Coverage, c => c.Property == "name" && c.IsComplete);
+        var objects = PropertyCollectorParser.ParsePage("""
+            <RetrievePropertiesExResponse xmlns="urn:vim25">
+              <returnval>
+                <objects><obj type="HostSystem">host-1</obj><propSet><name>name</name><val>esx01</val></propSet></objects>
+              </returnval>
+            </RetrievePropertiesExResponse>
+            """).Objects;
+
+        var rows = VsphereClient.MeasureCoverage(objects, new HashSet<string>(StringComparer.Ordinal));
+
+        Assert.DoesNotContain(rows, c => c.Property == "config.option");
+        Assert.Contains(rows, c => c.Property == "name" && c.IsComplete);
     }
 
     [Fact]
@@ -136,19 +167,24 @@ public class TwoTierInventoryTests
     }
 
     [Fact]
-    public async Task A_configuration_reading_is_absent_past_the_carry_forward_limit()
+    public async Task Past_the_carry_forward_limit_the_old_reading_is_not_used_and_the_fast_read_reseeds()
     {
         var time = new ManualTime(T0);
-        var client = Client(new TwoTierServer(), time);
+        var server = new TwoTierServer();
+        var client = Client(server, time);
 
         await client.RetrieveConfigurationAsync(CancellationToken.None);
+        server.LogHost = "udp://10.0.0.9:514";
+
         // ADR-0026's two-day carry-forward limit.
-        time.Now = T0 + TimeSpan.FromDays(2) + TimeSpan.FromSeconds(1);
+        var later = T0 + TimeSpan.FromDays(2) + TimeSpan.FromSeconds(1);
+        time.Now = later;
 
         var host = Assert.Single((await client.RetrieveInventoryAsync(CancellationToken.None)).Hosts);
 
-        Assert.Null(host.ConfigurationReadAtUtc);
-        Assert.Empty(host.AdvancedSettings);
+        Assert.Equal(later, host.ConfigurationReadAtUtc);
+        Assert.Equal("udp://10.0.0.9:514", host.AdvancedSettings["Syslog.global.logHost"]);
+        Assert.Contains("config.option", PathsOf(server.FastBodies.Single()));
     }
 
     [Fact]
@@ -254,12 +290,14 @@ public class TwoTierInventoryTests
                     return Ok(Page(string.Empty, string.Empty));
                 case "RetrievePropertiesEx" when body.Contains("type=\"Folder\"", StringComparison.Ordinal):
                     return Ok("<RetrievePropertiesExResponse xmlns=\"urn:vim25\" />");
+                case "RetrievePropertiesEx" when body.Contains(">parent<", StringComparison.Ordinal):
+                    FastBodies.Add(body);
+                    return Ok(Page(
+                        string.Empty,
+                        body.Contains(">config.option<", StringComparison.Ordinal) ? BothObjects() : FastObjects));
                 case "RetrievePropertiesEx" when body.Contains(">config.option<", StringComparison.Ordinal):
                     SlowBodies.Add(body);
                     return Ok(Page(SlowFirstPageHasMore ? "<token>session[1]token-1</token>" : string.Empty, SlowObjects));
-                case "RetrievePropertiesEx" when body.Contains(">parent<", StringComparison.Ordinal):
-                    FastBodies.Add(body);
-                    return Ok(Page(string.Empty, FastObjects));
                 case "RetrievePropertiesEx":
                     // Anything else (the view count) answers empty.
                     return Ok("<RetrievePropertiesExResponse xmlns=\"urn:vim25\" />");
@@ -276,6 +314,25 @@ public class TwoTierInventoryTests
               </returnval>
             </RetrievePropertiesExResponse>
             """;
+
+        /// <summary>A seeding read's reply: each object with both tiers' properties.</summary>
+        private string BothObjects()
+        {
+            const string Xsi = "http://www.w3.org/2001/XMLSchema-instance";
+            XElement Parse(string objects) => XElement.Parse($"<r xmlns:xsi=\"{Xsi}\">{objects}</r>");
+
+            var fast = Parse(FastObjects);
+            var slow = Parse(SlowObjects);
+
+            foreach (var o in fast.Elements("objects"))
+            {
+                o.Add(slow.Elements("objects")
+                    .Single(s => s.Element("obj")!.Value == o.Element("obj")!.Value)
+                    .Elements("propSet"));
+            }
+
+            return string.Concat(fast.Elements());
+        }
 
         private string FastObjects => $"""
             <objects>

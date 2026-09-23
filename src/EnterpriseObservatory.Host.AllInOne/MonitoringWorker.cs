@@ -174,8 +174,8 @@ public sealed class MonitoringWorker(
         // The configuration tier (heavy, slowly changing properties) on its
         // own cadence. Its first pass runs at start like the others; what it
         // reads reaches the graph with the next inventory cycle, which the
-        // source carries it into. Until that first pass lands, those keys are
-        // absent — "not read", as after any restart.
+        // source carries it into. A fast read with nothing carried asks for
+        // both tiers itself, so a restart leaves no "not read" window.
         var configuration = RunLoopAsync(
             "configuration",
             _options.ConfigurationInterval,
