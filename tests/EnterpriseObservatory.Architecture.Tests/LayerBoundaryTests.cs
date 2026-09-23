@@ -112,6 +112,87 @@ public class LayerBoundaryTests
     }
 
     [Fact]
+    public void Collectors_cannot_see_any_persistence_adapter()
+    {
+        // F5 (ADR-0025 §4, ADR-0005 §3): a collector reads its source and
+        // never the product's store. The runner keeps the marks and the gap
+        // record and does every store call; a collector referencing a storage
+        // engine would be the first step back to deciding for itself.
+        var offenders = SolutionAssemblies.Collectors
+            .SelectMany(c => c.GetReferencedAssemblies()
+                .Select(r => r.Name ?? string.Empty)
+                .Where(n => n.StartsWith("EnterpriseObservatory.Persistence.", StringComparison.Ordinal))
+                .Select(n => $"{SolutionAssemblies.Name(c)} -> {n}"))
+            .ToList();
+
+        Assert.NotEmpty(SolutionAssemblies.Collectors);
+        Assert.True(
+            offenders.Count == 0,
+            $"Collectors reference persistence: {string.Join(", ", offenders)}");
+    }
+
+    [Fact]
+    public void No_collector_holds_a_store_port()
+    {
+        // The narrower half of the rule above. The store ports are declared in
+        // Application, which collectors do reference, so the assembly check
+        // cannot see a collector taking an ICollectionGapStore — which is how
+        // the vSphere observation source read and wrote the gap record until
+        // F5. Declared surface only, like the transport rule: fields,
+        // properties, constructor and method parameters.
+        const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic |
+                                 BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+        static bool IsStorePort(Type t) =>
+            t.IsInterface &&
+            (t.Namespace ?? string.Empty).StartsWith("EnterpriseObservatory.Application", StringComparison.Ordinal) &&
+            t.Name.EndsWith("Store", StringComparison.Ordinal);
+
+        var holders = new List<string>();
+
+        foreach (var collector in SolutionAssemblies.Collectors)
+        {
+            foreach (var type in collector.GetTypes())
+            {
+                var declared = type.GetFields(Any).Select(f => f.FieldType)
+                    .Concat(type.GetProperties(Any).Select(p => p.PropertyType))
+                    .Concat(type.GetConstructors(Any).SelectMany(c => c.GetParameters()).Select(p => p.ParameterType))
+                    .Concat(type.GetMethods(Any).SelectMany(m => m.GetParameters()).Select(p => p.ParameterType));
+
+                holders.AddRange(declared.Where(IsStorePort).Select(t => $"{(type.DeclaringType ?? type).Name}: {t.Name}"));
+            }
+        }
+
+        Assert.True(
+            holders.Count == 0,
+            $"Collectors hold store ports: {string.Join(", ", holders.Distinct(StringComparer.Ordinal))}");
+    }
+
+    [Fact]
+    public void The_observation_source_keeps_no_locks()
+    {
+        // F5: the runner skips a source while its previous read is still
+        // running (F2), so one read at a time touches its learned state, and
+        // that state lives in the runner's SourceState. The locks the vSphere
+        // observation source carried for the overlapping read are gone; one
+        // coming back would mean the overlap had come back with it.
+        string[] locks = ["Lock", "SemaphoreSlim", "Mutex", "ReaderWriterLockSlim", "Monitor"];
+
+        const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic |
+                                 BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+        var holders = SolutionAssemblies.Collectors
+            .SelectMany(c => c.GetTypes())
+            .Where(t => (t.DeclaringType ?? t).Name.EndsWith("ObservationSource", StringComparison.Ordinal))
+            .SelectMany(t => t.GetFields(Any)
+                .Where(f => locks.Contains(f.FieldType.Name, StringComparer.Ordinal))
+                .Select(f => $"{t.Name}.{f.Name}"))
+            .ToList();
+
+        Assert.True(holders.Count == 0, $"Observation sources hold locks: {string.Join(", ", holders)}");
+    }
+
+    [Fact]
     public void The_api_cannot_see_any_collector()
     {
         // The interface reads one model. An API that could reach a vendor's

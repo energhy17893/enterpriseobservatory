@@ -34,7 +34,7 @@ public class SourceRequestSkipTests
 
         public int Attempts { get; private set; }
 
-        public Task<ObservationBatch> ReadAsync(CancellationToken cancellationToken)
+        public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken)
         {
             Attempts++;
 
@@ -56,7 +56,7 @@ public class SourceRequestSkipTests
     {
         public string InstanceId { get; } = id;
 
-        public Task<ObservationBatch> ReadAsync(CancellationToken cancellationToken) =>
+        public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
             Task.FromResult(Batch(InstanceId));
     }
 

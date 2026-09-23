@@ -86,6 +86,29 @@ public sealed class CollectionOptions
     /// </remarks>
     public int MaxRequestsPerSource { get; set; } = Defaults.MaxRequestsPerSource;
 
+    /// <summary>
+    /// How much the store queue may hold, in MiB (F5, ADR-0025 §6).
+    /// </summary>
+    /// <remarks>
+    /// Default 64 (planner's decision): at the measured 221 bytes a row that
+    /// is about 300,000 rows, some 11 minutes of this estate's 26,660 rows a
+    /// minute. A longer store outage drops the oldest rows and records them as
+    /// a gap the source reads again, so it costs a refill, not the data —
+    /// within the platform's hour of history. Between
+    /// <see cref="StoreQueueLimits.MinimumBudgetMegabytes"/> and
+    /// <see cref="StoreQueueLimits.MaximumBudgetMegabytes"/>; refused outside,
+    /// never clamped.
+    /// </remarks>
+    public int StoreQueueBudgetMegabytes { get; set; } = StoreQueueLimits.DefaultBudgetMegabytes;
+
+    /// <summary>
+    /// How long a row may wait in the store queue before it is dropped (and
+    /// recorded as a gap), in minutes. Default 30; between
+    /// <see cref="StoreQueueLimits.MinimumMaxAgeMinutes"/> and
+    /// <see cref="StoreQueueLimits.MaximumMaxAgeMinutes"/>.
+    /// </summary>
+    public int StoreQueueMaxAgeMinutes { get; set; } = StoreQueueLimits.DefaultMaxAgeMinutes;
+
     /// <summary>What is wrong with these values, or empty if nothing is.</summary>
     /// <remarks>
     /// Returns every problem rather than the first, the same reasoning as
@@ -138,8 +161,31 @@ public sealed class CollectionOptions
                 $"Collection:MaxRequestsPerSource must be between 1 and {SourceRequestGate.MaximumLimit}.");
         }
 
+        if (StoreQueueBudgetMegabytes is < StoreQueueLimits.MinimumBudgetMegabytes
+            or > StoreQueueLimits.MaximumBudgetMegabytes)
+        {
+            problems.Add(
+                $"Collection:StoreQueueBudgetMegabytes must be between {StoreQueueLimits.MinimumBudgetMegabytes} " +
+                $"and {StoreQueueLimits.MaximumBudgetMegabytes}.");
+        }
+
+        if (StoreQueueMaxAgeMinutes is < StoreQueueLimits.MinimumMaxAgeMinutes
+            or > StoreQueueLimits.MaximumMaxAgeMinutes)
+        {
+            problems.Add(
+                $"Collection:StoreQueueMaxAgeMinutes must be between {StoreQueueLimits.MinimumMaxAgeMinutes} " +
+                $"and {StoreQueueLimits.MaximumMaxAgeMinutes}.");
+        }
+
         return problems;
     }
+
+    /// <summary>The store queue's limits these values describe.</summary>
+    public StoreQueueLimits ToStoreQueueLimits() => new()
+    {
+        BudgetBytes = StoreQueueBudgetMegabytes * StoreQueueLimits.BytesPerMegabyte,
+        MaxAge = TimeSpan.FromMinutes(StoreQueueMaxAgeMinutes),
+    };
 
     /// <summary>The domain policy these values describe.</summary>
     public CollectionPolicy ToPolicy() => new()

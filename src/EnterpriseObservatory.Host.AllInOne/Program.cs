@@ -226,6 +226,17 @@ builder.Services.AddSingleton<EventCollectionPipeline>();
 builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();
+
+// The bounded queue in front of the observation store (F5, ADR-0025 §6):
+// one per process, so what a failed write could not take waits for the next
+// cycle. It records what it drops as collection gaps, so the source reads
+// that history again -- the gap store is handed over for that alone.
+builder.Services.AddSingleton(provider => new ObservationStoreQueue(
+    provider.GetRequiredService<IObservationStore>().Append,
+    provider.GetRequiredService<IClock>(),
+    collection.ToStoreQueueLimits(),
+    provider.GetRequiredService<ICollectionGapStore>()));
+builder.Services.AddSingleton<IStoreQueueMetrics>(provider => provider.GetRequiredService<ObservationStoreQueue>());
 builder.Services.AddSingleton<MonitoringCycle>();
 builder.Services.AddSingleton<AlertOperations>();
 builder.Services.AddSingleton<IMaintenanceWindowStore, PostgresMaintenanceWindowStore>();
@@ -451,7 +462,6 @@ builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegi
     provider.GetRequiredService<IClock>(),
     (instance, why) => HostLog.ConnectionNotPolled(
         provider.GetRequiredService<ILogger<VsphereSourceRegistry>>(), instance, why),
-    provider.GetRequiredService<ICollectionGapStore>(),
     monitoringOptions.Collection.MaxRequestsPerSource));
 
 builder.Services.AddHostedService<MonitoringWorker>();

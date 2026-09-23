@@ -92,7 +92,7 @@ public abstract class ObservationContractTests<TFixture>
         var fixture = new TFixture();
         var source = fixture.CreateWithOneFailingEntityType();
 
-        var batch = await source.ReadAsync(CancellationToken.None);
+        var batch = await new ObservationSourceSlot(fixture.InstanceId).ReadAsync(source, CancellationToken.None);
 
         // Two entity types were asked for (see the fixture): the host type
         // produced samples, the virtual-machine type was reported as a
@@ -124,7 +124,7 @@ public abstract class ObservationContractTests<TFixture>
         for (var cycle = 0; cycle < 3; cycle++)
         {
             var batch = await scenario.ReadCycleAsync(cycle);
-            batch.Stored?.Invoke();
+            scenario.Accept(batch);
             batches.Add(batch);
         }
 
@@ -147,5 +147,95 @@ public abstract class ObservationContractTests<TFixture>
         Assert.Equal(
             scenario.Combined.Value,
             Assert.Single(written, w => w.At == scenario.LateSampleAt && w.Series == scenario.Combined.Series).Raw);
+    }
+
+    // --- case: a store failure loses nothing: produced = accepted + dropped --
+
+    /// <summary>
+    /// §10.2's "depo hatasında kayıp ve çift yok", which stood skipped until
+    /// the store queue existed (F5, ADR-0025 §6): the store fails mid-run,
+    /// every row the source produced is afterwards either accepted exactly
+    /// once or counted as dropped, never both and never neither.
+    /// </summary>
+    /// <remarks>
+    /// Twice: with the default budget, which holds the whole outage, and with
+    /// one that holds two and a half batches, so the outage forces drops.
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_store_failure_does_not_lose_data_produced_equals_accepted_plus_dropped(bool smallBudget)
+    {
+        var fixture = new TFixture();
+        var clock = new TestClock();
+        var pipeline = new ObservationCollectionPipeline(clock);
+        var source = fixture.CreateHealthy(4);
+        var store = new FlakyStore();
+
+        var probe = await new ObservationSourceSlot(fixture.InstanceId)
+            .ReadAsync(fixture.CreateHealthy(4), CancellationToken.None);
+        var rowsPerBatch = probe.Observations.Count + probe.Backfill.Count;
+
+        var limits = smallBudget
+            ? new StoreQueueLimits { BudgetBytes = StoreQueueLimits.MeasuredBytesPerRow * rowsPerBatch * 5L / 2 }
+            : StoreQueueLimits.Default;
+        var queue = new ObservationStoreQueue(store.Append, clock, limits);
+
+        var produced = new List<Observation>();
+        IReadOnlyList<CollectorHealth> health = [];
+
+        for (var cycle = 0; cycle < 12; cycle++)
+        {
+            clock.UtcNow = clock.UtcNow.AddSeconds(30);
+
+            // Down for a third of the run, in the middle: every write fails
+            // before it lands, as a database that is not there does.
+            store.Down = cycle is >= 4 and < 8;
+
+            var result = await pipeline.RunAsync([source], health, CollectionPolicy.Default, CancellationToken.None);
+            health = result.Health;
+
+            foreach (var batch in result.Batches)
+            {
+                produced.AddRange(batch.Observations);
+                produced.AddRange(batch.Backfill);
+                queue.Enqueue(batch);
+            }
+
+            queue.Drain();
+        }
+
+        var after = queue.Snapshot();
+
+        Assert.NotEmpty(produced);
+        Assert.Equal(0, after.Rows);
+        Assert.Equal(produced.Count, after.ProducedRows);
+        Assert.Equal(after.ProducedRows, after.AcceptedRows + after.DroppedRows);
+        Assert.Equal(smallBudget, after.DroppedRows > 0);
+
+        // Accepted exactly once: what the store holds is what was counted
+        // accepted, each produced row at most once, nothing it never produced.
+        Assert.Equal(after.AcceptedRows, store.Kept.Count);
+        Assert.Equal(store.Kept.Count, store.Kept.Distinct(ReferenceEqualityComparer.Instance).Count());
+        var producedSet = produced.ToHashSet(ReferenceEqualityComparer.Instance);
+        Assert.All(store.Kept, row => Assert.Contains(row, producedSet));
+    }
+
+    /// <summary>A store that refuses every write while it is down, and keeps nothing it refused.</summary>
+    private sealed class FlakyStore
+    {
+        public bool Down { get; set; }
+
+        public List<Observation> Kept { get; } = [];
+
+        public void Append(IReadOnlyList<Observation> rows)
+        {
+            if (Down)
+            {
+                throw new InvalidOperationException("The database is not there.");
+            }
+
+            Kept.AddRange(rows);
+        }
     }
 }

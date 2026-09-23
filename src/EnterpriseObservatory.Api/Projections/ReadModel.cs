@@ -38,8 +38,15 @@ public sealed class ReadModel(
     IComplianceStore? compliance = null,
     IReadOnlyList<ContinuityCheck>? continuityChecks = null,
     ICollectionGapStore? gaps = null,
-    IOperationalMetricsStore? selfMetrics = null)
+    IOperationalMetricsStore? selfMetrics = null,
+    IStoreQueueMetrics? storeQueue = null)
 {
+    /// <summary>
+    /// The store queue's numbers (F5); null reads as "no queue measured"
+    /// (Package D's metrics view).
+    /// </summary>
+    private readonly IStoreQueueMetrics? _storeQueue = storeQueue;
+
     /// <summary>
     /// Where the continuity findings live (ADR-0024); null reads as "never
     /// evaluated", which the continuity report says rather than showing zeros.
@@ -163,8 +170,26 @@ public sealed class ReadModel(
             UnknownAlerts = _alerts.All.Count(a => a.IsConfirmed && a.State == AlertLifecycleState.Unknown),
             OpenGaps = gapCounts.GetValueOrDefault(CollectionGapState.Open),
             UnrecoverableGaps = gapCounts.GetValueOrDefault(CollectionGapState.Unrecoverable),
+            StoreQueue = _storeQueue is null ? null : ToView(_storeQueue.Snapshot()),
         };
     }
+
+    private static StoreQueueView ToView(StoreQueueSnapshot queue) => new()
+    {
+        Length = queue.Length,
+        Rows = queue.Rows,
+        Bytes = queue.Bytes,
+        BudgetBytes = queue.BudgetBytes,
+        OldestAgeSeconds = queue.OldestAge?.TotalSeconds,
+        MaxAgeSeconds = queue.MaxAge.TotalSeconds,
+        DroppedOverBudgetRows = queue.DroppedOverBudgetRows,
+        DroppedTooOldRows = queue.DroppedTooOldRows,
+        RecordedAsGapRows = queue.RecordedAsGapRows,
+        PendingGapRows = queue.PendingGapRows,
+        CouldNotBeFilledRows = queue.CouldNotBeFilledRows,
+        LastDropUtc = queue.LastDropUtc,
+        LastFailure = queue.LastFailure,
+    };
 
     private static CycleMetricsView ToView(CycleMetricsSnapshot? snapshot) => new()
     {

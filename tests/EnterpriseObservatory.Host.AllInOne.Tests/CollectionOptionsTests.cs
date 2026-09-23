@@ -178,6 +178,39 @@ public class CollectionOptionsTests
         Assert.Empty(new CollectionOptions { MaxRequestsPerSource = limit }.Validate());
     }
 
+    [Theory]
+    [InlineData(15)]
+    [InlineData(1025)]
+    public void A_store_queue_budget_outside_16_to_1024_mib_is_refused(int megabytes)
+    {
+        // F5: refused at startup, not clamped — the same convention as the rest.
+        var options = new CollectionOptions { StoreQueueBudgetMegabytes = megabytes };
+
+        Assert.Contains(options.Validate(), p => p.Contains("StoreQueueBudgetMegabytes", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(61)]
+    public void A_store_queue_age_outside_1_to_60_minutes_is_refused(int minutes)
+    {
+        // Past an hour a dropped row is past vCenter's real-time retention and
+        // could not be read again anyway.
+        var options = new CollectionOptions { StoreQueueMaxAgeMinutes = minutes };
+
+        Assert.Contains(options.Validate(), p => p.Contains("StoreQueueMaxAgeMinutes", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_store_queue_defaults_are_64_mib_and_30_minutes()
+    {
+        var limits = new CollectionOptions().ToStoreQueueLimits();
+
+        Assert.Equal(64L * 1024 * 1024, limits.BudgetBytes);
+        Assert.Equal(TimeSpan.FromMinutes(30), limits.MaxAge);
+        Assert.Equal(StoreQueueLimits.Default, limits);
+    }
+
     [Fact]
     public void Every_problem_is_reported_at_once()
     {
@@ -191,9 +224,11 @@ public class CollectionOptionsTests
             CircuitBreakerCooldownSeconds = 0,
             MaxConcurrency = 0,
             MaxRequestsPerSource = 0,
+            StoreQueueBudgetMegabytes = 0,
+            StoreQueueMaxAgeMinutes = 0,
         };
 
-        Assert.Equal(8, options.Validate().Count);
+        Assert.Equal(10, options.Validate().Count);
     }
 
     [Fact]

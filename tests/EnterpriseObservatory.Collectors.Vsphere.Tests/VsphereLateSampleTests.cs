@@ -180,10 +180,14 @@ public class VsphereLateSampleTests
         {
             Api = new PublishingVcenter(placeholders, neverFills);
             Gaps = new VsphereCollectionGapTests.InMemoryGaps(new() { [Id("host-1")] = S0.AddSeconds(-20) });
-            Source = new VsphereObservationSource(Api, new Targets(), Clock, Gaps);
+            Source = new VsphereObservationSource(Api, new Targets(), Clock);
+            Slot = new ObservationSourceSlot("vc-1", Gaps);
         }
 
         public PublishingVcenter Api { get; }
+
+        /// <summary>The runner's slot: the source's learned state and its gap record (F5).</summary>
+        public ObservationSourceSlot Slot { get; }
 
         public MovableClock Clock { get; } = new();
 
@@ -199,10 +203,10 @@ public class VsphereLateSampleTests
             Api.ServerNow = serverNow;
             Clock.UtcNow = serverNow;
 
-            var batch = await Source.ReadAsync(CancellationToken.None);
+            var batch = await Slot.ReadAsync(Source, CancellationToken.None);
             if (store)
             {
-                batch.Stored?.Invoke();
+                Slot.Accept(batch);
             }
 
             return batch;

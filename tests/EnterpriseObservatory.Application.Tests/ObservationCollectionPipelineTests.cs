@@ -20,7 +20,7 @@ public class ObservationCollectionPipelineTests
 
         public Func<int, Task<ObservationBatch>>? Behaviour { get; init; }
 
-        public Task<ObservationBatch> ReadAsync(CancellationToken cancellationToken)
+        public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken)
         {
             Attempts++;
             return Behaviour is null ? Task.FromResult(Batch(InstanceId)) : Behaviour(Attempts);
@@ -191,5 +191,40 @@ public class ObservationCollectionPipelineTests
         Assert.Empty(result.Batches);
         Assert.Empty(result.Observations);
         Assert.Empty(result.CollectionAlerts);
+    }
+
+    /// <summary>
+    /// F5, ADR-0025 §4: what a source learns is kept by the runner, handed to
+    /// every read of the same source, and gone with the source — a connection
+    /// the registry rebuilds starts from nothing, as it did when the state
+    /// lived inside the collector.
+    /// </summary>
+    [Fact]
+    public async Task A_learned_limit_survives_across_cycles_and_resets_when_the_source_is_rebuilt()
+    {
+        var pipeline = Pipeline();
+        var seen = new List<int?>();
+
+        var source = new LearningSource("vc-1", seen);
+        await pipeline.RunAsync([source], [], Fast, CancellationToken.None);
+        await pipeline.RunAsync([source], [], Fast, CancellationToken.None);
+
+        await pipeline.RunAsync([new LearningSource("vc-1", seen)], [], Fast, CancellationToken.None);
+
+        Assert.Equal([null, 1, null], seen);
+    }
+
+    /// <summary>Remembers one more than it was handed, every read.</summary>
+    private sealed class LearningSource(string id, List<int?> seen) : IObservationSource
+    {
+        public string InstanceId { get; } = id;
+
+        public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken)
+        {
+            var learned = context.State.Limits.For("batch");
+            seen.Add(learned);
+            context.State.Limits.Remember("batch", (learned ?? 0) + 1);
+            return Task.FromResult(Batch(InstanceId));
+        }
     }
 }

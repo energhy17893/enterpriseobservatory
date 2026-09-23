@@ -201,6 +201,21 @@ public sealed class CompositionRootSmokeTests : IDisposable
         var response = await client.GetAsync("/api/metrics");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // F5: the store queue is wired, with its default budget, and its
+        // numbers — length, bytes, age, drops by reason and what became of
+        // them — are on package D's surface.
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"storeQueue\":{", body, StringComparison.Ordinal);
+        Assert.Contains($"\"budgetBytes\":{64L * 1024 * 1024}", body, StringComparison.Ordinal);
+        foreach (var field in new[]
+                 {
+                     "length", "rows", "bytes", "maxAgeSeconds", "droppedOverBudgetRows", "droppedTooOldRows",
+                     "recordedAsGapRows", "pendingGapRows", "couldNotBeFilledRows",
+                 })
+        {
+            Assert.Contains($"\"{field}\":", body, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
