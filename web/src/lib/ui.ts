@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
-import type { AlertSeverity, EntityKind, FindingState, HealthBasis, HealthState } from '@/api/types'
+import type { AlertSeverity, CollectorView, EntityKind, FindingState, HealthBasis, HealthState } from '@/api/types'
 
 /** The shadcn/ui class helper, kept so generated components drop in unchanged. */
 export function cn(...inputs: ClassValue[]) {
@@ -171,6 +171,27 @@ export const STALE_AFTER_MS = 120_000
 
 export function isStale(iso: string | null, now: number = Date.now()): boolean {
   return iso === null || now - Date.parse(iso) > STALE_AFTER_MS
+}
+
+/**
+ * A collector's role, worded for the Collectors screen (CL1). The four
+ * roles fail independently (ADR-0009) and are shown so an operator can tell
+ * "we cannot list your inventory" apart from "we cannot read your metrics" --
+ * which means every role needs its own true label, never "metrics" standing
+ * in for whichever role isn't Inventory. Falls back to the raw value rather
+ * than a wrong label: the vocabulary is closed and typed, so a missing entry
+ * means the server sent a role this build predates (version skew), the same
+ * fallback EntityDetail.tsx's Connection() uses for RelationshipView.kind.
+ */
+const ROLE_LABEL: Record<CollectorView['role'], string> = {
+  Inventory: 'inventory',
+  Observation: 'metrics',
+  Events: 'events',
+  Configuration: 'configuration',
+}
+
+export function collectorRoleLabel(role: CollectorView['role']): string {
+  return ROLE_LABEL[role] ?? role
 }
 
 /** The plural noun an entity kind reads as, e.g. "84 datastores" (A9). */
