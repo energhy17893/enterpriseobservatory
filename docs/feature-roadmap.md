@@ -275,6 +275,34 @@ Duruş sayfasında **katalog** boyutuyla ayrılır (ADR-0024 Alternatif D'nin re
 | P4 | `advisories` beslemesi (M9.2) | `catalogues/`, besleme yutucu | "bu build'den sonra N duyuru, M'si istismar ediliyor" |
 | P5 | `eo-hardware` + `vendor-passthrough` | M6 ile | Duruş sayfasında donanım kataloğu |
 
+#### Şerit 4 — UX (Ertuğrul, 23 Eylül 2026: "ekle, paralelde uygulayıp devreye alıp test edelim")
+
+Tasarım felsefesi zaten yazılı ve yapıya gömülü: ADR-0006 (yığın, tipografi,
+Swiss minimalizm, koyu tema birincil), ADR-0007 (çok görünüm tek model;
+operatör niyetine göre gruplama; alarm tek yerde), ADR-0008 (rol rampası,
+eylem rengi durum hue'su değil, renk tek başına bilgi taşımaz, kontrast
+kapıdır), ADR-0026/K3 (üç değerli görünüm: gri ayrı durum). Önceki üründeki
+`.claude/skills/design` paketi ürün arayüzü felsefesi değil, genel marka/CIP
+skill'iydi; alınacak bir şey yok.
+
+Şerit kuralı: **referans önce, kritik sonra, tasarım en son.** Posture (P) ve
+SimpliVity sayfası (S5) bu şeride kapalı; F/M6 ile dosya paylaşmaz.
+
+| Adım | İş | Dokunur | Bitti = |
+|---|---|---|---|
+| U0 | **Referans** — Grafana (Saga), Dynatrace (Strato, Problems), vROps nesne sayfası ve rozetler, Veeam ONE alarm listesi, Zabbix/PRTG durum renkleri, WCAG 2.2, NN/g tablo ve boş durum; her ürünün "bilinmiyor/bayat" ve "kabul edildi" gösterimi | `reference-approaches.md` §11 | benimsenen/reddedilen tablo, alıntılı |
+| U1 | **`eo-ux` proje skill'i** — üç ADR + tokens.mjs + §11'den tek belge: bileşen kataloğu (StatusPill, FindingRow, karne, boş durum, "bilinmiyor" satırı), yazı kuralları (basis:/source ayrımı, alarm başlığı kalıbı), yoğunluk ve sayfalama kuralı (1.100 VM ölçüsüyle) | `.claude/skills/eo-ux/SKILL.md` | her ekran işi ona atıf yapar |
+| U2 | **Kritik turu 1** — Overview, Alerts, Events: `design:design-critique` + `design:accessibility-review` + `design:ux-copy` ile bulgu listesi; her bulgu küçük PR (kontrast kapısı + Ertuğrul'un ekrana bakışı) | `web/src/routes/{Overview,Alerts,Events}.tsx`, components | bulgu listesi PR gövdesinde; Kibar (1.100 VM) ile ölçülmüş yoğunluk |
+| U3 | **Kritik turu 2** — Entities, EntityDetail, Connections, Collectors | aynı | aynı |
+| U4 | **Wallboard** (ADR-0007 §6, ayrı görünüm) — U2 sonrası | yeni rota | tek ekranda estate durumu |
+| U5 | Posture ve SimpliVity sayfaları P3/S5 bitince aynı kritikten geçer | — | — |
+
+**Tema kuralı (Ertuğrul, 23 Eylül): mevcut arayüz `Classic` teması olarak kalır ve seçilebilir.** Tema = görsel katman: renk rampaları, boşluk ölçeği, tipografi, yoğunluk — `tokens.mjs`'te ikinci token seti (`observatory`), koyu/açık ikisi de her sette; kontrast kapısı her set için koşar (ADR-0008 §5). Yerleşim, navigasyon, sayfalama, boş durum satırı ve metin **tema değildir**, iki temada aynıdır (ADR-0007 tek model). Seçim izleyici başına (`localStorage`; hesap ayarı gerekirse sonra), varsayılan Classic; yeni set U2'nin görsel bulgularını alır.
+
+Kanıt kuralı: ikimiz de arayüze giriş yapmadığımız için görsel doğrulama
+Ertuğrul'un; PR gövdesi "neyi, neden, hangi ADR'ye göre" der, ekran görüntüsü
+istenmez ([[ui-verification-limit]]).
+
 **Paralellik:** Şerit 1 seri ve kritik; Şerit 2'nin M6.0/M6.0b'si ve Şerit 3'ün
 P1'i bugün başlar (üçü dosya paylaşmaz). M6.1 F6'yı bekler; P3 P1'i bekler.
 CI faturası dönünce hafta içi birleşenler bir kez CI'dan geçer.
