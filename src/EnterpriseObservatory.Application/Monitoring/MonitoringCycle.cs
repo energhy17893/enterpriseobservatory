@@ -233,22 +233,39 @@ public sealed class MonitoringCycle(
         var graphFailure = Guarded(
             "entity-graph", "the topology", () => _graphStore.Replace(graph));
 
-        // Capacity readings the inventory carried. Written before the rules
-        // run, so a rule reading a datastore's history sees this cycle's point.
-        // Guarded rather than routed through StoreObservations: that one
-        // reports on the metric cycle's result, and letting this cycle clear
-        // or overwrite it would make the metric cycle's storage message say
-        // something about a write it did not make. A failure here becomes an
-        // inventory-scoped alert instead, which resolves by itself on the
-        // first cycle whose write lands.
+        // Capacity readings the inventory carried, through the store queue as
+        // current state (F5b): a failed write keeps them for the next drain
+        // instead of losing them, a newer reading replaces an older one still
+        // waiting, and a drop records no gap — vCenter keeps no history of a
+        // datastore's capacity to read again. Drained here, current state
+        // only, before the rules run, so a rule reading a datastore's history
+        // sees this cycle's point; the metric batches waiting beside them are
+        // the metric cycle's to accept, with their marks. Not through
+        // StoreObservations: that one reports on the metric cycle's result,
+        // and letting this cycle clear or overwrite it would make the metric
+        // cycle's storage message say something about a write it did not
+        // make. A failure here becomes an inventory-scoped alert instead,
+        // which resolves by itself on the first cycle whose write lands.
         IReadOnlyList<Observation> samples = [.. cycle.Snapshots.SelectMany(s => s.Observations)];
+
+        foreach (var snapshot in cycle.Snapshots)
+        {
+            _storeQueue.EnqueueCurrentState(snapshot.SourceInstanceId, snapshot.Observations);
+        }
 
         IReadOnlyList<AlertDefinition> sampleFailure = samples.Count == 0
             ? []
             : Guarded(
                 "observations:inventory",
                 "the capacity readings taken with the inventory",
-                () => _observationStore.Append(samples));
+                () =>
+                {
+                    if (_storeQueue.Drain(currentStateOnly: true).Failure is { } failure)
+                    {
+                        throw new InvalidOperationException(
+                            $"{failure} They wait in the store queue for the next write.");
+                    }
+                });
 
         // Guarded like every other rule: a bug in counting paths must cost
         // the path count and not this cycle's "Collector unreachable".
@@ -654,7 +671,8 @@ public sealed class MonitoringCycle(
                     $"The store could not keep up and the queue in front of it dropped {queue.DroppedRows} " +
                     $"sample row(s) since the service started: {queue.DroppedOverBudgetRows} over its " +
                     $"{queue.BudgetBytes / StoreQueueLimits.BytesPerMegabyte} MiB budget and " +
-                    $"{queue.DroppedTooOldRows} older than {queue.MaxAge.TotalMinutes:0} minutes. " +
+                    $"{queue.DroppedTooOldRows} older than {queue.MaxAge.TotalMinutes:0} minutes and " +
+                    $"{queue.DroppedCurrentStateRows} capacity reading(s), which are current state and not refilled. " +
                     $"{queue.RecordedAsGapRows} were recorded as a gap the source is reading again, " +
                     $"{queue.PendingGapRows} wait for the store to record theirs, and " +
                     $"{queue.CouldNotBeFilledRows} could not be filled. " +

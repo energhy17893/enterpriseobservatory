@@ -624,6 +624,9 @@ public sealed record StoreQueueView
 
     public long DroppedTooOldRows { get; init; }
 
+    /// <summary>Capacity readings dropped: current state, never a gap.</summary>
+    public long DroppedCurrentStateRows { get; init; }
+
     public long RecordedAsGapRows { get; init; }
 
     public long PendingGapRows { get; init; }

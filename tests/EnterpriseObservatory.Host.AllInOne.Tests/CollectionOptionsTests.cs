@@ -201,13 +201,25 @@ public class CollectionOptionsTests
         Assert.Contains(options.Validate(), p => p.Contains("StoreQueueMaxAgeMinutes", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(999)]
+    [InlineData(50_001)]
+    public void A_store_write_chunk_outside_1000_to_50000_rows_is_refused(int rows)
+    {
+        // F5b: the chunk bounds one merge's time; refused, never clamped.
+        var options = new CollectionOptions { StoreQueueMaxRowsPerWrite = rows };
+
+        Assert.Contains(options.Validate(), p => p.Contains("StoreQueueMaxRowsPerWrite", StringComparison.Ordinal));
+    }
+
     [Fact]
-    public void The_store_queue_defaults_are_64_mib_and_30_minutes()
+    public void The_store_queue_defaults_are_64_mib_30_minutes_and_the_measured_chunk()
     {
         var limits = new CollectionOptions().ToStoreQueueLimits();
 
         Assert.Equal(64L * 1024 * 1024, limits.BudgetBytes);
         Assert.Equal(TimeSpan.FromMinutes(30), limits.MaxAge);
+        Assert.Equal(StoreQueueLimits.DefaultMaxRowsPerWrite, limits.MaxRowsPerWrite);
         Assert.Equal(StoreQueueLimits.Default, limits);
     }
 
@@ -226,9 +238,10 @@ public class CollectionOptionsTests
             MaxRequestsPerSource = 0,
             StoreQueueBudgetMegabytes = 0,
             StoreQueueMaxAgeMinutes = 0,
+            StoreQueueMaxRowsPerWrite = 0,
         };
 
-        Assert.Equal(10, options.Validate().Count);
+        Assert.Equal(11, options.Validate().Count);
     }
 
     [Fact]

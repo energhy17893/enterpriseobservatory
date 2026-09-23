@@ -184,6 +184,7 @@ public sealed class ReadModel(
         MaxAgeSeconds = queue.MaxAge.TotalSeconds,
         DroppedOverBudgetRows = queue.DroppedOverBudgetRows,
         DroppedTooOldRows = queue.DroppedTooOldRows,
+        DroppedCurrentStateRows = queue.DroppedCurrentStateRows,
         RecordedAsGapRows = queue.RecordedAsGapRows,
         PendingGapRows = queue.PendingGapRows,
         CouldNotBeFilledRows = queue.CouldNotBeFilledRows,
