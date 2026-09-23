@@ -27,11 +27,14 @@ public sealed record StoreQueueLimits
     /// <remarks>
     /// 220.2 bytes a row with one 20 s slot per series per read — every
     /// counter-name and instance string paid for by one row, the dearest
-    /// shape — and 175.3 with two. Rounded up from the dearer. The queue
-    /// accounts its bytes as rows × this, an estimate rather than a count of
-    /// every allocation, which is what makes it cheap enough to do per batch.
+    /// shape — and 175.3 with two. The queue accounts its bytes as rows ×
+    /// this, an estimate rather than a count of every allocation, which is
+    /// what makes it cheap enough to do per batch. Set to 256, ~16% above the
+    /// dearer measurement, not 221: at 0.8 bytes of headroom the measurement
+    /// test failed on ordinary GC variance, and an accounting constant only
+    /// has to be safe (never under-count), not tight.
     /// </remarks>
-    public const int MeasuredBytesPerRow = 221;
+    public const int MeasuredBytesPerRow = 256;
 
     /// <summary>The default budget, in MiB (planner's decision, 23 September 2026).</summary>
     public const int DefaultBudgetMegabytes = 64;
