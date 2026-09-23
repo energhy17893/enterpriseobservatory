@@ -626,22 +626,26 @@ export interface CatalogueScorecardView {
   totalSubjects: number
   /** evaluableSubjects / totalSubjects; null when there are no subjects at all. */
   coverage: number | null
-  /** This catalogue's verdict deltas over the last seven days (P2). */
+  /** This catalogue's NET posture change over the last seven days (P2). */
   last7Days: CatalogueLast7DaysView
 }
 
 /**
- * One catalogue's verdict deltas over the posture scorecard's trailing
- * window (P2) -- a count of `compliance_transition` rows, derived from the
- * append-only log rather than a second, independently-maintained total.
+ * One catalogue's NET posture change over the posture scorecard's trailing
+ * window (P2, revised) -- derived from `compliance_transition`, the
+ * append-only log, rather than a second, independently-maintained total. A
+ * round trip through NotEvaluated (e.g. a vCenter outage) is not a posture
+ * change: it shows only as notEvaluatedNow, never as worsened or improved.
  */
 export interface CatalogueLast7DaysView {
-  /** Subjects that started failing in the window. */
-  failingIn: number
-  /** Subjects that stopped failing in the window (passed, or left the evaluation). */
-  failingOut: number
-  /** Subjects that became not-evaluated in the window. */
-  notEvaluatedIn: number
+  /** Findings evaluated at both ends that went Passing -> Failing. */
+  worsened: number
+  /** Findings evaluated at both ends that went Failing -> Passing. */
+  improved: number
+  /** Findings with no verdict at the start of the window. */
+  new: number
+  /** Findings whose verdict now is NotEvaluated -- never folded into worsened/improved. */
+  notEvaluatedNow: number
 }
 
 export interface ComplianceView {

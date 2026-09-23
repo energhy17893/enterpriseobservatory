@@ -151,21 +151,26 @@ public sealed record CatalogueScorecardView
 }
 
 /// <summary>
-/// One catalogue's verdict deltas over the posture scorecard's trailing
-/// window (P2) — a count of <c>compliance_transition</c> rows, derived from
-/// the append-only log rather than a second, independently-maintained total
-/// (ADR-0026).
+/// One catalogue's NET posture change over the posture scorecard's trailing
+/// window (P2, revised) — derived from <c>compliance_transition</c>, the
+/// append-only log, rather than a second, independently-maintained total
+/// (ADR-0026). A round trip through NotEvaluated, such as a vCenter outage,
+/// is not a posture change: it shows as neither worsened nor improved, only
+/// (transiently) as <see cref="NotEvaluatedNow"/>.
 /// </summary>
 public sealed record CatalogueLast7DaysView
 {
-    /// <summary>Subjects that started failing in the window.</summary>
-    public required int FailingIn { get; init; }
+    /// <summary>Findings evaluated at both ends that went Passing -> Failing.</summary>
+    public required int Worsened { get; init; }
 
-    /// <summary>Subjects that stopped failing in the window (passed, or left the evaluation).</summary>
-    public required int FailingOut { get; init; }
+    /// <summary>Findings evaluated at both ends that went Failing -> Passing.</summary>
+    public required int Improved { get; init; }
 
-    /// <summary>Subjects that became not-evaluated in the window.</summary>
-    public required int NotEvaluatedIn { get; init; }
+    /// <summary>Findings with no verdict at the start of the window.</summary>
+    public required int New { get; init; }
+
+    /// <summary>Findings whose verdict now is NotEvaluated — never folded into worsened/improved.</summary>
+    public required int NotEvaluatedNow { get; init; }
 }
 
 /// <summary>The whole compliance screen's summary.</summary>
@@ -785,9 +790,10 @@ public static class ComplianceApi
 
     private static readonly CatalogueLast7DaysView NoDelta = new()
     {
-        FailingIn = 0,
-        FailingOut = 0,
-        NotEvaluatedIn = 0,
+        Worsened = 0,
+        Improved = 0,
+        New = 0,
+        NotEvaluatedNow = 0,
     };
 
     /// <summary>
@@ -848,9 +854,10 @@ public static class ComplianceApi
             Coverage = total == 0 ? null : (double)evaluable / total,
             Last7Days = new CatalogueLast7DaysView
             {
-                FailingIn = delta.FailingIn,
-                FailingOut = delta.FailingOut,
-                NotEvaluatedIn = delta.NotEvaluatedIn,
+                Worsened = delta.Worsened,
+                Improved = delta.Improved,
+                New = delta.New,
+                NotEvaluatedNow = delta.NotEvaluatedNow,
             },
         };
     }

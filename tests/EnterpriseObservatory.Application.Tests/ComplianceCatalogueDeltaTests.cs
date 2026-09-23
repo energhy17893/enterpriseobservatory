@@ -6,51 +6,71 @@ using EnterpriseObservatory.Domain.Compliance;
 namespace EnterpriseObservatory.Application.Tests;
 
 /// <summary>
-/// P2: the posture scorecard's "last 7 days" delta -- a COUNT over
-/// <c>compliance_transition</c> rows (ADR-0026's replay-from-the-log
-/// principle; no snapshot table), scoped to one catalogue's release.
+/// P2, revised: the posture scorecard's "last 7 days" delta counts NET
+/// posture change, not raw transitions -- a catalogue's whole estate going
+/// NotEvaluated during a vCenter outage and coming back is not "N things
+/// broke and N things got fixed" (ADR-0026). <see cref="ComplianceService.DeltaSince"/>
+/// compares each current finding's verdict against its verdict at the start
+/// of the window (the last <c>compliance_transition</c> row at or before
+/// then, from <see cref="IComplianceStore.LastTransitionsAtOrBefore"/>), and
+/// only for findings evaluated (Passing or Failing) at both ends.
 /// </summary>
-/// <remarks>
-/// The brief that started this work assumed <c>compliance_transition</c> had
-/// no <c>subject</c> column and needed one added as migration 17, with old
-/// rows counted as "subject unknown". That was wrong: migration 11 already
-/// added it, <c>NOT NULL DEFAULT ''</c>, and the store already writes it on
-/// every insert -- there is no unknown case. What the column actually
-/// protects is what this test proves: a transition is per (release, control,
-/// entity, subject), so two subjects of the same control and entity are two
-/// transitions, not one a coarser key would have collapsed.
-/// </remarks>
 public class ComplianceCatalogueDeltaTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 23, 9, 0, 0, TimeSpan.Zero);
 
+    private static readonly DateTimeOffset Start = T0.AddDays(-7);
+
     private static readonly ComplianceCatalogue Catalogue = ComplianceEvaluationTests.Catalogue(
         ComplianceEvaluationTests.LogForwarding);
 
+    private const string ControlId = "esx-9.log-forwarding";
+
     private static readonly EntityId Host1 = new("vc-1:host-1");
 
-    private static ComplianceTransition Transition(
-        string control, EntityId entity, string subject, ComplianceVerdict? from, ComplianceVerdict? to) => new()
-    {
-        CatalogueRelease = Catalogue.Release,
-        ControlId = control,
-        Entity = entity,
-        Subject = subject,
-        From = from,
-        To = to,
-        AtUtc = T0,
-    };
+    private static ComplianceFinding Finding(
+        EntityId entity, string subject, ComplianceVerdict verdict) => new()
+        {
+            ControlId = ControlId,
+            CatalogueRelease = Catalogue.Release,
+            Entity = entity,
+            Subject = subject,
+            Verdict = verdict,
+            Expected = "n/a",
+            FirstSeenUtc = T0,
+            LastEvaluatedUtc = T0,
+        };
+
+    private static ComplianceTransition StartVerdict(
+        EntityId entity, string subject, ComplianceVerdict to) => new()
+        {
+            CatalogueRelease = Catalogue.Release,
+            ControlId = ControlId,
+            Entity = entity,
+            Subject = subject,
+            To = to,
+            AtUtc = Start,
+        };
 
     private sealed class Clock(DateTimeOffset now) : IClock
     {
         public DateTimeOffset UtcNow => now;
     }
 
-    private sealed class Store(IReadOnlyList<ComplianceTransition> transitions) : IComplianceStore
+    /// <summary>
+    /// Findings as they stand now, and the "verdict at start" rows
+    /// <see cref="ComplianceService.DeltaSince"/> asks for -- exactly the two
+    /// things it reads, nothing else.
+    /// </summary>
+    private sealed class Store(
+        IReadOnlyList<ComplianceFinding> findings,
+        IReadOnlyList<ComplianceTransition> startVerdicts) : IComplianceStore
     {
         public string? ReleaseAsked { get; private set; }
 
-        public IReadOnlyList<ComplianceFinding> Findings => [];
+        public DateTimeOffset? AtAsked { get; private set; }
+
+        public IReadOnlyList<ComplianceFinding> Findings => findings;
 
         public IReadOnlyList<ComplianceWaiver> Exceptions => [];
 
@@ -71,87 +91,123 @@ public class ComplianceCatalogueDeltaTests
 
         public ComplianceTransitionsPage TransitionsSince(
             DateTimeOffset sinceUtc, DateTimeOffset? toUtc = null, string? catalogueRelease = null,
-            string? controlId = null, EntityId? entity = null)
+            string? controlId = null, EntityId? entity = null) =>
+            throw new NotSupportedException("DeltaSince reads LastTransitionsAtOrBefore, not this.");
+
+        public IReadOnlyList<ComplianceTransition> LastTransitionsAtOrBefore(
+            string catalogueRelease, DateTimeOffset atUtc)
         {
             ReleaseAsked = catalogueRelease;
-            return new ComplianceTransitionsPage { Transitions = transitions, Truncated = false };
+            AtAsked = atUtc;
+            return startVerdicts;
         }
     }
 
-    [Fact]
-    public void Two_subjects_of_the_same_control_and_entity_count_as_two_failing_in()
+    private static ComplianceCatalogueDelta Delta(
+        IReadOnlyList<ComplianceFinding> findings, IReadOnlyList<ComplianceTransition> startVerdicts)
     {
-        var transitions = new[]
-        {
-            Transition("esx-9.log-forwarding", Host1, "rule-a", ComplianceVerdict.Passing, ComplianceVerdict.Failing),
-            Transition("esx-9.log-forwarding", Host1, "rule-b", ComplianceVerdict.Passing, ComplianceVerdict.Failing),
-        };
-
-        var service = new ComplianceService([Catalogue], new Store(transitions), new Clock(T0));
-
-        var delta = service.DeltaSince(Catalogue, T0.AddDays(-7));
-
-        Assert.Equal(2, delta.FailingIn);
+        var service = new ComplianceService([Catalogue], new Store(findings, startVerdicts), new Clock(T0));
+        return service.DeltaSince(Catalogue, Start);
     }
 
     [Fact]
-    public void An_entity_level_transition_with_no_subject_counts_once()
+    public void An_outage_round_trip_through_not_evaluated_is_not_a_posture_change()
     {
-        var transitions = new[]
-        {
-            Transition("esx-9.log-forwarding", Host1, "", ComplianceVerdict.Failing, ComplianceVerdict.Passing),
-        };
+        // Failing at start, NotEvaluated in between (not itself asked about --
+        // only the start and now matter), Failing again now.
+        var delta = Delta(
+            [Finding(Host1, "", ComplianceVerdict.Failing)],
+            [StartVerdict(Host1, "", ComplianceVerdict.Failing)]);
 
-        var service = new ComplianceService([Catalogue], new Store(transitions), new Clock(T0));
-
-        var delta = service.DeltaSince(Catalogue, T0.AddDays(-7));
-
-        Assert.Equal(1, delta.FailingOut);
-        Assert.Equal(0, delta.FailingIn);
+        Assert.Equal(0, delta.Worsened);
+        Assert.Equal(0, delta.Improved);
     }
 
     [Fact]
-    public void Entering_not_evaluated_is_counted_apart_from_failing()
+    public void Passing_at_start_and_failing_now_is_one_worsened()
     {
-        var transitions = new[]
-        {
-            Transition("esx-9.log-forwarding", Host1, "", ComplianceVerdict.Passing, ComplianceVerdict.NotEvaluated),
-        };
+        var delta = Delta(
+            [Finding(Host1, "", ComplianceVerdict.Failing)],
+            [StartVerdict(Host1, "", ComplianceVerdict.Passing)]);
 
-        var service = new ComplianceService([Catalogue], new Store(transitions), new Clock(T0));
-
-        var delta = service.DeltaSince(Catalogue, T0.AddDays(-7));
-
-        Assert.Equal(1, delta.NotEvaluatedIn);
-        Assert.Equal(0, delta.FailingIn);
-        Assert.Equal(0, delta.FailingOut);
+        Assert.Equal(1, delta.Worsened);
+        Assert.Equal(0, delta.Improved);
     }
 
     [Fact]
-    public void Leaving_the_evaluation_while_failing_counts_as_failing_out()
+    public void Failing_at_start_and_passing_now_is_one_improved()
     {
-        // to_verdict NULL: the subject left the evaluation (ADR/K1 remarks on
-        // ComplianceTransition). Still "stopped failing" for the delta.
-        var transitions = new[]
-        {
-            Transition("esx-9.log-forwarding", Host1, "rule-a", ComplianceVerdict.Failing, null),
-        };
+        var delta = Delta(
+            [Finding(Host1, "", ComplianceVerdict.Passing)],
+            [StartVerdict(Host1, "", ComplianceVerdict.Failing)]);
 
-        var service = new ComplianceService([Catalogue], new Store(transitions), new Clock(T0));
-
-        var delta = service.DeltaSince(Catalogue, T0.AddDays(-7));
-
-        Assert.Equal(1, delta.FailingOut);
+        Assert.Equal(0, delta.Worsened);
+        Assert.Equal(1, delta.Improved);
     }
 
     [Fact]
-    public void The_delta_is_scoped_to_the_catalogues_own_release()
+    public void A_finding_first_seen_inside_the_window_is_new_not_worsened()
     {
-        var store = new Store([]);
+        // No row at or before Start at all: the finding did not exist yet.
+        var delta = Delta([Finding(Host1, "", ComplianceVerdict.Failing)], []);
+
+        Assert.Equal(1, delta.New);
+        Assert.Equal(0, delta.Worsened);
+        Assert.Equal(0, delta.Improved);
+    }
+
+    [Fact]
+    public void Two_subjects_of_one_control_and_entity_are_counted_independently()
+    {
+        var delta = Delta(
+            [
+                Finding(Host1, "rule-a", ComplianceVerdict.Failing),
+                Finding(Host1, "rule-b", ComplianceVerdict.Passing),
+            ],
+            [
+                StartVerdict(Host1, "rule-a", ComplianceVerdict.Passing),
+                StartVerdict(Host1, "rule-b", ComplianceVerdict.Failing),
+            ]);
+
+        Assert.Equal(1, delta.Worsened);
+        Assert.Equal(1, delta.Improved);
+    }
+
+    [Fact]
+    public void A_finding_not_evaluated_now_is_counted_apart_and_in_neither_sign()
+    {
+        var delta = Delta(
+            [Finding(Host1, "", ComplianceVerdict.NotEvaluated)],
+            [StartVerdict(Host1, "", ComplianceVerdict.Failing)]);
+
+        Assert.Equal(1, delta.NotEvaluatedNow);
+        Assert.Equal(0, delta.Worsened);
+        Assert.Equal(0, delta.Improved);
+        Assert.Equal(0, delta.New);
+    }
+
+    [Fact]
+    public void An_unchanged_finding_is_in_no_bucket()
+    {
+        var delta = Delta(
+            [Finding(Host1, "", ComplianceVerdict.Failing)],
+            [StartVerdict(Host1, "", ComplianceVerdict.Failing)]);
+
+        Assert.Equal(0, delta.Worsened);
+        Assert.Equal(0, delta.Improved);
+        Assert.Equal(0, delta.New);
+        Assert.Equal(0, delta.NotEvaluatedNow);
+    }
+
+    [Fact]
+    public void The_delta_asks_the_store_for_its_own_release_and_the_start_of_the_window()
+    {
+        var store = new Store([], []);
         var service = new ComplianceService([Catalogue], store, new Clock(T0));
 
-        service.DeltaSince(Catalogue, T0.AddDays(-7));
+        service.DeltaSince(Catalogue, Start);
 
         Assert.Equal(Catalogue.Release, store.ReleaseAsked);
+        Assert.Equal(Start, store.AtAsked);
     }
 }

@@ -355,6 +355,67 @@ public class ComplianceStoreTests : IDisposable
         Assert.Equal(2, both.Transitions.Count);
     }
 
+    // --- P2 (revised): "verdict at start" for the net posture change delta -----
+
+    [SkippableFact]
+    public void LastTransitionsAtOrBefore_returns_the_latest_row_per_identity_at_or_before_the_time()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+
+        // A finding failed, was fixed, then failed again -- three rows for
+        // the same identity. Only the last one at or before T0 + 2h matters.
+        store.Evaluate(Release, T0, _ => [Finding("vc-1:host-1")]);
+        store.Evaluate(Release, T0.AddHours(1), _ => [Finding("vc-1:host-1", ComplianceVerdict.Passing)]);
+        store.Evaluate(Release, T0.AddHours(3), _ => [Finding("vc-1:host-1")]);
+
+        var atStart = store.LastTransitionsAtOrBefore(Release, T0.AddHours(2));
+        var only = Assert.Single(atStart);
+
+        Assert.Equal("esxi-8.logs-remote", only.ControlId);
+        Assert.Equal("vc-1:host-1", only.Entity.Value);
+        Assert.Equal(ComplianceVerdict.Passing, only.To);
+
+        // Before the finding existed at all: nothing comes back, never an
+        // invented starting verdict.
+        Assert.Empty(store.LastTransitionsAtOrBefore(Release, T0.AddHours(-1)));
+    }
+
+    [SkippableFact]
+    public void LastTransitionsAtOrBefore_is_scoped_to_its_own_release_and_keeps_subjects_apart()
+    {
+        RequireDatabase();
+
+        var store = new PostgresComplianceStore(_live.Database);
+
+        store.Evaluate(Release, T0, _ => [Finding("vc-1:host-1")]);
+        store.Evaluate("other-release", T0, _ => [Finding("vc-1:host-1") with { CatalogueRelease = "other-release" }]);
+
+        store.Evaluate("eo-continuity-1", T0, _ =>
+        [
+            Finding("vc-1:host-1") with
+            {
+                CatalogueRelease = "eo-continuity-1",
+                ControlId = "eo-cont.drs-rule",
+                Subject = "rule-a",
+            },
+            Finding("vc-1:host-1") with
+            {
+                CatalogueRelease = "eo-continuity-1",
+                ControlId = "eo-cont.drs-rule",
+                Subject = "rule-b",
+            },
+        ]);
+
+        var scg = store.LastTransitionsAtOrBefore(Release, T0.AddHours(1));
+        var only = Assert.Single(scg);
+        Assert.Equal(Release, only.CatalogueRelease);
+
+        var continuity = store.LastTransitionsAtOrBefore("eo-continuity-1", T0.AddHours(1));
+        Assert.Equal(["rule-a", "rule-b"], continuity.Select(t => t.Subject).Order());
+    }
+
     [SkippableFact]
     public void A_history_wider_than_the_row_cap_comes_back_truncated_rather_than_whole()
     {

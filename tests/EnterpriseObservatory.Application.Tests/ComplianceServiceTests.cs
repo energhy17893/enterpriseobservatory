@@ -102,6 +102,9 @@ public class ComplianceServiceTests
             LastTransitionsQuery = (sinceUtc, toUtc, catalogueRelease, controlId, entity);
             return TransitionsToReturn;
         }
+
+        public IReadOnlyList<ComplianceTransition> LastTransitionsAtOrBefore(
+            string catalogueRelease, DateTimeOffset atUtc) => [];
     }
 
     private readonly Clock _clock = new(T0);
