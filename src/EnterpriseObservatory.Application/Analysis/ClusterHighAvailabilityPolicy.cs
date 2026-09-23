@@ -22,9 +22,9 @@ namespace EnterpriseObservatory.Application.Analysis;
 /// </para>
 /// <para>
 /// Reads <c>Entity.Settings</c> rather than a typed configuration object, for
-/// the same reason <see cref="RemoteLogging"/> does. The setting names are
+/// the same reason the old remote-logging rule did. The setting names are
 /// held as policy rather than compiled in, also for the reason
-/// <see cref="RemoteLoggingPolicy"/> gives: the application layer must not
+/// <c>RemoteLoggingPolicy</c> used to give: the application layer must not
 /// depend on what vSphere calls something, so this file does not reference
 /// the collector's <c>ClusterHaSettings</c> constants directly -- it carries
 /// its own defaults, which the collector's constants are required to match.
@@ -32,8 +32,8 @@ namespace EnterpriseObservatory.Application.Analysis;
 /// <para>
 /// Every check is silent on a cluster whose configuration could not be read.
 /// An absent key is a collection failure with its own channel, not a finding
-/// about a cluster nobody looked at -- see <see cref="RemoteLogging"/>'s
-/// remarks for why that distinction is load-bearing rather than a nicety.
+/// about a cluster nobody looked at -- the old remote-logging rule's remarks
+/// covered why that distinction is load-bearing rather than a nicety.
 /// </para>
 /// </remarks>
 public sealed record ClusterHighAvailabilityPolicy

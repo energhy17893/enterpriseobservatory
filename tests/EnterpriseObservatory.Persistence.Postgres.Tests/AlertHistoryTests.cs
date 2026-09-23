@@ -411,7 +411,7 @@ public sealed class AlertHistoryTests : IDisposable
         };
 
         Cycle(store, T0, [Present(psu, T0), Present(fan, T0)]);
-        Cycle(store, T0, [Present(syslog, T0)], RemoteLogging.RuleId, AlertScopes.Inventory);
+        Cycle(store, T0, [Present(syslog, T0)], "remote-logging", AlertScopes.Inventory);
         store.MarkNotified(AlertScopes.Observation, [psu.Fingerprint, fan.Fingerprint]);
         store.MarkNotified(AlertScopes.Inventory, [syslog.Fingerprint]);
 

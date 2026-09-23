@@ -44,7 +44,6 @@ public static class RuleCheckIds
             ["net-dropped-packets"] = DroppedPackets.RuleId,
             ["storage-noisy-neighbour"] = StorageNoisyNeighbour.RuleId,
             ["storage-path-redundancy"] = StoragePathRedundancy.RuleId,
-            ["remote-logging"] = RemoteLogging.RuleId,
             ["datastore-time-to-full"] = DatastoreTimeToFull.RuleId,
             [DatastoreTimeToFull.OvercommitCheckId] = DatastoreTimeToFull.RuleId,
             [DatastoreTimeToFull.HistoryUnreadableCheckId] = DatastoreTimeToFull.RuleId,
