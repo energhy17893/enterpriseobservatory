@@ -130,6 +130,46 @@ public sealed class CompositionRootSmokeTests : IDisposable
     }
 
     [Fact]
+    public async Task Health_answers_200_while_customer_sources_fail_and_lists_them()
+    {
+        // The live 503 of 2026-09-23: vCenters failing on the customer's
+        // network while the cycles ran, plus a connection with no collector.
+        // The product is working, so 200 — and the sources stay visible.
+        var now = _host.Services.GetRequiredService<IClock>().UtcNow;
+        _host.Services.GetRequiredService<ICollectorHealthStore>().Merge(
+        [
+            new CollectorHealth
+            {
+                InstanceId = "cls-vcenter",
+                Role = CollectorRole.Inventory,
+                Health = EnterpriseObservatory.Domain.HealthState.Unknown,
+                LastSuccessUtc = now - TimeSpan.FromHours(2),
+                LastAttemptUtc = now - TimeSpan.FromMinutes(1),
+                LastFailureKind = CollectionFailureKind.Unreachable,
+            },
+            new CollectorHealth
+            {
+                InstanceId = "hyperv-1",
+                Role = CollectorRole.Inventory,
+                Health = EnterpriseObservatory.Domain.HealthState.Unknown,
+                LastAttemptUtc = now - TimeSpan.FromHours(3),
+                LastFailureKind = CollectionFailureKind.NotConfigured,
+            },
+        ]);
+
+        var response = await Client().GetAsync("/health");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("storeReachable").GetBoolean());
+        var statuses = body.GetProperty("sources").EnumerateArray()
+            .ToDictionary(s => s.GetProperty("instanceId").GetString()!, s => s.GetProperty("status").GetString());
+        Assert.Equal("Unknown", statuses["cls-vcenter"]);
+        Assert.Equal("NotPolled", statuses["hyperv-1"]);
+    }
+
+    [Fact]
     public async Task The_sign_in_surface_is_reachable_without_a_session()
     {
         // The positive control for the test above. If the pipeline refused

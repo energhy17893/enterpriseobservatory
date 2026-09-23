@@ -3,6 +3,7 @@ using EnterpriseObservatory.Application.Monitoring;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace EnterpriseObservatory.Api;
 
@@ -26,9 +27,17 @@ namespace EnterpriseObservatory.Api;
 /// login service being down looks identical to the monitoring being down.
 /// </para>
 /// <para>
-/// Reflects freshness, not process liveness: a process that is up but has not
-/// read anything in an hour must not answer 200 just because it can still
-/// accept a request.
+/// Reflects whether the product's cycles run, not process liveness: a process
+/// that is up but has not attempted a read in an hour must not answer 200 just
+/// because it can still accept a request.
+/// </para>
+/// <para>
+/// And not the union of its sources either (Prometheus: a target's <c>up</c>
+/// is not the server's own readiness). An unreachable customer vCenter is the
+/// product working — it raises its own alert — so it shows in
+/// <c>sources[]</c>, not in the status code. 503 means only this: some role
+/// attempted nothing within <see cref="HealthOptions.UnhealthyAfter"/>, or the
+/// store queue's last write failed. See <see cref="HealthAssessment"/>.
 /// </para>
 /// </remarks>
 public static class HealthApi
@@ -42,14 +51,19 @@ public static class HealthApi
                 ICollectionGapStore gaps,
                 MonitoringOptions monitoring,
                 HealthOptions healthOptions,
-                IClock clock) =>
+                IClock clock,
+                HttpContext context) =>
             {
+                // Optional: a host without the store queue has no write to fail.
+                var storeQueue = context.RequestServices.GetService<IStoreQueueMetrics>();
+
                 var report = HealthAssessment.Assess(
                     collectors.Current,
                     monitoring,
                     healthOptions,
                     gaps.CountsByState(),
-                    clock.UtcNow);
+                    clock.UtcNow,
+                    storeQueue?.Snapshot().LastFailure);
 
                 return report.Status == ServiceHealthStatus.Unhealthy
                     ? Results.Json(report, statusCode: StatusCodes.Status503ServiceUnavailable)
