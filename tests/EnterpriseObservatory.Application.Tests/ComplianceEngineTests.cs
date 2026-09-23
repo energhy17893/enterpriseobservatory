@@ -578,6 +578,18 @@ public class ComplianceEngineTests
     }
 
     [Fact]
+    public void History_for_a_control_no_catalogue_knows_is_empty_rather_than_an_error()
+    {
+        // More than one catalogue is loaded here, which is what made the old
+        // fallback -- Catalogues.Single() -- throw on an unknown control id.
+        var page = Service().TransitionsSince(T0.AddDays(-1), T0, "no-such-control");
+
+        Assert.Empty(page.Transitions);
+        Assert.False(page.Truncated);
+        Assert.Empty(_store.TransitionReleases);
+    }
+
+    [Fact]
     public void A_catalogue_that_failed_to_load_does_not_stop_the_other()
     {
         var service = new ComplianceService(
