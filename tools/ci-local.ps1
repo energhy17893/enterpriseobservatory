@@ -44,9 +44,27 @@ if ($LASTEXITCODE -eq 0) {
 
 # --- Web interface ---
 Push-Location web
-npm ci --silent 2>&1 | Out-Null
-$w = npm run build 2>&1
-$results['Web interface'] = if ($LASTEXITCODE -eq 0) { 'pass' } else { 'FAIL: ' + (($w | Select-Object -Last 3) -join ' | ') }
+# npm ci wipes node_modules first, and on Windows a native module it is
+# deleting can be briefly locked (EPERM, 23 September 2026); with its output
+# swallowed the gate then reported "'tsc' is not recognized". So: install
+# only when the lock file changed, retry once, and say what npm said.
+$installed = 'node_modules/.package-lock.json'
+$stale = -not (Test-Path $installed) -or
+    (Get-Item package-lock.json).LastWriteTimeUtc -gt (Get-Item $installed).LastWriteTimeUtc
+$ci = $null
+if ($stale) {
+    foreach ($attempt in 1..2) {
+        $ci = npm ci --silent 2>&1
+        if ($LASTEXITCODE -eq 0) { $ci = $null; break }
+    }
+}
+if ($ci) {
+    $results['Web interface'] = 'FAIL: npm ci: ' + (($ci | Select-String -Pattern 'npm error (code|path|syscall)|ERR' | Select-Object -First 3) -join ' | ')
+}
+else {
+    $w = npm run build 2>&1
+    $results['Web interface'] = if ($LASTEXITCODE -eq 0) { 'pass' } else { 'FAIL: ' + (($w | Select-Object -Last 3) -join ' | ') }
+}
 Pop-Location
 
 # --- Design tokens ---
