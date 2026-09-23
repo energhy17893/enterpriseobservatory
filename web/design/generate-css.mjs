@@ -37,6 +37,8 @@ function emitTheme(theme) {
     lines.push(`  --focus-ring: ${css(theme.focusRing)};`);
     lines.push(`  --primary: ${css(theme.primary)};`);
     lines.push(`  --primary-on: ${css(theme.primaryOn)};`);
+    lines.push(`  --destructive: ${css(theme.destructive)};`);
+    lines.push(`  --destructive-on: ${css(theme.destructiveOn)};`);
     lines.push('');
 
     for (const s of STATUSES) {
@@ -59,6 +61,8 @@ function emitThemeInline() {
     lines.push('  --color-focus-ring: var(--focus-ring);');
     lines.push('  --color-primary: var(--primary);');
     lines.push('  --color-primary-on: var(--primary-on);');
+    lines.push('  --color-destructive: var(--destructive);');
+    lines.push('  --color-destructive-on: var(--destructive-on);');
     lines.push('');
     for (const s of STATUSES) {
         for (const r of ROLES) {

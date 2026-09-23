@@ -85,6 +85,12 @@ export const dark = {
     // kontrast veriyor ve koyu zeminde daha okunur duruyor.
     primary: { l: 0.72, c: 0.13, h: HUE.primary },
     primaryOn: { l: 0.17, c: 0.010, h: HUE.primary },
+
+    // ADR-0008 §2: yıkıcı eylem critical ile aynı hue'yu paylaşır. Değerler
+    // critical.solid/solidOn ile birebir aynı — o çift zaten >= 4.5:1 doğrulanmış
+    // (bkz. `${s}: solidOn / solid` kuralı), yeni bir renk icat etmeye gerek yok.
+    destructive: { l: 0.53, c: 0.18, h: HUE.critical },
+    destructiveOn: { l: 0.98, c: 0.004, h: HUE.critical },
 };
 
 export const light = {
@@ -138,6 +144,10 @@ export const light = {
 
     primary: { l: 0.50, c: 0.20, h: HUE.primary },
     primaryOn: { l: 0.99, c: 0, h: HUE.primary },
+
+    // Same reuse as dark: identical to critical.solid/solidOn (ADR-0008 §2).
+    destructive: { l: 0.52, c: 0.20, h: HUE.critical },
+    destructiveOn: { l: 0.99, c: 0, h: HUE.critical },
 };
 
 export const themes = { dark, light };

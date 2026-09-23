@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { cn } from '@/lib/ui'
+import { ConfirmDestructive } from '@/components/Primitives'
 import type { BulkActionView } from '@/api/types'
 
 const SILENCE_OPTIONS = [
@@ -27,6 +28,7 @@ export function BulkBar({
 }) {
   const queryClient = useQueryClient()
   const [silencing, setSilencing] = useState(false)
+  const [confirmingClear, setConfirmingClear] = useState(false)
   const [note, setNote] = useState<string | null>(null)
 
   const act = useMutation({
@@ -79,8 +81,8 @@ export function BulkBar({
         <button
           type="button"
           disabled={act.isPending}
-          onClick={() => act.mutate(() => api.clearMany(selected))}
-          className="rounded-md border border-border px-2 py-1 text-xs hover:bg-page"
+          onClick={() => setConfirmingClear(true)}
+          className="rounded-md border border-destructive px-2 py-1 text-xs hover:bg-destructive hover:text-destructive-on"
         >
           Clear
         </button>
@@ -121,6 +123,17 @@ export function BulkBar({
       {note !== null && (
         <div className={cn('mt-2 text-xs', 'text-muted-foreground')}>{note}</div>
       )}
+
+      <ConfirmDestructive
+        open={confirmingClear}
+        title={`Clear ${selected.length} alert${selected.length === 1 ? '' : 's'}? This cannot be undone.`}
+        confirmLabel={`Clear ${selected.length}`}
+        onConfirm={() => {
+          setConfirmingClear(false)
+          act.mutate(() => api.clearMany(selected))
+        }}
+        onCancel={() => setConfirmingClear(false)}
+      />
     </div>
   )
 }
