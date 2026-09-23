@@ -67,6 +67,14 @@ public sealed record SetupCommand
 
     /// <summary>The existing role's password; unused when creating.</summary>
     public string Password { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Never the two passwords. A record prints every property by default, and
+    /// this one should not be one careless log call away from the credential.
+    /// </summary>
+    public override string ToString() =>
+        $"SetupCommand {{ Mode = {Mode}, Host = {Host}, Port = {Port}, Database = {Database}, " +
+        $"Username = {Username}, Schema = {Schema}, RequireTls = {RequireTls}, AdminUsername = {AdminUsername} }}";
 }
 
 /// <summary>What setup did.</summary>

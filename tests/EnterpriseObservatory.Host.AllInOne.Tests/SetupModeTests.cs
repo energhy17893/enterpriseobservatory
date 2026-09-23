@@ -263,6 +263,15 @@ public sealed class SetupModeTests : IDisposable
     }
 
     [Fact]
+    public void The_setup_command_never_prints_its_passwords()
+    {
+        var command = new SetupCommand { AdminPassword = AdminPassword, Password = "role-password-sentinel" };
+
+        Assert.DoesNotContain(AdminPassword, command.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("role-password-sentinel", command.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task An_unknown_mode_is_refused()
     {
         var response = await Client().PostAsJsonAsync("/api/setup", new { mode = "import" });
