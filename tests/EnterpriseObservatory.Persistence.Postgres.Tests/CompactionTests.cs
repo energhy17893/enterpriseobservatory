@@ -470,6 +470,8 @@ public class CompactionTests : IDisposable
         var fives = slices.Where(s => s.Resolution == SeriesResolution.FiveMinutes).ToList();
 
         Assert.True(fives.Count >= 18, $"Only {fives.Count} five-minute slices.");
+        // Each slice carries its own transaction time, which the host logs.
+        Assert.All(slices, s => Assert.True(s.Duration > TimeSpan.Zero, "A slice with no duration."));
         // A slice that found nothing to fold may skip the empty stretch after
         // it in one step; every slice that rebuilt something stays bounded.
         Assert.All(slices.Where(s => s.BucketsWritten > 0), s => Assert.True(

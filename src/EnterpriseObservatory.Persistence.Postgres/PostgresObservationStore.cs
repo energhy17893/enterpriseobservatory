@@ -651,11 +651,18 @@ public sealed class PostgresObservationStore : IObservationStore
         var floor = RefoldWindow.Floor(nowUtc, policy, target);
         var total = 0;
 
-        while (_database.Write(connection =>
-            FoldOneSlice(connection, source, target, floor, completeTo)) is { } slice)
+        while (true)
         {
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            if (_database.Write(connection =>
+                FoldOneSlice(connection, source, target, floor, completeTo)) is not { } slice)
+            {
+                break;
+            }
+
             total += slice.BucketsWritten;
-            SliceCommitted?.Invoke(slice);
+            SliceCommitted?.Invoke(slice with { Duration = System.Diagnostics.Stopwatch.GetElapsedTime(started) });
         }
 
         return total;
@@ -1432,7 +1439,15 @@ public static class RefoldWindow
 /// <param name="ToUtc">Where it stopped, exclusive.</param>
 /// <param name="BucketsWritten">Rows written, across every series.</param>
 public sealed record FoldSlice(
-    SeriesResolution Resolution, DateTimeOffset FromUtc, DateTimeOffset ToUtc, int BucketsWritten);
+    SeriesResolution Resolution, DateTimeOffset FromUtc, DateTimeOffset ToUtc, int BucketsWritten)
+{
+    /// <summary>
+    /// The slice's transaction, lock included. Logged so a day of them can
+    /// say whether <see cref="PostgresObservationStore.BucketsPerSlice"/>
+    /// should shrink before the thirty-second timeout is reached.
+    /// </summary>
+    public TimeSpan Duration { get; init; }
+}
 
 /// <summary>
 /// The order of one compaction sweep, separated from the SQL that carries it out.
