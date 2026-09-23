@@ -52,7 +52,12 @@ public class GapFillRefoldTests : IDisposable
 
         var clock = new MovableClock();
         var api = new OneTimeline();
-        var source = new VsphereObservationSource(api, new OneHost(), clock, gaps);
+        var source = new VsphereObservationSource(api, new OneHost(), clock);
+
+        // The runner's half (F5): the slot keeps the gap record, and the
+        // store queue writes the samples and says which batches were kept.
+        var slot = new ObservationSourceSlot("vc-1", gaps);
+        var queue = new ObservationStoreQueue(samples.Append, clock, gaps: gaps);
 
         async Task CycleAsync(DateTimeOffset at)
         {
@@ -63,15 +68,19 @@ public class GapFillRefoldTests : IDisposable
             using var budget = new CancellationTokenSource();
             api.Allow(budget, queries: 2);
 
-            var batch = await source.ReadAsync(budget.Token);
+            var batch = await slot.ReadAsync(source, budget.Token);
 
-            samples.Append([.. batch.Observations, .. batch.Backfill]);
-            batch.Stored?.Invoke();
+            queue.Enqueue(batch);
+            foreach (var accepted in queue.Drain().Accepted)
+            {
+                slot.Accept(accepted);
+            }
 
             samples.Compact(at, SeriesRetentionPolicy.Default);
         }
 
-        // First cycle after the restart: current, and the gap recorded.
+        // First cycle after the restart: current, and the gap recorded by the
+        // runner after the read — filled from the next cycle on (F5).
         await CycleAsync(S0);
 
         var gap = Assert.Single(gaps.Gaps("vc-1"));
@@ -79,12 +88,14 @@ public class GapFillRefoldTests : IDisposable
         Assert.Equal(S0.AddMinutes(-2), gap.ToUtc);
         Assert.Equal(S0, Raw(samples, S0.AddMinutes(-1), S0.AddSeconds(1)).Max(p => p.StartUtc));
 
+        await CycleAsync(S0.AddSeconds(30));
+
         // The hour 11:00 was folded with what was there: history to 11:40:00 (121)
         // and the first slice (30).
         Assert.Equal(151, Hourly(samples, S0.AddMinutes(-70)).Count);
 
-        await CycleAsync(S0.AddSeconds(30));
         await CycleAsync(S0.AddSeconds(60));
+        await CycleAsync(S0.AddSeconds(90));
 
         gap = Assert.Single(gaps.Gaps("vc-1"));
         Assert.Equal(CollectionGapState.Filled, gap.State);

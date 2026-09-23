@@ -39,10 +39,39 @@ public sealed record ObservationCycleResult
 /// rather than a transient fault — see the vSphere metric contract §6.1.
 /// </para>
 /// </remarks>
-public sealed class ObservationCollectionPipeline(IClock clock, TimeProvider? timeProvider = null)
+public sealed class ObservationCollectionPipeline(
+    IClock clock,
+    TimeProvider? timeProvider = null,
+    ICollectionGapStore? gaps = null)
 {
     private readonly SourceRunner _runner =
         new(clock ?? throw new ArgumentNullException(nameof(clock)), timeProvider);
+
+    /// <summary>
+    /// The runner's slot per source (F5): its learned state and its gap
+    /// record, kept for as long as the same source object is handed in.
+    /// </summary>
+    /// <remarks>
+    /// Keyed by instance id and checked by reference: a connection the
+    /// registry rebuilds — new address, new credentials — is a new source
+    /// object and starts from a fresh state, as it did when the state lived
+    /// inside the collector. A source no longer handed in is forgotten.
+    /// </remarks>
+    private readonly Dictionary<string, (IObservationSource Source, ObservationSourceSlot Slot)> _slots =
+        new(StringComparer.Ordinal);
+
+    private readonly Lock _slotsGate = new();
+
+    private ObservationSourceSlot SlotFor(IObservationSource source)
+    {
+        if (!_slots.TryGetValue(source.InstanceId, out var held) || !ReferenceEquals(held.Source, source))
+        {
+            held = (source, new ObservationSourceSlot(source.InstanceId, gaps));
+            _slots[source.InstanceId] = held;
+        }
+
+        return held.Slot;
+    }
 
     public async Task<ObservationCycleResult> RunAsync(
         IReadOnlyList<IObservationSource> sources,
@@ -56,13 +85,25 @@ public sealed class ObservationCollectionPipeline(IClock clock, TimeProvider? ti
 
         using var gate = new SemaphoreSlim(policy.MaxConcurrency, policy.MaxConcurrency);
 
-        var outcomes = await Task.WhenAll(sources.Select(source =>
+        List<(IObservationSource Source, ObservationSourceSlot Slot)> slotted;
+        lock (_slotsGate)
+        {
+            slotted = [.. sources.Select(s => (s, SlotFor(s)))];
+
+            var current = sources.Select(s => s.InstanceId).ToHashSet(StringComparer.Ordinal);
+            foreach (var gone in _slots.Keys.Where(id => !current.Contains(id)).ToList())
+            {
+                _slots.Remove(gone);
+            }
+        }
+
+        var outcomes = await Task.WhenAll(slotted.Select(pair =>
             _runner.RunAsync(
-                source.InstanceId,
+                pair.Source.InstanceId,
                 CollectorRole.Observation,
-                source.ReadAsync,
+                ct => pair.Slot.ReadAsync(pair.Source, ct),
                 static batch => batch.Failures,
-                SourceRunner.Existing(priorHealth, source.InstanceId, CollectorRole.Observation),
+                SourceRunner.Existing(priorHealth, pair.Source.InstanceId, CollectorRole.Observation),
                 policy,
                 gate,
                 cancellationToken))).ConfigureAwait(false);

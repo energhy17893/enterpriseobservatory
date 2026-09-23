@@ -245,7 +245,7 @@ public sealed class CollectorUnreachableTests : IDisposable
                 ? Task.FromResult(new InventorySnapshot { SourceInstanceId = InstanceId, ReadAtUtc = T0 })
                 : throw new HttpRequestException("No such host is known. (vcenter.example:443)");
 
-        Task<ObservationBatch> IObservationSource.ReadAsync(CancellationToken cancellationToken) =>
+        Task<ObservationBatch> IObservationSource.ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
             Answers
                 ? Task.FromResult(new ObservationBatch { SourceInstanceId = InstanceId, ReadAtUtc = T0 })
                 : throw new HttpRequestException("No such host is known. (vcenter.example:443)");

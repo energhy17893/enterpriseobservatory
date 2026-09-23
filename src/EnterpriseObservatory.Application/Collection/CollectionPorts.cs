@@ -66,32 +66,39 @@ public interface IObservationSource
 {
     string InstanceId { get; }
 
-    /// <summary>Reads one batch. Not re-entrant.</summary>
+    /// <summary>Reads one batch. Not re-entrant, and never asked to be.</summary>
     /// <remarks>
     /// <para>
-    /// One instance serves every cycle — the registry hands back the same
-    /// object and the host holds it as a singleton — so implementations keep
-    /// state between reads: connections, sessions, and caches of what the
-    /// platform said it could supply. None of that is guarded, and guarding it
-    /// would not make two overlapping reads of one vCenter correct anyway;
-    /// they would still compete for one session.
+    /// One instance serves every cycle, but it keeps no state of its own
+    /// between reads any more (F5, ADR-0025 §4): what it learns — sizes the
+    /// platform accepts, where each series' history stops, what the platform
+    /// said it could supply — lives in <see cref="ObservationReadContext.State"/>,
+    /// which the runner holds and hands to each read.
     /// </para>
     /// <para>
-    /// So a caller must have at most one read in flight per instance.
-    /// <c>SourceRunner</c> honours that within a cycle, including across its
-    /// own retries: a read it abandoned at the timeout is still running inside
-    /// the source, so it is not started again.
+    /// The runner calls this at most once at a time per source, including
+    /// across cycles: a read abandoned at its timeout keeps the source's slot
+    /// until it truly finishes, and every cycle due meanwhile is skipped and
+    /// counted (F2). That is what lets the state be unguarded.
     /// </para>
     /// <para>
-    /// It cannot honour it <em>between</em> cycles. A read abandoned in cycle N
-    /// is still there when cycle N+1 starts thirty seconds later, and nothing
-    /// can stop it — a .NET task cannot be aborted. An implementation that
-    /// keeps state across reads must therefore still be safe against that one
-    /// overlap; what this contract buys it is that the overlap is rare and
-    /// bounded, not that it never happens.
+    /// The read never touches the product's store (ADR-0005 §3). What it wants
+    /// to happen once its samples are kept comes back on the batch as data —
+    /// <see cref="ObservationBatch.Advance"/>, <see cref="ObservationBatch.GapToOpen"/>,
+    /// <see cref="ObservationBatch.GapProgress"/> — and the runner does it.
     /// </para>
     /// </remarks>
-    Task<ObservationBatch> ReadAsync(CancellationToken cancellationToken);
+    Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The entities this source keeps a high-water mark for, so the runner can
+    /// seed the marks from the store before the first read.
+    /// </summary>
+    /// <remarks>
+    /// Answered from memory — what the source has been told to sample — never
+    /// by asking the platform. Empty for a source that keeps no marks.
+    /// </remarks>
+    IReadOnlyCollection<EntityId> EntitiesWithMarks() => [];
 }
 
 /// <summary>Why part of a collection did not succeed.</summary>
@@ -295,16 +302,66 @@ public sealed record ObservationBatch
     public IReadOnlyList<CollectionFailure> Failures { get; init; } = [];
 
     /// <summary>
-    /// What the source does once this batch's samples are in the store.
+    /// How the source's learned state moves once this batch is safely kept.
     /// </summary>
     /// <remarks>
-    /// Called by the cycle after the append succeeds, never otherwise. A
-    /// source that keeps a high-water mark or a gap's fill point must move it
-    /// only past samples that were actually kept: moved on the read, a failed
-    /// append would leave the mark ahead of the history and the hole behind it
-    /// would never be asked for again. Null for a source with nothing to do.
+    /// Data, applied by the runner after the store queue accepts the batch and
+    /// never otherwise (see <see cref="IStateAdvance"/>). A source that keeps a
+    /// high-water mark must move it only past samples that were actually kept:
+    /// moved on the read, a failed write would leave the mark ahead of the
+    /// history and the hole behind it would never be asked for again. Null for
+    /// a source with nothing to move.
     /// </remarks>
-    public Action? Stored { get; init; }
+    public IStateAdvance? Advance { get; init; }
+
+    /// <summary>A source-level gap this read found, for the runner to record.</summary>
+    /// <remarks>
+    /// Recorded right after the read, whether or not the samples are kept:
+    /// the gap exists either way. Its id is the store's, so it is filled from
+    /// the next read on.
+    /// </remarks>
+    public CollectionGap? GapToOpen { get; init; }
+
+    /// <summary>
+    /// Recorded gaps this read filled or found past retention, as they now
+    /// stand — written by the runner once the batch is accepted.
+    /// </summary>
+    public IReadOnlyList<CollectionGap> GapProgress { get; init; } = [];
+
+    /// <summary>
+    /// The stretch of the platform's history this batch's live read covered,
+    /// and how long the platform still keeps it — or null for a source that
+    /// cannot be asked again.
+    /// </summary>
+    /// <remarks>
+    /// What makes a batch the store queue drops recoverable: the runner
+    /// records the span as a collection gap and the source reads it again
+    /// (F5). An outage shorter than about an hour loses no data; beyond it,
+    /// the loss is reported.
+    /// </remarks>
+    public RefetchableSpan? Refetchable { get; init; }
+
+    /// <summary>The runner slot that read this batch, which accepts it.</summary>
+    internal ObservationSourceSlot? Slot { get; init; }
+}
+
+/// <summary>
+/// A stretch of a source's history the platform can be asked for again, and
+/// until when.
+/// </summary>
+/// <remarks>
+/// <see cref="FromExclusiveUtc"/> and <see cref="ToInclusiveUtc"/> are the
+/// platform's times, the same convention as <see cref="CollectionGap"/>;
+/// <see cref="RecoverableUntilUtc"/> is this process's clock — the moment the
+/// newest of it leaves what the platform keeps, less a margin.
+/// </remarks>
+public sealed record RefetchableSpan
+{
+    public required DateTimeOffset FromExclusiveUtc { get; init; }
+
+    public required DateTimeOffset ToInclusiveUtc { get; init; }
+
+    public required DateTimeOffset RecoverableUntilUtc { get; init; }
 }
 
 /// <summary>Which of a source's jobs a health record describes.</summary>

@@ -1,4 +1,5 @@
 using System.Globalization;
+using EnterpriseObservatory.Application.Collection;
 
 namespace EnterpriseObservatory.Collectors.Vsphere;
 
@@ -186,33 +187,26 @@ public sealed class AdaptiveBatchSizer
 /// and relearns it rather than inheriting a wrong one.
 /// </para>
 /// <para>
-/// In memory only, like the probe's reputation beside it: a restart reads the
-/// connection again, and a limit an administrator raised yesterday should not
-/// still be second-guessed today. Locked because an abandoned read can still
-/// be inside the source when the next one starts; see
-/// <c>VsphereObservationSource</c>.
+/// Only the key is decided here. The number itself lives in the runner's
+/// learned-limit slot for the source (F5, ADR-0025 §4) — in memory, for the
+/// life of the source, and touched only inside its read slot, so there is
+/// nothing to lock. What the number means, and how it is first planned
+/// (<see cref="AdaptiveBatchSizer"/>'s <c>maxQueryMetrics</c> formula), stays
+/// with vSphere.
 /// </para>
 /// </remarks>
-public sealed class LearnedBatchSizes
+public sealed class LearnedBatchSizes(LearnedLimits slot)
 {
-    private readonly Lock _padlock = new();
-    private readonly Dictionary<(VsphereEntityType, int), int> _sizes = [];
+    private readonly LearnedLimits _slot = slot ?? throw new ArgumentNullException(nameof(slot));
 
-    public int? For(VsphereEntityType entityType, int counterCount)
-    {
-        lock (_padlock)
-        {
-            return _sizes.TryGetValue((entityType, counterCount), out var size) ? size : null;
-        }
-    }
+    public int? For(VsphereEntityType entityType, int counterCount) => _slot.For(Key(entityType, counterCount));
 
     public void Remember(VsphereEntityType entityType, int counterCount, int size)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(size);
-
-        lock (_padlock)
-        {
-            _sizes[(entityType, counterCount)] = size;
-        }
+        _slot.Remember(Key(entityType, counterCount), size);
     }
+
+    private static string Key(VsphereEntityType entityType, int counterCount) =>
+        string.Create(CultureInfo.InvariantCulture, $"vsphere.batch/{entityType}/{counterCount}");
 }

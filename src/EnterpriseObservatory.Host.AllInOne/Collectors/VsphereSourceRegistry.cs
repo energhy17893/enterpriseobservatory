@@ -144,9 +144,6 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     private long _inventoryPasses;
     private long _observationPasses;
 
-    /// <summary>The source-level gap record every observation source is given (T0.4).</summary>
-    private readonly ICollectionGapStore? _gaps;
-
     /// <summary>
     /// How many requests one source may have in flight at once (F2). Applied
     /// to every <see cref="SourceRequestGate"/> this registry builds.
@@ -158,10 +155,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         IEntityGraphStore graph,
         IClock clock,
         Action<string, string> reportUnusable,
-        ICollectionGapStore? gaps = null,
         int maxRequestsPerSource = SourceRequestGate.DefaultLimit)
     {
-        _gaps = gaps;
         _catalogue = catalogue ?? throw new ArgumentNullException(nameof(catalogue));
         _graph = graph ?? throw new ArgumentNullException(nameof(graph));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -464,7 +459,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         Task<InventorySnapshot> IInventorySource.ReadAsync(CancellationToken cancellationToken) =>
             throw Fault();
 
-        Task<ObservationBatch> IObservationSource.ReadAsync(CancellationToken cancellationToken) =>
+        Task<ObservationBatch> IObservationSource.ReadAsync(
+            ObservationReadContext context, CancellationToken cancellationToken) =>
             throw Fault();
 
         /// <summary>
@@ -533,8 +529,9 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             channel,
             client,
             new VsphereInventorySource(client, _clock),
+            // No gap store: the runner keeps the gap record now (F5, ADR-0005 §3).
             new VsphereObservationSource(
-                client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock, _gaps),
+                client, new GraphSampleTargetProvider(_graph, connection.InstanceId), _clock),
             new VsphereEventSource(client, _clock));
     }
 

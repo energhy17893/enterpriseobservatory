@@ -512,24 +512,27 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
-    public async Task A_source_is_told_its_batch_was_stored_only_when_it_was()
+    public async Task A_sources_marks_advance_only_once_its_batch_was_stored()
     {
-        // T0.4: a source moves its high-water marks and gap fill points only
-        // past samples that were kept. Told on a failed append, the mark would
-        // run ahead of the history and the hole behind it would never be asked
-        // for again.
-        var stored = 0;
+        // T0.4, kept through F5: a source's high-water marks and gap fill
+        // points move only past samples that were kept. Moved on a failed
+        // append, the mark would run ahead of the history and the hole behind
+        // it would never be asked for again. The runner applies the advance —
+        // at the start of the source's next read, inside its read slot.
+        var advanced = 0;
         var metrics = new FakeObservationSource("vc-1")
         {
             Behaviour = () => Batch("vc-1", _clock.UtcNow) with
             {
                 Observations = [Reading("cpu.usage.average", 1, _clock.UtcNow)],
-                Stored = () => stored++,
+                Advance = new CountingAdvance(() => advanced++),
             },
         };
 
-        await Cycle().RunObservationsAsync([metrics], Options, CancellationToken.None);
-        Assert.Equal(1, stored);
+        var cycle = Cycle();
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.Equal(1, advanced);
 
         var failing = new MonitoringCycle(
             new InventoryCollectionPipeline(_clock),
@@ -545,26 +548,118 @@ public class MonitoringCycleTests : IDisposable
             new InMemoryEventStore());
 
         await failing.RunObservationsAsync([metrics], Options, CancellationToken.None);
-        Assert.Equal(1, stored);
+        await failing.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.Equal(1, advanced);
     }
 
     [Fact]
-    public async Task A_source_that_fails_on_being_told_costs_only_its_own_bookkeeping()
+    public async Task A_gap_record_that_fails_on_acceptance_costs_only_its_own_bookkeeping()
     {
         var metrics = new FakeObservationSource("vc-1")
         {
             Behaviour = () => Batch("vc-1", _clock.UtcNow) with
             {
                 Observations = [Reading("cpu.usage.average", 1, _clock.UtcNow)],
-                Stored = () => throw new InvalidOperationException("gap record unreachable"),
+                GapProgress =
+                [
+                    new CollectionGap
+                    {
+                        Id = 1,
+                        SourceInstanceId = "vc-1",
+                        FromUtc = _clock.UtcNow.AddMinutes(-30),
+                        ToUtc = _clock.UtcNow.AddMinutes(-2),
+                        FilledToUtc = _clock.UtcNow.AddMinutes(-20),
+                        State = CollectionGapState.Open,
+                        OpenedAtUtc = _clock.UtcNow,
+                    },
+                ],
             },
         };
 
-        var result = await Cycle().RunObservationsAsync([metrics], Options, CancellationToken.None);
+        var cycle = new MonitoringCycle(
+            new InventoryCollectionPipeline(_clock),
+            new ObservationCollectionPipeline(_clock, gaps: new UnwritableGapRecord()),
+            _graphs,
+            _alerts,
+            _health,
+            _coverage,
+            _notifier,
+            _observations,
+            _maintenance,
+            _clock,
+            new InMemoryEventStore());
+
+        var result = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
 
         Assert.Null(result.StorageFailure);
         Assert.Single(result.Observations);
         Assert.Contains(_alerts.All, a => a.Description.Contains("gap record unreachable", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Samples_the_store_queue_drops_raise_an_alert_that_says_how_many_and_why()
+    {
+        // F5, ADR-0025 §6: a drop is counted and alarmed through the ordinary
+        // alert path, never only logged.
+        var store = new FailingObservationStore();
+        var queue = new ObservationStoreQueue(
+            store.Append, _clock, new StoreQueueLimits { BudgetBytes = StoreQueueLimits.MeasuredBytesPerRow });
+
+        var cycle = new MonitoringCycle(
+            new InventoryCollectionPipeline(_clock),
+            new ObservationCollectionPipeline(_clock),
+            _graphs,
+            _alerts,
+            _health,
+            _coverage,
+            _notifier,
+            store,
+            _maintenance,
+            _clock,
+            new InMemoryEventStore(),
+            queue);
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = [Reading("cpu.usage.average", 1, _clock.UtcNow)],
+            },
+        };
+
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.DoesNotContain(_alerts.All, a => a.Title == "Samples dropped before they could be stored");
+
+        // The second batch pushes the first over the one-row budget.
+        await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        var alert = Assert.Single(_alerts.All, a => a.Title == "Samples dropped before they could be stored");
+        Assert.Contains("dropped 1 sample row(s)", alert.Description, StringComparison.Ordinal);
+        Assert.Contains("1 over its", alert.Description, StringComparison.Ordinal);
+        Assert.Equal(1, queue.Snapshot().DroppedOverBudgetRows);
+    }
+
+    private sealed class CountingAdvance(Action counted) : IStateAdvance
+    {
+        public void Apply(SourceState state) => counted();
+    }
+
+    /// <summary>A gap record that answers reads and refuses every progress write.</summary>
+    private sealed class UnwritableGapRecord : ICollectionGapStore
+    {
+        public IReadOnlyDictionary<EntityId, DateTimeOffset> LatestSampleTimes(IReadOnlyCollection<EntityId> entities) =>
+            new Dictionary<EntityId, DateTimeOffset>();
+
+        public IReadOnlyList<CollectionGap> OpenGaps(string sourceInstanceId) => [];
+
+        public IReadOnlyList<CollectionGap> Gaps(string sourceInstanceId) => [];
+
+        public CollectionGap Open(CollectionGap gap) => gap;
+
+        public void Update(CollectionGap gap) => throw new InvalidOperationException("gap record unreachable");
+
+        public IReadOnlyDictionary<CollectionGapState, int> CountsByState() =>
+            new Dictionary<CollectionGapState, int>();
     }
 
     [Fact]
@@ -626,14 +721,46 @@ public class MonitoringCycleTests : IDisposable
         var failed = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
         Assert.NotNull(failed.StorageFailure);
 
-        // Reachable, and with nothing to say. The store is never touched.
+        // Reachable, and with nothing to say — and, since F5, nothing left in
+        // the store queue either: the failed write's row has aged out of it.
+        // The store is never touched.
         sampling = false;
         store.Fails = false;
-        _clock.Advance(TimeSpan.FromSeconds(30));
+        _clock.Advance(StoreQueueLimits.Default.MaxAge + TimeSpan.FromSeconds(30));
 
         var quiet = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
 
         Assert.Equal(failed.StorageFailure, quiet.StorageFailure);
+    }
+
+    [Fact]
+    public async Task A_failed_write_is_retried_from_the_store_queue_on_the_next_cycle()
+    {
+        // F5, ADR-0025 §6: the samples a failed write could not take wait in
+        // the queue and go first on the next cycle, even one with nothing new.
+        var store = new FlakyObservationStore { Fails = true };
+        var cycle = Cycle(observations: store);
+        var sampling = true;
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => Batch("vc-1", _clock.UtcNow) with
+            {
+                Observations = sampling ? [Reading("cpu.usage.average", 1, _clock.UtcNow)] : [],
+            },
+        };
+
+        var failed = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+        Assert.NotNull(failed.StorageFailure);
+
+        sampling = false;
+        store.Fails = false;
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var retried = await cycle.RunObservationsAsync([metrics], Options, CancellationToken.None);
+
+        Assert.Null(retried.StorageFailure);
+        Assert.Equal(1, store.Appends);
     }
 
     // --- the cycle's own store writes -------------------------------------
@@ -2350,7 +2477,11 @@ internal sealed class FlakyObservationStore : IObservationStore
         }
 
         _kept.Append(observations);
+        Appends++;
     }
+
+    /// <summary>Appends that landed.</summary>
+    public int Appends { get; private set; }
 
     /// <summary>Whether reading history fails, as a statement timeout does.</summary>
     public bool QueryFails { get; set; }

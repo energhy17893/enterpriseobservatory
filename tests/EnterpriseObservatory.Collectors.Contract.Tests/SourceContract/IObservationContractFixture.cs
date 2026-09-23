@@ -57,4 +57,7 @@ public interface ILateValueScenario
 
     /// <summary>Reads cycle <paramref name="cycle"/> (0 first) at the platform time the scenario sets.</summary>
     Task<ObservationBatch> ReadCycleAsync(int cycle);
+
+    /// <summary>What the cycle does once the store queue has accepted <paramref name="batch"/>.</summary>
+    void Accept(ObservationBatch batch);
 }
