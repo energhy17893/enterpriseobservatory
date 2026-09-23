@@ -70,4 +70,44 @@ public static class InventoryVerdictKeys
     /// it has none or has not answered for two days.
     /// </summary>
     public const string SimplivityBackupLastUtc = "simplivity.backup.lastUtc";
+
+    // The rest of the SimpliVity annotation (ADR-0027), as the collector
+    // writes it and the SimpliVity page reads it. Here rather than in the
+    // collector so both use one name and cannot drift. Absent = not read.
+
+    /// <summary>VM: that backup's <c>type</c>.</summary>
+    public const string SimplivityBackupType = "simplivity.backup.type";
+
+    /// <summary>Host: <c>state</c> (ALIVE, FAULTY, SUSPECTED…).</summary>
+    public const string SimplivityState = "simplivity.state";
+
+    /// <summary>Host and cluster: <c>upgrade_state</c>.</summary>
+    public const string SimplivityUpgradeState = "simplivity.upgrade_state";
+
+    /// <summary>Host and cluster: <c>version</c>.</summary>
+    public const string SimplivityVersion = "simplivity.version";
+
+    /// <summary>Host: its OVC's name.</summary>
+    public const string SimplivityVirtualControllerName = "simplivity.virtual_controller_name";
+
+    /// <summary>Cluster: the OmniStack cluster's own name.</summary>
+    public const string SimplivityName = "simplivity.name";
+
+    /// <summary>Cluster: <c>arbiter_required</c>, "true"/"false".</summary>
+    public const string SimplivityArbiterRequired = "simplivity.arbiter_required";
+
+    /// <summary>Cluster: <c>arbiter_configured</c>, "true"/"false".</summary>
+    public const string SimplivityArbiterConfigured = "simplivity.arbiter_configured";
+
+    /// <summary>Cluster: <c>arbiter_connected</c>, "true"/"false".</summary>
+    public const string SimplivityArbiterConnected = "simplivity.arbiter_connected";
+
+    /// <summary>Cluster: how many member hosts it lists.</summary>
+    public const string SimplivityMembers = "simplivity.members";
+
+    /// <summary>VM: storage <c>ha_status</c> (SAFE, DEGRADED, DEFUNCT, SYNCING, OUT_OF_SCOPE).</summary>
+    public const string SimplivityHaStatus = "simplivity.ha_status";
+
+    /// <summary>VM: <c>ha_resynchronization_progress</c>.</summary>
+    public const string SimplivityHaResyncProgress = "simplivity.ha_resynchronization_progress";
 }

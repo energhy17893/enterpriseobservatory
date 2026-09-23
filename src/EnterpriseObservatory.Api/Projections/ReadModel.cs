@@ -1004,7 +1004,217 @@ public sealed class ReadModel(
             TimeToFull = entity.Kind == EntityKind.Datastore ? TimeToFull(entityId) : null,
             HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity) : null,
             ClusterFailover = entity.Kind == EntityKind.Cluster ? ClusterFailover(entity, graph) : null,
+            Annotations = AnnotationsOf(graph, entity),
         };
+    }
+
+    // --- annotations and the SimpliVity deep view (ADR-0027, S5) -------------
+
+    /// <summary>
+    /// The SimpliVity keys a verdict rests on, per entity kind: absent on an
+    /// annotated entity means the source could not answer — Unknown, never
+    /// SAFE (ADR-0026). The collector counts the same fields as coverage.
+    /// </summary>
+    private static readonly Dictionary<EntityKind, string[]> JudgedSimplivityKeys = new()
+    {
+        [EntityKind.EsxiHost] = [InventoryVerdictKeys.SimplivityState, InventoryVerdictKeys.SimplivityUpgradeState],
+        [EntityKind.Cluster] = [InventoryVerdictKeys.SimplivityArbiterConnected, InventoryVerdictKeys.SimplivityUpgradeState],
+        [EntityKind.VirtualMachine] = [InventoryVerdictKeys.SimplivityHaStatus],
+    };
+
+    private const string SimplivityNamespace = "simplivity";
+
+    private const string Unknown = "Unknown";
+
+    /// <summary>Every annotated value on one entity, judged keys it lacks as null.</summary>
+    private List<AnnotationView> AnnotationsOf(EntityGraph graph, Entity entity)
+    {
+        var reporting = ReportingSources();
+        var views = new List<AnnotationView>();
+
+        foreach (var annotation in graph.Annotations.Where(a => a.Entity == entity.Id))
+        {
+            var prefix = annotation.Namespace + ".";
+            var judged = annotation.Namespace == SimplivityNamespace
+                ? JudgedSimplivityKeys.GetValueOrDefault(entity.Kind, [])
+                : [];
+
+            views.AddRange(annotation.Settings.Keys.Union(judged, StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.Ordinal)
+                .Select(key => new AnnotationView
+                {
+                    Namespace = annotation.Namespace,
+                    Key = key[prefix.Length..],
+                    Value = annotation.Settings.GetValueOrDefault(key),
+                    Source = annotation.SourceInstanceId,
+                    ReadAtUtc = annotation.ReadAtUtc,
+                    CarriedForward = !reporting.Contains(annotation.SourceInstanceId),
+                }));
+        }
+
+        return views;
+    }
+
+    /// <summary>
+    /// The SimpliVity page: per source, its federation as the annotations
+    /// carry it. A projection only — no alert, no finding (ADR-0007).
+    /// </summary>
+    /// <param name="simplivitySources">The configured SimpliVity connections, listed even before they answer.</param>
+    public SimplivityView Simplivity(IReadOnlyCollection<string> simplivitySources)
+    {
+        ArgumentNullException.ThrowIfNull(simplivitySources);
+
+        var graph = _graphs.Current;
+        var reporting = ReportingSources();
+        var now = _clock.UtcNow;
+
+        // M8.8's policy value, from the check itself — never restated here.
+        var rpo = _continuityChecks.Select(c => c.Check).OfType<BackupFreshnessCheck>().FirstOrDefault()?.Rpo;
+
+        var annotations = graph.Annotations
+            .Where(a => a.Namespace == SimplivityNamespace && graph.Entities.ContainsKey(a.Entity))
+            .ToLookup(a => a.SourceInstanceId, StringComparer.Ordinal);
+
+        var clusterOfHost = graph.Relationships
+            .Where(r => r.Kind == RelationshipKind.PartOf &&
+                        graph.Entities.TryGetValue(r.From, out var from) && from.Kind == EntityKind.EsxiHost)
+            .GroupBy(r => r.From)
+            .ToDictionary(g => g.Key, g => g.First().To);
+
+        var sources = simplivitySources.Concat(annotations.Select(g => g.Key))
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .Select(id =>
+            {
+                var carried = !reporting.Contains(id);
+                var mine = annotations[id].Select(a => (Annotation: a, Entity: graph.Entities[a.Entity])).ToList();
+                var collector = _collectors.Current.FirstOrDefault(c =>
+                    c.InstanceId == id && c.Role == CollectorRole.Inventory);
+
+                var hosts = mine.Where(x => x.Entity.Kind == EntityKind.EsxiHost)
+                    .Select(x => (Cluster: clusterOfHost.TryGetValue(x.Entity.Id, out var parent) ? parent : (EntityId?)null, View: new SimplivityHostView
+                    {
+                        EntityId = x.Entity.Id.Value,
+                        Name = x.Entity.DisplayName,
+                        State = Get(x.Annotation, InventoryVerdictKeys.SimplivityState),
+                        UpgradeState = Get(x.Annotation, InventoryVerdictKeys.SimplivityUpgradeState),
+                        Version = Get(x.Annotation, InventoryVerdictKeys.SimplivityVersion),
+                        VirtualControllerName = Get(x.Annotation, InventoryVerdictKeys.SimplivityVirtualControllerName),
+                        CarriedForward = carried,
+                        ReadAtUtc = x.Annotation.ReadAtUtc,
+                    }))
+                    .OrderBy(h => h.View.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var clusters = mine.Where(x => x.Entity.Kind == EntityKind.Cluster)
+                    .Select(x => new SimplivityClusterView
+                    {
+                        EntityId = x.Entity.Id.Value,
+                        Name = Get(x.Annotation, InventoryVerdictKeys.SimplivityName) ?? x.Entity.DisplayName,
+                        ArbiterRequired = Bool(x.Annotation.Settings, InventoryVerdictKeys.SimplivityArbiterRequired),
+                        ArbiterConfigured = Bool(x.Annotation.Settings, InventoryVerdictKeys.SimplivityArbiterConfigured),
+                        ArbiterConnected = Bool(x.Annotation.Settings, InventoryVerdictKeys.SimplivityArbiterConnected),
+                        UpgradeState = Get(x.Annotation, InventoryVerdictKeys.SimplivityUpgradeState),
+                        Version = Get(x.Annotation, InventoryVerdictKeys.SimplivityVersion),
+                        Members = int.TryParse(Get(x.Annotation, InventoryVerdictKeys.SimplivityMembers),
+                            System.Globalization.CultureInfo.InvariantCulture, out var m) ? m : null,
+                        Hosts = [.. hosts.Where(h => h.Cluster == x.Entity.Id).Select(h => h.View)],
+                        CarriedForward = carried,
+                        ReadAtUtc = x.Annotation.ReadAtUtc,
+                    })
+                    .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var clustered = clusters.Select(c => new EntityId(c.EntityId)).ToHashSet();
+
+                var vms = mine.Where(x => x.Entity.Kind == EntityKind.VirtualMachine).ToList();
+
+                var notSafe = vms
+                    .Select(x => new SimplivityVmView
+                    {
+                        EntityId = x.Entity.Id.Value,
+                        Name = x.Entity.DisplayName,
+                        HaStatus = Get(x.Annotation, InventoryVerdictKeys.SimplivityHaStatus),
+                        ResynchronizationProgress = Get(x.Annotation, InventoryVerdictKeys.SimplivityHaResyncProgress),
+                        CarriedForward = carried,
+                        ReadAtUtc = x.Annotation.ReadAtUtc,
+                    })
+                    .Where(v => v.HaStatus != "SAFE")
+                    .OrderBy(v => HaOrder(v.HaStatus))
+                    .ThenBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var backups = vms
+                    .Select(x => (x.Entity, x.Annotation, At: Utc(Get(x.Annotation, InventoryVerdictKeys.SimplivityBackupLastUtc))))
+                    .ToList();
+
+                return new SimplivitySourceView
+                {
+                    InstanceId = id,
+                    CollectorHealth = collector?.Health,
+                    LastSuccessUtc = collector?.LastSuccessUtc,
+                    LastFailureDetail = collector?.LastFailureDetail,
+                    PartialFailures = collector?.PartialFailures.Count ?? 0,
+                    Reporting = !carried,
+                    ReadAtUtc = mine.Count == 0 ? null : mine.Max(x => x.Annotation.ReadAtUtc),
+                    Clusters = clusters,
+                    OtherHosts = [.. hosts.Where(h => h.Cluster is not { } c || !clustered.Contains(c)).Select(h => h.View)],
+                    HostStates = CountBy(hosts.Select(h => h.View.State)),
+                    ArbitersConnected = CountBy(clusters.Select(c => c.ArbiterConnected is { } b ? (b ? "true" : "false") : null)),
+                    VmHaStatuses = CountBy(vms.Select(x => Get(x.Annotation, InventoryVerdictKeys.SimplivityHaStatus))),
+                    NotSafeVms = notSafe,
+                    Backups = new SimplivityBackupsView
+                    {
+                        WithBackup = backups.Count(b => b.At is not null),
+                        WithoutBackup = backups.Count(b => b.At is null),
+                        OlderThanRpo = rpo is not { } limit
+                            ? []
+                            :
+                            [
+                                .. backups
+                                    .Where(b => b.At is { } at && now - at > limit)
+                                    .OrderBy(b => b.At)
+                                    .Select(b => new SimplivityBackupView
+                                    {
+                                        EntityId = b.Entity.Id.Value,
+                                        Name = b.Entity.DisplayName,
+                                        LastBackupUtc = b.At!.Value,
+                                        Type = Get(b.Annotation, InventoryVerdictKeys.SimplivityBackupType),
+                                        CarriedForward = carried,
+                                        ReadAtUtc = b.Annotation.ReadAtUtc,
+                                    }),
+                            ],
+                    },
+                };
+            })
+            .ToList();
+
+        return new SimplivityView
+        {
+            GeneratedAtUtc = now,
+            BackupRpoHours = rpo?.TotalHours,
+            Sources = sources,
+        };
+
+        static string? Get(EntityAnnotation annotation, string key) => annotation.Settings.GetValueOrDefault(key);
+
+        static DateTimeOffset? Utc(string? iso) =>
+            DateTimeOffset.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var at) ? at : null;
+
+        // Worst first; Unknown last — grey is the lowest priority (§11.1), not the best.
+        static int HaOrder(string? status) => status switch
+        {
+            "DEFUNCT" => 0,
+            "DEGRADED" => 1,
+            "SYNCING" => 2,
+            null => 4,
+            _ => 3,
+        };
+
+        static Dictionary<string, int> CountBy(IEnumerable<string?> values) =>
+            values.GroupBy(v => v ?? Unknown, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
     }
 
     /// <summary>

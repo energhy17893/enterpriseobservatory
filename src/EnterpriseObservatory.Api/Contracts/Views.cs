@@ -210,6 +210,187 @@ public sealed record EntityDetailView
     /// fewer than two live hosts. See roadmap M8.2.
     /// </summary>
     public ClusterFailoverView? ClusterFailover { get; init; }
+
+    /// <summary>
+    /// What other sources say about this entity (ADR-0027), e.g. SimpliVity's
+    /// state on a vSphere host. Empty when nothing annotates it.
+    /// </summary>
+    public IReadOnlyList<AnnotationView> Annotations { get; init; } = [];
+}
+
+/// <summary>One annotated value on an entity another source owns (ADR-0027).</summary>
+/// <remarks>
+/// <see cref="Value"/> null is "could not be evaluated" (ADR-0026): a field
+/// a verdict rests on that the source did not answer — shown grey, never as
+/// fine. <see cref="CarriedForward"/>: the source did not answer this cycle,
+/// so this is its last word from <see cref="ReadAtUtc"/>, not a current one.
+/// </remarks>
+public sealed record AnnotationView
+{
+    public required string Namespace { get; init; }
+
+    /// <summary>The key without its namespace, e.g. <c>ha_status</c>.</summary>
+    public required string Key { get; init; }
+
+    public string? Value { get; init; }
+
+    public required string Source { get; init; }
+
+    public required DateTimeOffset ReadAtUtc { get; init; }
+
+    public required bool CarriedForward { get; init; }
+}
+
+/// <summary>
+/// The SimpliVity deep view (ADR-0007 tier 3): a projection of the
+/// <c>simplivity.*</c> annotations, per source. Computes no alert or finding.
+/// </summary>
+public sealed record SimplivityView
+{
+    public required DateTimeOffset GeneratedAtUtc { get; init; }
+
+    /// <summary>
+    /// The M8.8 backup-freshness RPO the backup table is cut at, read from
+    /// the continuity catalogue's check; null when that check is not there.
+    /// </summary>
+    public double? BackupRpoHours { get; init; }
+
+    public required IReadOnlyList<SimplivitySourceView> Sources { get; init; }
+}
+
+/// <summary>One SimpliVity connection: its collector and its federation.</summary>
+/// <remarks>
+/// Every count dictionary keys a missing value as <c>Unknown</c>, never
+/// folded into the good state.
+/// </remarks>
+public sealed record SimplivitySourceView
+{
+    public required string InstanceId { get; init; }
+
+    /// <summary>The inventory collector's health; null when it has never run.</summary>
+    public HealthState? CollectorHealth { get; init; }
+
+    public DateTimeOffset? LastSuccessUtc { get; init; }
+
+    public string? LastFailureDetail { get; init; }
+
+    /// <summary>
+    /// The last read's partial failures, chiefly objects it could not fold
+    /// onto a vSphere entity; the Collectors page names each.
+    /// </summary>
+    public required int PartialFailures { get; init; }
+
+    /// <summary>False: every row below is carried forward, not current.</summary>
+    public required bool Reporting { get; init; }
+
+    /// <summary>The newest ReadAt among its annotations; null when it has none.</summary>
+    public DateTimeOffset? ReadAtUtc { get; init; }
+
+    public required IReadOnlyList<SimplivityClusterView> Clusters { get; init; }
+
+    /// <summary>Annotated hosts whose vSphere cluster carries no SimpliVity annotation.</summary>
+    public required IReadOnlyList<SimplivityHostView> OtherHosts { get; init; }
+
+    /// <summary>Host <c>state</c> → count.</summary>
+    public required IReadOnlyDictionary<string, int> HostStates { get; init; }
+
+    /// <summary>Cluster <c>arbiter_connected</c> ("true"/"false"/"Unknown") → count.</summary>
+    public required IReadOnlyDictionary<string, int> ArbitersConnected { get; init; }
+
+    /// <summary>VM <c>ha_status</c> → count.</summary>
+    public required IReadOnlyDictionary<string, int> VmHaStatuses { get; init; }
+
+    /// <summary>Every annotated VM whose <c>ha_status</c> is not SAFE, Unknown included; worst first.</summary>
+    public required IReadOnlyList<SimplivityVmView> NotSafeVms { get; init; }
+
+    public required SimplivityBackupsView Backups { get; init; }
+}
+
+public sealed record SimplivityClusterView
+{
+    public required string EntityId { get; init; }
+
+    public required string Name { get; init; }
+
+    public bool? ArbiterRequired { get; init; }
+
+    public bool? ArbiterConfigured { get; init; }
+
+    public bool? ArbiterConnected { get; init; }
+
+    public string? UpgradeState { get; init; }
+
+    public string? Version { get; init; }
+
+    public int? Members { get; init; }
+
+    public required IReadOnlyList<SimplivityHostView> Hosts { get; init; }
+
+    public required bool CarriedForward { get; init; }
+
+    public required DateTimeOffset ReadAtUtc { get; init; }
+}
+
+public sealed record SimplivityHostView
+{
+    public required string EntityId { get; init; }
+
+    public required string Name { get; init; }
+
+    public string? State { get; init; }
+
+    public string? UpgradeState { get; init; }
+
+    public string? Version { get; init; }
+
+    public string? VirtualControllerName { get; init; }
+
+    public required bool CarriedForward { get; init; }
+
+    public required DateTimeOffset ReadAtUtc { get; init; }
+}
+
+public sealed record SimplivityVmView
+{
+    public required string EntityId { get; init; }
+
+    public required string Name { get; init; }
+
+    public string? HaStatus { get; init; }
+
+    public string? ResynchronizationProgress { get; init; }
+
+    public required bool CarriedForward { get; init; }
+
+    public required DateTimeOffset ReadAtUtc { get; init; }
+}
+
+/// <summary>Newest PROTECTED backup per annotated VM, as the collector read it.</summary>
+public sealed record SimplivityBackupsView
+{
+    /// <summary>Annotated VMs with a PROTECTED backup.</summary>
+    public required int WithBackup { get; init; }
+
+    /// <summary>Annotated VMs with none (or none with a readable time).</summary>
+    public required int WithoutBackup { get; init; }
+
+    /// <summary>Those whose newest is older than <see cref="SimplivityView.BackupRpoHours"/>, oldest first.</summary>
+    public required IReadOnlyList<SimplivityBackupView> OlderThanRpo { get; init; }
+}
+
+public sealed record SimplivityBackupView
+{
+    public required string EntityId { get; init; }
+
+    public required string Name { get; init; }
+
+    public required DateTimeOffset LastBackupUtc { get; init; }
+
+    public string? Type { get; init; }
+
+    public required bool CarriedForward { get; init; }
+
+    public required DateTimeOffset ReadAtUtc { get; init; }
 }
 
 /// <summary>
