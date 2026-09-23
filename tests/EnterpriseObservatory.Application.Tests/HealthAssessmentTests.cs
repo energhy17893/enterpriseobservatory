@@ -140,6 +140,27 @@ public class HealthAssessmentTests
     }
 
     [Fact]
+    public void A_disabled_connection_counts_toward_no_role_and_shows_as_not_polled()
+    {
+        // Switched off by an operator: its last attempt stops ageing only
+        // because nobody attempts it, and that must not page anyone.
+        var health = new[]
+        {
+            Of(CollectorRole.Inventory, T0 - TimeSpan.FromMinutes(1), "vc-live", T0 - TimeSpan.FromMinutes(1)),
+            Of(CollectorRole.Inventory, T0 - TimeSpan.FromDays(2), "vc-off", T0 - TimeSpan.FromDays(2)),
+        };
+
+        var report = HealthAssessment.Assess(
+            health, Options, Health, NoGaps, T0, disabledConnections: new HashSet<string> { "vc-off" });
+
+        Assert.Equal(ServiceHealthStatus.Healthy, report.Status);
+        Assert.Equal(SourceStatus.NotPolled, Assert.Single(report.Sources, s => s.InstanceId == "vc-off").Status);
+        Assert.Equal(
+            ServiceHealthStatus.Unhealthy,
+            HealthAssessment.Assess([health[1]], Options, Health, NoGaps, T0).Status);
+    }
+
+    [Fact]
     public void Unreachable_customer_sources_and_an_unpolled_one_leave_the_product_healthy()
     {
         // The live estate on 2026-09-23: two vCenters failing on the

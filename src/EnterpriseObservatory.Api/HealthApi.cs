@@ -63,7 +63,11 @@ public static class HealthApi
                     healthOptions,
                     gaps.CountsByState(),
                     clock.UtcNow,
-                    storeQueue?.Snapshot().LastFailure);
+                    storeQueue?.Snapshot().LastFailure,
+                    context.RequestServices.GetService<ISourceConnectionStore>()?.All
+                        .Where(c => !c.IsEnabled)
+                        .Select(c => c.InstanceId)
+                        .ToHashSet(StringComparer.Ordinal));
 
                 return report.Status == ServiceHealthStatus.Unhealthy
                     ? Results.Json(report, statusCode: StatusCodes.Status503ServiceUnavailable)
