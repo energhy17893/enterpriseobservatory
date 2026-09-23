@@ -1086,7 +1086,7 @@ public sealed class ReadModel(
     /// </summary>
     private static readonly Dictionary<EntityKind, string[]> JudgedSimplivityKeys = new()
     {
-        [EntityKind.EsxiHost] = [InventoryVerdictKeys.SimplivityState, InventoryVerdictKeys.SimplivityUpgradeState],
+        [EntityKind.EsxiHost] = [InventoryVerdictKeys.SimplivityState, InventoryVerdictKeys.SimplivityUpgradeState, InventoryVerdictKeys.SimplivityHwStatus],
         [EntityKind.Cluster] = [InventoryVerdictKeys.SimplivityArbiterConnected, InventoryVerdictKeys.SimplivityUpgradeState],
         [EntityKind.VirtualMachine] = [InventoryVerdictKeys.SimplivityHaStatus],
     };
@@ -1254,6 +1254,29 @@ public sealed class ReadModel(
                                     }),
                             ],
                     },
+                    Hardware =
+                    [
+                        .. mine.Where(x => x.Entity.Kind == EntityKind.EsxiHost)
+                            .Select(x => new SimplivityHardwareView
+                            {
+                                EntityId = x.Entity.Id.Value,
+                                Name = x.Entity.DisplayName,
+                                Status = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwStatus),
+                                RaidStatus = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwRaidStatus),
+                                BatteryStatus = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwBatteryStatus),
+                                BatteryHealth = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwBatteryHealth),
+                                BatteryPercentCharged = Int(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwBatteryCharge)),
+                                AcceleratorStatus = Get(x.Annotation, InventoryVerdictKeys.SimplivityHwAcceleratorStatus),
+                                Drives = Int(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwDrives)),
+                                DriveStatuses = Counts(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwDriveStatus)),
+                                DriveHealths = Counts(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwDriveHealth)),
+                                MinLifeRemaining = Int(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwLifeRemainingMin)),
+                                DrivesRebuilding = Int(Get(x.Annotation, InventoryVerdictKeys.SimplivityHwDrivesRebuilding)),
+                                CarriedForward = carried,
+                                ReadAtUtc = x.Annotation.ReadAtUtc,
+                            })
+                            .OrderBy(h => h.Name, StringComparer.OrdinalIgnoreCase),
+                    ],
                 };
             })
             .ToList();
@@ -1266,6 +1289,16 @@ public sealed class ReadModel(
         };
 
         static string? Get(EntityAnnotation annotation, string key) => annotation.Settings.GetValueOrDefault(key);
+
+        static int? Int(string? value) =>
+            int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : null;
+
+        // The collector's "GREEN=23;RED=1".
+        static Dictionary<string, int> Counts(string? encoded) =>
+            (encoded ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(pair => pair.Split('='))
+                .Where(kv => kv.Length == 2 && Int(kv[1]) is not null)
+                .ToDictionary(kv => kv[0], kv => Int(kv[1])!.Value, StringComparer.Ordinal);
 
         static DateTimeOffset? Utc(string? iso) =>
             DateTimeOffset.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,
