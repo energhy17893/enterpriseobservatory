@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card } from '@/components/Primitives'
-import { cn } from '@/lib/ui'
+import { cn, ramp } from '@/lib/ui'
 import type { SetupCommand, SetupResultView, SetupStateView } from '@/api/types'
 
 /**
@@ -221,7 +221,9 @@ function Done({ result }: { result: SetupResultView }) {
   return (
     <Frame title="Database connected">
       <div className="space-y-3 text-sm">
-        <div className="rounded-md border border-healthy px-3 py-2 text-healthy-on">{result.detail}</div>
+        <div className={cn('rounded-md border px-3 py-2', ramp('Healthy').surface, ramp('Healthy').border, ramp('Healthy').text)}>
+          {result.detail}
+        </div>
         {result.nextStep !== null && <p className="text-muted-foreground">{result.nextStep}</p>}
         {result.restartRequired ? (
           <p className="font-medium">Restart the service to finish.</p>
