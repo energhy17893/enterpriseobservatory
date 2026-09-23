@@ -15,6 +15,9 @@ namespace EnterpriseObservatory.Application.Compliance;
 /// the measured estate — docs/measurements/backup-freshness-shapes.md), read
 /// by the collector into <see cref="InventoryVerdictKeys.BackupLastUtc"/>.
 /// Entity = the VM, subject <c>''</c>: the fix is "back this machine up".
+/// A second source (S3): SimpliVity's newest PROTECTED backup, annotated on
+/// the same VM as <see cref="InventoryVerdictKeys.SimplivityBackupLastUtc"/>
+/// (ADR-0027). When it is there the newer of the two is judged.
 /// </para>
 /// <para>
 /// Older than the RPO → Failing with its age; otherwise Passing (exactly the
@@ -56,6 +59,11 @@ public sealed class BackupFreshnessCheck(TimeSpan? rpo = null) : IComplianceChec
         ArgumentNullException.ThrowIfNull(context);
 
         var expected = $"a backup within the last {Describe(Rpo)}";
+
+        if (ReadUtc(entity, InventoryVerdictKeys.SimplivityBackupLastUtc) is { } simplivity)
+        {
+            return JudgeNewest(entity, simplivity, expected, context);
+        }
 
         if (!entity.Settings.TryGetValue(InventoryVerdictKeys.BackupRead, out var read) ||
             !string.Equals(read, "true", StringComparison.OrdinalIgnoreCase))
@@ -115,6 +123,67 @@ public sealed class BackupFreshnessCheck(TimeSpan? rpo = null) : IComplianceChec
             ? [Verdict(ComplianceVerdict.Failing, expected, observed + $": older than the {Describe(Rpo)} RPO")]
             : [Verdict(ComplianceVerdict.Passing, expected, observed)];
     }
+
+    /// <summary>
+    /// Two sources for one fact (ADR-0027 §5): SimpliVity's newest PROTECTED
+    /// backup, annotated on the VM, and the backup product's attribute. The
+    /// newer one is judged, and the observation names both and their ages.
+    /// </summary>
+    /// <remarks>
+    /// The same rule, not a second one: a VM is protected when either says
+    /// so recently enough. The attribute counts only when it was read and
+    /// parses; otherwise SimpliVity alone is judged and says so.
+    /// </remarks>
+    private IReadOnlyList<CheckVerdict> JudgeNewest(
+        Entity entity, DateTimeOffset simplivity, string expected, CheckContext context)
+    {
+        var attributeRead = entity.Settings.TryGetValue(InventoryVerdictKeys.BackupRead, out var read) &&
+                            string.Equals(read, "true", StringComparison.OrdinalIgnoreCase);
+        var field = entity.Settings.TryGetValue(InventoryVerdictKeys.BackupField, out var f) ? f : null;
+        var attribute = attributeRead && field is not null
+            ? ReadUtc(entity, InventoryVerdictKeys.BackupLastUtc)
+            : null;
+
+        var sources = attribute is { } a
+            ? $"SimpliVity {Ago(simplivity)} / attribute '{field}' {Ago(a)}"
+            : $"SimpliVity {Ago(simplivity)}";
+
+        var (last, from) = attribute is { } other && other > simplivity
+            ? (other, $"attribute '{field}'")
+            : (simplivity, "SimpliVity");
+        var age = context.NowUtc - last;
+
+        if (age < -FutureTolerance)
+        {
+            return
+            [
+                Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
+                    $"The newest backup ({from}) is {Describe(-age)} in the future ({sources}); " +
+                    "that source's clock or time zone disagrees with this one."),
+            ];
+        }
+
+        var when = last.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        var observed = $"last backup {when} UTC, {Describe(age < TimeSpan.Zero ? TimeSpan.Zero : age)} ago " +
+                       $"({sources})";
+
+        return age > Rpo
+            ? [Verdict(ComplianceVerdict.Failing, expected, observed + $": older than the {Describe(Rpo)} RPO")]
+            : [Verdict(ComplianceVerdict.Passing, expected, observed)];
+
+        string Ago(DateTimeOffset at)
+        {
+            var span = context.NowUtc - at;
+            return span < TimeSpan.Zero ? "in the future" : $"{Describe(span)} ago";
+        }
+    }
+
+    private static DateTimeOffset? ReadUtc(Entity entity, string key) =>
+        entity.Settings.TryGetValue(key, out var iso) &&
+        DateTimeOffset.TryParse(iso, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var at)
+            ? at
+            : null;
 
     /// <summary>Hours below two days, days from there.</summary>
     private static string Describe(TimeSpan span)

@@ -196,4 +196,57 @@ public class BackupFreshnessCheckTests
         Assert.Equal(ComplianceVerdict.Failing, verdict.Verdict);
         Assert.Contains("4 hours", verdict.Expected, StringComparison.Ordinal);
     }
+
+    // --- S3: SimpliVity as a second source (ADR-0027 §5) --------------------
+
+    private static Entity WithSimplivity(Entity vm, DateTimeOffset last) => vm with
+    {
+        Settings = new Dictionary<string, string>(vm.Settings, StringComparer.OrdinalIgnoreCase)
+        {
+            [InventoryVerdictKeys.SimplivityBackupLastUtc] = last.ToString("o", CultureInfo.InvariantCulture),
+        },
+    };
+
+    [Fact]
+    public void The_newer_of_the_two_sources_is_judged_and_both_are_named()
+    {
+        // Commvault 30 h ago would pass anyway; SimpliVity 2 h ago is newer.
+        var vm = WithSimplivity(BackedUp("vc-1:vm-1", T0.AddHours(-30)), T0.AddHours(-2));
+
+        var finding = Of(Evaluate([vm]), vm);
+
+        Assert.Equal(ComplianceVerdict.Passing, finding.Verdict);
+        Assert.Contains("2 hours ago", finding.Observed, StringComparison.Ordinal);
+        Assert.Contains("SimpliVity 2 hours ago / attribute 'Last Backup' 30 hours ago", finding.Observed, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_fresh_simplivity_backup_rescues_a_stale_attribute()
+    {
+        var vm = WithSimplivity(BackedUp("vc-1:vm-1", T0.AddDays(-5)), T0.AddHours(-3));
+
+        Assert.Equal(ComplianceVerdict.Passing, Of(Evaluate([vm]), vm).Verdict);
+    }
+
+    [Fact]
+    public void A_fresh_attribute_wins_over_a_stale_simplivity_backup()
+    {
+        var vm = WithSimplivity(BackedUp("vc-1:vm-1", T0.AddHours(-4)), T0.AddDays(-3));
+
+        var finding = Of(Evaluate([vm]), vm);
+
+        Assert.Equal(ComplianceVerdict.Passing, finding.Verdict);
+        Assert.Contains("4 hours ago (SimpliVity 3 days ago / attribute 'Last Backup' 4 hours ago)", finding.Observed, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Simplivity_alone_is_judged_when_the_attributes_were_not_read()
+    {
+        var stale = WithSimplivity(Vm("vc-1:vm-1"), T0.AddHours(-40));
+
+        var finding = Of(Evaluate([stale]), stale);
+
+        Assert.Equal(ComplianceVerdict.Failing, finding.Verdict);
+        Assert.Contains("(SimpliVity 40 hours ago)", finding.Observed, StringComparison.Ordinal);
+    }
 }
