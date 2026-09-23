@@ -31,10 +31,14 @@ public sealed class MonitoringWorker(
     IAlertStateStore alerts,
     IObservationStore series,
     IOperationalMetricsStore selfMetrics,
+    ISourceConnectionStore connections,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
     private readonly IObservationStore _series = series ?? throw new ArgumentNullException(nameof(series));
+
+    private readonly ISourceConnectionStore _connections =
+        connections ?? throw new ArgumentNullException(nameof(connections));
 
     private readonly IOperationalMetricsStore _selfMetrics =
         selfMetrics ?? throw new ArgumentNullException(nameof(selfMetrics));
@@ -71,7 +75,7 @@ public sealed class MonitoringWorker(
                 NoteWhetherAnythingIsConfigured(sources.Count);
 
                 var result = await _cycle
-                    .RunInventoryAsync(sources, _options, token)
+                    .RunInventoryAsync(sources, _options, token, DisabledInstanceIds())
                     .ConfigureAwait(false);
 
                 HostLog.InventoryCycle(
@@ -136,7 +140,7 @@ public sealed class MonitoringWorker(
             async token =>
             {
                 var result = await _cycle
-                    .RunObservationsAsync(_sources.Observations, _options, token)
+                    .RunObservationsAsync(_sources.Observations, _options, token, DisabledInstanceIds())
                     .ConfigureAwait(false);
 
                 HostLog.ObservationCycle(_logger, result.Observations.Count, result.Visible.Count);
@@ -268,6 +272,14 @@ public sealed class MonitoringWorker(
             HostLog.AlarmsMovedToFindings(_logger, moved.Count, matched);
         }
     }
+
+    /// <summary>
+    /// Connections switched off, read fresh every cycle (N1): a vCenter
+    /// disabled in the product must stop carrying "Collector unreachable" and
+    /// have its other alerts go unknown without a restart.
+    /// </summary>
+    private IReadOnlyCollection<string> DisabledInstanceIds() =>
+        [.. _connections.All.Where(c => !c.IsEnabled).Select(c => c.InstanceId)];
 
     /// <summary>Says so, once, when there is nothing to read.</summary>
     /// <remarks>

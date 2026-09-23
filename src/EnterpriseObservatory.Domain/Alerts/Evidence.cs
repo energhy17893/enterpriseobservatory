@@ -15,6 +15,13 @@ public enum UnknownReason
     /// <summary>The source did not answer this cycle ("kaynak cevap vermedi").</summary>
     SourceSilent,
 
+    /// <summary>
+    /// The owning connection is disabled (ADR-0026): a deliberate decision, not
+    /// a failure, so the condition is unknown rather than resolved or reopened
+    /// while it holds.
+    /// </summary>
+    SourceDisabled,
+
     /// <summary>A counter or property is missing for this subject ("sayaç toplanmıyor").</summary>
     InputNotCollected,
 

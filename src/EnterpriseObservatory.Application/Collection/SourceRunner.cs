@@ -110,11 +110,16 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             {
                 // Left alone deliberately. Reported rather than silently skipped so
                 // an operator can tell "we are not looking" from "we looked and it
-                // was fine" — those must never be confused.
+                // was fine" — those must never be confused. Except when the estate
+                // itself explains the failure (NotConfigured: no collector for this
+                // kind) — that is not an alarm (ADR-0026), so nothing is raised, one
+                // strike or forty.
+                var quiet = prior.LastFailureKind == CollectionFailureKind.NotConfigured;
+
                 return new SourceRunOutcome<TResult>(
                     null,
                     prior with { IsBackingOff = true, Health = HealthState.Unknown },
-                    [UnreachableAlert(instanceId, role, prior, backingOff: true)]);
+                    quiet ? [] : [UnreachableAlert(instanceId, role, prior, backingOff: true)]);
             }
 
             await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -255,8 +260,18 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
                     // does not happen.
                     var fatal = FailedFatally(prior, ex, fault.Kind, _time.GetElapsedTime(attemptStart), _clock.UtcNow);
 
+                    // NotConfigured (no collector for this kind) is the estate
+                    // describing itself, not a collector failing to reach it — the
+                    // same distinction Up already draws in Succeeded (§10.6,
+                    // ADR-0026). Raising an alarm for a decision nobody can fix by
+                    // being paged is what made the redfish placeholder's "Collector
+                    // unreachable" permanent on the live estate.
                     return new SourceRunOutcome<TResult>(
-                        null, fatal, [UnreachableAlert(instanceId, role, fatal, backingOff: false)]);
+                        null,
+                        fatal,
+                        fault.Kind == CollectionFailureKind.NotConfigured
+                            ? []
+                            : [UnreachableAlert(instanceId, role, fatal, backingOff: false)]);
                 }
 
                 if (ex is OutOfTimeException)

@@ -176,13 +176,23 @@ public sealed class MonitoringCycle(
     private readonly IReadOnlyList<IAnalysisRule> _rules = AnalysisRules.Create();
 
     /// <summary>Re-reads inventory and folds it into the graph.</summary>
+    /// <param name="disabledInstanceIds">
+    /// Connections an operator switched off (N1, ADR-0026). They are not in
+    /// <paramref name="sources"/> — the registry never builds a collector for
+    /// one — so without this the "collection:inventory" producer never signs
+    /// for their "Collector unreachable" fingerprint and a previously open one
+    /// stays open and stale forever, instead of resolving.
+    /// </param>
     public async Task<MonitoringCycleResult> RunInventoryAsync(
         IReadOnlyList<IInventorySource> sources,
         MonitoringOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<string>? disabledInstanceIds = null)
     {
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(options);
+
+        var disabled = disabledInstanceIds ?? [];
 
         var stopwatch = Stopwatch.StartNew();
         var now = _clock.UtcNow;
@@ -323,7 +333,15 @@ public sealed class MonitoringCycle(
         [
             ProducerRun.For(
                 "collection:inventory",
-                sources.Select(s => SourceRunner.UnreachableFingerprint(s.InstanceId, CollectorRole.Inventory))),
+                sources.Select(s => SourceRunner.UnreachableFingerprint(s.InstanceId, CollectorRole.Inventory))
+                    // Disabled connections are never in `sources` -- the
+                    // registry builds no collector for one -- but this cycle
+                    // still speaks for them: it looked at the roster and
+                    // deliberately did not ask. Signing here is what lets a
+                    // "Collector unreachable" raised before it was disabled
+                    // resolve instead of staying open and stale forever.
+                    .Concat(disabled.Select(id =>
+                        SourceRunner.UnreachableFingerprint(id, CollectorRole.Inventory)))),
             .. cycle.Snapshots.Select(s => ProducerRun.Where(
                 $"inventory:{s.SourceInstanceId}", f => f.HasSource(s.SourceInstanceId))),
             .. cycle.Snapshots.Select(s => Wrote($"coverage:{s.SourceInstanceId}")),
@@ -342,6 +360,7 @@ public sealed class MonitoringCycle(
             new EvidenceSources
             {
                 Reporting = reporting,
+                DisabledConnections = disabled,
                 OwnerOf = entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
                 IsVanished = entity => graph.Entities.TryGetValue(entity, out var e) &&
                                        e.ObservationState == ObservationState.Vanished,
@@ -378,13 +397,17 @@ public sealed class MonitoringCycle(
     }
 
     /// <summary>Samples metrics and folds the resulting alerts in.</summary>
+    /// <param name="disabledInstanceIds">See <see cref="RunInventoryAsync"/>'s parameter of the same name.</param>
     public async Task<MonitoringCycleResult> RunObservationsAsync(
         IReadOnlyList<IObservationSource> sources,
         MonitoringOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<string>? disabledInstanceIds = null)
     {
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(options);
+
+        var disabled = disabledInstanceIds ?? [];
 
         var stopwatch = Stopwatch.StartNew();
         var now = _clock.UtcNow;
@@ -490,7 +513,9 @@ public sealed class MonitoringCycle(
         [
             ProducerRun.For(
                 "collection:metrics",
-                sources.Select(s => SourceRunner.UnreachableFingerprint(s.InstanceId, CollectorRole.Observation))),
+                sources.Select(s => SourceRunner.UnreachableFingerprint(s.InstanceId, CollectorRole.Observation))
+                    .Concat(disabled.Select(id =>
+                        SourceRunner.UnreachableFingerprint(id, CollectorRole.Observation)))),
             .. cycle.Batches.Select(b => ProducerRun.For(
                 $"detail-level:{b.SourceInstanceId}",
                 ObservationCollectionPipeline.DetailLevelFingerprint(b.SourceInstanceId))),
@@ -511,6 +536,7 @@ public sealed class MonitoringCycle(
             new EvidenceSources
             {
                 Reporting = answered,
+                DisabledConnections = disabled,
                 OwnerOf = entity => graph.Entities.TryGetValue(entity, out var e) ? e.SourceInstanceId : null,
                 IsVanished = entity => graph.Entities.TryGetValue(entity, out var e) &&
                                        e.ObservationState == ObservationState.Vanished,

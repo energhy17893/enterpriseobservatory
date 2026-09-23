@@ -248,14 +248,14 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             // being honoured is how an inbox becomes something people mute.
             foreach (var connection in _catalogue.All().Where(c => c.IsEnabled))
             {
-                if (WhyUnusable(connection) is not { } reason)
+                if (WhyUnusable(connection) is not { } why)
                 {
                     wanted.Add(connection);
                     continue;
                 }
 
-                _reportUnusable(connection.InstanceId, reason);
-                unusable.Add(StandIn(connection.InstanceId, reason));
+                _reportUnusable(connection.InstanceId, why.Reason);
+                unusable.Add(StandIn(connection.InstanceId, why.Reason, why.Kind));
             }
 
             Forget(unusable);
@@ -384,7 +384,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         }
     }
 
-    private UnusableSource StandIn(string instanceId, string reason)
+    private UnusableSource StandIn(string instanceId, string reason, CollectionFailureKind kind)
     {
         if (_unusable.TryGetValue(instanceId, out var existing) &&
             string.Equals(existing.Reason, reason, StringComparison.Ordinal))
@@ -392,7 +392,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             return existing;
         }
 
-        var fresh = new UnusableSource(instanceId, reason);
+        var fresh = new UnusableSource(instanceId, reason, kind);
         _unusable[instanceId] = fresh;
 
         return fresh;
@@ -417,23 +417,32 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// <see cref="SourceConnection.PasswordUnreadable"/> exists to preserve.
     /// </para>
     /// </remarks>
-    private static string? WhyUnusable(SourceConnection connection)
+    private static (string Reason, CollectionFailureKind Kind)? WhyUnusable(SourceConnection connection)
     {
         if (!BuiltKinds.Contains(connection.Kind, StringComparer.Ordinal))
         {
-            return $"this build has no collector for kind '{connection.Kind}'; " +
-                   "remove the connection, or deploy a build that reads that kind";
+            // The estate describing itself, not a credential an operator forgot
+            // (N1, ADR-0026): nothing was ever going to be polled here, so
+            // nothing raises "Collector unreachable" for it either.
+            return (
+                $"this build has no collector for kind '{connection.Kind}'; " +
+                "remove the connection, or deploy a build that reads that kind",
+                CollectionFailureKind.NotConfigured);
         }
 
         if (connection.PasswordUnreadable)
         {
-            return "its stored password cannot be decrypted; restore the Data Protection " +
-                   "key ring that belongs with this database, or enter the password again";
+            return (
+                "its stored password cannot be decrypted; restore the Data Protection " +
+                "key ring that belongs with this database, or enter the password again",
+                CollectionFailureKind.CredentialsUnavailable);
         }
 
         if (connection.Password.IsEmpty)
         {
-            return "no password has been entered for it; enter one on the Connections screen";
+            return (
+                "no password has been entered for it; enter one on the Connections screen",
+                CollectionFailureKind.CredentialsUnavailable);
         }
 
         return null;
@@ -451,30 +460,47 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// would disappear. Failing says the only true thing: we did not look.
     /// </para>
     /// <para>
-    /// Failing also puts the connection back on the two screens an operator
+    /// Failing also puts the connection back on the one screen an operator
     /// actually watches. The runner turns the failure into a health record —
     /// Unknown, never succeeded, which the collectors list shows and
-    /// <c>FailingCollectors</c> counts — and into the same
-    /// <c>Collector unreachable</c> alert every other unreadable source
-    /// raises, so it reaches the inbox and the notifier without a second kind
-    /// of alert to learn.
+    /// <c>FailingCollectors</c> counts.
     /// </para>
     /// <para>
-    /// The failure is <see cref="CollectionFailureKind.NotConfigured"/>, which
-    /// is not worth retrying, so the runner tries once and the breaker holds it
-    /// off afterwards. There is nothing to retry: no request leaves the
-    /// process. It resolves itself — once the connection is usable this object
-    /// is gone, the real collector answers in its place, and the alert nobody
-    /// had to clear by hand is reconciled away.
+    /// <see cref="Kind"/> decides whether that also raises
+    /// <c>Collector unreachable</c> (N1, ADR-0026). No collector built for the
+    /// kind (<see cref="CollectionFailureKind.NotConfigured"/>) is the estate
+    /// describing itself, not a collector failing to reach it, and paging on a
+    /// decision nobody can fix by being paged is what made the redfish
+    /// placeholder's alert permanent on the live estate — so that one stays
+    /// quiet. A missing or unreadable password
+    /// (<see cref="CollectionFailureKind.CredentialsUnavailable"/>) is still an
+    /// operator's fix waiting, and still pages until they make it.
+    /// </para>
+    /// <para>
+    /// Either way the failure is not worth retrying (<see cref="CollectionFailures.IsWorthRetrying"/>),
+    /// so the runner tries once and the breaker holds it off afterwards. There
+    /// is nothing to retry: no request leaves the process. It resolves itself
+    /// — once the connection is usable this object is gone, the real collector
+    /// answers in its place, and the health record it left behind is the next
+    /// one it writes.
     /// </para>
     /// </remarks>
-    private sealed class UnusableSource(string instanceId, string reason)
+    private sealed class UnusableSource(string instanceId, string reason, CollectionFailureKind kind)
         : IInventorySource, IObservationSource
     {
         public string InstanceId { get; } = instanceId;
 
         /// <summary>Why, in the operator's terms. Never anything password-shaped.</summary>
         public string Reason { get; } = reason;
+
+        /// <summary>
+        /// <see cref="CollectionFailureKind.NotConfigured"/> for a kind this
+        /// build has no collector for — never an alarm (N1, ADR-0026) — or
+        /// <see cref="CollectionFailureKind.CredentialsUnavailable"/> for a
+        /// missing or unreadable password, which stays one until an operator
+        /// fixes it.
+        /// </summary>
+        public CollectionFailureKind Kind { get; } = kind;
 
         Task<InventorySnapshot> IInventorySource.ReadAsync(CancellationToken cancellationToken) =>
             throw Fault();
@@ -492,7 +518,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         /// polled, and says what would fix it.
         /// </remarks>
         private ConnectionNotUsableException Fault() =>
-            new($"'{InstanceId}' is not being polled: {Reason}.");
+            new($"'{InstanceId}' is not being polled: {Reason}.", Kind);
     }
 
     /// <summary>A connection the product is configured to read but cannot.</summary>
@@ -503,10 +529,10 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// the retry budget and the cycle's patience on a decision that cannot
     /// change until a person changes it.
     /// </remarks>
-    private sealed class ConnectionNotUsableException(string message)
+    private sealed class ConnectionNotUsableException(string message, CollectionFailureKind kind)
         : InvalidOperationException(message), ICollectionFault
     {
-        public CollectionFailureKind Kind => CollectionFailureKind.NotConfigured;
+        public CollectionFailureKind Kind => kind;
     }
 
     /// <summary>The vSphere collector's kind.</summary>
@@ -625,7 +651,8 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         public string InstanceId { get; } = instanceId;
 
         public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
-            throw new ConnectionNotUsableException($"'{InstanceId}' is not being polled: {reason}.");
+            throw new ConnectionNotUsableException(
+                $"'{InstanceId}' is not being polled: {reason}.", CollectionFailureKind.NotConfigured);
     }
 
     internal const string SimplivityHasNoMetrics =

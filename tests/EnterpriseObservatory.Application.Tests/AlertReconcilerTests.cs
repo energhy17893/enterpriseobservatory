@@ -442,6 +442,14 @@ public class AlertReconcilerTests
         OwnerOf = entity => entity.Value == "esx01" ? "vc-1" : null,
     };
 
+    /// <summary>vc-1 is disabled and so, like a silent source, does not answer.</summary>
+    private static EvidenceSources Disabled(params string[] disabled) => new()
+    {
+        Reporting = [],
+        DisabledConnections = disabled,
+        OwnerOf = entity => entity.Value == "esx01" ? "vc-1" : null,
+    };
+
     [Fact]
     public void A_rule_alert_carries_the_rule_that_raised_it()
     {
@@ -520,6 +528,58 @@ public class AlertReconcilerTests
         var instance = Assert.Single(r.Instances);
         Assert.Equal(AlertLifecycleState.Open, instance.State);
         Assert.Equal(UnknownReason.SourceSilent, instance.StaleReason);
+    }
+
+    [Fact]
+    public void A_present_verdict_on_a_disabled_sources_entity_does_not_open_an_alert()
+    {
+        // A disabled connection is the same clamp as a silent one, checked
+        // first (N1, ADR-0026): a decision, not a failure, but still not
+        // evidence about the condition either way.
+        var r = Rules(null, Cycle(0), [Present(Psu())], sources: Disabled("vc-1"));
+
+        Assert.Empty(r.Instances);
+    }
+
+    [Fact]
+    public void Disabling_a_sources_connection_marks_its_open_alert_unknown_not_stale_open()
+    {
+        // The widened N1 case: SVT_Vcenter's "Host forwards no logs" stayed
+        // Open and merely stale for as long as the rule gave no verdict about
+        // it -- the age clamp is days out. Disabling has to say why at once.
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+
+        // The rule itself never looks at a disabled source's entities (its
+        // read comes from the source, not the reconciler) -- so no verdict at
+        // all reaches this fingerprint this cycle, the same shape RemoteLoggingRule
+        // left behind.
+        r = Rules(r, Cycle(1), [], sources: Disabled("vc-1"));
+
+        var instance = Assert.Single(r.Instances);
+        Assert.Equal(AlertLifecycleState.Open, instance.State);
+        Assert.Equal(UnknownReason.SourceDisabled, instance.StaleReason);
+    }
+
+    [Fact]
+    public void Re_enabling_a_source_is_judged_fresh_again()
+    {
+        // Once vc-1 answers again, its verdict is ordinary evidence: still
+        // present reopens exactly as before, resting on nothing left over
+        // from having been disabled.
+        var r = Rules(null, Cycle(0), [Present(Psu())]);
+        r = Rules(r, Cycle(1), [], sources: Disabled("vc-1"));
+        r = Rules(r, Cycle(2), [Present(Psu())]);
+
+        var stillPresent = Assert.Single(r.Instances);
+        Assert.Equal(AlertLifecycleState.Open, stillPresent.State);
+        Assert.Null(stillPresent.StaleReason);
+
+        // And if the condition actually cleared while it was disabled, the
+        // next real answer resolves it rather than reopening it blind.
+        r = Rules(
+            r, Cycle(3), [Gone(Psu(), Cycle(3)) with { Resolution = ResolutionPolicy.Immediate }]);
+
+        Assert.Equal(AlertLifecycleState.Resolved, Assert.Single(r.Instances).State);
     }
 
     [Fact]
