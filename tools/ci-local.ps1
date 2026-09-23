@@ -75,9 +75,12 @@ foreach ($sha in (git rev-list "$Base..HEAD")) {
 $results['Commit message format'] = if ($bad.Count -eq 0) { 'pass' } else { 'FAIL: ' + ($bad -join ', ') }
 
 # --- No catalogue picked by position (P1/P2 removed it; P3a nearly brought it back as [2]) ---
-# Any index, not just [0]: identity comes from CatalogueDescriptor, never from order.
+# Any index, and the parameterless First()/Last()/Single()/ElementAt(): identity
+# comes from CatalogueDescriptor, never from order. Single(c => ...) with a
+# predicate is a lookup by identity and is NOT flagged. The widened form found a
+# live crash on its first run (#123: Single() on a list of three).
 # Production code only; tests register catalogues in reverse on purpose.
-$byPosition = git grep -n -E 'Catalogues\[[0-9]+\]' -- src
+$byPosition = git grep -n -E 'Catalogues\s*(\[[0-9]+\]|\.(First|Last|Single)\(\s*\)|\.ElementAt\()' -- src
 $results['Catalogue by position'] = if (-not $byPosition) { 'pass' } else { 'FAIL: ' + (($byPosition | Select-Object -First 3) -join ' | ') }
 
 $head = git rev-parse --short HEAD
