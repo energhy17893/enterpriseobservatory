@@ -257,7 +257,36 @@ public sealed class ProvisioningTests : IDisposable
         }
         finally
         {
-            AsAdminExecute($"DROP DATABASE IF EXISTS \"{_name}\" WITH (FORCE);", $"DROP ROLE IF EXISTS \"{_name}\";");
+            // FORCE terminates whoever is still connected first, and the
+            // Adopt() call above just closed its own probe connection — which
+            // can still be finishing that close, server-side, when this runs.
+            // The admin here owns the database directly (no SET ROLE trick:
+            // there is nothing to SET ROLE to that would help drop someone
+            // else's still-closing backend), so retrying past that instant is
+            // simpler than racing it. Same fault PostgresProvisioning.Undo
+            // retries around (42501, "terminate process"); measured live under
+            // concurrent load, not merely theoretical.
+            DropDatabaseIfExistsWithRetry(_name);
+            AsAdminExecute($"DROP ROLE IF EXISTS \"{_name}\";");
+        }
+    }
+
+    private void DropDatabaseIfExistsWithRetry(string name)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                AsAdminExecute($"DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE);");
+                return;
+            }
+            catch (PostgresException ex) when (
+                attempt < 5 &&
+                ex.SqlState == PostgresErrorCodes.InsufficientPrivilege &&
+                ex.MessageText.Contains("terminate process", StringComparison.Ordinal))
+            {
+                Thread.Sleep(TimeSpan.FromMilliseconds(100 * attempt));
+            }
         }
     }
 
@@ -283,8 +312,11 @@ public sealed class ProvisioningTests : IDisposable
     {
         Skip.If(SkipReason is not null, SkipReason);
 
-        Assert.True(PostgresProvisioning.Provision(Admin, _target).Succeeded);
-        Assert.True(PostgresProvisioning.Drop(Admin, _target).Succeeded);
+        var provisioned = PostgresProvisioning.Provision(Admin, _target);
+        Assert.True(provisioned.Succeeded, provisioned.Detail);
+
+        var dropped = PostgresProvisioning.Drop(Admin, _target);
+        Assert.True(dropped.Succeeded, dropped.Detail);
 
         AsAdmin(connection =>
         {

@@ -607,7 +607,7 @@ public static partial class PostgresProvisioning
                     Execute(server, $"SET ROLE {role};");
                 }
 
-                Execute(server, $"DROP DATABASE {Identifier(target.Database)} WITH (FORCE);");
+                DropDatabaseWithForce(server, target.Database);
 
                 if (roleExists)
                 {
@@ -626,6 +626,44 @@ public static partial class PostgresProvisioning
             // Best effort after a failure that is already being reported. The
             // operator is told what failed; a second failure while tidying up
             // would only replace that sentence with a less useful one.
+        }
+    }
+
+    /// <summary>
+    /// Runs <c>DROP DATABASE ... WITH (FORCE)</c>, tolerating the one race
+    /// FORCE itself cannot help with.
+    /// </summary>
+    /// <remarks>
+    /// FORCE terminates every backend connected to the database first — but a
+    /// backend that is still authenticating has not been assigned a role yet,
+    /// and PostgreSQL will not let even the role granted <c>SET</c> above
+    /// terminate a process it cannot yet attribute to that role
+    /// (<c>42501 permission denied to terminate process</c>). Measured live: a
+    /// connection opened moments earlier by this same product's own schema
+    /// check (<see cref="PostgresDatabase"/>'s pooled data source) can still be
+    /// mid-handshake when this runs, especially under concurrent load. That
+    /// handshake finishes in milliseconds either way, so retrying rather than
+    /// failing outright is enough — no different from FORCE's own retry of the
+    /// termination itself.
+    /// </remarks>
+    private static void DropDatabaseWithForce(NpgsqlConnection server, string database)
+    {
+        const int attempts = 5;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                Execute(server, $"DROP DATABASE {Identifier(database)} WITH (FORCE);");
+                return;
+            }
+            catch (PostgresException ex) when (
+                attempt < attempts &&
+                ex.SqlState == PostgresErrorCodes.InsufficientPrivilege &&
+                ex.MessageText.Contains("terminate process", StringComparison.Ordinal))
+            {
+                Thread.Sleep(TimeSpan.FromMilliseconds(100 * attempt));
+            }
         }
     }
 
