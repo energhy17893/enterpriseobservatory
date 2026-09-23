@@ -477,6 +477,40 @@ public class MonitoringCycleTests : IDisposable
     }
 
     [Fact]
+    public async Task A_capacity_reading_the_store_refused_waits_in_the_queue_and_is_written_by_the_next_drain()
+    {
+        // F5b: capacity used to be written straight to the store, so a failed
+        // write lost the reading. Now it waits in the store queue as current
+        // state, and the metric cycle's next drain writes it.
+        var datastore = new EntityId("vc-1:ds-1");
+        var store = new FlakyObservationStore { Fails = true };
+        var cycle = Cycle(observations: store);
+
+        var inventory = new FakeInventorySource("vc-1")
+        {
+            Behaviour = () => Snapshot("vc-1", _clock.UtcNow) with
+            {
+                Observations = [CapacityCounters.Reading(datastore, CapacityCounters.DatastoreUsed, 80e9, _clock.UtcNow, "vc-1")],
+            },
+        };
+
+        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
+        Assert.Equal(0, store.Appends);
+
+        store.Fails = false;
+        await cycle.RunObservationsAsync([], Options, CancellationToken.None);
+
+        var series = store.Query(new SeriesQuery
+        {
+            Key = new SeriesKey(datastore, CapacityCounters.DatastoreUsed, string.Empty),
+            FromUtc = T0.AddMinutes(-1),
+            ToUtc = T0.AddMinutes(1),
+            Resolution = SeriesResolution.Raw,
+        });
+        Assert.Equal(80e9, Assert.Single(series.Points).Last);
+    }
+
+    [Fact]
     public async Task A_storage_failure_does_not_stop_the_cycle()
     {
         // Losing a sample costs one point on one chart and the next cycle

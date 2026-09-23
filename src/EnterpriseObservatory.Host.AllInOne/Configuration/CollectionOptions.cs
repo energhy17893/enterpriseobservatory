@@ -109,6 +109,15 @@ public sealed class CollectionOptions
     /// </summary>
     public int StoreQueueMaxAgeMinutes { get; set; } = StoreQueueLimits.DefaultMaxAgeMinutes;
 
+    /// <summary>
+    /// The most rows one store write carries (F5b); a backlog is written in
+    /// chunks of this many. Default <see cref="StoreQueueLimits.DefaultMaxRowsPerWrite"/>,
+    /// measured (see <see cref="StoreQueueLimits.MaxRowsPerWrite"/>); between
+    /// <see cref="StoreQueueLimits.MinimumMaxRowsPerWrite"/> and
+    /// <see cref="StoreQueueLimits.MaximumMaxRowsPerWrite"/>, refused outside.
+    /// </summary>
+    public int StoreQueueMaxRowsPerWrite { get; set; } = StoreQueueLimits.DefaultMaxRowsPerWrite;
+
     /// <summary>What is wrong with these values, or empty if nothing is.</summary>
     /// <remarks>
     /// Returns every problem rather than the first, the same reasoning as
@@ -177,6 +186,14 @@ public sealed class CollectionOptions
                 $"and {StoreQueueLimits.MaximumMaxAgeMinutes}.");
         }
 
+        if (StoreQueueMaxRowsPerWrite is < StoreQueueLimits.MinimumMaxRowsPerWrite
+            or > StoreQueueLimits.MaximumMaxRowsPerWrite)
+        {
+            problems.Add(
+                $"Collection:StoreQueueMaxRowsPerWrite must be between {StoreQueueLimits.MinimumMaxRowsPerWrite} " +
+                $"and {StoreQueueLimits.MaximumMaxRowsPerWrite}.");
+        }
+
         return problems;
     }
 
@@ -185,6 +202,7 @@ public sealed class CollectionOptions
     {
         BudgetBytes = StoreQueueBudgetMegabytes * StoreQueueLimits.BytesPerMegabyte,
         MaxAge = TimeSpan.FromMinutes(StoreQueueMaxAgeMinutes),
+        MaxRowsPerWrite = StoreQueueMaxRowsPerWrite,
     };
 
     /// <summary>The domain policy these values describe.</summary>

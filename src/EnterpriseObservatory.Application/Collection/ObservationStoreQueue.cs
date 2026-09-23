@@ -56,9 +56,43 @@ public sealed record StoreQueueLimits
 
     public const long BytesPerMegabyte = 1024L * 1024L;
 
+    /// <summary>The default rows per store write (F5b), measured — see <see cref="MaxRowsPerWrite"/>.</summary>
+    public const int DefaultMaxRowsPerWrite = 10_000;
+
+    public const int MinimumMaxRowsPerWrite = 1_000;
+
+    /// <summary>The largest chunk measured under 5 s on every run (see <see cref="MaxRowsPerWrite"/>).</summary>
+    public const int MaximumMaxRowsPerWrite = 50_000;
+
     public long BudgetBytes { get; init; } = DefaultBudgetMegabytes * BytesPerMegabyte;
 
     public TimeSpan MaxAge { get; init; } = TimeSpan.FromMinutes(DefaultMaxAgeMinutes);
+
+    /// <summary>
+    /// The most rows one store write carries (F5b): a backlog is written in
+    /// chunks of this many, each accepted on its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Measured 23 September 2026 on the test PostgreSQL 18.6 (port 5433,
+    /// shared_buffers 128 MB): <c>sample</c> with 33.3 million rows (9,000
+    /// series × 3,700 slots, 2.7 GB with its primary key), each chunk new rows
+    /// for every series, written as <c>Append</c> writes them — temp table,
+    /// binary COPY, <c>INSERT … ON CONFLICT DO NOTHING RETURNING</c>, commit —
+    /// three runs per size, two passes. Whole transaction, worst run:
+    /// 5,000 rows 0.99 s; 10,000 1.07 s (0.19–0.21 s warm); 20,000 0.43 s;
+    /// 50,000 3.0 s; 100,000 6.2 s; 260,000 5.4 s. So 100,000 and more miss
+    /// the 5 s target even here, and 50,000 is the ceiling.
+    /// </para>
+    /// <para>
+    /// 10,000 (~22 s of this estate's 26,660 rows a minute) for production,
+    /// which is slower than this server: the incident's 260k rows did not
+    /// finish in 30 s, so it merged under 8,700 rows/s against ~50,000 here.
+    /// A 10,000-row chunk stays under 5 s down to 2,000 rows/s — a quarter of
+    /// the incident's bound — and a 260k backlog is 26 writes.
+    /// </para>
+    /// </remarks>
+    public int MaxRowsPerWrite { get; init; } = DefaultMaxRowsPerWrite;
 
     public static StoreQueueLimits Default { get; } = new();
 }
@@ -94,6 +128,14 @@ public sealed record StoreQueueSnapshot
     /// <summary>Rows dropped because they waited longer than the age limit.</summary>
     public long DroppedTooOldRows { get; init; }
 
+    /// <summary>
+    /// Current-state rows (the inventory's capacity readings) dropped — for
+    /// age, budget, or because a newer reading of the same source replaced
+    /// them. Never a gap: the platform keeps no history of current state to
+    /// read again, and the next inventory read is the newer value anyway.
+    /// </summary>
+    public long DroppedCurrentStateRows { get; init; }
+
     /// <summary>Dropped rows whose span was recorded as a gap the source will read again.</summary>
     public long RecordedAsGapRows { get; init; }
 
@@ -112,7 +154,7 @@ public sealed record StoreQueueSnapshot
     /// <summary>Why the last write attempt failed, if it did.</summary>
     public string? LastFailure { get; init; }
 
-    public long DroppedRows => DroppedOverBudgetRows + DroppedTooOldRows;
+    public long DroppedRows => DroppedOverBudgetRows + DroppedTooOldRows + DroppedCurrentStateRows;
 }
 
 /// <summary>Where package D reads the store queue's numbers from.</summary>
@@ -124,7 +166,12 @@ public interface IStoreQueueMetrics
 /// <summary>What one drain of the queue did.</summary>
 public sealed record StoreQueueDrain
 {
-    /// <summary>Batches the store accepted in this drain, oldest first, for the runner to accept in turn.</summary>
+    /// <summary>
+    /// Batches the store accepted in this drain, oldest first, for the runner
+    /// to accept in turn. A batch is here only once its last chunk is stored;
+    /// one whose earlier chunks landed and a later one failed is not, and its
+    /// marks stay where they were.
+    /// </summary>
     public IReadOnlyList<ObservationBatch> Accepted { get; init; } = [];
 
     /// <summary>Whether a write was attempted at all (a gap record or rows).</summary>
@@ -160,9 +207,25 @@ public sealed record StoreQueueDrain
 /// the gap from there.
 /// </para>
 /// <para>
-/// Idempotent by construction: a write that failed is retried as a whole,
-/// and the store keeps one row per series and sample time, so a partial
-/// write retried is not a duplicate.
+/// Written in chunks of at most <see cref="StoreQueueLimits.MaxRowsPerWrite"/>
+/// rows (F5b; Telegraf's <c>metric_batch_size</c>, Prometheus remote-write's
+/// <c>max_samples_per_send</c>). Each stored chunk is kept; a failed one is
+/// retried from where it stopped, never as the whole backlog. The backlog
+/// after an outage used to go as one statement (23 September 2026: ~260k
+/// rows into a 33-million-row table outran the command timeout, rolled back,
+/// and the next attempt carried more). A batch counts as accepted — its
+/// source's marks move — only once its last chunk is stored.
+/// </para>
+/// <para>
+/// Idempotent by construction: the store keeps one row per series and sample
+/// time, so a chunk retried after a failure that in fact landed is not a
+/// duplicate.
+/// </para>
+/// <para>
+/// Current state — the inventory's capacity readings — waits here too
+/// (<see cref="EnqueueCurrentState"/>), but is dropped differently: no gap,
+/// since the platform keeps no history of it to read again, and the newest
+/// reading of a source replaces an older one still waiting.
 /// </para>
 /// </remarks>
 [SuppressMessage(
@@ -188,6 +251,7 @@ public sealed class ObservationStoreQueue : IStoreQueueMetrics
     private long _accepted;
     private long _droppedOverBudget;
     private long _droppedTooOld;
+    private long _droppedCurrentState;
     private long _recordedAsGap;
     private long _couldNotBeFilled;
     private DateTimeOffset? _lastDrop;
@@ -207,30 +271,80 @@ public sealed class ObservationStoreQueue : IStoreQueueMetrics
 
     public StoreQueueLimits Limits { get; }
 
-    /// <summary>Queues one batch's rows — its current values and its earlier samples, kept or lost together.</summary>
+    /// <summary>Queues one batch's rows — its current values and its earlier samples, as one item.</summary>
     public void Enqueue(ObservationBatch batch)
     {
         ArgumentNullException.ThrowIfNull(batch);
 
-        IReadOnlyList<Observation> rows = [.. batch.Observations, .. batch.Backfill];
+        Add(new Item([.. batch.Observations, .. batch.Backfill], batch, batch.SourceInstanceId, _clock.UtcNow));
+    }
+
+    /// <summary>
+    /// Queues one source's current-state rows — the capacity readings its
+    /// inventory read carried — replacing any of that source's still waiting.
+    /// </summary>
+    /// <remarks>
+    /// Newest wins: an older reading still queued describes a state that no
+    /// longer holds, and writing both would only cost the store a row the
+    /// newer one already says. The replaced rows are counted as
+    /// <see cref="StoreQueueSnapshot.DroppedCurrentStateRows"/>.
+    /// </remarks>
+    public void EnqueueCurrentState(string sourceInstanceId, IReadOnlyList<Observation> rows)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(sourceInstanceId);
+        ArgumentNullException.ThrowIfNull(rows);
+
+        if (rows.Count == 0)
+        {
+            return;
+        }
 
         lock (_gate)
         {
             var now = _clock.UtcNow;
-            _items.AddLast(new Item(rows, batch, now));
-            _rows += rows.Count;
-            _produced += rows.Count;
+            for (var node = _items.First; node is not null;)
+            {
+                var next = node.Next;
+                if (node.Value.Batch is null &&
+                    string.Equals(node.Value.Source, sourceInstanceId, StringComparison.Ordinal))
+                {
+                    _items.Remove(node);
+                    Drop(node.Value, now);
+                }
 
-            DropTooOld(now);
-            DropOverBudget(now);
+                node = next;
+            }
+        }
+
+        Add(new Item([.. rows], Batch: null, sourceInstanceId, _clock.UtcNow));
+    }
+
+    private void Add(Item item)
+    {
+        lock (_gate)
+        {
+            _items.AddLast(item);
+            _rows += item.Rows.Length;
+            _produced += item.Rows.Length;
+
+            DropTooOld(item.EnqueuedAtUtc);
+            DropOverBudget(item.EnqueuedAtUtc);
         }
     }
 
     /// <summary>
     /// Writes what can be written: first the gaps for what was dropped, then
-    /// the waiting batches, oldest first, until one fails.
+    /// the waiting items, oldest first, in chunks of at most
+    /// <see cref="StoreQueueLimits.MaxRowsPerWrite"/> rows, until one fails.
     /// </summary>
-    public StoreQueueDrain Drain()
+    /// <param name="currentStateOnly">
+    /// Only the current-state rows (<see cref="EnqueueCurrentState"/>): the
+    /// inventory cycle's drain, which must not accept metric batches whose
+    /// bookkeeping belongs to the metric cycle. Current state moves no marks,
+    /// so writing it ahead of older metric batches reorders nothing that
+    /// matters.
+    /// </param>
+    public StoreQueueDrain Drain(bool currentStateOnly = false)
     {
         lock (_drainGate)
         {
@@ -255,26 +369,44 @@ public sealed class ObservationStoreQueue : IStoreQueueMetrics
             }
 
             var accepted = new List<ObservationBatch>();
+            var maxRows = Limits.MaxRowsPerWrite;
 
-            while (true)
+            LinkedListNode<Item>? node;
+            lock (_gate)
             {
-                Item item;
-                lock (_gate)
+                node = _items.First;
+            }
+
+            while (node is not null)
+            {
+                var item = node.Value;
+
+                if (currentStateOnly && item.Batch is not null)
                 {
-                    if (_items.First is not { } first)
+                    lock (_gate)
                     {
-                        break;
+                        node = node.List is null ? _items.First : node.Next;
                     }
 
-                    item = first.Value;
+                    continue;
                 }
 
-                if (item.Rows.Count > 0)
+                // One chunk. Written is read under the gate; only this drain
+                // (under _drainGate) moves it.
+                int from;
+                lock (_gate)
+                {
+                    from = item.Written;
+                }
+
+                var count = Math.Min(maxRows, item.Rows.Length - from);
+
+                if (count > 0)
                 {
                     attempted = true;
                     try
                     {
-                        _append(item.Rows);
+                        _append(new ArraySegment<Observation>(item.Rows, from, count));
                     }
                     catch (OperationCanceledException)
                     {
@@ -282,7 +414,8 @@ public sealed class ObservationStoreQueue : IStoreQueueMetrics
                     }
 #pragma warning disable CA1031 // Justified: the store may throw anything, and
                     // the one outcome that must not happen is losing the rows
-                    // it could not take — they stay queued.
+                    // it could not take — they stay queued, and the chunks
+                    // already stored stay stored.
                     catch (Exception ex)
 #pragma warning restore CA1031
                     {
@@ -290,21 +423,42 @@ public sealed class ObservationStoreQueue : IStoreQueueMetrics
                     }
                 }
 
+                var complete = from + count == item.Rows.Length;
+
                 lock (_gate)
                 {
-                    // Dropped for age or budget while it was being written:
-                    // the write landed, so it is not also a drop — but the
-                    // drop was already counted and its gap recorded, which
-                    // only costs a refill the store keeps once.
-                    if (ReferenceEquals(_items.First?.Value, item))
+                    if (node.List is null)
                     {
-                        _items.RemoveFirst();
-                        _rows -= item.Rows.Count;
-                        _accepted += item.Rows.Count;
+                        // Dropped for age, budget or a newer reading while
+                        // this chunk was being written: the drop was already
+                        // counted (and its gap recorded), so the chunk is not
+                        // also counted accepted — which only costs a refill
+                        // the store keeps once.
+                        node = _items.First;
+                    }
+                    else
+                    {
+                        item.Written += count;
+                        _rows -= count;
+                        _accepted += count;
+
+                        if (!complete)
+                        {
+                            continue;
+                        }
+
+                        var next = node.Next;
+                        _items.Remove(node);
+                        node = next;
                     }
                 }
 
-                accepted.Add(item.Batch);
+                // The whole batch is stored, so its source's marks may move —
+                // also when the last chunk landed on an item dropped meanwhile.
+                if (complete && item.Batch is not null)
+                {
+                    accepted.Add(item.Batch);
+                }
             }
 
             if (attempted)
@@ -336,6 +490,7 @@ public sealed class ObservationStoreQueue : IStoreQueueMetrics
                 AcceptedRows = _accepted,
                 DroppedOverBudgetRows = _droppedOverBudget,
                 DroppedTooOldRows = _droppedTooOld,
+                DroppedCurrentStateRows = _droppedCurrentState,
                 RecordedAsGapRows = _recordedAsGap,
                 CouldNotBeFilledRows = _couldNotBeFilled,
                 PendingGapRows = _pending.Values.Sum(spans => spans.Sum(s => s.Rows)),
@@ -440,8 +595,8 @@ public sealed class ObservationStoreQueue : IStoreQueueMetrics
     {
         while (_items.First is { } first && now - first.Value.EnqueuedAtUtc > Limits.MaxAge)
         {
-            _droppedTooOld += first.Value.Rows.Count;
-            Drop(first.Value, now);
+            _items.RemoveFirst();
+            _droppedTooOld += Drop(first.Value, now);
         }
     }
 
@@ -457,40 +612,59 @@ public sealed class ObservationStoreQueue : IStoreQueueMetrics
         while (_items.First is { } first && _items.Count > 1 &&
                _rows * StoreQueueLimits.MeasuredBytesPerRow > Limits.BudgetBytes)
         {
-            _droppedOverBudget += first.Value.Rows.Count;
-            Drop(first.Value, now);
+            _items.RemoveFirst();
+            _droppedOverBudget += Drop(first.Value, now);
         }
     }
 
-    // Under _gate.
-    private void Drop(Item item, DateTimeOffset now)
+    /// <summary>Accounts for an item already taken off the list: what of it was not yet stored is dropped.</summary>
+    /// <returns>
+    /// The metric rows dropped, for the caller to count under its reason;
+    /// current-state rows are counted here, apart, and return zero.
+    /// </returns>
+    /// <remarks>Under _gate.</remarks>
+    private long Drop(Item item, DateTimeOffset now)
     {
-        _items.RemoveFirst();
-        _rows -= item.Rows.Count;
+        long rows = item.Rows.Length - item.Written;
+        _rows -= rows;
 
-        if (item.Rows.Count == 0)
+        if (rows == 0)
         {
-            return;
+            return 0;
         }
 
         _lastDrop = now;
 
+        if (item.Batch is null)
+        {
+            // Current state: no gap — nothing the platform could be asked for.
+            _droppedCurrentState += rows;
+            return 0;
+        }
+
         if (_gaps is not null && item.Batch.Refetchable is { } span)
         {
-            if (!_pending.TryGetValue(item.Batch.SourceInstanceId, out var list))
+            if (!_pending.TryGetValue(item.Source, out var list))
             {
-                _pending[item.Batch.SourceInstanceId] = list = [];
+                _pending[item.Source] = list = [];
             }
 
-            list.Add((span, item.Rows.Count));
+            list.Add((span, rows));
         }
         else
         {
             // Nothing can ask for it again: no gap record, or a source whose
             // history cannot be re-read.
-            _couldNotBeFilled += item.Rows.Count;
+            _couldNotBeFilled += rows;
         }
+
+        return rows;
     }
 
-    private sealed record Item(IReadOnlyList<Observation> Rows, ObservationBatch Batch, DateTimeOffset EnqueuedAtUtc);
+    /// <summary>One queued batch, or one source's current state (<see cref="Batch"/> null).</summary>
+    private sealed record Item(Observation[] Rows, ObservationBatch? Batch, string Source, DateTimeOffset EnqueuedAtUtc)
+    {
+        /// <summary>Rows already stored, from the front. Under _gate.</summary>
+        public int Written { get; set; }
+    }
 }

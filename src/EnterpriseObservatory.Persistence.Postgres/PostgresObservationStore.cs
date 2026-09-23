@@ -225,14 +225,15 @@ public sealed class PostgresObservationStore : IObservationStore
 
             using (var merge = connection.CreateCommand())
             {
-                // Not the pool's 30 s. After a store outage the queue hands
-                // back its whole backlog (up to its budget, ~260k rows) in one
-                // batch, and merging that into a sample table of tens of
-                // millions of rows takes longer than 30 s. A timed-out merge
-                // rolls back and the next attempt is bigger, so a 30 s limit
-                // turned one slow minute into a permanent inability to store
-                // (23 September 2026: 40 minutes of one vCenter's samples held
-                // back until this was raised).
+                // Not the pool's 30 s: a ceiling, not the expected time. The
+                // store queue writes a backlog in bounded chunks (F5b,
+                // StoreQueueLimits.MaxRowsPerWrite), measured at about a second
+                // each on tens of millions of rows. Before that it handed back
+                // its whole backlog (~260k rows) in one statement, which took
+                // longer than 30 s, rolled back, and came back bigger
+                // (23 September 2026: one vCenter's samples held back for 55
+                // minutes). Kept so a slow minute on the database is waited
+                // out rather than turned into a retry.
                 merge.CommandTimeout = 300;
                 merge.CommandText = """
                     WITH added AS (
