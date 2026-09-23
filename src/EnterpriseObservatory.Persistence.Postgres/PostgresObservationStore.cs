@@ -79,16 +79,21 @@ public sealed class PostgresObservationStore : IObservationStore
     private readonly ConcurrentDictionary<SeriesKey, long> _seriesIds = new();
 
     /// <summary>The default for <see cref="BucketsPerSlice"/>.</summary>
-    public const int DefaultBucketsPerSlice = 12;
+    // Six, halved from twelve on 23 September 2026: the per-slice log line
+    // (EventId 1060) measured five-minute slices of 17.5, 25.7 and 18.1 s on
+    // the Kibar estate, against the thirty-second timeout, and four
+    // consecutive sweeps failed on it. Half the buckets, half the rows under
+    // the watermark lock; the lock's timeout stays thirty seconds.
+    public const int DefaultBucketsPerSlice = 6;
 
     /// <summary>
     /// The most buckets of one tier a single fold transaction rebuilds.
     /// </summary>
     /// <remarks>
-    /// Twelve: an hour of raw samples for the five-minute tier, twelve hours of
-    /// five-minute buckets for the hourly one — each about 1.5 million source
-    /// rows on the measured estate, seconds of work, against an append that
-    /// waits at most one slice with a thirty-second timeout. See
+    /// Six: half an hour of raw samples for the five-minute tier, six hours of
+    /// five-minute buckets for the hourly one. Twelve (about 1.5 million source
+    /// rows) measured 17–26 s per slice on the live estate, too close to the
+    /// thirty-second timeout an append waits at most one slice for. See
     /// <see cref="Fold"/>.
     /// </remarks>
     public int BucketsPerSlice
