@@ -106,6 +106,34 @@ logical_drives[].drive_sets[].physical_drives[]}`; fiziksel sürücüde
 Kibar için beklenen S4 alarm sayısı: 0. 26 host'luk sıralı okuma 19,6 s —
 her 120 s turunda değil, yavaş kademede ya da paralel okunmalı.
 
+### Yedek listesi sayfalaması (`GET /api/backups`), 24 Eylül 2026
+
+`RedfishProbe --kind simplivity --from-store KibarHolding-KBSVT --backup-paging`
+(salt-okunur; yalnız sayılar). Belirti: `eo-cont.backup-freshness` her
+envanter turunda aynı büyüklükte gruplarla Passing→Failing, 1–2 dk sonra
+geri (18:55–21:53Z; tur 60→120 s olunca periyot da ~1→~2 dk). Koleksiyoncunun
+sayfalamasıyla (500'lük `limit`/`offset`, `count`'a kadar) beş okuma, art arda:
+
+| Okuma | Satır | Farklı id | Sıra bozulması | Sınırda eşit `created_at` | En yenisi eski VM |
+|---|---|---|---|---|---|
+| A, B koleksiyoncu (sırasız) | 1481 | B: 1433 | — | — | A↔B: 30 VM farklı |
+| D `state=PROTECTED` (sırasız) | 1477 | 1447 | — | — | 30 |
+| C `sort=created_at&order=ascending` | 1481 | 1481 | 0 | 513 (04:00) | 0 |
+| E asc + `state=PROTECTED` | — | — | — | — | 1 |
+
+Okumalar sırasında oluşturulan yedek: 0 — kayıp liste değişiminden değil,
+**varsayılan sıranın istekler arasında kararsız** olmasından. Sıralı okuma da
+tam sıra değil (`created_at` eşitleri, E'de 1 VM). En büyük sayfa: `limit=1000`
+→ 1000 satır 1,7 s; `limit=2000` → 1481 (tümü) 1,9 s; `limit=5000` → HTTP 400.
+Canlı kanıt: en çok çırpınan VM'in en yeni yedeği 2026-09-23 04:00 (17 sa,
+Passing) ↔ 2026-09-22 04:00 (41 sa, Failing) arasında gidip geliyor.
+
+**Karar (fix/backup-freshness-flap):** `PageLimit = 2000` sabit (Kibar'ın
+1481 yedeği tek sayfa, sayfa sınırı yok); her liste id ile tekilleştirilir;
+2000'i aşan yedek listesi `sort=created_at&order=ascending` ve 50 satır
+örtüşen sayfalarla okunur; tekil id < `count` → kısmi okuma: o tur yedek
+tarihi gönderilmez, `SimpliVity backups` hatası sayılarıyla bildirilir.
+
 ## İlk soru (canlıda henüz cevapsız)
 
 23 Eylül'de ölçülen: olay akışında `com.simplivity.event.*` **0** (bkz.

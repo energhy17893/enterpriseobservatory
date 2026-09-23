@@ -59,8 +59,28 @@ public sealed class SimplivityInventorySource(
     /// <summary>The annotation namespace (ADR-0027).</summary>
     public const string Namespace = "simplivity";
 
-    /// <summary>The largest page the API serves (measured, API 1.28).</summary>
-    public const int PageLimit = 500;
+    /// <summary>The page size asked for; fixed, never probed at runtime.</summary>
+    /// <remarks>
+    /// Measured on Kibar (24 September 2026, RedfishProbe --backup-paging):
+    /// limit=2000 answered all 1481 backups in 1.9 s, limit=5000 was refused
+    /// with HTTP 400. 500 is only the default when no limit is sent.
+    /// </remarks>
+    public const int PageLimit = 2000;
+
+    /// <summary>Rows each backup page repeats of the one before it.</summary>
+    /// <remarks>
+    /// created_at is not a total order (513 backups shared 04:00 on Kibar),
+    /// so a tie cut by a page boundary may come back in another order on the
+    /// next page. Overlapping pages, de-duplicated by id, cover a tie up to
+    /// this size; a larger one shows as distinct &lt; count, a partial read.
+    /// </remarks>
+    public const int PageOverlap = 50;
+
+    /// <summary>
+    /// The order backups are paged in: oldest first, so a backup created
+    /// mid-read lands on the last page instead of shifting every page.
+    /// </summary>
+    private const string BackupOrder = "&sort=created_at&order=ascending";
 
     private readonly SimplivitySessionChannel _channel = channel ?? throw new ArgumentNullException(nameof(channel));
     private readonly ISimplivityFoldingDirectory _directory = directory ?? throw new ArgumentNullException(nameof(directory));
@@ -70,18 +90,35 @@ public sealed class SimplivityInventorySource(
 
     public async Task<InventorySnapshot> ReadAsync(CancellationToken cancellationToken)
     {
-        var hosts = await ReadAllAsync("hosts", cancellationToken).ConfigureAwait(false);
-        var clusters = await ReadAllAsync("omnistack_clusters", cancellationToken).ConfigureAwait(false);
-        var vms = await ReadAllAsync("virtual_machines", cancellationToken).ConfigureAwait(false);
-        var backups = await ReadAllAsync("backups", cancellationToken).ConfigureAwait(false);
+        var (hosts, _) = await ReadAllAsync("hosts", cancellationToken).ConfigureAwait(false);
+        var (clusters, _) = await ReadAllAsync("omnistack_clusters", cancellationToken).ConfigureAwait(false);
+        var (vms, _) = await ReadAllAsync("virtual_machines", cancellationToken).ConfigureAwait(false);
+        var (backups, counted) = await ReadAllAsync("backups", cancellationToken, BackupOrder).ConfigureAwait(false);
 
         var read = new Read(this);
+
+        // Newest() is a maximum over the rows that arrived: one missing row can
+        // be a VM's newest backup, and an older one then reads as its last.
+        // A list short of its count sends no backup date at all this cycle.
+        var backupsComplete = counted is not { } total || backups.Count >= total;
+
+        if (!backupsComplete)
+        {
+            read.Failures.Add(new CollectionFailure
+            {
+                Kind = CollectionFailureKind.ProtocolError,
+                Target = "SimpliVity backups",
+                Detail = $"Partial read: {backups.Count} distinct of {counted} backups counted, after sorted, " +
+                         "overlapping pages. No backup date is sent this cycle rather than one judged on a partial list.",
+            });
+        }
+
         var folded = read.Hosts(hosts);
         var hardware = await ReadHardwareAsync(folded, cancellationToken).ConfigureAwait(false);
         read.Hardware(folded, hardware.Replies, hardware.Failures);
         read.Clusters(clusters, hosts);
         var now = _clock.UtcNow;
-        read.VirtualMachines(vms, Newest(backups));
+        read.VirtualMachines(vms, backupsComplete ? Newest(backups) : []);
 
         return new InventorySnapshot
         {
@@ -108,19 +145,35 @@ public sealed class SimplivityInventorySource(
     /// </para>
     /// <para>
     /// A reply without the collection's array is a failure, never an empty
-    /// estate. ponytail: offset paging over a list that changes mid-read may
-    /// skip or repeat a row; rows are keyed by id downstream, so a repeat is
-    /// harmless and a skip is back next cycle.
+    /// estate.
+    /// </para>
+    /// <para>
+    /// A skipped row is not harmless. The OVC's default order is unstable
+    /// between requests (Kibar, 24 September 2026: 1481 backups read as 1433
+    /// distinct over three 500-row pages, 30 VMs' newest backup different
+    /// between two back-to-back reads), and a value derived over the rows —
+    /// Newest() — silently becomes an older backup when the newest row is the
+    /// one skipped: backup freshness flapped Passing/Failing every cycle. So
+    /// every list is de-duplicated by id, one page covers Kibar's lists, and
+    /// a list beyond one page is read in <paramref name="order"/> with
+    /// <see cref="PageOverlap"/> rows repeated across each boundary. The
+    /// caller compares the distinct rows with the returned count.
+    /// ponytail: hosts and VMs past 2000 still page in the default order, with
+    /// no overlap; dedupe covers repeats, not skips. Sort them too if an
+    /// estate that large appears.
     /// </para>
     /// </remarks>
-    private async Task<List<JsonElement>> ReadAllAsync(string collection, CancellationToken cancellationToken)
+    private async Task<(List<JsonElement> Rows, int? Count)> ReadAllAsync(
+        string collection, CancellationToken cancellationToken, string? order = null)
     {
         var items = new List<JsonElement>();
+        var ids = new HashSet<string>(StringComparer.Ordinal);
 
         for (var offset = 0; ;)
         {
             var path = string.Create(
-                CultureInfo.InvariantCulture, $"/api/{collection}?show_optional_fields=true&limit={PageLimit}&offset={offset}");
+                CultureInfo.InvariantCulture,
+                $"/api/{collection}?show_optional_fields=true{order}&limit={PageLimit}&offset={offset}");
 
             using var document = await _channel.GetAsync(path, cancellationToken).ConfigureAwait(false);
             var root = document.RootElement;
@@ -141,17 +194,19 @@ public sealed class SimplivityInventorySource(
                     CollectionFailureKind.ProtocolError, $"GET {path} answered a '{collection}' row that is not an object.");
             }
 
-            items.AddRange(page.EnumerateArray().Select(e => e.Clone()));
+            items.AddRange(page.EnumerateArray()
+                .Where(e => Text(e, "id") is not { } id || ids.Add(id))
+                .Select(e => e.Clone()));
 
             var rows = page.GetArrayLength();
-            offset += rows;
-
             int? count = root.TryGetProperty("count", out var c) && c.TryGetInt32(out var n) ? n : null;
 
-            if (rows == 0 || (count is { } total ? offset >= total : rows < PageLimit))
+            if (rows == 0 || (count is { } total ? offset + rows >= total : rows < PageLimit))
             {
-                return items;
+                return (items, count);
             }
+
+            offset += order is not null && rows > PageOverlap ? rows - PageOverlap : rows;
         }
     }
 

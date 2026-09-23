@@ -10,7 +10,7 @@ namespace EnterpriseObservatory.RedfishProbe;
 /// </summary>
 /// <remarks>
 /// Measures the backup-freshness flap (24 September 2026): the collector
-/// (SimplivityInventorySource.ReadAllAsync) pages <c>limit=500&amp;offset=</c>
+/// (SimplivityInventorySource.ReadAllAsync) paged <c>limit=500&amp;offset=</c> at the time
 /// until <c>count</c>, and Newest() keeps the newest PROTECTED row per VM from
 /// whatever rows arrived. Reads the collector's exact query twice, then the
 /// two candidate fixes, and compares each read's newest-per-VM with the
