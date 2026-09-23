@@ -113,16 +113,30 @@ public class ReadBudgetTests
     /// inline within <c>Advance</c> — so the loop below also yields real
     /// (negligible) time between steps to let it land. That yield decides
     /// nothing about the test's outcome, only how promptly this loop notices
-    /// a virtual-time transition has already happened; the loop is bounded
-    /// generously so it cannot hang.
+    /// a virtual-time transition has already happened.
+    /// </para>
+    /// <para>
+    /// The loop used to bound itself by a real wall-clock deadline
+    /// (<c>Environment.TickCount64 + 10_000</c>), which put the one piece of
+    /// real elapsed time back in charge of a supposedly all-virtual test: on a
+    /// loaded machine, each iteration's yield can itself take longer than
+    /// planned, and enough of them running slow was measured to blow through
+    /// ten real seconds despite needing only a couple of seconds of virtual
+    /// time. Bounding by iteration count instead means how long each yield
+    /// actually takes cannot decide pass or fail — only whether the pipeline's
+    /// own virtual-time logic completed within that many advances, which is
+    /// what this loop exists to check. <see cref="MaxIterations"/> is sized
+    /// with room to spare: every test using this helper needs at most a few
+    /// dozen virtual seconds, and this allows a hundred times that.
     /// </para>
     /// </remarks>
+    private const int MaxIterations = 5_000;
+
     private static async Task<T> RunToCompletionAsync<T>(FakeTimeProvider time, Func<Task<T>> start, TimeSpan step)
     {
         var task = start();
-        var deadline = Environment.TickCount64 + 10_000;
 
-        while (!task.IsCompleted && Environment.TickCount64 < deadline)
+        for (var i = 0; !task.IsCompleted && i < MaxIterations; i++)
         {
             time.Advance(step);
             await Task.Delay(1).ConfigureAwait(false);
