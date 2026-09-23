@@ -27,6 +27,9 @@ public sealed record VsphereInventoryPayload
     /// <summary>The vCenter's own name, for the management-plane entity.</summary>
     public required string VCenterName { get; init; }
 
+    /// <summary>The vCenter's <c>about.instanceUuid</c>; empty when not sent.</summary>
+    public string VCenterInstanceUuid { get; init; } = string.Empty;
+
     /// <summary>
     /// The vCenter's own verdicts, keyed by <see cref="InventoryVerdicts"/>:
     /// today its endpoint certificate's expiry and fingerprint (M8.7), read by

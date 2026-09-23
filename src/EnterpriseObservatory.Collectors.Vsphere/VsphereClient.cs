@@ -808,6 +808,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             var payload = new VsphereInventoryPayload
             {
                 VCenterName = string.IsNullOrWhiteSpace(content.Name) ? InstanceId : content.Name,
+                VCenterInstanceUuid = content.InstanceUuid,
                 VCenterVerdicts = vCenterVerdicts,
                 RootFolderMoRef = content.RootFolder,
                 Hosts = [.. objects.Where(o => o.Type == "HostSystem").Select(ToHost)],

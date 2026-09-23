@@ -63,6 +63,13 @@ public sealed record VsphereServiceContent
 
     /// <summary>The vCenter's own name, for the management-plane entity.</summary>
     public string Name { get; init; } = string.Empty;
+
+    /// <summary>
+    /// <c>about.instanceUuid</c>: the vCenter's own identity. SimpliVity names
+    /// a host as <c>&lt;instanceUuid&gt;:HostSystem:host-N</c>, so this is what
+    /// joins its hosts to ours. Empty when the server did not send it.
+    /// </summary>
+    public string InstanceUuid { get; init; } = string.Empty;
 }
 
 /// <summary>Reads a <c>RetrieveServiceContent</c> response.</summary>
@@ -122,6 +129,7 @@ public static class VsphereServiceContentParser
             CustomFieldsManager = Child(returnVal, "customFieldsManager"),
             ApiVersion = about is null ? string.Empty : Child(about, "apiVersion") ?? string.Empty,
             Name = about is null ? string.Empty : Child(about, "name") ?? string.Empty,
+            InstanceUuid = about is null ? string.Empty : Child(about, "instanceUuid") ?? string.Empty,
         };
     }
 
