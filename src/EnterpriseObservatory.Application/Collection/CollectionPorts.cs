@@ -621,19 +621,35 @@ public sealed record CollectorHealth
     public long TotalFailures { get; init; }
 
     /// <summary>
-    /// Whether the last attempt is healthy, in Prometheus's sense of <c>up</c>:
-    /// false when the source could not be reached <em>and</em> false when it
-    /// answered but something could not be read or kept — not only when
-    /// nothing answered at all.
+    /// Whether the last attempt is healthy, in Prometheus's exact sense of
+    /// <c>up</c>: the scrape <em>succeeded</em> — the source answered, and the
+    /// reply was parsed and kept.
     /// </summary>
     /// <remarks>
-    /// Deliberately not "did we get a response". Prometheus's own scraper sets
-    /// <c>up = 0</c> when the scrape succeeded but parsing or storing it failed
-    /// (§10.6, <c>scrape.go</c>): a reply the product could not use is exactly
-    /// as unhelpful as no reply. <see cref="HealthState.Warning"/> is this
-    /// product's name for that same case — something was read but not
-    /// everything — so <c>Up</c> is true for <see cref="HealthState.Healthy"/>
-    /// only.
+    /// <para>
+    /// False on: no answer at all, a fault the source itself says will not
+    /// clear (<see cref="LastFailureKind"/> set), a timeout or an abandoned
+    /// read, a reply that could not be parsed, or bookkeeping the read
+    /// depended on (the gap record, the store queue) refusing to write.
+    /// </para>
+    /// <para>
+    /// True for a complete read that carries only <em>per-item</em> partial
+    /// failures the estate itself explains — <see cref="CollectionFailureKind.NotConfigured"/>
+    /// (a feature this platform simply is not configured for) and
+    /// <see cref="CollectionFailureKind.InsufficientDetailLevel"/> (the
+    /// statistics level is too low). Those are environment conditions, not a
+    /// failed scrape, and are already visible through
+    /// <see cref="ItemsUnread"/> and <see cref="PartialFailures"/> — a
+    /// datastore whose latency counter Storage I/O Control has switched off
+    /// estate-wide must not turn <c>up</c> false forever on an otherwise
+    /// healthy vCenter. Deliberately not tied to
+    /// <see cref="HealthState.Warning"/>: that rollup already conflates the
+    /// two cases this field exists to separate.
+    /// </para>
+    /// <para>
+    /// Set explicitly by <see cref="SourceRunner"/> from the attempt's own
+    /// outcome, not derived from <see cref="Health"/>.
+    /// </para>
     /// </remarks>
-    public bool Up => Health == HealthState.Healthy;
+    public bool Up { get; init; }
 }

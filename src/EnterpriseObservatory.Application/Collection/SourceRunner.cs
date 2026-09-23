@@ -501,6 +501,13 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             SessionsHeld = extras.SessionsHeld,
             ClockSkewSeconds = extras.ClockSkewSeconds,
             TotalAttempts = prior.TotalAttempts + 1,
+
+            // Prometheus's up, not Health: a read that reached every item and
+            // kept everything is up even while it names failures, as long as
+            // every one of them is an environment condition (the estate is
+            // not configured for it) rather than something that stopped the
+            // scrape from succeeding. See CollectorHealth.Up's remarks.
+            Up = failures.All(f => IsEnvironmentCondition(f.Kind)),
         };
 
     private static CollectorHealth Failed(
@@ -537,6 +544,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             ClockSkewSeconds = null,
             TotalAttempts = prior.TotalAttempts + 1,
             TotalFailures = prior.TotalFailures + 1,
+            Up = false,
         };
 
     /// <summary>A failure the source itself says will not clear by retrying.</summary>
@@ -566,7 +574,17 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             ClockSkewSeconds = null,
             TotalAttempts = prior.TotalAttempts + 1,
             TotalFailures = prior.TotalFailures + 1,
+            Up = false,
         };
+
+    /// <summary>
+    /// Whether a failure of this kind describes the estate rather than a
+    /// failed scrape (§10.6): the platform answered, and answered honestly,
+    /// that it is simply not configured to give this — never a reason
+    /// <see cref="CollectorHealth.Up"/> should read false.
+    /// </summary>
+    private static bool IsEnvironmentCondition(CollectionFailureKind kind) =>
+        kind is CollectionFailureKind.NotConfigured or CollectionFailureKind.InsufficientDetailLevel;
 
     /// <summary>Appends a duration to the last-32 ring (§10.6, Datadog's check <c>Stats</c>).</summary>
     private static IReadOnlyList<TimeSpan> Ring(IReadOnlyList<TimeSpan> prior, TimeSpan next)
