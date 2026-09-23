@@ -1,4 +1,5 @@
 import type {
+  AlertGroupView,
   AlertView,
   CollectorView,
   CoverageView,
@@ -214,6 +215,7 @@ export const api = {
   overview: () => get<OverviewView>('/api/overview'),
   selfMetrics: () => get<SelfMetricsView>('/api/metrics'),
   alerts: (query: AlertQuery = {}) => get<Page<AlertView>>('/api/alerts', query),
+  alertGroups: (query: AlertQuery = {}) => get<Page<AlertGroupView>>('/api/alerts/grouped', query),
   entities: (query: EntityQuery = {}) => get<Page<EntityView>>('/api/entities', query),
   entity: (id: string) => get<EntityDetailView>(`/api/entities/${encodeURIComponent(id)}`),
   collectors: () => get<CollectorView[]>('/api/collectors'),

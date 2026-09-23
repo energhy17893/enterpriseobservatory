@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
-import type { AlertSeverity, FindingState, HealthBasis, HealthState } from '@/api/types'
+import type { AlertSeverity, EntityKind, FindingState, HealthBasis, HealthState } from '@/api/types'
 
 /** The shadcn/ui class helper, kept so generated components drop in unchanged. */
 export function cn(...inputs: ClassValue[]) {
@@ -171,4 +171,36 @@ export const STALE_AFTER_MS = 120_000
 
 export function isStale(iso: string | null, now: number = Date.now()): boolean {
   return iso === null || now - Date.parse(iso) > STALE_AFTER_MS
+}
+
+/** The plural noun an entity kind reads as, e.g. "84 datastores" (A9). */
+const ENTITY_KIND_NOUN_PLURAL: Record<EntityKind, string> = {
+  Unknown: 'things',
+  VCenter: 'vCenters',
+  Cluster: 'clusters',
+  EsxiHost: 'hosts',
+  VirtualMachine: 'virtual machines',
+  Datastore: 'datastores',
+  ResourcePool: 'resource pools',
+  PhysicalServer: 'physical servers',
+  Bmc: 'BMCs',
+  HardwareComponent: 'hardware components',
+  HbaPort: 'HBA ports',
+  SanSwitch: 'SAN switches',
+  SanSwitchPort: 'SAN switch ports',
+  StorageArray: 'storage arrays',
+  ArrayPort: 'array ports',
+  Lun: 'LUNs',
+  ManagementAppliance: 'management appliances',
+  CollectorInstance: 'collector instances',
+}
+
+/**
+ * A group's count, worded for its header — "84 datastores" when every member
+ * is the same kind of entity, "84 alerts" otherwise (mixed kinds, or alerts
+ * with no entity at all).
+ */
+export function groupCountLabel(count: number, kind: EntityKind | null): string {
+  const noun = kind === null ? (count === 1 ? 'alert' : 'alerts') : ENTITY_KIND_NOUN_PLURAL[kind]
+  return `${count} ${noun}`
 }

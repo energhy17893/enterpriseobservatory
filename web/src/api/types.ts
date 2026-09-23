@@ -77,11 +77,30 @@ export interface AlertView {
   source: string
   entityId: string | null
   entityName: string | null
+  /** The entity's kind, for wording a group's count (A9), e.g. "84 datastores". */
+  entityKind: EntityKind | null
   isDerived: boolean
   /** Set when a maintenance window is suppressing notification, not the alert. */
   suppressedByWindowId: string | null
   firstSeenUtc: string
   lastSeenUtc: string
+}
+
+/**
+ * The inbox's default view (A9): alerts with the same rule and source folded
+ * into one row. A list concern only -- ADR-0021 keeps alert identity
+ * per-datastore; grouping never changes a fingerprint.
+ */
+export interface AlertGroupView {
+  key: string
+  title: string
+  /** The worst severity among the members. */
+  severity: AlertSeverity
+  /** Shared by every member, or null when they are not all the same kind (or have none). */
+  entityKind: EntityKind | null
+  count: number
+  /** Every member, worst first. Never a sample. */
+  alerts: AlertView[]
 }
 
 export interface EntityView {
