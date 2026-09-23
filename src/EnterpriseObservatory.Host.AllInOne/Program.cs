@@ -33,6 +33,12 @@ using Secret = EnterpriseObservatory.Application.Security.Secret;
 // See ADR-0001.
 var builder = WebApplication.CreateBuilder(args);
 
+// G-SVC: a real Windows service, with a log file that survives a restart.
+// Applied to this builder now, and again below when setup finishes and a
+// fresh one is created for the normal host -- each builder needs it, since
+// neither inherits the other's configuration. See HostServiceIntegration.
+HostServiceIntegration.Apply(builder);
+
 // First-run setup (G-DB). An installation with no database source at all — no
 // protected file beside the key ring, no Database:Password in configuration —
 // starts as a one-page setup host on loopback only instead of refusing to
@@ -49,6 +55,7 @@ if (DatabaseSource.SetupRequired(
     }
 
     builder = WebApplication.CreateBuilder(args);
+    HostServiceIntegration.Apply(builder);
 }
 
 var endpoints = builder.Configuration.GetSection("VCenters").Get<List<VsphereEndpointOptions>>() ?? [];

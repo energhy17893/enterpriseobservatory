@@ -249,6 +249,59 @@ Geliştirme ortamı ve yapılandırmayla kurulmuş sunucular **değişmeden** ç
 dotnet user-secrets --project src/EnterpriseObservatory.Host.AllInOne set "Database:Password" '...'
 ```
 
+### Windows servisi olarak kurulum (G-SVC)
+
+Bugün ürün WMI üzerinden başlatılan bir konsol süreci; bu, CTRL_CLOSE
+sinyaline (0xC000013A) açıktır — aynı makinedeki test PostgreSQL'i bu sinyal
+iki kez öldürdü. Ürün artık `Microsoft.Extensions.Hosting.WindowsServices` ile
+gerçek bir Windows servisi olarak kaydedilebilir; `UseWindowsService`,
+süreç Hizmet Denetim Yöneticisi (SCM) tarafından başlatılmadığı her yerde
+(geliştirme, `dotnet run`, testler) sessizce hiçbir şey yapmaz.
+
+**Servis kaydı ve kurtarma ayarı, yükseltilmiş bir kabukta, elle, bir kez
+yapılır.** Bu depodaki hiçbir kod bir servis oluşturmaz, başlatmaz, durdurmaz
+ya da sistem ayarı değiştirmez.
+
+```powershell
+sc create EnterpriseObservatory binPath= "C:\Program Files\EnterpriseObservatory\EnterpriseObservatory.Host.AllInOne.exe" start= auto
+sc failure EnterpriseObservatory reset= 86400 actions= restart/60000
+```
+
+`sc failure` satırı olmadan servis bir kere çöker ve orada kalır: SCM'ye "24
+saatlik pencerede sayıp, her çökmede 60 saniye sonra yeniden başlat" denir.
+
+Kayıt sonrası, aşağıdakiler **sizin** (ajanın değil) elle doğrulayacağınız
+kontroller:
+
+- `sc query EnterpriseObservatory` → `RUNNING`.
+- Süreç bir konsola bağlı değil (Görev Yöneticisi'nde "Servisler" sekmesinde,
+  konsol oturumu yok).
+- `logs\host-*.log` günlük olarak döner (aşağıda).
+- Süreci öldürün (Görev Yöneticisi'nden, `taskkill /F`) → SCM 60 saniye içinde
+  yeniden başlatır ve `/health` 200 döner.
+
+**Günlük dosyası.** Konsol günlüğü değişmedi (geliştirmede olduğu gibi
+kalıyor); servisin konsolu olmadığı için ayrıca kalıcı bir dosyaya da yazılır:
+
+    C:\ProgramData\EnterpriseObservatory\logs\host-.log
+
+Anahtar halkasıyla aynı ProgramData kökü — ADR-0020'nin nedeniyle aynı sebep:
+bir yükseltmeyi ve bir yeniden başlatmayı atlatması gereken şey, ikisinin de
+yazdığı yerde durmaz. Günlük tarihe göre döner (`host-20260923.log`), 14
+dosya saklanır. Yol `Logging:File:Path` ile geçersiz kılınabilir.
+
+**Test PostgreSQL'i (5433) için aynı reçete.** Aynı CTRL_CLOSE sorunu bu
+sunucuyu da vurdu; `pg_ctl register` ile o da bir servis olur:
+
+```powershell
+pg_ctl register -N postgresql-test-5433 -D C:\pgtest\data -S auto
+icacls C:\pgtest\data /grant "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)F"
+```
+
+`icacls` satırı gerekli: `pg_ctl register` varsayılan olarak NETWORK SERVICE
+hesabı altında çalışır, ve o hesabın veri dizinine yazma izni yoksa servis
+"RUNNING" görünüp hemen çöker.
+
 ### vCenter bağlantısı
 
 İki yol var ve ikisi de desteklenir.

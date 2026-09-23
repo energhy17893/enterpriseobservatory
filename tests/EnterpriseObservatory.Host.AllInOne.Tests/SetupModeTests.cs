@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using EnterpriseObservatory.Host.AllInOne.Configuration;
 using EnterpriseObservatory.Host.AllInOne.Setup;
 using EnterpriseObservatory.Persistence.Postgres;
 using Microsoft.AspNetCore.Builder;
@@ -387,6 +388,10 @@ internal sealed class SetupModeHost : WebApplicationFactory<Program>
     {
         builder.UseEnvironment("Testing");
         builder.UseSetting("Storage:KeyRingPath", KeyRing);
+        // The file log beside the key ring, not in C:\ProgramData: a test run
+        // must leave nothing on the machine it ran on.
+        builder.UseSetting(
+            HostServiceIntegration.PathSetting, Path.Combine(KeyRing, "logs", "host-.log"));
 
         // Explicitly empty, so nothing in the machine's environment can turn
         // this into a configured installation.

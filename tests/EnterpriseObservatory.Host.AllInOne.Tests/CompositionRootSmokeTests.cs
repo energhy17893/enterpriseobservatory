@@ -9,6 +9,7 @@ using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Application.Reporting;
 using EnterpriseObservatory.Application.Security;
 using EnterpriseObservatory.Host.AllInOne;
+using EnterpriseObservatory.Host.AllInOne.Configuration;
 using EnterpriseObservatory.Persistence.Postgres;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -1069,6 +1070,10 @@ internal sealed class ObservatoryHost : WebApplicationFactory<Program>
         // rightly does not treat as a settings file.
         builder.UseSetting("Database:Password", "smoke-test-no-database-is-reached");
         builder.UseSetting("Storage:KeyRingPath", _keyRing);
+        // The file log beside the key ring, not in C:\ProgramData: a test run
+        // must leave nothing on the machine it ran on.
+        builder.UseSetting(
+            HostServiceIntegration.PathSetting, Path.Combine(_keyRing, "logs", "host-.log"));
 
         builder.ConfigureTestServices(services =>
         {
