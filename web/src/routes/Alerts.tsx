@@ -65,6 +65,15 @@ export function Alerts() {
     setSelected(new Set())
   }
 
+  function clearFilters() {
+    const next = new URLSearchParams(params)
+    next.delete('severity')
+    next.delete('search')
+    next.delete('offset')
+    setParams(next, { replace: true })
+    setSelected(new Set())
+  }
+
   function setOffset(next: number) {
     const nextParams = new URLSearchParams(params)
     if (next <= 0) nextParams.delete('offset')
@@ -86,6 +95,13 @@ export function Alerts() {
 
   const visible = data?.items ?? []
   const allSelected = visible.length > 0 && visible.every((a) => selected.has(a.fingerprint))
+
+  // Shown when the result is empty: distinguishes "no alerts anywhere" from
+  // "no alerts match what's typed/selected" — see eo-ux §6, reference §11.8.
+  const activeFilters = [
+    severity && `Severity: ${severity}`,
+    search && `Search: "${search}"`,
+  ].filter((v): v is string => Boolean(v))
 
   return (
     <div className="space-y-4">
@@ -179,12 +195,29 @@ export function Alerts() {
       ) : isPending ? (
         <Loading what="alerts" />
       ) : data.items.length === 0 ? (
-        <Empty>
-          Nothing is currently firing.
-          <div className="mt-1">
-            That is not the same as everything being healthy — check the collectors.
-          </div>
-        </Empty>
+        activeFilters.length > 0 ? (
+          <Empty
+            action={
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="rounded-md border border-border px-3 py-1 text-xs text-foreground"
+              >
+                Clear filters
+              </button>
+            }
+          >
+            No alerts match this filter.
+            <div className="mt-1">{activeFilters.join(' · ')}</div>
+          </Empty>
+        ) : (
+          <Empty>
+            Nothing is currently firing.
+            <div className="mt-1">
+              That is not the same as everything being healthy — check the collectors.
+            </div>
+          </Empty>
+        )
       ) : (
         <ul className="space-y-2">
           {data.items.map((alert) => (
