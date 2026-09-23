@@ -354,6 +354,89 @@ public partial class ReadModelTests
         Assert.Equal(84, group.Alerts.Count);
     }
 
+    // --- open first (A4) and repeat count (A8) ------------------------------
+
+    [Fact]
+    public void Open_alerts_come_first_even_below_an_acknowledged_critical()
+    {
+        GivenAlerts(
+            Alert("acked", AlertSeverity.Critical) with { State = AlertLifecycleState.Acknowledged },
+            Alert("silenced", AlertSeverity.Critical) with { State = AlertLifecycleState.Silenced },
+            Alert("open", AlertSeverity.Warning));
+
+        var page = Model().Alerts();
+
+        Assert.Equal("open", page.Items[0].Title);
+        Assert.Equal(3, page.Items.Count);
+    }
+
+    [Fact]
+    public void Open_first_is_decided_over_the_whole_result_not_one_page()
+    {
+        // The reason it is server-side: page 1 of acknowledged criticals must
+        // not bury an open warning on page 2.
+        GivenAlerts(
+        [
+            .. Enumerable.Range(0, 3).Select(i =>
+                Alert($"acked{i}", AlertSeverity.Critical) with { State = AlertLifecycleState.Acknowledged }),
+            Alert("open", AlertSeverity.Warning),
+        ]);
+
+        Assert.Equal("open", Assert.Single(Model().Alerts(limit: 1).Items).Title);
+    }
+
+    [Fact]
+    public void A_group_with_an_open_member_comes_before_an_all_acknowledged_one()
+    {
+        GivenAlerts(
+            Alert("a1", AlertSeverity.Critical) with { RuleId = "r1", State = AlertLifecycleState.Acknowledged },
+            Alert("a2", AlertSeverity.Critical) with { RuleId = "r1", State = AlertLifecycleState.Silenced },
+            Alert("b1", AlertSeverity.Warning) with { RuleId = "r2", State = AlertLifecycleState.Acknowledged },
+            Alert("b2", AlertSeverity.Warning) with { RuleId = "r2" });
+
+        var groups = Model().AlertGroups().Items;
+
+        Assert.Equal(["r2|vc-1", "r1|vc-1"], groups.Select(g => g.Key));
+        // Inside the group too, the open member leads.
+        Assert.Equal("b2", groups[0].Alerts[0].Title);
+    }
+
+    [Fact]
+    public void The_repeat_count_is_the_number_of_lives_in_the_history()
+    {
+        var earlier = Alert("psu", AlertSeverity.Critical) with
+        {
+            FirstSeenUtc = T0.AddDays(-3),
+            State = AlertLifecycleState.Resolved,
+        };
+        GivenAlerts(earlier);
+        _alerts.Retire(earlier.Fingerprint);
+        GivenAlerts(Alert("psu", AlertSeverity.Critical), Alert("fan", AlertSeverity.Warning));
+
+        var byTitle = Model().Alerts().Items.ToDictionary(a => a.Title);
+
+        Assert.Equal(2, byTitle["psu"].RepeatCount);
+        Assert.Equal(1, byTitle["fan"].RepeatCount);
+    }
+
+    [Fact]
+    public void Repeat_counts_are_asked_once_per_page_not_once_per_alert()
+    {
+        GivenAlerts(
+        [
+            .. Enumerable.Range(0, 30).Select(i =>
+                Alert($"ds{i}", AlertSeverity.Warning) with { RuleId = $"r{i % 3}", Source = "vc-1" }),
+        ]);
+
+        var flat = Model().Alerts(limit: 20);
+        Assert.Equal(1, _alerts.EpisodeCountCalls);
+        Assert.All(flat.Items, a => Assert.Equal(1, a.RepeatCount));
+
+        var grouped = Model().AlertGroups();
+        Assert.Equal(2, _alerts.EpisodeCountCalls);
+        Assert.All(grouped.Items.SelectMany(g => g.Alerts), a => Assert.Equal(1, a.RepeatCount));
+    }
+
     // --- alert report (M5.1) -----------------------------------------------
 
     [Fact]
@@ -883,6 +966,21 @@ public partial class ReadModelTests
                     t.To == AlertLifecycleState.Resolved && t.From != AlertLifecycleState.Resolved &&
                     t.AtUtc >= fromUtc && t.AtUtc <= toUtc)),
         ];
+
+        /// <summary>How many times <see cref="EpisodeCounts"/> was asked: once per page, never per alert.</summary>
+        public int EpisodeCountCalls { get; private set; }
+
+        public IReadOnlyDictionary<AlertFingerprint, int> EpisodeCounts(IReadOnlyCollection<AlertFingerprint> fingerprints)
+        {
+            EpisodeCountCalls++;
+            var wanted = fingerprints.ToHashSet();
+            return _history
+                .Concat(_instances)
+                .DistinctBy(i => (i.Fingerprint, i.FirstSeenUtc))
+                .Where(i => wanted.Contains(i.Fingerprint))
+                .GroupBy(i => i.Fingerprint)
+                .ToDictionary(g => g.Key, g => g.Count());
+        }
 
         public int PruneHistory(DateTimeOffset olderThanUtc) =>
             throw new NotSupportedException("The read model never writes.");

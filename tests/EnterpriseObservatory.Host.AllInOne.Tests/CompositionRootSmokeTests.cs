@@ -267,7 +267,28 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Account("viewer", Role.Viewer);
         var client = await SignedIn(Client(), "viewer");
 
-        var response = await client.GetAsync("/api/vcenter-events");
+        var response = await client.GetAsync("/api/vcenter-events?search=esx&offset=50&limit=25");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // E2: paged and searched on the server, and the page says where it is.
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"total\":0", body, StringComparison.Ordinal);
+        Assert.Contains("\"offset\":50", body, StringComparison.Ordinal);
+        Assert.Contains("\"limit\":25", body, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/api/alerts")]
+    [InlineData("/api/alerts/grouped")]
+    public async Task A_viewer_can_read_the_inbox_both_ways(string path)
+    {
+        // A4/A8 moved ordering and the repeat count into these projections;
+        // proof the composed store answers the batched count without a 500.
+        Account("viewer", Role.Viewer);
+        var client = await SignedIn(Client(), "viewer");
+
+        var response = await client.GetAsync(path);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }

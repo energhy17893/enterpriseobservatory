@@ -90,7 +90,7 @@ public abstract class EventContractTests<TFixture>
                 (_cursors.GetValueOrDefault(sourceInstanceId) ?? new EventCursor { SourceInstanceId = sourceInstanceId })
                 with { LastAttemptUtc = attemptedAtUtc, LastFailure = detail };
 
-        public IReadOnlyList<SourceEvent> Recent(int limit, string? sourceInstanceId = null) => [];
+        public EventPage Recent(int offset, int limit, string? sourceInstanceId = null, string? search = null) => EventPage.Empty;
 
         public int Prune(DateTimeOffset createdBeforeUtc) => 0;
 

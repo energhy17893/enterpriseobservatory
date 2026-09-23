@@ -2474,6 +2474,9 @@ internal sealed class ScopeWatchingAlertStateStore(InMemoryAlertStateStore inner
     public IReadOnlyList<AlertInstance> ResolvedBetween(DateTimeOffset fromUtc, DateTimeOffset toUtc) =>
         inner.ResolvedBetween(fromUtc, toUtc);
 
+    public IReadOnlyDictionary<AlertFingerprint, int> EpisodeCounts(IReadOnlyCollection<AlertFingerprint> fingerprints) =>
+        inner.EpisodeCounts(fingerprints);
+
     public int PruneHistory(DateTimeOffset olderThanUtc) => inner.PruneHistory(olderThanUtc);
 }
 

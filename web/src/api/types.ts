@@ -84,6 +84,8 @@ export interface AlertView {
   suppressedByWindowId: string | null
   firstSeenUtc: string
   lastSeenUtc: string
+  /** Lives of this fingerprint in the kept history, this one included (A8); at least 1. */
+  repeatCount: number
 }
 
 /**
@@ -558,8 +560,11 @@ export interface EventStreamView {
 
 /** Recent vCenter events, with the state of the streams they came from. */
 export interface EventFeedView {
-  /** Newest first. */
+  /** Newest first; one page of `total` (E2: paged and searched on the server). */
   events: SourceEventView[]
+  total: number
+  offset: number
+  limit: number
   streams: EventStreamView[]
   retentionDays: number
 }

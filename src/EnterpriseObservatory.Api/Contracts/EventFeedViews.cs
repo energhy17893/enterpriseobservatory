@@ -6,6 +6,13 @@ public sealed record EventFeedView
     /// <summary>Newest first.</summary>
     public required IReadOnlyList<SourceEventView> Events { get; init; }
 
+    /// <summary>How many held events match the source and search, across every page.</summary>
+    public required int Total { get; init; }
+
+    public required int Offset { get; init; }
+
+    public required int Limit { get; init; }
+
     /// <summary>
     /// When each source's events were last read, and whether that worked.
     /// </summary>
