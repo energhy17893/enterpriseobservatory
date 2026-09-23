@@ -297,6 +297,8 @@ SimpliVity sayfası (S5) bu şeride kapalı; F/M6 ile dosya paylaşmaz.
 | U4 | **Wallboard** (ADR-0007 §6, ayrı görünüm) — U2 sonrası | yeni rota | tek ekranda estate durumu |
 | U5 | Posture ve SimpliVity sayfaları P3/S5 bitince aynı kritikten geçer | — | — |
 
+**Tema kuralı (Ertuğrul, 23 Eylül): mevcut arayüz `Classic` teması olarak kalır ve seçilebilir.** Tema = görsel katman: renk rampaları, boşluk ölçeği, tipografi, yoğunluk — `tokens.mjs`'te ikinci token seti (`observatory`), koyu/açık ikisi de her sette; kontrast kapısı her set için koşar (ADR-0008 §5). Yerleşim, navigasyon, sayfalama, boş durum satırı ve metin **tema değildir**, iki temada aynıdır (ADR-0007 tek model). Seçim izleyici başına (`localStorage`; hesap ayarı gerekirse sonra), varsayılan Classic; yeni set U2'nin görsel bulgularını alır.
+
 Kanıt kuralı: ikimiz de arayüze giriş yapmadığımız için görsel doğrulama
 Ertuğrul'un; PR gövdesi "neyi, neden, hangi ADR'ye göre" der, ekran görüntüsü
 istenmez ([[ui-verification-limit]]).
