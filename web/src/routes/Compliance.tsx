@@ -146,21 +146,25 @@ function CatalogueScorecard({ catalogue }: { catalogue: CatalogueScorecardView }
 }
 
 /**
- * P2: the posture scorecard's trailing-window delta, derived from
- * compliance_transition (ADR-0026's replay-from-the-log principle) --
- * entering failing (bad), leaving failing (good), entering not-evaluated
- * (a coverage gap, said plainly rather than folded into either sign).
+ * P2 (revised): the posture scorecard's trailing-window NET posture change,
+ * derived from compliance_transition (ADR-0026's replay-from-the-log
+ * principle). Worsened/improved compare only findings evaluated at both
+ * ends of the window, so a round trip through NotEvaluated -- e.g. a
+ * vCenter outage -- nets to zero rather than showing as a churn of
+ * findings both breaking and getting fixed. New and not-evaluated-now are
+ * their own counts, never folded into the +/- signs.
  */
 function Last7DaysLine({ last7Days }: { last7Days: CatalogueLast7DaysView }) {
-  const { failingIn, failingOut, notEvaluatedIn } = last7Days
+  const { worsened, improved, new: newCount, notEvaluatedNow } = last7Days
 
   return (
     <div className="text-xs text-muted-foreground">
       last 7 days:{' '}
-      <span className={failingIn > 0 ? 'text-status-warning-text' : undefined}>+{failingIn}</span>
+      <span className={worsened > 0 ? 'text-status-warning-text' : undefined}>+{worsened}</span>
       {' / '}
-      <span className={failingOut > 0 ? 'text-status-healthy-text' : undefined}>−{failingOut}</span> failing
-      {notEvaluatedIn > 0 && `, +${notEvaluatedIn} newly not evaluated`}
+      <span className={improved > 0 ? 'text-status-healthy-text' : undefined}>−{improved}</span>
+      {newCount > 0 && `, ${newCount} new`}
+      {notEvaluatedNow > 0 && `, ${notEvaluatedNow} not evaluated`}
     </div>
   )
 }
