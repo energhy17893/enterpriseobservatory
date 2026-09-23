@@ -261,6 +261,13 @@ public sealed record EntityDetailView
     /// state on a vSphere host. Empty when nothing annotates it.
     /// </summary>
     public IReadOnlyList<AnnotationView> Annotations { get; init; } = [];
+
+    /// <summary>
+    /// When the configuration tier last read this entity's heavy settings
+    /// (advanced settings, certificate, device list, snapshot layout), so a
+    /// screen can say "read 15 min ago". Null when none is carried.
+    /// </summary>
+    public DateTimeOffset? ConfigurationReadAtUtc { get; init; }
 }
 
 /// <summary>One annotated value on an entity another source owns (ADR-0027).</summary>

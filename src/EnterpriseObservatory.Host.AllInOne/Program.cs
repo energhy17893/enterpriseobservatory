@@ -102,7 +102,7 @@ var monitoringOptions = BuildMonitoringOptions(builder.Configuration, collection
 // value and bound to zero. Both turn MonitoringWorker's PeriodicTimer into a
 // busy loop against every configured vCenter. See MonitoringIntervalValidation.
 var intervalProblems = MonitoringIntervalValidation.Validate(
-    monitoringOptions.InventoryInterval, monitoringOptions.ObservationInterval);
+    monitoringOptions.InventoryInterval, monitoringOptions.ObservationInterval, monitoringOptions.ConfigurationInterval);
 
 if (intervalProblems.Count > 0)
 {
@@ -244,6 +244,7 @@ builder.Services.AddSingleton<EventCollectionPipeline>();
 builder.Services.AddSingleton<IAlertNotifier, LoggingAlertNotifier>();
 builder.Services.AddSingleton<InventoryCollectionPipeline>();
 builder.Services.AddSingleton<ObservationCollectionPipeline>();
+builder.Services.AddSingleton<ConfigurationCollectionPipeline>();
 
 // The bounded queue in front of the observation store (F5, ADR-0025 §6):
 // one per process, so what a failed write could not take waits for the next
@@ -491,7 +492,8 @@ builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegi
     {
         var log = provider.GetRequiredService<ILogger<VsphereSourceRegistry>>();
         HostLog.SimplivityRead(log, instance, annotations, alerts, foldFailures, notSafe, filled);
-    }));
+    },
+    monitoringOptions.ConfigurationInterval));
 
 builder.Services.AddHostedService<MonitoringWorker>();
 builder.Services.AddHostedService<CompactionWorker>();
@@ -628,6 +630,7 @@ static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration, Co
     {
         InventoryInterval = Seconds(section["InventoryIntervalSeconds"], defaults.InventoryInterval),
         ObservationInterval = Seconds(section["ObservationIntervalSeconds"], defaults.ObservationInterval),
+        ConfigurationInterval = Seconds(section["ConfigurationIntervalSeconds"], defaults.ConfigurationInterval),
         CompactionInterval = Seconds(section["CompactionIntervalSeconds"], defaults.CompactionInterval),
         EventReadDeadline = Seconds(section["EventReadDeadlineSeconds"], defaults.EventReadDeadline),
         Collection = collectionPolicy,

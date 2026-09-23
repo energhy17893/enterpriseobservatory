@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Monitoring;
 using EnterpriseObservatory.Host.AllInOne.Configuration;
 
 namespace EnterpriseObservatory.Host.AllInOne.Tests;
@@ -43,6 +44,26 @@ public class MonitoringIntervalValidationTests
 
         Assert.Contains("Monitoring:InventoryIntervalSeconds", problem, StringComparison.Ordinal);
         Assert.Contains("20", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_configuration_interval_default_and_its_floor_are_accepted()
+    {
+        Assert.Empty(MonitoringIntervalValidation.Validate(
+            TimeSpan.FromMinutes(2), AboveFloor, MonitoringOptions.Default.ConfigurationInterval));
+        Assert.Equal(TimeSpan.FromSeconds(900), MonitoringOptions.Default.ConfigurationInterval);
+        Assert.Empty(MonitoringIntervalValidation.Validate(
+            AboveFloor, AboveFloor, TimeSpan.FromSeconds(300)));
+    }
+
+    [Fact]
+    public void A_configuration_interval_below_five_minutes_is_refused_and_named()
+    {
+        var problem = Assert.Single(MonitoringIntervalValidation.Validate(
+            AboveFloor, AboveFloor, TimeSpan.FromSeconds(299)));
+
+        Assert.Contains("Monitoring:ConfigurationIntervalSeconds", problem, StringComparison.Ordinal);
+        Assert.Contains("300", problem, StringComparison.Ordinal);
     }
 
     [Fact]

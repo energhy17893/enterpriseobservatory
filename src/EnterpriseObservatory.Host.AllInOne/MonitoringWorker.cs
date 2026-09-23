@@ -14,6 +14,8 @@ namespace EnterpriseObservatory.Host.AllInOne;
 /// metrics are a time series with a new sample every interval. Running both at
 /// the metric rate re-reads an entire estate every thirty seconds; running both
 /// at the inventory rate makes the product blind between samples. See ADR-0005.
+/// A third loop reads the configuration tier (heavy, slowly changing
+/// properties) on its own, slower cadence.
 /// </para>
 /// <para>
 /// Neither loop may end. A cycle that throws is logged and the loop continues,
@@ -32,8 +34,12 @@ public sealed class MonitoringWorker(
     IObservationStore series,
     IOperationalMetricsStore selfMetrics,
     ISourceConnectionStore connections,
+    ConfigurationCollectionPipeline configuration,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
+    private readonly ConfigurationCollectionPipeline _configuration =
+        configuration ?? throw new ArgumentNullException(nameof(configuration));
+
     private readonly IAlertStateStore _alerts = alerts ?? throw new ArgumentNullException(nameof(alerts));
     private readonly IObservationStore _series = series ?? throw new ArgumentNullException(nameof(series));
 
@@ -61,6 +67,14 @@ public sealed class MonitoringWorker(
     /// </remarks>
     private bool _saidThereAreNoSources;
 
+    /// <summary>
+    /// Set once the first inventory cycle has ended, however it ended. The
+    /// first configuration pass waits for it: that cycle's fast read seeds the
+    /// carry with both tiers, so the pass then finds it fresh and asks
+    /// nothing, instead of racing it into a second ~41 MB read.
+    /// </summary>
+    private readonly TaskCompletionSource _firstInventory = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var inventory = RunLoopAsync(
@@ -68,68 +82,13 @@ public sealed class MonitoringWorker(
             _options.InventoryInterval,
             async token =>
             {
-                // Asked every cycle, not captured at startup: a vCenter added
-                // in the product has to be read without a restart.
-                var sources = _sources.Inventory;
-
-                NoteWhetherAnythingIsConfigured(sources.Count);
-
-                var result = await _cycle
-                    .RunInventoryAsync(sources, _options, token, DisabledInstanceIds())
-                    .ConfigureAwait(false);
-
-                HostLog.InventoryCycle(
-                    _logger, result.ActiveEntities, result.VanishedEntities, result.Visible.Count);
-
-                foreach (var count in result.AlertsBySource)
+                try
                 {
-                    HostLog.InventoryAlertsBySource(
-                        _logger, count.Source, count.InSnapshot, count.PassedToReconciler, count.HeldAfter);
+                    await RunInventoryPassAsync(token).ConfigureAwait(false);
                 }
-
-                _selfMetrics.RecordInventory(new CycleMetricsSnapshot
+                finally
                 {
-                    AtUtc = result.AtUtc,
-                    Duration = result.CycleDuration,
-                    TransitionsAppended = result.TransitionsAppended,
-                    AgeClampedToUnknown = result.AgeClampedToUnknown,
-                });
-
-                WarnAboutSilence(result);
-
-                EvaluateCompliance(result.ReportingSources);
-
-                // Same rhythm, after the inventory: the stream is read from a
-                // mark, so a five-minute cadence loses nothing, and the event
-                // collection never throws into this loop — a vCenter whose
-                // events cannot be read must not be logged as the inventory
-                // cycle failing. Bounded as a whole, not only per call: a read
-                // is many calls, and their timeouts add up to far more than
-                // one inventory interval. A source cut off keeps its mark.
-                //
-                // Only the vCenters whose inventory just answered are asked.
-                // The read now has its own breaker and its own collector_health
-                // row (F1, CollectorRole.Events): a rejected login backs off on
-                // its own count rather than riding inventory's, one strike
-                // rather than several consecutive failures before it stops
-                // asking. What is still borrowed from the inventory cycle is
-                // the verdict on which sources are worth asking at all — an
-                // events read is never attempted for a source inventory did
-                // not just hear from.
-                var events = await _events
-                    .RunAsync(_sources.Events, result.ReportingSources, _options.EventReadDeadline, token)
-                    .ConfigureAwait(false);
-
-                HostLog.EventCycle(_logger, events.Recorded, events.Pruned);
-
-                foreach (var (source, detail) in events.Failures)
-                {
-                    HostLog.EventsNotRead(_logger, source, detail);
-                }
-
-                if (events.Gaps.Count > 0)
-                {
-                    HostLog.EventGap(_logger, string.Join(", ", events.Gaps));
+                    _firstInventory.TrySetResult();
                 }
             },
             stoppingToken);
@@ -165,7 +124,107 @@ public sealed class MonitoringWorker(
             },
             stoppingToken);
 
-        await Task.WhenAll(inventory, observations).ConfigureAwait(false);
+        // The configuration tier (heavy, slowly changing properties) on its
+        // own cadence; what it reads reaches the graph with the next inventory
+        // cycle, which the source carries it into. A fast read with nothing
+        // carried asks for both tiers itself, so a restart leaves no "not
+        // read" window — and the first pass waits for that read, then finds
+        // the carry fresh and skips rather than read ~41 MB a second time.
+        var configuration = RunLoopAsync(
+            "configuration",
+            _options.ConfigurationInterval,
+            async token =>
+            {
+                await _firstInventory.Task.WaitAsync(token).ConfigureAwait(false);
+
+                var result = await _configuration
+                    .RunAsync(
+                        _sources.Configuration,
+                        _options.Collection.ForInterval(_options.ConfigurationInterval),
+                        token)
+                    .ConfigureAwait(false);
+
+                foreach (var (instance, read) in result.Reads)
+                {
+                    HostLog.ConfigurationRead(
+                        _logger,
+                        instance,
+                        read.ObjectsRead,
+                        (int)(read.BytesRead / 1024),
+                        read.Skipped ? "carry fresh, skipped" : read.Complete ? "complete" : "partial");
+                }
+            },
+            stoppingToken);
+
+        await Task.WhenAll(inventory, observations, configuration).ConfigureAwait(false);
+    }
+
+    /// <summary>One inventory pass: the cycle, its logs, compliance, then events.</summary>
+    private async Task RunInventoryPassAsync(CancellationToken token)
+    {
+        // Asked every cycle, not captured at startup: a vCenter added
+        // in the product has to be read without a restart.
+        var sources = _sources.Inventory;
+
+        NoteWhetherAnythingIsConfigured(sources.Count);
+
+        var result = await _cycle
+            .RunInventoryAsync(sources, _options, token, DisabledInstanceIds())
+            .ConfigureAwait(false);
+
+        HostLog.InventoryCycle(
+            _logger, result.ActiveEntities, result.VanishedEntities, result.Visible.Count);
+
+        foreach (var count in result.AlertsBySource)
+        {
+            HostLog.InventoryAlertsBySource(
+                _logger, count.Source, count.InSnapshot, count.PassedToReconciler, count.HeldAfter);
+        }
+
+        _selfMetrics.RecordInventory(new CycleMetricsSnapshot
+        {
+            AtUtc = result.AtUtc,
+            Duration = result.CycleDuration,
+            TransitionsAppended = result.TransitionsAppended,
+            AgeClampedToUnknown = result.AgeClampedToUnknown,
+        });
+
+        WarnAboutSilence(result);
+
+        EvaluateCompliance(result.ReportingSources);
+
+        // Same rhythm, after the inventory: the stream is read from a
+        // mark, so a five-minute cadence loses nothing, and the event
+        // collection never throws into this loop — a vCenter whose
+        // events cannot be read must not be logged as the inventory
+        // cycle failing. Bounded as a whole, not only per call: a read
+        // is many calls, and their timeouts add up to far more than
+        // one inventory interval. A source cut off keeps its mark.
+        //
+        // Only the vCenters whose inventory just answered are asked.
+        // The read now has its own breaker and its own collector_health
+        // row (F1, CollectorRole.Events): a rejected login backs off on
+        // its own count rather than riding inventory's, one strike
+        // rather than several consecutive failures before it stops
+        // asking. What is still borrowed from the inventory cycle is
+        // the verdict on which sources are worth asking at all — an
+        // events read is never attempted for a source inventory did
+        // not just hear from.
+        var events = await _events
+            .RunAsync(_sources.Events, result.ReportingSources, _options.EventReadDeadline, token)
+            .ConfigureAwait(false);
+
+        HostLog.EventCycle(_logger, events.Recorded, events.Pruned);
+
+        foreach (var (source, detail) in events.Failures)
+        {
+            HostLog.EventsNotRead(_logger, source, detail);
+        }
+
+        if (events.Gaps.Count > 0)
+        {
+            HostLog.EventGap(_logger, string.Join(", ", events.Gaps));
+        }
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Api.Contracts;
 using EnterpriseObservatory.Application.Analysis;
 using EnterpriseObservatory.Application.Collection;
@@ -1118,6 +1119,11 @@ public sealed class ReadModel(
             HaScorecard = entity.Kind == EntityKind.Cluster ? HaScorecard(entity) : null,
             ClusterFailover = entity.Kind == EntityKind.Cluster ? ClusterFailover(entity, graph) : null,
             Annotations = AnnotationsOf(graph, entity),
+            ConfigurationReadAtUtc =
+                entity.Settings.TryGetValue(InventoryVerdictKeys.ConfigurationReadAtUtc, out var readAt) &&
+                DateTimeOffset.TryParse(readAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
+                    ? at
+                    : null,
         };
     }
 

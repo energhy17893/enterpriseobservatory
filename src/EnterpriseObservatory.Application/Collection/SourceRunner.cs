@@ -681,6 +681,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectorRole.Inventory => "inventory",
         CollectorRole.Observation => "metrics",
         CollectorRole.Events => "events",
+        CollectorRole.Configuration => "configuration",
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown collector role."),
     };
 

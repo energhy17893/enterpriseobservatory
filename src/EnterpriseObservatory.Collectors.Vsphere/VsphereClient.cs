@@ -73,7 +73,8 @@ public sealed record VsphereAvailableMetric
 /// handling are the kind of thing that only a real server settles.
 /// </para>
 /// </remarks>
-public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, IVsphereEventApi, IVsphereChannelSelfMetrics
+public sealed partial class VsphereClient
+    : IVsphereApi, IVsphereInventoryApi, IVsphereConfigurationApi, IVsphereEventApi, IVsphereChannelSelfMetrics
 {
     /// <summary>Samples per series; see <see cref="VsphereSoapRequests.QueryPerf"/>.</summary>
     private const int MaxSample = 3;
@@ -119,6 +120,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// machine it runs on.
     /// </remarks>
     public TimeZoneInfo BackupTimeZone { get; init; } = TimeZoneInfo.Local;
+
+    /// <summary>The clock a configuration reading is dated by, and aged against.</summary>
+    public TimeProvider Time { get; init; } = TimeProvider.System;
+
+    /// <summary>The configuration tier's readings, carried into every inventory read.</summary>
+    private readonly ConfigurationCarry _configuration = new();
 
     // --- IVsphereApi ------------------------------------------------------
 
@@ -541,7 +548,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// failure this whole surface exists to prevent.
     /// </remarks>
     public static IReadOnlyList<string> RequestedProperties(string objectType) =>
-        InventoryProperties.TryGetValue(objectType, out var paths) ? paths : [];
+        InventoryPropertiesFor(objectType);
 
     /// <summary>
     /// Counts, per object type and property, how many objects answered.
@@ -552,8 +559,16 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// mapped into entities the question is unanswerable — an absent property
     /// and a property that mapped to a default look identical.
     /// </remarks>
+    /// <param name="objects">What the read returned.</param>
+    /// <param name="configurationRead">
+    /// The objects the configuration tier has read, or null to count every
+    /// path on every object. A configuration path is only asked of an object
+    /// that tier has reached: before its first read, "not asked yet" must not
+    /// read as "blind".
+    /// </param>
     public static IReadOnlyList<PropertyCoverage> MeasureCoverage(
-        IReadOnlyList<PropertyObject> objects)
+        IReadOnlyList<PropertyObject> objects,
+        IReadOnlySet<string>? configurationRead = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
 
@@ -572,14 +587,25 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 continue;
             }
 
-            coverage.AddRange(expected.Select(path => new PropertyCoverage
+            foreach (var path in expected)
             {
-                ObjectType = type,
-                Property = path,
-                Asked = ofType.Count,
-                Answered = ofType.Count(o => o.Values.ContainsKey(path) ||
-                                             o.Structures.ContainsKey(path)),
-            }));
+                List<PropertyObject> asked = configurationRead is not null && ConfigurationPropertiesFor(type).Contains(path)
+                    ? [.. ofType.Where(o => configurationRead.Contains(o.MoRef))]
+                    : ofType;
+
+                if (asked.Count == 0)
+                {
+                    continue;
+                }
+
+                coverage.Add(new PropertyCoverage
+                {
+                    ObjectType = type,
+                    Property = path,
+                    Asked = asked.Count,
+                    Answered = asked.Count(o => o.Values.ContainsKey(path) || o.Structures.ContainsKey(path)),
+                });
+            }
         }
 
         return coverage;
@@ -609,23 +635,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             // named by.
             "config.fileSystemVolume.mountInfo",
 
-            // The path table, and the second table that names its devices.
-            // multipathInfo says which routes reach which device and what
-            // state each is in; it names the device by an internal key, and
-            // scsiLun is read solely to turn that key into the NAA every other
-            // part of the product speaks. One without the other gives either
-            // path states nobody can attribute or names nothing points at.
+            // The path table. It names each device by an internal key; the
+            // table that turns that key into the NAA every other part of the
+            // product speaks, scsiLun, is read on the configuration tier and
+            // carried (see ConfigurationProperties). Path state is read here,
+            // every fast cycle, because a dead path is state, not setup.
             "config.storageDevice.multipathInfo",
-            "config.storageDevice.scsiLun",
-
-            // Every advanced setting the host has, which is over a thousand
-            // rows. Asking for the whole table and keeping a handful of it is
-            // deliberate: vSphere has no way to request individual advanced
-            // settings through the property collector, and the alternative —
-            // one QueryOptions round trip per setting per host — is a far
-            // worse trade than one property that arrives with the rest of the
-            // inventory. What is kept is decided in AdvancedSettingKeys.
-            "config.option",
 
             // Host hardening inputs for the compliance engine (roadmap M3.4),
             // carried rather than judged. Each is asked for whole because the
@@ -648,17 +663,10 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             // (docs/measurements/collection-pr1-shapes.md). Read in
             // InventoryVerdictParser.
             //
-            // vCenter's own verdicts: its configuration issues (an empty
-            // array on a healthy host) and the hardware sensors (749 on 10
-            // hosts, 343 KB).
+            // vCenter's own verdict: its configuration issues (an empty
+            // array on a healthy host). The hardware sensors and the
+            // certificate are on the configuration tier.
             InventoryVerdictParser.ConfigIssuePath,
-            InventoryVerdictParser.HealthSystemRuntimePath,
-
-            // M8.7: the ESXi certificate, whole, for its expiry. The
-            // certificate manager's certificateInfo would be smaller and is
-            // refused to the read-only role (NoPermission, measured); this is
-            // ~55 KB a host.
-            InventoryVerdictParser.CertificatePath,
 
             // Collection PR 2 (docs/measurements/collection-pr2-shapes.md):
             // the host's newest possible EVC mode, ~0.2 KB a host, so the EVC
@@ -687,20 +695,15 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             "config.cpuAllocation.limit",
             "config.memoryAllocation.limit",
 
-            // Snapshots: the tree for age, the file layout for size. Asked for
-            // as two sub-paths rather than as layoutEx whole, because the rest
-            // of that structure is per-file detail nothing here reads.
+            // Snapshots: the tree, for age, every fast cycle. Their size comes
+            // from layoutEx, on the configuration tier.
             "snapshot",
-            "layoutEx.file",
-            "layoutEx.disk",
 
             // Collection PR 1 (measured live, see the host list). The device
-            // list is the largest addition -- ~8 KB a machine -- and there is
-            // no narrower path to a CD drive's backing and connection (M8.4).
+            // list is on the configuration tier.
             InventoryVerdictParser.ConfigIssuePath,
             InventoryVerdictParser.ConnectionStatePath,
             InventoryVerdictParser.ConsolidationNeededPath,
-            InventoryVerdictParser.DevicePath,
 
             // M8.8 (docs/measurements/backup-freshness-shapes.md): the custom
             // attribute values, where a backup product leaves its last backup
@@ -756,7 +759,83 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         ],
     };
 
-    /// <summary>What is asked of one managed object type, for a test to check.</summary>
+    /// <summary>
+    /// The configuration tier: heavy properties read on their own, slower
+    /// cadence and carried into every fast read (<see cref="ConfigurationCarry"/>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Measured live (#173, KBVc01, 23 Sep 2026): these seven paths are ~41 MB
+    /// of a ~48 MB inventory read. They are setup, not state — an advanced
+    /// setting, a certificate or a device list changes when somebody changes
+    /// it — so they are read the way vROps reads properties and Telegraf reads
+    /// inventory: on a slower clock than the state beside them
+    /// (docs/reference-approaches.md §10.3).
+    /// </para>
+    /// <para>
+    /// Nothing here decides topology, relationships or whether an object has
+    /// vanished; those come from the fast read alone.
+    /// </para>
+    /// </remarks>
+    private static readonly Dictionary<string, IReadOnlyList<string>> ConfigurationProperties = new(StringComparer.Ordinal)
+    {
+        ["HostSystem"] =
+        [
+            // Every advanced setting the host has, over a thousand rows (202
+            // KB a host, measured). Asked for whole because vSphere cannot
+            // request individual advanced settings through the property
+            // collector; what is kept is decided in AdvancedSettings.
+            "config.option",
+
+            // Read solely to turn multipathInfo's device key into the NAA.
+            "config.storageDevice.scsiLun",
+
+            // M8.7: the ESXi certificate, whole, for its expiry. The
+            // certificate manager's certificateInfo would be smaller and is
+            // refused to the read-only role (NoPermission, measured).
+            InventoryVerdictParser.CertificatePath,
+
+            // The hardware sensors (749 on 10 hosts, 343 KB).
+            InventoryVerdictParser.HealthSystemRuntimePath,
+        ],
+        ["VirtualMachine"] =
+        [
+            // ~8 KB a machine, and no narrower path to a CD drive's backing
+            // and connection (M8.4) or the adapter types (P3a).
+            InventoryVerdictParser.DevicePath,
+
+            // Snapshot size: the file layout, and the disk chains that tell a
+            // delta disk from a base one. Two sub-paths rather than layoutEx
+            // whole, because the rest is per-file detail nothing reads.
+            "layoutEx.file",
+            "layoutEx.disk",
+        ],
+    };
+
+    /// <summary>Both tiers in one retrieval, for a fast read with nothing carried.</summary>
+    private static readonly Dictionary<string, IReadOnlyList<string>> BothTiers =
+        InventoryProperties.ToDictionary(
+            p => p.Key,
+            p => (IReadOnlyList<string>)[.. p.Value, .. ConfigurationPropertiesFor(p.Key)],
+            StringComparer.Ordinal);
+
+    /// <summary>
+    /// Only an object's configuration paths, so a seeding read carries none of
+    /// its fast values: a fast path absent next cycle (a deleted snapshot) must
+    /// not be filled in from the carry.
+    /// </summary>
+    private static PropertyObject OnlyConfiguration(PropertyObject o)
+    {
+        var paths = ConfigurationPropertiesFor(o.Type);
+
+        return o with
+        {
+            Values = o.Values.Where(v => paths.Contains(v.Key)).ToDictionary(StringComparer.Ordinal),
+            Structures = o.Structures.Where(s => paths.Contains(s.Key)).ToDictionary(StringComparer.Ordinal),
+        };
+    }
+
+    /// <summary>What is asked of one managed object type, by either tier, for a test to check.</summary>
     /// <remarks>
     /// Exposed because a forgotten property path is not an error. vCenter
     /// returns nothing for one it was never asked for, the reading is null
@@ -764,7 +843,15 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
     /// asking has to be assertable, not only the parsing.
     /// </remarks>
     public static IReadOnlyList<string> InventoryPropertiesFor(string managedObjectType) =>
+        [.. FastPropertiesFor(managedObjectType), .. ConfigurationPropertiesFor(managedObjectType)];
+
+    /// <summary>What the fast (topology and state) read asks of one type.</summary>
+    public static IReadOnlyList<string> FastPropertiesFor(string managedObjectType) =>
         InventoryProperties.TryGetValue(managedObjectType, out var paths) ? paths : [];
+
+    /// <summary>What the configuration tier asks of one type.</summary>
+    public static IReadOnlyList<string> ConfigurationPropertiesFor(string managedObjectType) =>
+        ConfigurationProperties.TryGetValue(managedObjectType, out var paths) ? paths : [];
 
     public async Task<VsphereInventoryPayload> RetrieveInventoryAsync(CancellationToken cancellationToken)
     {
@@ -777,8 +864,26 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
 
         try
         {
-            var (objects, pages) = await RetrieveAllPagesAsync(content, viewMoRef, scope, cancellationToken)
+            // Nothing carried yet — the first read after start, or the carry
+            // expired: this read asks for both tiers and seeds the carry, so
+            // no fast snapshot ever lacks the configuration keys and a restart
+            // leaves no "not read" window in the finding history.
+            var now = Time.GetUtcNow();
+            var seed = _configuration.IsEmpty(now);
+
+            var (fast, pages) = await RetrieveAllPagesAsync(
+                    content, viewMoRef, seed ? BothTiers : InventoryProperties, scope, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (seed)
+            {
+                _configuration.Store(fast.Where(o => ConfigurationProperties.ContainsKey(o.Type)).Select(OnlyConfiguration), now);
+            }
+
+            // The configuration tier's last reading, overlaid before anything
+            // is mapped, so every parser sees what it always saw (see
+            // ConfigurationCarry for why here and not on the graph).
+            var (objects, configurationReadAt) = _configuration.Overlay(fast, now);
 
             foreach (var missing in objects.SelectMany(o => o.Missing.Select(m => (o, m))))
             {
@@ -811,11 +916,18 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 VCenterInstanceUuid = content.InstanceUuid,
                 VCenterVerdicts = vCenterVerdicts,
                 RootFolderMoRef = content.RootFolder,
-                Hosts = [.. objects.Where(o => o.Type == "HostSystem").Select(ToHost)],
+                Hosts =
+                [
+                    .. objects.Where(o => o.Type == "HostSystem")
+                        .Select(o => ToHost(o) with { ConfigurationReadAtUtc = ReadAtOf(o) }),
+                ],
                 VirtualMachines =
                 [
                     .. objects.Where(o => o.Type == "VirtualMachine")
-                        .Select(o => WithBackup(ToVirtualMachine(o), o, backupFields)),
+                        .Select(o => WithBackup(ToVirtualMachine(o), o, backupFields) with
+                        {
+                            ConfigurationReadAtUtc = ReadAtOf(o),
+                        }),
                 ],
                 Clusters = [.. objects.Where(o => o.Type == "ClusterComputeResource").Select(ToCluster)],
                 Datastores =
@@ -825,9 +937,12 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 ],
                 TriggeredAlarms = alarms,
                 Failures = failures,
-                Coverage = MeasureCoverage(objects),
+                Coverage = MeasureCoverage(objects, configurationReadAt.Keys.ToHashSet(StringComparer.Ordinal)),
                 PagesRetrieved = pages,
             };
+
+            DateTimeOffset? ReadAtOf(PropertyObject o) =>
+                configurationReadAt.TryGetValue(o.MoRef, out var at) ? at : null;
 
             // Views are server-side resources with a session lifetime. Leaking
             // one per cycle would accumulate until the session is recycled.
@@ -843,6 +958,80 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
             await scope.DisposeAllAsync(CleanupGrace, cancellationToken).ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// <para>
+    /// Its own container view over the two types that have configuration
+    /// paths, walked page by page like the inventory. Each page is kept the
+    /// moment it arrives, so a read cut off by its budget (ADR-0005: partial
+    /// progress) has still refreshed what it reached; everything else keeps its
+    /// earlier reading and read time.
+    /// </para>
+    /// <para>
+    /// A read cut off before its first page kept nothing and throws, which the
+    /// runner counts as the failure it is.
+    /// </para>
+    /// </remarks>
+    public bool ConfigurationYoungerThan(TimeSpan age) =>
+        _configuration.Newest is { } newest && Time.GetUtcNow() - newest < age;
+
+    /// <inheritdoc/>
+    public async Task<VsphereConfigurationRead> RetrieveConfigurationAsync(CancellationToken cancellationToken)
+    {
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+        var scope = new ServerHandleScope();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var failures = new List<VsphereReadFailure>();
+        var bytes = 0L;
+        var complete = false;
+
+        try
+        {
+            var viewMoRef = await CreateViewAsync(content, [.. ConfigurationProperties.Keys], cancellationToken)
+                .ConfigureAwait(false);
+            scope.Register(new VsphereViewHandle(this, viewMoRef));
+
+            await RetrieveAllPagesAsync(
+                content, viewMoRef, ConfigurationProperties, scope, cancellationToken,
+                onReply: length => bytes += length,
+                onPage: page =>
+                {
+                    _configuration.Store(page, Time.GetUtcNow());
+
+                    foreach (var o in page)
+                    {
+                        seen.Add(o.MoRef);
+
+                        failures.AddRange(o.Missing.Select(m => new VsphereReadFailure
+                        {
+                            Target = $"{o.Type} {o.MoRef}: {m.Path}",
+                            Detail = m.FaultType.Length == 0 ? "unreadable" : m.FaultType,
+                            IsPermissionDenied = m.IsPermissionDenied,
+                        }));
+                    }
+                }).ConfigureAwait(false);
+
+            complete = true;
+            _configuration.KeepOnly(seen);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && seen.Count > 0)
+        {
+            // Partial: what was read is kept (above, per page).
+        }
+        finally
+        {
+            await scope.DisposeAllAsync(CleanupGrace, cancellationToken).ConfigureAwait(false);
+        }
+
+        return new VsphereConfigurationRead
+        {
+            Objects = seen.Count,
+            Bytes = bytes,
+            Complete = complete,
+            Failures = failures,
+        };
     }
 
     /// <summary>
@@ -1002,7 +1191,8 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
         IReadOnlyDictionary<string, IReadOnlyList<string>> properties,
         ServerHandleScope scope,
         CancellationToken cancellationToken,
-        Action<int>? onReply = null)
+        Action<int>? onReply = null,
+        Action<IReadOnlyList<PropertyObject>>? onPage = null)
     {
         var all = new List<PropertyObject>();
         var pages = 1;
@@ -1016,6 +1206,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
 
         var page = PropertyCollectorParser.ParsePage(response);
         all.AddRange(page.Objects);
+        onPage?.Invoke(page.Objects);
 
         // The token the server is still holding results against. Each page
         // replaces it, and the last page clears it.
@@ -1036,6 +1227,7 @@ public sealed partial class VsphereClient : IVsphereApi, IVsphereInventoryApi, I
                 page = PropertyCollectorParser.ParsePage(response);
                 open = page.ContinuationToken;
                 all.AddRange(page.Objects);
+                onPage?.Invoke(page.Objects);
                 pages++;
             }
         }

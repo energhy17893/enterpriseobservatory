@@ -27,6 +27,11 @@ namespace EnterpriseObservatory.Collectors.Vsphere;
 /// </remarks>
 public static class InventoryVerdicts
 {
+    /// <summary>
+    /// Host or VM: when the configuration tier read what this entity's
+    /// configuration keys say, ISO-8601 UTC. Absent when none is carried.
+    /// </summary>
+    public const string ConfigurationReadAtUtc = "configuration.readAtUtc";
     /// <summary>How many <c>configIssue</c> events vCenter holds; every type.</summary>
     public const string ConfigIssueCount = "configIssue.count";
 

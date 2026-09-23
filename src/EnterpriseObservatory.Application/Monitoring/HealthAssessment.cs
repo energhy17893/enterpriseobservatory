@@ -201,6 +201,7 @@ public static class HealthAssessment
             // vCenters that just answered — so its own collector_health row
             // is judged against that interval too.
             AssessRole(CollectorRole.Events, polled, monitoring.InventoryInterval, healthOptions, nowUtc),
+            AssessRole(CollectorRole.Configuration, polled, monitoring.ConfigurationInterval, healthOptions, nowUtc),
         };
 
         // No polled sources of a role reports that role Healthy (nothing to
