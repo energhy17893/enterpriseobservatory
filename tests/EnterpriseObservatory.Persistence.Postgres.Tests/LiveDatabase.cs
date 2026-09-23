@@ -31,6 +31,11 @@ namespace EnterpriseObservatory.Persistence.Postgres.Tests;
 /// $env:EO_TEST_PG_DATABASE = "observatory" # optional
 /// $env:EO_TEST_PG_USER     = "observatory" # optional
 /// $env:EO_TEST_PG_PASSWORD = "..."         # required, or the tests skip
+///
+/// # first-run setup's create path (ProvisioningTests): a role with CREATEDB
+/// # and CREATEROLE, not a superuser; absent, those tests skip and say so
+/// $env:EO_TEST_PG_ADMIN_USER     = "eo_test_admin"
+/// $env:EO_TEST_PG_ADMIN_PASSWORD = "..."
 /// </code>
 /// <para>
 /// The port is configurable because a developer machine may already have a

@@ -302,4 +302,71 @@ internal static partial class HostLog
                   "({ElapsedSeconds:0}s since the first try); retrying.")]
     public static partial void DatabaseNotReachableRetrying(
         ILogger logger, Exception exception, int attempt, double elapsedSeconds);
+
+    // --- first-run setup and the database card (G-DB) ----------------------
+    //
+    // None of these takes a credential, and none takes an exception: a driver
+    // exception's text is the driver's to change, and the sentences passed in
+    // here come from PostgresProvisioning.Explain, which has already checked
+    // them against every secret the request held.
+
+    [LoggerMessage(
+        EventId = 1040,
+        Level = LogLevel.Warning,
+        Message = "No database is configured: the service is in setup mode, on loopback only. Open " +
+                  "http://localhost:{Port}/setup in a browser on this machine.")]
+    public static partial void SetupModeStarting(ILogger logger, int port);
+
+    [LoggerMessage(
+        EventId = 1041,
+        Level = LogLevel.Information,
+        Message = "Setup is listening on {Addresses} and nowhere else.")]
+    public static partial void SetupListening(ILogger logger, string addresses);
+
+    [LoggerMessage(
+        EventId = 1042,
+        Level = LogLevel.Critical,
+        Message = "Setup found itself bound to a non-loopback address ({Addresses}) and is stopping. " +
+                  "The setup page accepts a database administrator's credential and must never face " +
+                  "the network.")]
+    public static partial void SetupExposed(ILogger logger, string addresses);
+
+    [LoggerMessage(
+        EventId = 1043,
+        Level = LogLevel.Warning,
+        Message = "Setup refused a request from {Remote}: setup is only available from this machine.")]
+    public static partial void SetupRefusedRemoteCaller(ILogger logger, string remote);
+
+    [LoggerMessage(
+        EventId = 1044,
+        Level = LogLevel.Warning,
+        Message = "Setup did not complete: {Detail}")]
+    public static partial void SetupFailed(ILogger logger, string detail);
+
+    [LoggerMessage(
+        EventId = 1045,
+        Level = LogLevel.Information,
+        Message = "Setup {Outcome} role {Role} and database {Database} on {Host}:{Port}; the connection is " +
+                  "saved, protected, in {File}. Switching to normal mode.")]
+    public static partial void SetupCompleted(
+        ILogger logger, string outcome, string role, string database, string host, int port, string file);
+
+    [LoggerMessage(
+        EventId = 1046,
+        Level = LogLevel.Information,
+        Message = "Database: {Username}@{Host}:{Port}/{Database}, from {Source}.")]
+    public static partial void DatabaseSourceChosen(
+        ILogger logger, string username, string host, int port, string database, string source);
+
+    [LoggerMessage(
+        EventId = 1047,
+        Level = LogLevel.Information,
+        Message = "The database password was rotated by {Actor}.")]
+    public static partial void DatabasePasswordRotated(ILogger logger, string actor);
+
+    [LoggerMessage(
+        EventId = 1048,
+        Level = LogLevel.Error,
+        Message = "Rotating the database password failed ({Actor}): {Detail}")]
+    public static partial void DatabasePasswordRotationFailed(ILogger logger, string actor, string detail);
 }

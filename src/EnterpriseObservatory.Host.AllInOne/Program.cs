@@ -16,6 +16,7 @@ using EnterpriseObservatory.Host.AllInOne.Configuration;
 using EnterpriseObservatory.Host.AllInOne.Mail;
 using EnterpriseObservatory.Host.AllInOne.Notifications;
 using EnterpriseObservatory.Host.AllInOne.Security;
+using EnterpriseObservatory.Host.AllInOne.Setup;
 using EnterpriseObservatory.Host.AllInOne.State;
 using EnterpriseObservatory.Persistence.Postgres;
 using Microsoft.AspNetCore.DataProtection;
@@ -31,6 +32,24 @@ using Secret = EnterpriseObservatory.Application.Security.Secret;
 // service plus a web host tomorrow without the application layer changing.
 // See ADR-0001.
 var builder = WebApplication.CreateBuilder(args);
+
+// First-run setup (G-DB). An installation with no database source at all — no
+// protected file beside the key ring, no Database:Password in configuration —
+// starts as a one-page setup host on loopback only instead of refusing to
+// start. When the page has created the database, that host stops and the
+// normal one below is composed from scratch in this same process, now reading
+// the file setup wrote. See FirstRunSetup and ADR-0010's addendum.
+if (DatabaseSource.SetupRequired(
+        DatabaseCredentialFile.PathFor(KeyRingPath(builder.Configuration)), builder.Configuration))
+{
+    if (!await FirstRunSetup.RunAsync(builder, KeyRingPath(builder.Configuration)))
+    {
+        // Stopped before setup finished: a service stop, or Ctrl+C.
+        return;
+    }
+
+    builder = WebApplication.CreateBuilder(args);
+}
 
 var endpoints = builder.Configuration.GetSection("VCenters").Get<List<VsphereEndpointOptions>>() ?? [];
 
@@ -96,7 +115,41 @@ builder.Services.AddSingleton<IClock, SystemClock>();
 // separation was about file mechanics — a churning metric history should not
 // be able to take alerting down with it — and a server has no shared file to
 // contend for. See ADR-0016.
-var database = BuildDatabaseOptions(builder.Configuration);
+//
+// Where the connection comes from, in a fixed order (G-DB): the protected file
+// setup wrote, beside the key ring; else Database:* from configuration, the
+// password from user secrets or the environment — exactly the path an
+// installation configured before setup existed keeps taking; else setup mode,
+// which was handled at the top of this file.
+//
+// The key ring is inspected here rather than further down, because reading
+// the protected file needs it. What is inspected and refused is unchanged.
+var keyRingLocation = KeyRingDurabilityGuard.Inspect(KeyRingPath(builder.Configuration));
+KeyRingDurabilityGuard.EnsureUsable(keyRingLocation);
+
+var databaseFilePath = DatabaseCredentialFile.PathFor(keyRingLocation.Path);
+ServiceProvider? standaloneKeyRing = null;
+
+var databaseSource = DatabaseSource.Resolve(
+    databaseFilePath,
+    () =>
+    {
+        standaloneKeyRing = KeyRing.Standalone(keyRingLocation.Path);
+
+        return new DatabaseCredentialFile(
+            databaseFilePath,
+            new DataProtectionSecretProtector(
+                standaloneKeyRing.GetRequiredService<IDataProtectionProvider>(),
+                DataProtectionSecretProtector.DatabasePasswordPurpose));
+    },
+    builder.Configuration);
+
+standaloneKeyRing?.Dispose();
+
+// Setup mode was taken at the top of this file, so reaching here without a
+// source means the password is simply absent — reported below exactly as it
+// always was.
+var database = databaseSource.Options ?? DatabaseSource.FromConfiguration(builder.Configuration);
 var databaseProblems = database.Validate();
 
 if (databaseProblems.Count > 0)
@@ -305,34 +358,32 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // are already gone. %TEMP% was a real setting on a real installation this
 // morning; Windows emptied it and one vCenter's password stopped existing. The
 // product reported that correctly and far too late. See ADR-0020.
-var keyRingLocation = KeyRingDurabilityGuard.Inspect(KeyRingPath(builder.Configuration));
+//
+// The inspection itself (KeyRingDurabilityGuard.Inspect and EnsureUsable) now
+// runs above, before the database source is resolved, because the protected
+// database file is read with this same key ring. The only refusal in that
+// guard is the same refusal the database makes: a key ring that cannot be
+// written is not a degraded product, it is one that cannot hold a credential.
+//
+// The key ring's definition lives in KeyRing.Add so that setup mode and the
+// read of the protected file use exactly this one.
+KeyRing.Add(builder.Services, keyRingLocation.Path);
 
-// The only refusal in this guard, and it is the same refusal the database makes
-// above: a key ring that cannot be written is not a degraded product, it is one
-// that cannot hold a credential at all.
-KeyRingDurabilityGuard.EnsureUsable(keyRingLocation);
-
-var keyRing = builder.Services.AddDataProtection()
-    .SetApplicationName("EnterpriseObservatory")
-    .PersistKeysToFileSystem(new DirectoryInfo(keyRingLocation.Path));
-
-if (OperatingSystem.IsWindows())
-{
-    // Machine scope rather than user scope, and the trade is worth stating.
-    //
-    // User scope is the stronger of the two, but it needs a loaded user
-    // profile, which a Windows service running as LocalSystem or a managed
-    // service account does not reliably have — and a key ring that silently
-    // fails to decrypt after an account change is an outage nobody can
-    // diagnose from the symptom.
-    //
-    // So: this protects the files leaving the machine, which is the realistic
-    // case (a backup, a copied folder, a restored VM). It does not protect
-    // against another administrator on this same machine. Said plainly in
-    // ADR-0015 rather than implied by the absence of a comment.
-    keyRing.ProtectKeysWithDpapi(protectToLocalMachine: true);
-}
-else
+// On Windows: machine scope rather than user scope (ProtectKeysWithDpapi with
+// protectToLocalMachine: true, inside KeyRing.Add), and the trade is worth
+// stating.
+//
+// User scope is the stronger of the two, but it needs a loaded user
+// profile, which a Windows service running as LocalSystem or a managed
+// service account does not reliably have — and a key ring that silently
+// fails to decrypt after an account change is an outage nobody can
+// diagnose from the symptom.
+//
+// So: this protects the files leaving the machine, which is the realistic
+// case (a backup, a copied folder, a restored VM). It does not protect
+// against another administrator on this same machine. Said plainly in
+// ADR-0015 rather than implied by the absence of a comment.
+if (!OperatingSystem.IsWindows())
 {
     // Not silently weaker. Without DPAPI the key ring is XML on disk, and the
     // encryption of the database is then only as good as the file permissions
@@ -342,6 +393,20 @@ else
 }
 
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+
+// The Database card (G-DB): what the service is connected to and where that
+// came from. The protected file is registered only when it is the source, so
+// rotation cannot write one over a configuration-sourced installation.
+builder.Services.AddSingleton(provider => new DatabaseConnectionState(
+    databaseSource.Kind,
+    database,
+    databaseSource.Kind is DatabaseSourceKind.ProtectedFile
+        ? new DatabaseCredentialFile(
+            databaseFilePath,
+            new DataProtectionSecretProtector(
+                provider.GetRequiredService<IDataProtectionProvider>(),
+                DataProtectionSecretProtector.DatabasePasswordPurpose))
+        : null));
 
 // Scheduled email reports (roadmap M5.4). IReportRenderer renders each
 // ReportKind by reusing the export that kind already has -- M5.1's CSV for
@@ -402,6 +467,7 @@ host.MapEmailApi();
 host.MapReportsApi();
 host.MapObservatoryApi();
 host.MapHealthApi();
+host.MapDatabaseApi();
 
 // The SPA's build output, when it has been built. Serving the interface from
 // the same origin as the API is what lets authentication stay a cookie rather
@@ -440,6 +506,18 @@ var startupLog = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger
 // signing in and re-typing passwords — neither is possible from a service that
 // will not boot, and the estate that is still monitorable goes on being
 // monitored in the meantime. The argument is set out in ADR-0020.
+// Which of the two sources won, so an installation that has both — a
+// protected file and a password in user secrets — says which one it is using.
+HostLog.DatabaseSourceChosen(
+    startupLog,
+    database.Username,
+    database.Host,
+    database.Port,
+    database.Database,
+    databaseSource.Kind is DatabaseSourceKind.ProtectedFile
+        ? "the protected file " + databaseFilePath
+        : "configuration");
+
 if (keyRingLocation.Risk is KeyRingRisk.Losable)
 {
     HostLog.KeyRingInLosableLocation(
@@ -497,38 +575,6 @@ foreach (var endpoint in endpoints)
 }
 
 await host.RunAsync();
-
-// A file beside the service, not a server. ADR-0001 requires an MSI that
-// installs without an appliance, and a database nobody has to provision is the
-// difference between a product an operator installs in a maintenance window and
-// one that needs a project. ProgramData rather than the install directory,
-// because data that survives an upgrade must not sit where the upgrade writes.
-static PostgresOptions BuildDatabaseOptions(IConfiguration configuration)
-{
-    var section = configuration.GetSection("Database");
-
-    return new PostgresOptions
-    {
-        Host = Text(section["Host"], "127.0.0.1"),
-        Port = int.TryParse(section["Port"], out var port) ? port : 5432,
-        Database = Text(section["Database"], "observatory"),
-        Username = Text(section["Username"], "observatory"),
-
-        // Bound through the ordinary configuration system so user secrets, an
-        // environment variable and a key vault all work with no special
-        // support — and then checked by CredentialSourceGuard, because the
-        // previous product's leak was a password sitting in a settings file.
-        Password = Secret.From(section["Password"]),
-
-        // Named so one server can hold a lab beside a production installation.
-        Schema = Text(section["Schema"], "public"),
-
-        RequireTls = bool.TryParse(section["RequireTls"], out var tls) && tls,
-    };
-
-    static string Text(string? value, string fallback) =>
-        string.IsNullOrWhiteSpace(value) ? fallback : value;
-}
 
 static MonitoringOptions BuildMonitoringOptions(IConfiguration configuration, CollectionPolicy collectionPolicy)
 {

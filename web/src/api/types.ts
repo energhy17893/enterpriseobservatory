@@ -1015,3 +1015,60 @@ export interface ReportSubscriptionCommand {
   kind: ReportKind
   isEnabled: boolean
 }
+
+// --- first-run setup and the Database card (G-DB) -----------------------
+
+/** What the setup page starts from: Database:* from configuration, if any. */
+export interface SetupStateView {
+  setupRequired: boolean
+  host: string
+  port: number
+  database: string
+  username: string
+  schema: string
+  requireTls: boolean
+  adminUsername: string
+}
+
+/**
+ * What the setup form sends. `adminPassword` is used once, in that request,
+ * and never stored; `password` is only for an existing database a DBA made.
+ */
+export interface SetupCommand {
+  mode: 'create' | 'existing'
+  host: string
+  port: number
+  database: string
+  username: string
+  schema: string
+  requireTls: boolean
+  adminUsername: string
+  adminPassword: string
+  password: string
+}
+
+export interface SetupResultView {
+  succeeded: boolean
+  detail: string
+  restartRequired: boolean
+  nextStep: string | null
+}
+
+/** The database connection, as the card shows it. There is no password field. */
+export interface DatabaseView {
+  host: string
+  port: number
+  database: string
+  username: string
+  schema: string
+  requireTls: boolean
+  source: 'ProtectedFile' | 'Configuration'
+  canRotate: boolean
+  rotateRefusal: string | null
+  passwordSetUtc: string | null
+}
+
+export interface DatabaseActionView {
+  succeeded: boolean
+  detail: string
+}
