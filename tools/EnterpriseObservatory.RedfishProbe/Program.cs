@@ -452,6 +452,17 @@ static async Task<int> RunLiveSimplivityAsync(
                 if (i == 0 && read.Ok)
                 {
                     ShapeDump.Print("GET /api/hosts/{id}/hardware", read.Document!.RootElement, depth: 9);
+
+                    // A masked copy of one real reply, for fixtures: every field
+                    // name and type as received; identifying values replaced by
+                    // fakes of the same shape.
+                    if (Environment.GetEnvironmentVariable("EO_PROBE_DUMP") is { Length: > 0 } dumpPath)
+                    {
+                        var node = System.Text.Json.Nodes.JsonNode.Parse(read.Document!.RootElement.GetRawText())!;
+                        MaskIdentifying(node);
+                        File.WriteAllText(dumpPath, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                        Console.WriteLine($"  masked reply written to {dumpPath}");
+                    }
                 }
 
                 if (read.Ok && read.Document!.RootElement.TryGetProperty("host", out var hw))
@@ -544,4 +555,33 @@ static JsonElement? LoadSample(string kindFolder, string fileName)
 
     using var document = JsonDocument.Parse(File.ReadAllText(path));
     return document.RootElement.Clone();
+}
+
+static void MaskIdentifying(System.Text.Json.Nodes.JsonNode? node)
+{
+    string[] keys = ["serial_number", "wwn", "host_id", "name", "id"];
+    switch (node)
+    {
+        case System.Text.Json.Nodes.JsonObject o:
+            foreach (var (k, v) in o.ToList())
+            {
+                if (keys.Contains(k, StringComparer.Ordinal) && v is System.Text.Json.Nodes.JsonValue jv && jv.TryGetValue<string>(out var str))
+                {
+                    o[k] = new string([.. str.Select(c => char.IsDigit(c) ? '9' : char.IsLetter(c) ? 'X' : c)]);
+                }
+                else
+                {
+                    MaskIdentifying(v);
+                }
+            }
+
+            break;
+        case System.Text.Json.Nodes.JsonArray a:
+            foreach (var item in a)
+            {
+                MaskIdentifying(item);
+            }
+
+            break;
+    }
 }
