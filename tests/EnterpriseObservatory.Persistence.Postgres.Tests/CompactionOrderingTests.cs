@@ -113,13 +113,28 @@ public class CompactionOrderingTests
     public void A_sweep_times_the_deletes_and_not_the_folds()
     {
         // The duration decides whether sample needs an index on its age, so a
-        // slow fold counted in it would argue for the wrong fix.
-        var report = CompactionSequence.Run(
-            () => { Thread.Sleep(1000); return 0; },
-            () => 0,
-            () => { Thread.Sleep(50); return 0; },
-            () => 0);
+        // slow fold counted in it would argue for the wrong fix. A stepped
+        // clock rather than sleeps: the sleeping version failed under load.
+        var clock = new SteppedClock();
 
-        Assert.InRange(report.DeleteDuration, TimeSpan.FromMilliseconds(45), TimeSpan.FromMilliseconds(900));
+        var report = CompactionSequence.Run(
+            () => { clock.Advance(TimeSpan.FromSeconds(10)); return 0; },
+            () => { clock.Advance(TimeSpan.FromSeconds(10)); return 0; },
+            () => { clock.Advance(TimeSpan.FromSeconds(2)); return 0; },
+            () => { clock.Advance(TimeSpan.FromSeconds(1)); return 0; },
+            clock);
+
+        Assert.Equal(TimeSpan.FromSeconds(3), report.DeleteDuration);
+    }
+
+    private sealed class SteppedClock : TimeProvider
+    {
+        private long _ticks;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => _ticks;
+
+        public void Advance(TimeSpan by) => _ticks += by.Ticks;
     }
 }
