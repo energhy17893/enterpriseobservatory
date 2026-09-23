@@ -45,6 +45,36 @@ public class CollectionAttributionTests
     }
 
     [Fact]
+    public async Task Every_annotation_carries_its_source_and_read_time_and_counts_as_read()
+    {
+        var source = new AttributionInventorySource("svt-1")
+        {
+            Snapshot = () => new InventorySnapshot
+            {
+                SourceInstanceId = "svt-1",
+                ReadAtUtc = T0,
+                Annotations =
+                [
+                    new EntityAnnotation
+                    {
+                        Entity = EntityId.For("vc-1", "host-21"),
+                        Namespace = "simplivity",
+                        Settings = new Dictionary<string, string> { ["simplivity.state"] = "ALIVE" },
+                    },
+                ],
+            },
+        };
+
+        var result = await new InventoryCollectionPipeline(new FixedClock(T0))
+            .RunAsync([source], [], Fast, CancellationToken.None);
+
+        var annotation = Assert.Single(result.Snapshots.SelectMany(s => s.Annotations));
+        Assert.Equal("svt-1", annotation.SourceInstanceId);
+        Assert.Equal(T0, annotation.ReadAtUtc);
+        Assert.Equal(1, Assert.Single(result.Health).ItemsRead);
+    }
+
+    [Fact]
     public async Task Alerts_a_collector_reported_belong_to_the_inventory_scope()
     {
         var source = new AttributionInventorySource("vc-1")

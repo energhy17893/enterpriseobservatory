@@ -240,6 +240,16 @@ public sealed record InventorySnapshot
     public IReadOnlyList<Relationship> Relationships { get; init; } = [];
 
     /// <summary>
+    /// Settings this source adds to entities another source owns (ADR-0027).
+    /// </summary>
+    /// <remarks>
+    /// Never an entity: a source that sees the same host another source
+    /// already reports annotates it rather than opening a second one. See
+    /// <see cref="EntityAnnotation"/>.
+    /// </remarks>
+    public IReadOnlyList<EntityAnnotation> Annotations { get; init; } = [];
+
+    /// <summary>
     /// What this source could not read. Anything named here is
     /// <see cref="HealthState.Unknown"/>, never healthy.
     /// </summary>
