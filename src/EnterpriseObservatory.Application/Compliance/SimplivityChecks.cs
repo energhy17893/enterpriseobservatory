@@ -31,28 +31,29 @@ internal static class SimplivityScope
 }
 
 /// <summary>
+/// <summary>
 /// One cluster setting of an OmniStack cluster, judged against HPE's rule
-/// (reference-approaches §10.8): DPM off, vSphere HA on, admission control on
-/// with a percentage policy, no upgrade waiting to be committed.
+/// (reference-approaches §10.8): DPM off, a percentage admission control
+/// policy, no upgrade waiting to be committed.
 /// </summary>
 /// <remarks>
 /// Only clusters that carry a <c>simplivity.*</c> annotation. A setting that
-/// was not read is NotEvaluated, never passing. The eo-continuity HA checks
-/// judge every cluster by vSphere's own rule; these are HPE's, on SimpliVity
-/// clusters only, and are kept apart so each catalogue says whose rule it is.
+/// was not read is NotEvaluated, never passing. Whether HA and admission
+/// control are on at all is eo-continuity's finding (eo-cont.ha-enabled,
+/// eo-cont.ha-admission-control), not repeated here (product principle 4):
+/// this catalogue judges only what HPE adds on top.
 /// </remarks>
 public sealed class SimplivityClusterSettingCheck(SimplivityClusterSettingCheck.Aspect aspect) : IComplianceCheck
 {
     public enum Aspect
     {
         DpmOff,
-        HaOn,
-        AdmissionControl,
+        AdmissionControlPolicy,
         UpgradeCommit,
     }
 
-    /// <summary>The deprecated slot policy HPE's percentage formula does not fit.</summary>
-    public const string FailoverLevelPolicy = "ClusterFailoverLevelAdmissionControlPolicy";
+    /// <summary>The "Cluster resource percentage" policy HPE's formula is written for.</summary>
+    public const string ResourcePercentagePolicy = "ClusterFailoverResourceAdmissionControlPolicy";
 
     private static readonly ClusterHighAvailabilityPolicy Ha = ClusterHighAvailabilityPolicy.Default;
 
@@ -76,8 +77,7 @@ public sealed class SimplivityClusterSettingCheck(SimplivityClusterSettingCheck.
             Judges switch
             {
                 Aspect.DpmOff => Dpm(settings),
-                Aspect.HaOn => HaOn(settings),
-                Aspect.AdmissionControl => AdmissionControl(settings),
+                Aspect.AdmissionControlPolicy => AdmissionControlPolicy(settings),
                 Aspect.UpgradeCommit => UpgradeCommit(settings),
                 _ => throw new InvalidOperationException($"Unknown aspect {Judges}."),
             },
@@ -100,54 +100,39 @@ public sealed class SimplivityClusterSettingCheck(SimplivityClusterSettingCheck.
             : Verdict(ComplianceVerdict.Passing, expected, "DPM off");
     }
 
-    private static CheckVerdict HaOn(IReadOnlyDictionary<string, string> settings)
+    /// <remarks>
+    /// Only the policy type. HA or admission control off, or not read, is not
+    /// evaluated and points at the continuity control that owns that finding.
+    /// </remarks>
+    private static CheckVerdict AdmissionControlPolicy(IReadOnlyDictionary<string, string> settings)
     {
-        const string expected = "vSphere HA on";
+        const string expected = "admission control policy: cluster resource percentage";
 
-        if (!bool.TryParse(settings.GetValueOrDefault(Ha.EnabledSetting), out var on))
+        if (!bool.TryParse(settings.GetValueOrDefault(Ha.EnabledSetting), out var ha) || !ha)
         {
             return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
-                "The cluster's HA enabled flag (configurationEx.dasConfig.enabled) was not read.");
+                $"vSphere HA is not confirmed on for this cluster, so its admission control policy does not apply; see {ContinuityControls.HaEnabled}.");
         }
 
-        return on
-            ? Verdict(ComplianceVerdict.Passing, expected, "enabled")
-            : Verdict(ComplianceVerdict.Failing, expected,
-                "disabled: a failed host's virtual machines, the OVC's peers included, are not restarted");
-    }
-
-    private static CheckVerdict AdmissionControl(IReadOnlyDictionary<string, string> settings)
-    {
-        const string expected = "admission control on, reserving a percentage of cluster resources";
-
-        if (bool.TryParse(settings.GetValueOrDefault(Ha.EnabledSetting), out var ha) && !ha)
+        if (!bool.TryParse(settings.GetValueOrDefault(Ha.AdmissionControlEnabledSetting), out var on) || !on)
         {
             return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
-                $"vSphere HA is off on this cluster, so admission control does not apply; see {SimplivityControls.ClusterHaOn}.");
-        }
-
-        if (!bool.TryParse(settings.GetValueOrDefault(Ha.AdmissionControlEnabledSetting), out var on))
-        {
-            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
-                "Admission control (configurationEx.dasConfig.admissionControlEnabled) was not read.");
-        }
-
-        if (!on)
-        {
-            return Verdict(ComplianceVerdict.Failing, expected,
-                "disabled: no failover capacity is reserved for the OVCs' and their VMs' restart");
+                $"Admission control is not confirmed on for this cluster, so its policy does not apply; see {ContinuityControls.HaAdmissionControl}.");
         }
 
         if (settings.GetValueOrDefault(InventoryVerdictKeys.ClusterAdmissionControlPolicyType) is not { Length: > 0 } policy)
         {
-            return Verdict(ComplianceVerdict.NotEvaluated, expected, "enabled", reason:
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
                 "The admission control policy (configurationEx.dasConfig.admissionControlPolicy) was not read.");
         }
 
-        return string.Equals(policy, FailoverLevelPolicy, StringComparison.Ordinal)
-            ? Verdict(ComplianceVerdict.Failing, expected,
-                $"enabled with {policy} (slots): HPE's formula is a cluster resource percentage")
-            : Verdict(ComplianceVerdict.Passing, expected, $"enabled with {policy}");
+        return policy switch
+        {
+            ResourcePercentagePolicy => Verdict(ComplianceVerdict.Passing, expected, "policy: cluster resource percentage"),
+            "ClusterFailoverHostAdmissionControlPolicy" => Verdict(ComplianceVerdict.Failing, expected, "policy: dedicated failover host"),
+            "ClusterFailoverLevelAdmissionControlPolicy" => Verdict(ComplianceVerdict.Failing, expected, "policy: slots (host failures to tolerate)"),
+            _ => Verdict(ComplianceVerdict.Failing, expected, $"policy: {policy}"),
+        };
     }
 
     private static CheckVerdict UpgradeCommit(IReadOnlyDictionary<string, string> settings)
@@ -252,7 +237,9 @@ public sealed class SimplivitySnapshotCheck : IComplianceCheck
 /// <remarks>
 /// Entity = the vCenter, subject <c>''</c>: the product has no federation
 /// entity, and the SimpliVity annotation does not say which federation a host
-/// belongs to. ponytail: one vCenter stands in for one federation; a
+/// belongs to. OmniStack's /api/version returns <c>federation_id</c>; once the
+/// SimpliVity source (S3) adds it to the annotation this moves to the
+/// federation. ponytail: until then one vCenter stands in for one federation; a
 /// federation across vCenters is judged per vCenter and two federations
 /// under one vCenter are judged together — key on a federation id once the
 /// collector records one.

@@ -72,10 +72,10 @@ public class SimplivityChecksTests
     // --- catalogue ------------------------------------------------------------
 
     [Fact]
-    public void Production_registers_the_seven_s2a_controls_each_with_a_source()
+    public void Production_registers_the_six_s2a_controls_each_with_a_source()
     {
         Assert.Equal(
-            [DpmOff, ClusterHaOn, AdmissionControlConfigured, VmSnapshots, MixedVersions, UpgradeCommitNeeded, NtpConsistent],
+            [DpmOff, AdmissionControlPolicy, VmSnapshots, MixedVersions, UpgradeCommitNeeded, NtpConsistent],
             Catalogue.Controls.Select(c => c.ControlId));
         Assert.All(Catalogue.Controls, c => Assert.False(string.IsNullOrWhiteSpace(c.Source)));
         Assert.Equal("eo-simplivity-1", Catalogue.Release);
@@ -113,69 +113,67 @@ public class SimplivityChecksTests
     public void Dpm_not_read_is_not_evaluated() =>
         Assert.Equal(ComplianceVerdict.NotEvaluated, One(Evaluate([SvtCluster()]), DpmOff).Verdict);
 
-    // --- svt.cluster-ha-on -------------------------------------------------------
+    // --- svt.admission-control-policy ----------------------------------------------
+
+    private static Entity AdmissionCluster(string policy) =>
+        SvtCluster(("dasConfig.enabled", "true"), ("dasConfig.admissionControlEnabled", "true"),
+            ("dasConfig.admissionControlPolicy.type", policy));
 
     [Theory]
-    [InlineData("false", ComplianceVerdict.Failing)]
-    [InlineData("true", ComplianceVerdict.Passing)]
-    public void Ha_off_fails_and_on_passes(string enabled, ComplianceVerdict expected) =>
-        Assert.Equal(expected, One(Evaluate([SvtCluster(("dasConfig.enabled", enabled))]), ClusterHaOn).Verdict);
-
-    [Fact]
-    public void Ha_not_read_is_not_evaluated() =>
-        Assert.Equal(ComplianceVerdict.NotEvaluated, One(Evaluate([SvtCluster()]), ClusterHaOn).Verdict);
-
-    // --- svt.admission-control-configured ----------------------------------------
-
-    [Fact]
-    public void Admission_control_off_fails()
+    [InlineData("ClusterFailoverLevelAdmissionControlPolicy", "policy: slots (host failures to tolerate)")]
+    [InlineData("ClusterFailoverHostAdmissionControlPolicy", "policy: dedicated failover host")]
+    public void A_policy_that_is_not_a_resource_percentage_fails(string policy, string observed)
     {
-        var finding = One(
-            Evaluate([SvtCluster(("dasConfig.enabled", "true"), ("dasConfig.admissionControlEnabled", "false"))]),
-            AdmissionControlConfigured);
+        var finding = One(Evaluate([AdmissionCluster(policy)]), AdmissionControlPolicy);
 
         Assert.Equal(ComplianceVerdict.Failing, finding.Verdict);
+        Assert.Equal(observed, finding.Observed);
     }
 
     [Fact]
-    public void The_failover_level_slot_policy_fails()
-    {
-        var finding = One(
-            Evaluate([SvtCluster(("dasConfig.enabled", "true"), ("dasConfig.admissionControlEnabled", "true"),
-                ("dasConfig.admissionControlPolicy.type", "ClusterFailoverLevelAdmissionControlPolicy"))]),
-            AdmissionControlConfigured);
-
-        Assert.Equal(ComplianceVerdict.Failing, finding.Verdict);
-        Assert.Contains("ClusterFailoverLevelAdmissionControlPolicy", finding.Observed, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Admission_control_on_with_a_resource_percentage_passes()
-    {
-        var finding = One(
-            Evaluate([SvtCluster(("dasConfig.enabled", "true"), ("dasConfig.admissionControlEnabled", "true"),
-                ("dasConfig.admissionControlPolicy.type", "ClusterFailoverResourceAdmissionControlPolicy"))]),
-            AdmissionControlConfigured);
-
-        Assert.Equal(ComplianceVerdict.Passing, finding.Verdict);
-    }
-
-    [Fact]
-    public void Admission_control_not_read_is_not_evaluated() =>
+    public void A_cluster_resource_percentage_policy_passes() =>
         Assert.Equal(
-            ComplianceVerdict.NotEvaluated,
-            One(Evaluate([SvtCluster(("dasConfig.enabled", "true"))]), AdmissionControlConfigured).Verdict);
+            ComplianceVerdict.Passing,
+            One(Evaluate([AdmissionCluster("ClusterFailoverResourceAdmissionControlPolicy")]), AdmissionControlPolicy).Verdict);
 
     [Fact]
-    public void Admission_control_on_a_cluster_with_ha_off_is_left_to_the_ha_control()
+    public void Admission_control_off_is_left_to_the_continuity_control()
     {
+        // The "enabled" half is eo-cont.ha-admission-control's finding (principle 4).
         var finding = One(
-            Evaluate([SvtCluster(("dasConfig.enabled", "false"), ("dasConfig.admissionControlEnabled", "false"))]),
-            AdmissionControlConfigured);
+            Evaluate([SvtCluster(("dasConfig.enabled", "true"), ("dasConfig.admissionControlEnabled", "false"),
+                ("dasConfig.admissionControlPolicy.type", "ClusterFailoverLevelAdmissionControlPolicy"))]),
+            AdmissionControlPolicy);
 
         Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
-        Assert.Contains(ClusterHaOn, finding.Reason, StringComparison.Ordinal);
+        Assert.Contains(ContinuityControls.HaAdmissionControl, finding.Reason, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Ha_off_is_left_to_the_continuity_control()
+    {
+        var finding = One(
+            Evaluate([SvtCluster(("dasConfig.enabled", "false"), ("dasConfig.admissionControlEnabled", "true"),
+                ("dasConfig.admissionControlPolicy.type", "ClusterFailoverLevelAdmissionControlPolicy"))]),
+            AdmissionControlPolicy);
+
+        Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
+        Assert.Contains(ContinuityControls.HaEnabled, finding.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_policy_not_read_is_not_evaluated() =>
+        Assert.Equal(
+            ComplianceVerdict.NotEvaluated,
+            One(Evaluate([SvtCluster(("dasConfig.enabled", "true"), ("dasConfig.admissionControlEnabled", "true"))]),
+                AdmissionControlPolicy).Verdict);
+
+    [Fact]
+    public void A_cluster_without_a_simplivity_annotation_gets_no_policy_finding() =>
+        None(
+            Evaluate([Cluster(("dasConfig.enabled", "true"), ("dasConfig.admissionControlEnabled", "true"),
+                ("dasConfig.admissionControlPolicy.type", "ClusterFailoverLevelAdmissionControlPolicy"))]),
+            AdmissionControlPolicy);
 
     // --- svt.vm-snapshots ----------------------------------------------------------
 

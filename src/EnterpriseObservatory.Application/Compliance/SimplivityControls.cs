@@ -16,11 +16,9 @@ public static class SimplivityControls
     /// <summary>Cluster, subject <c>''</c>: DPM is off on an OmniStack cluster.</summary>
     public const string DpmOff = "svt.dpm-off";
 
-    /// <summary>Cluster, subject <c>''</c>: vSphere HA is on in an OmniStack cluster.</summary>
-    public const string ClusterHaOn = "svt.cluster-ha-on";
-
-    /// <summary>Cluster, subject <c>''</c>: HA admission control is on and not the slot (failover level) policy.</summary>
-    public const string AdmissionControlConfigured = "svt.admission-control-configured";
+    /// <summary>Cluster, subject <c>''</c>: the HA admission control policy is a cluster resource percentage.</summary>
+    /// <remarks>Only the policy type; HA and admission control being on are eo-continuity's findings.</remarks>
+    public const string AdmissionControlPolicy = "svt.admission-control-policy";
 
     /// <summary>Cluster, subject <c>''</c>: no VMware snapshots on its SimpliVity VMs, one finding with a count.</summary>
     public const string VmSnapshots = "svt.vm-snapshots";
@@ -45,16 +43,13 @@ public static class SimplivityControls
             "configurationEx.dpmConfigInfo.enabled",
             AdminGuide + " GUID-CB42AB7B (alarm 'DPM enabled on OmniCube system')",
             new SimplivityClusterSettingCheck(SimplivityClusterSettingCheck.Aspect.DpmOff)),
-        Check(ClusterHaOn, "Cluster", "vSphere HA is on in the OmniStack cluster",
-            "configurationEx.dasConfig.enabled",
-            "HPE SimpliVity Events Reference 5.2.0 (sd00005179) GUID-5EBBA0A1 ('MVA cluster has vSphere HA disabled')",
-            new SimplivityClusterSettingCheck(SimplivityClusterSettingCheck.Aspect.HaOn)),
-        Check(AdmissionControlConfigured, "Cluster",
-            "HA admission control is on and reserves a percentage, not slots (failover level)",
-            "configurationEx.dasConfig.admissionControlEnabled, configurationEx.dasConfig.admissionControlPolicy",
+        Check(AdmissionControlPolicy, "Cluster",
+            "HA admission control reserves a cluster resource percentage (not slots, not a dedicated failover host)",
+            "configurationEx.dasConfig.admissionControlPolicy",
             AdminGuide + " GUID-5EBC5FC4, GUID-C8D90369 ('Cluster resource percentage'; the OVC-reservation " +
-            "formula itself is not judged yet)",
-            new SimplivityClusterSettingCheck(SimplivityClusterSettingCheck.Aspect.AdmissionControl)),
+            "formula itself is not judged yet). HA and admission control being on: eo-cont.ha-enabled, " +
+            "eo-cont.ha-admission-control",
+            new SimplivityClusterSettingCheck(SimplivityClusterSettingCheck.Aspect.AdmissionControlPolicy)),
         Check(VmSnapshots, "Cluster",
             "No VMware snapshots on SimpliVity VMs (a conflict with SimpliVity backups, judged whatever " +
             "their age; not the 'Snapshot left behind' age alarm)",

@@ -186,6 +186,9 @@ public static class InventoryVerdictParser
                 CopyValue(o, ConsolidationNeededPath, InventoryVerdicts.ConsolidationNeeded, verdicts);
                 ReadCdroms(o, verdicts);
                 ReadLegacyAdapters(o, verdicts);
+                // Absent = 0 is correct here, not a guess: vSphere does not send an
+                // unset property at all, and a VM with no snapshot has 'snapshot' unset.
+                // The property is in the VM request, so a VM that arrived was asked.
                 verdicts[InventoryVerdicts.SnapshotCount] = Count(VsphereClient.ReadSnapshots(o).Count);
                 break;
 
