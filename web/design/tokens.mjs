@@ -141,3 +141,19 @@ export const light = {
 };
 
 export const themes = { dark, light };
+
+/**
+ * Token setleri (eo-ux §8, Ertuğrul 2026-09-23). Bir set yalnızca görsel
+ * katmandır; yerleşim, navigasyon, sayfalama ve metin setten bağımsız,
+ * paylaşılan koddur (ADR-0007).
+ *
+ *   classic      bugünkü set, değerleri değişmez
+ *   observatory  şimdilik classic'in birebir kopyası; U2 bulguları değiştirir
+ *
+ * Her set aynı anahtarlara sahip olmalı — validate-contrast.mjs bunu da kontrol
+ * eder ve her seti ayrı ayrı doğrular.
+ */
+export const sets = {
+    classic: themes,
+    observatory: structuredClone(themes),
+};

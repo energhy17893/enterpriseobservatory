@@ -23,7 +23,12 @@ import { ScheduledReports } from '@/routes/ScheduledReports'
 import { ComplianceReport } from '@/routes/reports/ComplianceReport'
 import { CapacityReport } from '@/routes/reports/CapacityReport'
 import { ContinuityReport } from '@/routes/reports/ContinuityReport'
+import { Appearance } from '@/routes/Appearance'
+import { applyThemeSet, getThemeSet } from '@/lib/theme'
 import './styles/index.css'
+
+// Before the first render, so a viewer on another set never sees classic flash.
+applyThemeSet(getThemeSet())
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -97,6 +102,7 @@ function Application() {
           <Route path="reports/scheduled" element={<ScheduledReports identity={data} />} />
           <Route path="email" element={<Email identity={data} />} />
           <Route path="accounts" element={<Accounts identity={data} />} />
+          <Route path="appearance" element={<Appearance />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -9,7 +9,7 @@
  * Çıkış kodu 1 ise bir çift eşiği geçemiyor; build kırılır.
  */
 
-import { themes } from './tokens.mjs';
+import { sets } from './tokens.mjs';
 
 // ---------------------------------------------------------------------------
 // OKLCH -> sRGB. WCAG kontrastı sRGB tabanlıdır, bu yüzden dönüşüm şart.
@@ -121,8 +121,27 @@ function rulesFor(theme) {
 let failures = 0;
 let gamutFailures = 0;
 
+// Her set aynı anahtarlara sahip olmalı: eksik bir token bir sette CSS
+// değişkeni üretmez ve o sette sessizce classic değerine düşer.
+const keysOf = (obj, path = '') =>
+    Object.entries(obj).flatMap(([k, v]) =>
+        v && typeof v === 'object' ? keysOf(v, `${path}${k}.`) : [`${path}${k}`]);
+const reference = keysOf(sets.classic).sort().join('\n');
+let keyFailures = 0;
+for (const [setName, themes] of Object.entries(sets)) {
+    if (keysOf(themes).sort().join('\n') !== reference) {
+        console.log(`ANAHTAR UYUMSUZ  ${setName} seti classic ile aynı anahtarlara sahip değil`);
+        keyFailures++;
+    }
+}
+if (keyFailures > 0) {
+    console.log(`BASARISIZ: ${keyFailures} anahtar uyumsuzlugu.`);
+    process.exit(1);
+}
+
+for (const [setName, themes] of Object.entries(sets))
 for (const [themeName, theme] of Object.entries(themes)) {
-    console.log(`\n=== ${themeName.toUpperCase()} ===`);
+    console.log(`\n=== ${setName.toUpperCase()} / ${themeName.toUpperCase()} ===`);
 
     // Gamut kontrolü: tanımladığımız her renk sRGB'de gösterilebilmeli
     const walk = (obj, path = []) => {
@@ -155,8 +174,8 @@ console.log('');
 if (gamutFailures > 0) {
     console.log(`${gamutFailures} renk sRGB gamut disinda.`);
 }
-if (failures > 0 || gamutFailures > 0) {
-    console.log(`BASARISIZ: ${failures} kontrast ihlali, ${gamutFailures} gamut ihlali.`);
+if (failures > 0 || gamutFailures > 0 || keyFailures > 0) {
+    console.log(`BASARISIZ: ${failures} kontrast ihlali, ${gamutFailures} gamut ihlali, ${keyFailures} anahtar uyumsuzlugu.`);
     process.exit(1);
 }
 console.log('Tum kontrast ve gamut kurallari gecti.');
