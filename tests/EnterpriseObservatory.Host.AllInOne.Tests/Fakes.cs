@@ -39,7 +39,7 @@ internal sealed class FakeObservationSource(string instanceId) : IObservationSou
 
     public int Attempts { get; private set; }
 
-    public Task<ObservationBatch> ReadAsync(CancellationToken cancellationToken)
+    public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken)
     {
         Attempts++;
 

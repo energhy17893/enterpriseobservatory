@@ -50,11 +50,15 @@ public sealed class VsphereObservationContractFixture : IObservationContractFixt
         private readonly LateApi _api;
         private readonly TestClock _clock = new();
 
+        /// <summary>The runner's slot: the state the source learns lives here (F5).</summary>
+        private readonly ObservationSourceSlot _slot;
+
         public LateValueScenario(string instanceId)
         {
             _api = new LateApi(instanceId);
             Source = new VsphereObservationSource(
                 _api, new FixedTargets(new VsphereSampleTargets { Hosts = ["host-1"] }), _clock);
+            _slot = new ObservationSourceSlot(instanceId);
         }
 
         public IObservationSource Source { get; }
@@ -77,8 +81,10 @@ public sealed class VsphereObservationContractFixture : IObservationContractFixt
             // phase the live collector met the :00 slot in.
             _api.ServerNow = S0.AddSeconds(1 + (30 * cycle));
             _clock.UtcNow = _api.ServerNow;
-            return Source.ReadAsync(CancellationToken.None);
+            return _slot.ReadAsync(Source, CancellationToken.None);
         }
+
+        public void Accept(ObservationBatch batch) => _slot.Accept(batch);
     }
 
     private sealed class LateApi(string instanceId) : IVsphereApi

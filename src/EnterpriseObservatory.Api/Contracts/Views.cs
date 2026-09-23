@@ -547,6 +547,50 @@ public sealed record SelfMetricsView
     public int OpenGaps { get; init; }
 
     public int UnrecoverableGaps { get; init; }
+
+    /// <summary>The bounded queue in front of the observation store (F5); null when none is measured.</summary>
+    public StoreQueueView? StoreQueue { get; init; }
+}
+
+/// <summary>
+/// The store queue's numbers (F5, ADR-0025 §6), for <see cref="SelfMetricsView"/>.
+/// </summary>
+/// <remarks>
+/// Dropped rows are split by reason — over the byte budget, older than the
+/// age limit — and by what became of them: recorded as a gap the source is
+/// reading again (a refill in progress), waiting for the store to record that
+/// gap, or could not be filled (past the platform's hour of history — a loss).
+/// Counts are rows since the service started.
+/// </remarks>
+public sealed record StoreQueueView
+{
+    /// <summary>Batches waiting.</summary>
+    public int Length { get; init; }
+
+    public long Rows { get; init; }
+
+    public long Bytes { get; init; }
+
+    public long BudgetBytes { get; init; }
+
+    /// <summary>How long the oldest waiting batch has waited; null when nothing waits.</summary>
+    public double? OldestAgeSeconds { get; init; }
+
+    public double MaxAgeSeconds { get; init; }
+
+    public long DroppedOverBudgetRows { get; init; }
+
+    public long DroppedTooOldRows { get; init; }
+
+    public long RecordedAsGapRows { get; init; }
+
+    public long PendingGapRows { get; init; }
+
+    public long CouldNotBeFilledRows { get; init; }
+
+    public DateTimeOffset? LastDropUtc { get; init; }
+
+    public string? LastFailure { get; init; }
 }
 
 /// <summary>One counter available for an entity.</summary>

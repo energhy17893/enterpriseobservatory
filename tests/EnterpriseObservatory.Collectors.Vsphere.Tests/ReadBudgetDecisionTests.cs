@@ -119,7 +119,7 @@ public class ReadBudgetDecisionTests
     [Fact]
     public void Remembered_sizes_are_per_type_and_counter_count()
     {
-        var memory = new LearnedBatchSizes();
+        var memory = new LearnedBatchSizes(new LearnedLimits());
         memory.Remember(VsphereEntityType.VirtualMachine, counterCount: 17, size: 3);
 
         Assert.Equal(3, memory.For(VsphereEntityType.VirtualMachine, 17));

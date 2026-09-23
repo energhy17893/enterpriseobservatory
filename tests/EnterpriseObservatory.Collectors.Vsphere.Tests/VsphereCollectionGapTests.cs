@@ -22,8 +22,14 @@ public class VsphereCollectionGapTests
     private static readonly string[] Vms = ["vm-1", "vm-2", "vm-3"];
 
 
+    /// <remarks>
+    /// F5 moved the gap record to the runner: the read reports the gap as
+    /// data and the runner records it after the read, so the fill starts one
+    /// cycle later than when the collector recorded it mid-read — 30 s against
+    /// the host's one-hour real-time retention.
+    /// </remarks>
     [Fact]
-    public async Task After_a_30_minute_outage_the_first_cycle_is_current_and_the_gap_fills_oldest_first()
+    public async Task After_a_30_minute_outage_the_first_cycle_is_current_and_records_the_gap_and_the_next_fill_it_oldest_first()
     {
         var fixture = new Fixture(lastStored: S0.AddMinutes(-30));
 
@@ -36,20 +42,24 @@ public class VsphereCollectionGapTests
             Assert.Equal(S0, first.Observations.Where(o => o.Entity == Id(moRef)).Max(o => o.SampledAtUtc));
         }
 
+        // Recorded by the runner after the read; nothing filled yet.
         var gap = Assert.Single(fixture.Gaps.Gaps("vc-1"));
         Assert.Equal(S0.AddMinutes(-30), gap.FromUtc);
         Assert.Equal(S0.AddMinutes(-2), gap.ToUtc);
-        Assert.Equal(S0.AddMinutes(-20), gap.FilledToUtc);
+        Assert.Equal(S0.AddMinutes(-30), gap.FilledToUtc);
         Assert.Equal(CollectionGapState.Open, gap.State);
 
-        // The first slice's samples came back as backfill, all of them.
-        var filled = first.Backfill.Where(o => o.Entity == Id("vm-1"))
+        // Cycle 2 fills the first slice, all of it, as backfill.
+        var second = await fixture.ReadAsync(S0.AddSeconds(30), queriesAllowed: 4);
+
+        Assert.Equal(S0.AddMinutes(-20), Assert.Single(fixture.Gaps.Gaps("vc-1")).FilledToUtc);
+        var filled = second.Backfill.Where(o => o.Entity == Id("vm-1"))
             .Select(o => o.SampledAtUtc).ToHashSet();
         Assert.Equal(30, filled.Count(t => t > S0.AddMinutes(-30) && t <= S0.AddMinutes(-20)));
 
-        // Cycles 2 and 3 fill the rest, oldest first, and open nothing new.
-        await fixture.ReadAsync(S0.AddSeconds(30), queriesAllowed: 4);
+        // Cycles 3 and 4 fill the rest, oldest first, and open nothing new.
         await fixture.ReadAsync(S0.AddSeconds(60), queriesAllowed: 4);
+        await fixture.ReadAsync(S0.AddSeconds(90), queriesAllowed: 4);
 
         gap = Assert.Single(fixture.Gaps.Gaps("vc-1"));
         Assert.Equal(CollectionGapState.Filled, gap.State);
@@ -108,7 +118,10 @@ public class VsphereCollectionGapTests
         Assert.Equal(S0.AddMinutes(-2), gap.FilledToUtc);
 
         // The host keeps an hour: the part before that is recorded, not dropped.
-        Assert.Equal(S0.AddMinutes(-59), gap.LostBeforeUtc);
+        // Judged by the second cycle, the first that fills (F5): the horizon
+        // has moved on by that cycle's 30 s, the documented cost of recording
+        // the gap after the read rather than during it.
+        Assert.Equal(S0.AddSeconds(30).AddMinutes(-59), gap.LostBeforeUtc);
 
         // And nothing was asked for from before the horizon.
         Assert.All(fixture.Api.Windows, w => Assert.True(w.Start >= S0.AddMinutes(-59)));
@@ -119,19 +132,26 @@ public class VsphereCollectionGapTests
     {
         var fixture = new Fixture(lastStored: S0.AddMinutes(-30));
 
-        await fixture.ReadAsync(S0, queriesAllowed: 4, store: false);
+        await fixture.ReadAsync(S0, queriesAllowed: 4);
 
-        // The append failed: the slice read is not counted as filled.
+        // The first slice is read, but the batch is never accepted.
+        await fixture.ReadAsync(S0.AddSeconds(30), queriesAllowed: 4, store: false);
+
+        // Not counted as filled.
         Assert.Equal(S0.AddMinutes(-30), Assert.Single(fixture.Gaps.Gaps("vc-1")).FilledToUtc);
 
-        await fixture.ReadAsync(S0.AddSeconds(30), queriesAllowed: 4);
+        await fixture.ReadAsync(S0.AddSeconds(60), queriesAllowed: 4);
 
-        // The same slice again, and the live data the failed append lost is a
-        // new, small gap of its own rather than a silent hole.
-        var gaps = fixture.Gaps.Gaps("vc-1");
-        Assert.Equal(2, gaps.Count);
-        Assert.Equal(S0.AddMinutes(-20), gaps[0].FilledToUtc);
-        Assert.Equal(S0.AddMinutes(-2), gaps[1].FromUtc);
+        // The same slice again, now kept.
+        Assert.Equal(S0.AddMinutes(-20), Assert.Single(fixture.Gaps.Gaps("vc-1")).FilledToUtc);
+        Assert.Equal(
+            2,
+            fixture.Api.Windows.Count(w => w.Start == S0.AddMinutes(-30) && w.End == S0.AddMinutes(-20)) /
+                (Hosts.Length + Vms.Length));
+
+        // And the marks did not move past the unkept live read: the next live
+        // read starts where the last kept one ended.
+        Assert.All(fixture.Api.Targets, t => Assert.Equal(S0, t.StartExclusiveUtc));
     }
 
     [Fact]
@@ -152,8 +172,10 @@ public class VsphereCollectionGapTests
     {
         var fixture = new Fixture(lastStored: S0.AddMinutes(-30));
 
+        await fixture.ReadAsync(S0, queriesAllowed: 100);
+
         // Budget for the live read and half a slice.
-        var batch = await fixture.ReadAsync(S0, queriesAllowed: 3);
+        var batch = await fixture.ReadAsync(S0.AddSeconds(30), queriesAllowed: 3);
 
         Assert.Equal(Hosts.Length + Vms.Length, batch.Observations.Select(o => o.Entity).Distinct().Count());
         Assert.Equal(S0.AddMinutes(-30), Assert.Single(fixture.Gaps.Gaps("vc-1")).FilledToUtc);
@@ -171,8 +193,12 @@ public class VsphereCollectionGapTests
             }
 
             Gaps = new InMemoryGaps(Marks);
-            Source = new VsphereObservationSource(Api, new Targets(), Clock, Gaps);
+            Source = new VsphereObservationSource(Api, new Targets(), Clock);
+            Slot = new ObservationSourceSlot("vc-1", Gaps);
         }
+
+        /// <summary>The runner's slot: the source's learned state and its gap record (F5).</summary>
+        public ObservationSourceSlot Slot { get; }
 
         public Dictionary<EntityId, DateTimeOffset> Marks { get; } = [];
 
@@ -192,11 +218,11 @@ public class VsphereCollectionGapTests
             using var budget = new CancellationTokenSource();
             Api.Allow(budget, queriesAllowed);
 
-            var batch = await Source.ReadAsync(budget.Token);
+            var batch = await Slot.ReadAsync(Source, budget.Token);
 
             if (store)
             {
-                batch.Stored?.Invoke();
+                Slot.Accept(batch);
             }
 
             return batch;

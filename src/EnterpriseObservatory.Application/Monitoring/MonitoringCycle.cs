@@ -106,8 +106,22 @@ public sealed class MonitoringCycle(
     IObservationStore observations,
     IMaintenanceWindowStore maintenance,
     IClock clock,
-    IEventStore events)
+    IEventStore events,
+    ObservationStoreQueue? storeQueue = null)
 {
+    /// <summary>
+    /// The bounded queue in front of the observation store (F5, ADR-0025 §6).
+    /// </summary>
+    /// <remarks>
+    /// Held for the process's life by the host, so samples a failed write
+    /// could not take wait for the next cycle rather than being lost with
+    /// this one. A cycle built without one (tests) gets its own, with the
+    /// default limits and no gap record for what it drops.
+    /// </remarks>
+    private readonly ObservationStoreQueue _storeQueue = storeQueue ?? new ObservationStoreQueue(
+        (observations ?? throw new ArgumentNullException(nameof(observations))).Append,
+        clock ?? throw new ArgumentNullException(nameof(clock)));
+
     /// <summary>
     /// Where collected vCenter events are read from, for the rules. Handed
     /// on only as its read side.
@@ -349,25 +363,32 @@ public sealed class MonitoringCycle(
             "the collectors' health",
             () => _healthStore.Merge(cycle.Health));
 
-        // The earlier samples go to the store and nowhere else. One append, so
-        // they are kept or lost together with the values they came with.
-        var kept = StoreObservations([.. cycle.Observations, .. cycle.Backfill]);
+        // Through the store queue (F5, ADR-0025 §6): each batch's current
+        // values and earlier samples as one item, kept or lost together, and
+        // written oldest first — what an earlier failed write left behind
+        // goes before this cycle's.
+        foreach (var batch in cycle.Batches)
+        {
+            _storeQueue.Enqueue(batch);
+        }
 
-        // Only once the samples are in: a source moves its high-water marks
-        // and gap fill points past what was kept, never past what was merely
-        // read (T0.4). Guarded per source, so one source's bookkeeping failing
-        // costs that bookkeeping and nothing else.
-        IReadOnlyList<AlertDefinition> bookkeepingFailures = kept
-            ?
-            [
-                .. cycle.Batches
-                    .Where(b => b.Stored is not null)
-                    .SelectMany(b => Guarded(
-                        $"collection-marks:{b.SourceInstanceId}",
-                        $"the collection marks and gap record of '{b.SourceInstanceId}'",
-                        b.Stored!)),
-            ]
-            : [];
+        var drain = StoreObservations();
+
+        // Only once a batch is accepted: its source's marks and gap fill
+        // points move past what was kept, never past what was merely read
+        // (T0.4) — and not in this cycle's thread either: the runner applies
+        // the advance inside the source's next read slot. A batch accepted
+        // now may be one an earlier cycle read. Guarded per source, so one
+        // source's gap record failing costs that bookkeeping and nothing else.
+        var acceptedNow = drain.Accepted.Where(b => b.Slot is not null).ToList();
+
+        IReadOnlyList<AlertDefinition> bookkeepingFailures =
+        [
+            .. acceptedNow.SelectMany(b => Guarded(
+                $"collection-marks:{b.SourceInstanceId}",
+                $"the collection marks and gap record of '{b.SourceInstanceId}'",
+                () => b.Slot!.Accept(b))),
+        ];
 
         // Only sources that actually answered may have their entities' metric
         // alerts judged on this cycle's silence. A source we could not reach
@@ -410,6 +431,7 @@ public sealed class MonitoringCycle(
             .. cycle.CollectionAlerts,
             .. healthFailure,
             .. bookkeepingFailures,
+            .. SamplesDropped(_storeQueue.Snapshot(), now),
             .. analysis.Failures,
         ];
 
@@ -430,9 +452,11 @@ public sealed class MonitoringCycle(
                 $"detail-level:{b.SourceInstanceId}",
                 ObservationCollectionPipeline.DetailLevelFingerprint(b.SourceInstanceId))),
             Wrote("collector-health:metrics"),
-            .. kept
-                ? cycle.Batches.Where(b => b.Stored is not null).Select(b => Wrote($"collection-marks:{b.SourceInstanceId}"))
-                : [],
+            .. acceptedNow
+                .Select(b => b.SourceInstanceId)
+                .Distinct(StringComparer.Ordinal)
+                .Select(id => Wrote($"collection-marks:{id}")),
+            ProducerRun.For("store-queue", SamplesDroppedFingerprint),
             RulesRan(RuleScope.Metric),
         ];
 
@@ -564,9 +588,11 @@ public sealed class MonitoringCycle(
     /// is already how this product says "we were not looking".
     /// </remarks>
     /// <returns>Whether everything given is now in the store -- true when there was nothing to write.</returns>
-    private bool StoreObservations(IReadOnlyList<Observation> observations)
+    private StoreQueueDrain StoreObservations()
     {
-        if (observations.Count == 0)
+        var drain = _storeQueue.Drain();
+
+        if (!drain.Attempted)
         {
             // Deliberately neither set nor cleared. Nothing was written, so
             // nothing new is known about whether writing works, and clearing
@@ -576,31 +602,74 @@ public sealed class MonitoringCycle(
             // nothing to store repeats the last real failure; that is bounded
             // by the first cycle that has a sample, and a cycle with no samples
             // at all already says so through SilentSources.
-            return true;
+            return drain;
         }
 
-        try
-        {
-            _observationStore.Append(observations);
-
-            // Cleared, not left behind. One restart of the database at 02:00
-            // otherwise put that message on every result until the service was
-            // restarted: the worker warned every thirty seconds that samples
-            // could not be recorded while they were being recorded perfectly.
-            // A fabricated failure is the mirror of a fabricated zero and worse
-            // in one respect -- it teaches an operator to ignore the one
-            // message that means the history really does have a hole.
-            _lastStorageFailure = null;
-            return true;
-        }
-#pragma warning disable CA1031 // Justified: see the remarks above.
-        catch (Exception ex)
-#pragma warning restore CA1031
-        {
-            _lastStorageFailure = ex.Message;
-            return false;
-        }
+        // Cleared, not left behind, when the write lands. One restart of the
+        // database at 02:00 otherwise put that message on every result until
+        // the service was restarted: the worker warned every thirty seconds
+        // that samples could not be recorded while they were being recorded
+        // perfectly. A fabricated failure is the mirror of a fabricated zero
+        // and worse in one respect -- it teaches an operator to ignore the one
+        // message that means the history really does have a hole. The samples
+        // a failed write could not take are still queued, not lost.
+        _lastStorageFailure = drain.Failure;
+        return drain;
     }
+
+    /// <summary>
+    /// Says so while the store queue has recently had to drop samples.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An ordinary alert, reconciled in this scope, so it reaches the inbox and
+    /// the notifier like any other. Raised for as long as the last drop is
+    /// within the queue's age limit, then resolved by itself: the counters
+    /// behind it are cumulative for the process, and an alert that could only
+    /// clear on a restart is one nobody reads.
+    /// </para>
+    /// <para>
+    /// It says how much of the drop was recorded as a gap the source is
+    /// reading again, and how much could not be: the first is a refill in
+    /// progress, the second a loss.
+    /// </para>
+    /// </remarks>
+    internal static IReadOnlyList<AlertDefinition> SamplesDropped(StoreQueueSnapshot queue, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+
+        if (queue.LastDropUtc is not { } last || now - last > queue.MaxAge)
+        {
+            return [];
+        }
+
+        return
+        [
+            new AlertDefinition
+            {
+                Fingerprint = SamplesDroppedFingerprint,
+                Severity = AlertSeverity.Warning,
+                Title = SamplesDroppedTitle,
+                Description =
+                    $"The store could not keep up and the queue in front of it dropped {queue.DroppedRows} " +
+                    $"sample row(s) since the service started: {queue.DroppedOverBudgetRows} over its " +
+                    $"{queue.BudgetBytes / StoreQueueLimits.BytesPerMegabyte} MiB budget and " +
+                    $"{queue.DroppedTooOldRows} older than {queue.MaxAge.TotalMinutes:0} minutes. " +
+                    $"{queue.RecordedAsGapRows} were recorded as a gap the source is reading again, " +
+                    $"{queue.PendingGapRows} wait for the store to record theirs, and " +
+                    $"{queue.CouldNotBeFilledRows} could not be filled. " +
+                    $"Last write failure: {queue.LastFailure ?? "none"}.",
+                Category = WriteFailedCategory,
+                Source = "platform",
+                IsDerived = true,
+            },
+        ];
+    }
+
+    private const string SamplesDroppedTitle = "Samples dropped before they could be stored";
+
+    internal static readonly AlertFingerprint SamplesDroppedFingerprint =
+        AlertFingerprint.Create("platform", SamplesDroppedTitle, WriteFailedCategory, "store-queue", "samples-dropped");
 
     /// <summary>Why the last attempt to record samples failed, if it did.</summary>
     /// <remarks>

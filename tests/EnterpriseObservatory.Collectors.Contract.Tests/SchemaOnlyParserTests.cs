@@ -393,8 +393,9 @@ public class DrsAffinityRuleSchemaOnlyTests
 /// <remarks>
 /// No reader exists in this codebase to point a schema-vs-unexpected-shape
 /// test at (see <see cref="SchemaOnlyParsers.All"/>). Left as a documented,
-/// skipped placeholder for the same reason <see cref="StoreErrorBalanceTests"/>
-/// is: so the case is not lost between now and whenever a reader is added.
+/// skipped placeholder — as the store-error balance case was until F5 gave it
+/// a store queue to fail — so the case is not lost between now and whenever
+/// a reader is added.
 /// </remarks>
 public sealed class ProfileComplianceManagerTests
 {
