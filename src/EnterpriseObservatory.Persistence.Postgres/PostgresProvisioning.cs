@@ -658,7 +658,14 @@ public static partial class PostgresProvisioning
             SslMode = target.RequireTls ? SslMode.Require : SslMode.Prefer,
             Pooling = false,
             Timeout = 15,
-            CommandTimeout = 60,
+            // DROP DATABASE on Windows forces an immediate checkpoint before it
+            // releases the files, so it takes as long as flushing everything the
+            // server has dirtied. Measured on a live install writing ~26,000
+            // rows a minute: 40.5 s for an empty database. 60 s left a failed
+            // setup one busy minute away from timing out in its own rollback and
+            // leaving the half-made database behind. These statements run once,
+            // at setup; a long bound costs nothing when they are fast.
+            CommandTimeout = 300,
         }.ConnectionString;
 
     private static bool Exists(NpgsqlConnection connection, string sql, string name)

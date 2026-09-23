@@ -68,6 +68,11 @@ public sealed class ProvisioningTests : IDisposable
             Username = Admin.Username,
             Password = Admin.Password.Reveal(),
             Pooling = false,
+            // Npgsql's default 30 s is shorter than a DROP DATABASE on a Windows
+            // server under load (40.5 s measured), and a timed-out cleanup is how
+            // this suite leaked its throwaway databases. Same bound as the
+            // product's provisioning connections.
+            CommandTimeout = 300,
         }.ConnectionString);
 
         connection.Open();
