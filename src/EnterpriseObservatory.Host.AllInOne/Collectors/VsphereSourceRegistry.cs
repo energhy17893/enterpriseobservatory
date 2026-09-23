@@ -602,6 +602,20 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         }
     }
 
+    /// <summary>
+    /// The stand-in for a role the kind does not have: NotPolled with a
+    /// reason, and — unlike <see cref="UnusableSource"/> — no "Collector
+    /// unreachable" alert (<see cref="IRoleNotApplicable"/>, ADR-0026).
+    /// </summary>
+    private sealed class RoleNotApplicable(string instanceId, string reason)
+        : IObservationSource, IRoleNotApplicable
+    {
+        public string InstanceId { get; } = instanceId;
+
+        public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
+            throw new ConnectionNotUsableException($"'{InstanceId}' is not being polled: {reason}.");
+    }
+
     internal const string SimplivityHasNoMetrics =
         "SimpliVity is read for inventory only; this build has no observation collector for it";
 
@@ -628,7 +642,7 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
             // A stand-in, not nothing: without it the Observation health row
             // kept the last "no collector for kind" message forever. It stays
             // NotConfigured, so /health keeps it NotPolled, and now says why.
-            Observation: new UnusableSource(connection.InstanceId, SimplivityHasNoMetrics),
+            Observation: new RoleNotApplicable(connection.InstanceId, SimplivityHasNoMetrics),
             Events: null);
     }
 
