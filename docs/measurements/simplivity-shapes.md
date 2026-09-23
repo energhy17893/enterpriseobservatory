@@ -63,6 +63,27 @@ Kolektör için bulgular:
   yenisini almamalı.
 - **Maske:** küme adları `--mask` altında açık yazılıyor (probe düzeltmesi).
 
+### Tüm sayfalarla yeniden sayım (13:50, sayfalama + biçim düzeltmesiyle)
+
+| Konu | Sonuç |
+|---|---|
+| Host | 26 / `count` 26, ALIVE=26 |
+| Küme | 13 / `count` 13 |
+| VM | **699** / `count` 699 — `ha_status` DEGRADED=1, SAFE=698 |
+| Yedek | **1 533** / `count` 1 533 — PROTECTED=1 526, QUEUED=4, SAVING=3 |
+| `hypervisor_object_id` biçimi | `<uuid>:HostSystem:host-N`, 26/26 (N 2, 5 ya da 6 hane) |
+| `compute_cluster_hypervisor_object_id` biçimi | `<uuid>:ClusterComputeResource:domain-cN`, 26/26 |
+| `hypervisor_management_system` biçimi | IPv4, 26/26 aynı biçim |
+| `hypervisor_management_system_name` biçimi | `aaaa99.aaaaa.aaa` (kbvc01 ile aynı biçim), 26/26 |
+| Token / revoke | 231 ms / 401 |
+
+**Kimlik katlama:** SimpliVity host'u vSphere host'una
+`(vCenter instance UUID, moRef)` çiftiyle bağlanır: kimliğin `:` ile
+ayrılmış ilk parçası vCenter'ın `about.instanceUuid`'i, son parçası
+`host-N` moRef'i. Tek başına moRef yetmez (iki vCenter aynı moRef'i
+kullanabilir); UUID parçası bunu çözer. Değerlerin eşleşme sayısı
+kolektörde ölçülür, burada yalnız biçim var.
+
 ## İlk soru (canlıda henüz cevapsız)
 
 23 Eylül'de ölçülen: olay akışında `com.simplivity.event.*` **0** (bkz.

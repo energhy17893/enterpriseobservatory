@@ -36,7 +36,7 @@ if (dry)
 {
     return kind == "redfish"
         ? await RunDryRedfish(mask, shapes)
-        : RunDrySimplivity(shapes);
+        : RunDrySimplivity(mask, shapes);
 }
 
 if (storeIndex < 0)
@@ -82,7 +82,7 @@ Console.WriteLine($"  certificate validation            {(insecure ? "RELAXED (s
 
 return kind == "redfish"
     ? await RunLiveRedfishAsync(baseAddress, user, password, insecure, mask, shapes, cancellation.Token)
-    : await RunLiveSimplivityAsync(baseAddress, user, password, insecure, shapes, cancellation.Token);
+    : await RunLiveSimplivityAsync(baseAddress, user, password, insecure, mask, shapes, cancellation.Token);
 
 static async Task<int> RunDryRedfish(bool mask, bool shapes)
 {
@@ -153,7 +153,7 @@ static async Task<int> RunDryRedfish(bool mask, bool shapes)
     return 0;
 }
 
-static int RunDrySimplivity(bool shapes)
+static int RunDrySimplivity(bool mask, bool shapes)
 {
     Console.WriteLine("=== --dry: parsers over bundled HPE SimpliVity sample JSON, no network ===");
 
@@ -182,7 +182,7 @@ static int RunDrySimplivity(bool shapes)
         Backups = backups,
     };
 
-    foreach (var line in SimplivityReport.Generate(docs))
+    foreach (var line in SimplivityReport.Generate(docs, mask))
     {
         Console.WriteLine(line);
     }
@@ -295,7 +295,7 @@ static async Task<int> RunLiveRedfishAsync(
 }
 
 static async Task<int> RunLiveSimplivityAsync(
-    Uri baseAddress, string user, string password, bool insecure, bool shapes, CancellationToken cancellationToken)
+    Uri baseAddress, string user, string password, bool insecure, bool mask, bool shapes, CancellationToken cancellationToken)
 {
     using var client = new SimplivityClient(baseAddress, insecure);
     var timing = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
@@ -331,11 +331,49 @@ static async Task<int> RunLiveSimplivityAsync(
             return null;
         }
 
-        var hosts = await ReadAsync("/api/hosts");
-        var clusters = await ReadAsync("/api/omnistack_clusters");
-        var vms = await ReadAsync(
-            "/api/virtual_machines?fields=id,name,state,ha_status,host_id,omnistack_cluster_id");
-        var backups = await ReadAsync("/api/backups?limit=500");
+        // Every page: the API caps a page at `limit` (500 by default) and
+        // reports the total in `count`, so one read of 500 VMs said nothing
+        // about the estate (23 September 2026). Capped at 100 pages.
+        async Task<JsonElement?> ReadAllAsync(string path, string array)
+        {
+            const int limit = 500;
+            var items = new List<JsonElement>();
+            JsonElement? count = null;
+            var separator = path.Contains('?') ? '&' : '?';
+
+            for (var offset = 0; offset < limit * 100; offset += limit)
+            {
+                if (await ReadAsync($"{path}{separator}limit={limit}&offset={offset}") is not { } page)
+                {
+                    return items.Count == 0 ? null : Merged();
+                }
+
+                count ??= page.TryGetProperty("count", out var total) ? total.Clone() : null;
+                var read = page.TryGetProperty(array, out var list) && list.ValueKind == JsonValueKind.Array
+                    ? list.EnumerateArray().Select(e => e.Clone()).ToList()
+                    : [];
+                items.AddRange(read);
+
+                if (read.Count < limit || (count is { } c && items.Count >= c.GetInt32()))
+                {
+                    break;
+                }
+            }
+
+            return Merged();
+
+            JsonElement Merged() => JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+            {
+                [array] = items,
+                ["count"] = count,
+            });
+        }
+
+        var hosts = await ReadAllAsync("/api/hosts", "hosts");
+        var clusters = await ReadAllAsync("/api/omnistack_clusters", "omnistack_clusters");
+        var vms = await ReadAllAsync(
+            "/api/virtual_machines?fields=id,name,state,ha_status,host_id,omnistack_cluster_id", "virtual_machines");
+        var backups = await ReadAllAsync("/api/backups", "backups");
 
         if (shapes)
         {
@@ -357,7 +395,7 @@ static async Task<int> RunLiveSimplivityAsync(
             TokenAcquisition = loginElapsed,
         };
 
-        foreach (var line in SimplivityReport.Generate(docs))
+        foreach (var line in SimplivityReport.Generate(docs, mask))
         {
             Console.WriteLine(line);
         }

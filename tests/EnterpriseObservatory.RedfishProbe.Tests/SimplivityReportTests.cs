@@ -127,4 +127,40 @@ public sealed class SimplivityReportTests
 
         Assert.DoesNotContain(lines, l => l.Contains("password", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Theory]
+    [InlineData("4c1d2e3f-0a1b:HostSystem:host-21", "9x9x9x9x-9x9x:HostSystem:host-99")]
+    [InlineData("host-2104", "host-9999")]
+    [InlineData("domain-c7", "domain-x9")]
+    public void An_id_is_reported_by_its_format_keeping_the_moref_words(string value, string shape) =>
+        Assert.Equal(shape, SimplivityReport.IdShape(value));
+
+    [Theory]
+    [InlineData("kbvc01.kibar.net", "aaaa99.aaaaa.aaa")]
+    [InlineData("10.5.1.23", "99.9.9.99")]
+    public void A_management_system_name_keeps_its_format_and_loses_its_letters(string value, string shape) =>
+        Assert.Equal(shape, SimplivityReport.NameShape(value));
+
+    [Fact]
+    public void Cluster_names_are_masked_under_mask()
+    {
+        var masked = SimplivityReport.Generate(SampleDocs(), mask: true);
+        var plain = SimplivityReport.Generate(SampleDocs());
+
+        Assert.DoesNotContain(masked, l => l.Contains("SVT-Cluster-1", StringComparison.Ordinal));
+        Assert.Contains(plain, l => l.Contains("SVT-Cluster-1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_page_short_of_the_total_says_so()
+    {
+        // 23 September 2026: 500 VMs read and the report said 500, which was
+        // the page limit, not the estate.
+        var vms = JsonDocument.Parse("""{"virtual_machines":[{"ha_status":"SAFE"}],"count":1234}""")
+            .RootElement.Clone();
+
+        var lines = SimplivityReport.Generate(new SimplivityDocs { VirtualMachines = vms });
+
+        Assert.True(HasLine(lines, "VMs read", "1 of count 1234"));
+    }
 }
