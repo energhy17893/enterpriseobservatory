@@ -43,6 +43,14 @@ public sealed class ObservationReadContext
     public IReadOnlyList<CollectionGap> OpenGaps { get; init; } = [];
 
     /// <summary>
+    /// The platform's own clock, read by the runner before this read (F6) via
+    /// <see cref="IObservationSource.GetServerTimeAsync"/>. Null when the
+    /// source could not say; the read then falls back to its own clock for
+    /// ending windows, and no clock-skew self-metric is reported.
+    /// </summary>
+    public DateTimeOffset? ServerNowUtc { get; init; }
+
+    /// <summary>
     /// How far a recorded gap already accounts for the source, if one does.
     /// </summary>
     /// <remarks>
@@ -87,6 +95,7 @@ public sealed class ObservationSourceSlot
 {
     private readonly string _instanceId;
     private readonly ICollectionGapStore? _gaps;
+    private readonly IClock? _clock;
 
     /// <summary>
     /// Advances of accepted batches, waiting for the source's next read slot.
@@ -103,10 +112,11 @@ public sealed class ObservationSourceSlot
     private bool _seeded;
     private DateTimeOffset? _accountedTo;
 
-    public ObservationSourceSlot(string instanceId, ICollectionGapStore? gaps = null)
+    public ObservationSourceSlot(string instanceId, ICollectionGapStore? gaps = null, IClock? clock = null)
     {
         _instanceId = instanceId ?? throw new ArgumentNullException(nameof(instanceId));
         _gaps = gaps;
+        _clock = clock;
     }
 
     /// <summary>The source's learned state.</summary>
@@ -123,12 +133,20 @@ public sealed class ObservationSourceSlot
         }
 
         var failures = new List<CollectionFailure>();
+
+        // F6: the platform's own clock, read once here rather than by the
+        // collector's own read (VsphereObservationSource.cs:187 pre-F6) — so
+        // it is available as a self-metric even when the read that follows it
+        // fails outright, and so the collector writes no metric of its own.
+        var serverNow = await source.GetServerTimeAsync(cancellationToken).ConfigureAwait(false);
+
         var context = new ObservationReadContext(State)
         {
             KeepsGapRecord = _gaps is not null,
             StoredMarks = _gaps is null ? null : Seed(source, failures),
             OpenGaps = _gaps is null ? [] : OpenGaps(failures),
             AccountedTo = _accountedTo,
+            ServerNowUtc = serverNow,
         };
 
         var batch = await source.ReadAsync(context, cancellationToken).ConfigureAwait(false);
@@ -159,6 +177,10 @@ public sealed class ObservationSourceSlot
         {
             Failures = failures.Count == 0 ? batch.Failures : [.. failures, .. batch.Failures],
             Slot = this,
+            SessionsHeld = source.SessionsHeld,
+            ClockSkewSeconds = serverNow is { } sn && _clock is { } clock
+                ? (sn - clock.UtcNow).TotalSeconds
+                : null,
         };
     }
 

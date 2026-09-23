@@ -117,8 +117,12 @@ public class QueuedRowSizeMeasurementTests(ITestOutputHelper output)
     }
 
     /// <summary>A vCenter that answers every live query with a vim25 reply of real counter keys.</summary>
-    private sealed class XmlVcenter(int slots) : IVsphereApi
+    private sealed class XmlVcenter(int slots) : IVsphereApi, IVsphereChannelSelfMetrics
     {
+        // F6: VsphereObservationSource now reads GetServerTimeAsync through
+        // this channel interface, not IVsphereApi.
+        public int SessionsHeld => 1;
+
         private readonly IReadOnlyList<VsphereCounter> _catalog =
         [
             .. VsphereCounters.Host.Concat(VsphereCounters.VirtualMachine)

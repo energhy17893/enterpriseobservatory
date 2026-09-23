@@ -40,6 +40,16 @@ public abstract class ObservationContractTests<TFixture>
 
     // --- case: self-metrics are present after every result -----------------
 
+    /// <summary>
+    /// F6, ADR-0025 §5: §10.2's minimum list -- answered, duration, items
+    /// read/unread, skipped cycles, total attempts -- exists after a healthy
+    /// read and after a failed one, produced entirely by the runner. Held
+    /// sessions and clock skew are asserted separately below
+    /// (<see cref="Self_metrics_are_produced_by_the_runner_even_when_the_collector_emits_none"/>):
+    /// they are null here whenever the fixture's fake does not offer
+    /// <c>IVsphereChannelSelfMetrics</c>, and null is exactly what "the
+    /// collector emits none" must read as, not a failure of this case.
+    /// </summary>
     [Fact]
     public async Task Self_metrics_are_present_after_every_result_healthy_or_not()
     {
@@ -53,9 +63,62 @@ public abstract class ObservationContractTests<TFixture>
 
         var okHealth = Assert.Single(healthy.Health);
         Assert.NotNull(okHealth.LastAttemptUtc);
+        Assert.True(okHealth.Up);
+        Assert.NotNull(okHealth.LastDuration);
+        Assert.NotEmpty(okHealth.RecentDurations);
+        Assert.NotNull(okHealth.ItemsRead);
+        Assert.NotNull(okHealth.ItemsUnread);
+        Assert.Equal(1, okHealth.TotalAttempts);
+        Assert.Equal(0, okHealth.TotalFailures);
 
         var slowHealth = Assert.Single(slow.Health);
         Assert.NotNull(slowHealth.LastAttemptUtc);
+        Assert.False(slowHealth.Up);
+        Assert.NotNull(slowHealth.LastDuration);
+        Assert.NotEmpty(slowHealth.RecentDurations);
+        // Not reached, so nothing was read -- null, not zero (§10.6's rule).
+        Assert.Null(slowHealth.ItemsRead);
+        Assert.Null(slowHealth.ItemsUnread);
+        Assert.Equal(1, slowHealth.TotalAttempts);
+        Assert.Equal(1, slowHealth.TotalFailures);
+    }
+
+    /// <summary>
+    /// F6's own new case: the runner's self-metrics exist even for a source
+    /// that offers none of its own -- no <see cref="IObservationSource.SessionsHeld"/>,
+    /// no <see cref="IObservationSource.GetServerTimeAsync"/> -- proving these
+    /// numbers are the runner's to produce, not a courtesy a collector has to
+    /// remember to supply. <typeparamref name="TFixture"/>'s own healthy
+    /// source already is this case today (its fakes do not implement
+    /// <c>IVsphereChannelSelfMetrics</c>); a source with literally the
+    /// interface's bare defaults proves it independent of any one collector.
+    /// </summary>
+    [Fact]
+    public async Task Self_metrics_are_produced_by_the_runner_even_when_the_collector_emits_none()
+    {
+        var pipeline = new ObservationCollectionPipeline(new TestClock());
+
+        var result = await pipeline.RunAsync(
+            [new BareSource()], [], CollectionPolicy.Default, CancellationToken.None);
+
+        var health = Assert.Single(result.Health);
+        Assert.True(health.Up);
+        Assert.NotNull(health.LastAttemptUtc);
+        Assert.NotNull(health.LastDuration);
+        Assert.Equal(1, health.TotalAttempts);
+
+        // Exactly what "emits none" means: not invented as zero.
+        Assert.Null(health.SessionsHeld);
+        Assert.Null(health.ClockSkewSeconds);
+    }
+
+    /// <summary>An observation source offering nothing beyond what <see cref="IObservationSource"/> requires.</summary>
+    private sealed class BareSource : IObservationSource
+    {
+        public string InstanceId => "bare";
+
+        public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
+            Task.FromResult(new ObservationBatch { SourceInstanceId = InstanceId, ReadAtUtc = DateTimeOffset.UtcNow });
     }
 
     // --- case: state and memory stay constant over a long run --------------

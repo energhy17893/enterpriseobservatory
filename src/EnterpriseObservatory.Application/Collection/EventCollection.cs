@@ -583,7 +583,8 @@ public sealed class EventCollectionPipeline
                 SourceRunner.Existing(prior, source.InstanceId, CollectorRole.Events),
                 _policy with { SourceTimeout = left },
                 gate,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                extras: static r => new SelfMetricsExtras(ItemsRead: r.Events?.Count)).ConfigureAwait(false);
 
             health.Add(outcome.Health);
 

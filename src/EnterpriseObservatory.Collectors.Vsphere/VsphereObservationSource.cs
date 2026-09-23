@@ -164,6 +164,22 @@ public sealed class VsphereObservationSource(
     public IReadOnlyCollection<EntityId> EntitiesWithMarks() =>
         [.. MoRefsOfMarkedEntities(_targets.Current.ByType().ToList()).Keys];
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Forwarded, never computed here: this is the channel's own bookkeeping
+    /// (F6). Null when <c>_api</c> is a fake that does not offer it — every
+    /// contract fixture predating this — which is exactly "does not apply",
+    /// not zero.
+    /// </remarks>
+    public int? SessionsHeld => (_api as IVsphereChannelSelfMetrics)?.SessionsHeld;
+
+    /// <inheritdoc/>
+    /// <remarks>Forwarded, never computed here; see <see cref="SessionsHeld"/>.</remarks>
+    public Task<DateTimeOffset?> GetServerTimeAsync(CancellationToken cancellationToken) =>
+        _api is IVsphereChannelSelfMetrics channel
+            ? channel.GetServerTimeAsync(cancellationToken)
+            : Task.FromResult<DateTimeOffset?>(null);
+
     public async Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -184,8 +200,10 @@ public sealed class VsphereObservationSource(
 
         // The server's clock ends every window: sample times are its, so the
         // local clock being out must not decide what is asked for (§10.3).
-        var serverTime = await _api.GetServerTimeAsync(cancellationToken).ConfigureAwait(false);
-        var serverNow = serverTime ?? now;
+        // Read by the runner before this call, not by this source (F6) — see
+        // IObservationSource.GetServerTimeAsync — so it exists as a
+        // self-metric even on a cycle whose read then fails outright.
+        var serverNow = context.ServerNowUtc ?? now;
 
         var types = _targets.Current.ByType().ToList();
 
@@ -240,11 +258,6 @@ public sealed class VsphereObservationSource(
             {
                 // The slice in flight is asked again next cycle.
             }
-        }
-
-        if (serverTime is { } server)
-        {
-            backfill.Add(ClockSkew(server, now));
         }
 
         return new ObservationBatch
@@ -881,21 +894,6 @@ public sealed class VsphereObservationSource(
         }
     }
 
-    /// <summary>The server's clock minus ours, as a series on the vCenter.</summary>
-    private Observation ClockSkew(DateTimeOffset serverNow, DateTimeOffset now) => new()
-    {
-        Entity = EntityId.For(InstanceId, "vcenter"),
-        Value = new CounterValue
-        {
-            CounterName = CollectorSelfMetrics.ClockSkewCounter,
-            Raw = (serverNow - now).TotalSeconds,
-            Rollup = RollupType.Latest,
-            Interval = TimeSpan.FromSeconds(VsphereIntervals.RealTimeSeconds),
-            Unit = "second",
-        },
-        SampledAtUtc = now,
-        Source = InstanceId,
-    };
 
     /// <summary>
     /// Whether a fault ends the conversation rather than just this question.

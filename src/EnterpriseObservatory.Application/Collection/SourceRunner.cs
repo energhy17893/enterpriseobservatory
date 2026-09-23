@@ -81,7 +81,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectionPolicy policy,
         SemaphoreSlim gate,
         CancellationToken cancellationToken,
-        Func<TResult, int?>? viewsHeld = null)
+        Func<TResult, SelfMetricsExtras>? extras = null)
         where TResult : class
     {
         var key = (instanceId, role);
@@ -127,7 +127,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
                             abandoned = true;
                             ForgetAbandoned(key, task);
                         },
-                        viewsHeld,
+                        extras,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -177,7 +177,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectorHealth prior,
         CollectionPolicy policy,
         Action<Task> onAbandoned,
-        Func<TResult, int?>? viewsHeld,
+        Func<TResult, SelfMetricsExtras>? extras,
         CancellationToken cancellationToken)
         where TResult : class
     {
@@ -201,15 +201,20 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
                 break;
             }
 
+            var attemptStart = _time.GetTimestamp();
+
             try
             {
                 var result = await ReadWithHardTimeoutAsync(
                     instanceId, read, left, policy.ReturnGrace, _time, onAbandoned, cancellationToken)
                     .ConfigureAwait(false);
 
+                var duration = _time.GetElapsedTime(attemptStart);
+                var failures = reportedFailures(result);
+
                 return new SourceRunOutcome<TResult>(
                     result,
-                    Succeeded(prior, reportedFailures(result), viewsHeld?.Invoke(result), _clock.UtcNow),
+                    Succeeded(prior, failures, extras?.Invoke(result) ?? default, duration, _clock.UtcNow),
                     []);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -248,7 +253,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
                     // cycle is how the monitoring account gets locked out, and
                     // the operator is being shown a message that promises this
                     // does not happen.
-                    var fatal = FailedFatally(prior, ex, fault.Kind, _clock.UtcNow);
+                    var fatal = FailedFatally(prior, ex, fault.Kind, _time.GetElapsedTime(attemptStart), _clock.UtcNow);
 
                     return new SourceRunOutcome<TResult>(
                         null, fatal, [UnreachableAlert(instanceId, role, fatal, backingOff: false)]);
@@ -278,7 +283,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             }
         }
 
-        var failed = Failed(prior, lastError, _clock.UtcNow);
+        var failed = Failed(prior, lastError, _time.GetElapsedTime(budgetStart), _clock.UtcNow);
 
         return new SourceRunOutcome<TResult>(
             null, failed, [UnreachableAlert(instanceId, role, failed, backingOff: false)]);
@@ -448,11 +453,12 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
     private static CollectorHealth Succeeded(
         CollectorHealth prior,
         IReadOnlyList<CollectionFailure> failures,
-        int? viewsHeld,
+        SelfMetricsExtras extras,
+        TimeSpan duration,
         DateTimeOffset now) =>
         prior with
         {
-            ViewsHeld = viewsHeld,
+            ViewsHeld = extras.ViewsHeld,
 
             // Memory first (see CollectorHealth.ViewsHeldMax): prior is never
             // hydrated from the database for this field, so this only ever
@@ -461,7 +467,9 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             // max, and the max itself stays null until a read actually
             // succeeds -- inventing zero here is exactly the mistake that let
             // views_held_max = 0 prove nothing was ever measured.
-            ViewsHeldMax = viewsHeld is { } held ? Math.Max(prior.ViewsHeldMax ?? 0, held) : prior.ViewsHeldMax,
+            ViewsHeldMax = extras.ViewsHeld is { } held
+                ? Math.Max(prior.ViewsHeldMax ?? 0, held)
+                : prior.ViewsHeldMax,
             // Reaching the source but not reading all of it is degraded, not
             // healthy. Anything named in failures is Unknown, never fine.
             Health = failures.Count == 0 ? HealthState.Healthy : HealthState.Warning,
@@ -484,10 +492,19 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             // Cleared, or the one-strike rule would outlive the problem: a
             // password corrected at noon would still be treated as rejected.
             LastFailureKind = null,
+
+            // F6, from here down.
+            LastDuration = duration,
+            RecentDurations = Ring(prior.RecentDurations, duration),
+            ItemsRead = extras.ItemsRead,
+            ItemsUnread = failures.Count,
+            SessionsHeld = extras.SessionsHeld,
+            ClockSkewSeconds = extras.ClockSkewSeconds,
+            TotalAttempts = prior.TotalAttempts + 1,
         };
 
     private static CollectorHealth Failed(
-        CollectorHealth prior, Exception? error, DateTimeOffset now) =>
+        CollectorHealth prior, Exception? error, TimeSpan duration, DateTimeOffset now) =>
         prior with
         {
             // Not Critical: we do not know the estate is broken, only that we
@@ -508,6 +525,18 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             // retryable. Guessing in the other direction would silently stop
             // collecting from a source that was only briefly unwell.
             LastFailureKind = (error as ICollectionFault)?.Kind,
+
+            // F6. Not reached, so nothing was read and nothing has a session
+            // or a clock skew reading this cycle; the duration is still real
+            // and counted, and joins the ring like any other attempt's.
+            LastDuration = duration,
+            RecentDurations = Ring(prior.RecentDurations, duration),
+            ItemsRead = null,
+            ItemsUnread = null,
+            SessionsHeld = null,
+            ClockSkewSeconds = null,
+            TotalAttempts = prior.TotalAttempts + 1,
+            TotalFailures = prior.TotalFailures + 1,
         };
 
     /// <summary>A failure the source itself says will not clear by retrying.</summary>
@@ -515,6 +544,7 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
         CollectorHealth prior,
         Exception error,
         CollectionFailureKind kind,
+        TimeSpan duration,
         DateTimeOffset now) =>
         prior with
         {
@@ -526,7 +556,27 @@ internal sealed class SourceRunner(IClock clock, TimeProvider? timeProvider = nu
             LastAttemptUtc = now,
             LastFailureKind = kind,
             PartialFailures = [],
+
+            // F6, as in Failed.
+            LastDuration = duration,
+            RecentDurations = Ring(prior.RecentDurations, duration),
+            ItemsRead = null,
+            ItemsUnread = null,
+            SessionsHeld = null,
+            ClockSkewSeconds = null,
+            TotalAttempts = prior.TotalAttempts + 1,
+            TotalFailures = prior.TotalFailures + 1,
         };
+
+    /// <summary>Appends a duration to the last-32 ring (§10.6, Datadog's check <c>Stats</c>).</summary>
+    private static IReadOnlyList<TimeSpan> Ring(IReadOnlyList<TimeSpan> prior, TimeSpan next)
+    {
+        var kept = prior.Count >= CollectorHealth.RecentDurationsCapacity
+            ? prior.Skip(prior.Count - CollectorHealth.RecentDurationsCapacity + 1)
+            : prior;
+
+        return [.. kept, next];
+    }
 
     /// <summary>
     /// Every distinct thing that could not be read, in a stable order.

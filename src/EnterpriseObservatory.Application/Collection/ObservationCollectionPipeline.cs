@@ -44,8 +44,8 @@ public sealed class ObservationCollectionPipeline(
     TimeProvider? timeProvider = null,
     ICollectionGapStore? gaps = null)
 {
-    private readonly SourceRunner _runner =
-        new(clock ?? throw new ArgumentNullException(nameof(clock)), timeProvider);
+    private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+    private readonly SourceRunner _runner = new(clock, timeProvider);
 
     /// <summary>
     /// The runner's slot per source (F5): its learned state and its gap
@@ -66,7 +66,7 @@ public sealed class ObservationCollectionPipeline(
     {
         if (!_slots.TryGetValue(source.InstanceId, out var held) || !ReferenceEquals(held.Source, source))
         {
-            held = (source, new ObservationSourceSlot(source.InstanceId, gaps));
+            held = (source, new ObservationSourceSlot(source.InstanceId, gaps, _clock));
             _slots[source.InstanceId] = held;
         }
 
@@ -106,7 +106,11 @@ public sealed class ObservationCollectionPipeline(
                 SourceRunner.Existing(priorHealth, pair.Source.InstanceId, CollectorRole.Observation),
                 policy,
                 gate,
-                cancellationToken))).ConfigureAwait(false);
+                cancellationToken,
+                extras: static batch => new SelfMetricsExtras(
+                    ItemsRead: batch.Observations.Count,
+                    SessionsHeld: batch.SessionsHeld,
+                    ClockSkewSeconds: batch.ClockSkewSeconds)))).ConfigureAwait(false);
 
         var batches = outcomes.Select(o => o.Result).OfType<ObservationBatch>().ToList();
 

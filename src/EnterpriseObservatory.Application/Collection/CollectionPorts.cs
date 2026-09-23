@@ -99,6 +99,37 @@ public interface IObservationSource
     /// by asking the platform. Empty for a source that keeps no marks.
     /// </remarks>
     IReadOnlyCollection<EntityId> EntitiesWithMarks() => [];
+
+    /// <summary>
+    /// Sessions this source's own channel believes it holds, for the
+    /// <c>sessionsHeld</c> self-metric (F6, ADR-0025 §5). Null for a source
+    /// with no session concept.
+    /// </summary>
+    /// <remarks>
+    /// "Believes", not "the platform confirms": a read-only account often
+    /// cannot list a platform's sessions (measured for vSphere: NoPermission),
+    /// so this can never detect a session the channel itself lost track of.
+    /// It answers "how many did we open and not yet close", nothing more.
+    /// </remarks>
+    int? SessionsHeld => null;
+
+    /// <summary>
+    /// The platform's own clock, for ending read windows
+    /// (<see cref="ObservationReadContext.ServerNowUtc"/>) and for the
+    /// <c>clockSkew</c> self-metric (F6, ADR-0025 §5). Null when this source
+    /// cannot say — the runner then uses its own clock for windowing and
+    /// reports no skew.
+    /// </summary>
+    /// <remarks>
+    /// Called once per read, by the runner, before <see cref="ReadAsync"/> —
+    /// never by the source itself: this used to be the observation source's
+    /// own first call (F note, VsphereObservationSource.cs:187 pre-F6), which
+    /// made the server's clock a piece of business logic rather than a
+    /// self-metric the runner could report even when the read that follows it
+    /// fails outright.
+    /// </remarks>
+    Task<DateTimeOffset?> GetServerTimeAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<DateTimeOffset?>(null);
 }
 
 /// <summary>Why part of a collection did not succeed.</summary>
@@ -343,6 +374,22 @@ public sealed record ObservationBatch
 
     /// <summary>The runner slot that read this batch, which accepts it.</summary>
     internal ObservationSourceSlot? Slot { get; init; }
+
+    /// <summary>
+    /// Sessions this source's own channel believes it holds (F6). Filled by
+    /// <see cref="ObservationSourceSlot"/> from <see cref="IObservationSource.SessionsHeld"/>
+    /// before the batch is returned — never by the collector's own read.
+    /// </summary>
+    public int? SessionsHeld { get; init; }
+
+    /// <summary>
+    /// The source's clock minus this process's clock, in seconds (F6). Filled
+    /// by <see cref="ObservationSourceSlot"/> from the same
+    /// <see cref="IObservationSource.GetServerTimeAsync"/> call that supplied
+    /// <see cref="ObservationReadContext.ServerNowUtc"/> — never an
+    /// <see cref="Observation"/> the collector adds to <see cref="Backfill"/>.
+    /// </summary>
+    public double? ClockSkewSeconds { get; init; }
 }
 
 /// <summary>
@@ -386,6 +433,23 @@ public enum CollectorRole
     /// </summary>
     Events,
 }
+
+/// <summary>
+/// The self-metrics one result can answer for itself, beyond duration and the
+/// failure count every result already carries (F6, ADR-0025 §5).
+/// </summary>
+/// <remarks>
+/// One shape for every role, read from the result by the pipeline that knows
+/// what "read" means for it — <see cref="ObservationBatch.Observations"/> for
+/// metrics, <see cref="InventorySnapshot.Entities"/> for inventory. Every
+/// field is optional because not every role or every source can answer every
+/// one of them, and "does not apply" must never collapse into zero.
+/// </remarks>
+public readonly record struct SelfMetricsExtras(
+    int? ItemsRead = null,
+    int? ViewsHeld = null,
+    int? SessionsHeld = null,
+    double? ClockSkewSeconds = null);
 
 /// <summary>How a source is behaving over time.</summary>
 /// <remarks>
@@ -509,4 +573,67 @@ public sealed record CollectorHealth
     /// </para>
     /// </remarks>
     public int? ViewsHeldMax { get; init; }
+
+    // --- F6: self-metrics the runner produces itself, never the collector ---
+
+    /// <summary>How long the last attempt took, start to finish (success or failure).</summary>
+    public TimeSpan? LastDuration { get; init; }
+
+    /// <summary>
+    /// The last <see cref="RecentDurationsCapacity"/> attempts' durations,
+    /// oldest first — successful or not, since a source timing out is itself
+    /// a duration worth trending.
+    /// </summary>
+    /// <remarks>
+    /// A ring, not one "last duration": Datadog's check <c>Stats</c> keeps the
+    /// last 32 for the same reason (§10.6) — a single figure cannot show a
+    /// trend, and a trend is what tells "one slow cycle" from "getting slower".
+    /// </remarks>
+    public IReadOnlyList<TimeSpan> RecentDurations { get; init; } = [];
+
+    public const int RecentDurationsCapacity = 32;
+
+    /// <summary>Items this attempt read — samples for observation, entities for inventory, events for events.</summary>
+    public int? ItemsRead { get; init; }
+
+    /// <summary>
+    /// Items this attempt could not read — the count behind <see cref="PartialFailures"/>.
+    /// </summary>
+    public int? ItemsUnread { get; init; }
+
+    /// <summary>
+    /// Sessions this source's own channel believes it holds. Named
+    /// deliberately: a read-only account often cannot list a platform's own
+    /// sessions (measured for vSphere: <c>NoPermission</c>), so this can never
+    /// confirm or detect a session the channel itself lost track of — it
+    /// answers only "how many did we open and not yet close".
+    /// </summary>
+    public int? SessionsHeld { get; init; }
+
+    /// <summary>The source's clock minus this process's clock, in seconds, from the last successful probe.</summary>
+    /// <remarks>Positive means the source is ahead. See <see cref="CollectorSelfMetrics.ClockSkewCounter"/>.</remarks>
+    public double? ClockSkewSeconds { get; init; }
+
+    /// <summary>Attempts made since this process started, successful or not.</summary>
+    public long TotalAttempts { get; init; }
+
+    /// <summary>Attempts that failed outright since this process started (not counting partial failures).</summary>
+    public long TotalFailures { get; init; }
+
+    /// <summary>
+    /// Whether the last attempt is healthy, in Prometheus's sense of <c>up</c>:
+    /// false when the source could not be reached <em>and</em> false when it
+    /// answered but something could not be read or kept — not only when
+    /// nothing answered at all.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not "did we get a response". Prometheus's own scraper sets
+    /// <c>up = 0</c> when the scrape succeeded but parsing or storing it failed
+    /// (§10.6, <c>scrape.go</c>): a reply the product could not use is exactly
+    /// as unhelpful as no reply. <see cref="HealthState.Warning"/> is this
+    /// product's name for that same case — something was read but not
+    /// everything — so <c>Up</c> is true for <see cref="HealthState.Healthy"/>
+    /// only.
+    /// </remarks>
+    public bool Up => Health == HealthState.Healthy;
 }
