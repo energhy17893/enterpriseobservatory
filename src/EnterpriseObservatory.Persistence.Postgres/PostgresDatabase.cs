@@ -89,14 +89,14 @@ public sealed record PostgresOptions
         return problems;
     }
 
-    internal string ToConnectionString() =>
+    internal string ToConnectionString(bool includePassword = true) =>
         new NpgsqlConnectionStringBuilder
         {
             Host = Host,
             Port = Port,
             Database = Database,
             Username = Username,
-            Password = Password.Reveal(),
+            Password = includePassword ? Password.Reveal() : null,
             SslMode = RequireTls ? SslMode.Require : SslMode.Prefer,
             SearchPath = Schema,
 
@@ -133,6 +133,7 @@ public sealed record PostgresOptions
 public sealed class PostgresDatabase : IDisposable
 {
     private readonly NpgsqlDataSource _source;
+    private volatile PasswordBox _password;
     private bool _disposed;
 
     public PostgresDatabase(PostgresOptions options)
@@ -148,7 +149,17 @@ public sealed class PostgresDatabase : IDisposable
                 nameof(options));
         }
 
-        _source = NpgsqlDataSource.Create(options.ToConnectionString());
+        _password = new PasswordBox(options.Password);
+
+        // The password is supplied per physical connection rather than baked
+        // into the connection string, so that rotating it (the Database card)
+        // reaches the pool without a restart: connections already open keep
+        // working, and every new one authenticates with the new password.
+        var builder = new NpgsqlDataSourceBuilder(options.ToConnectionString(includePassword: false));
+        builder.UsePasswordProvider(
+            _ => _password.Value.Reveal(),
+            (_, _) => ValueTask.FromResult(_password.Value.Reveal()));
+        _source = builder.Build();
 
         // Created before the migrations, because they are created inside it.
         // Harmless when it is "public", which already exists.
@@ -209,6 +220,25 @@ public sealed class PostgresDatabase : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Changes the password new physical connections authenticate with.
+    /// </summary>
+    /// <remarks>
+    /// Called after the role's password was changed on the server (see
+    /// <see cref="PostgresProvisioning.RotatePassword"/>). Pooled connections
+    /// that are already authenticated are unaffected, which is what lets a
+    /// rotation happen under a running collection cycle.
+    /// </remarks>
+    public void UsePassword(Secret password)
+    {
+        if (password.IsEmpty)
+        {
+            throw new ArgumentException("A password is required.", nameof(password));
+        }
+
+        _password = new PasswordBox(password);
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -219,4 +249,7 @@ public sealed class PostgresDatabase : IDisposable
         _disposed = true;
         _source.Dispose();
     }
+
+    // A reference type around the struct, so a swap is one atomic write.
+    private sealed record PasswordBox(Secret Value);
 }
