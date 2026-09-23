@@ -1,4 +1,10 @@
-# M6.0b — iLO Redfish şekil ölçümü (şablon, henüz canlı ölçülmedi)
+# M6.0b — iLO Redfish şekil ölçümü
+
+**23 Eylül 2026, Kibar Holding, tek iLO (`KibarHolding-alhcesx04-ilo`), canlı.**
+`RedfishProbe --kind redfish --from-store … --shapes --mask`. Probe yalnız
+alan adı, tür ve sayı yazar, değer yazmaz; iki seviyeden derini (ör.
+`Oem.Hpe` altındaki 40 alan) listelemez. Bir cihaz, bir örnek: dağılım
+değil, şekil kanıtı. Aşağıdaki "ölçülmedi" satırları hâlâ ölçülmedi.
 
 Bu dosya, ilk iLO kimlik bilgisi girilip
 `RedfishProbe --from-store --kind redfish` canlı bir iLO 5/6'ya karşı
@@ -13,18 +19,18 @@ gerçek değerlerini istiyor, ki hiçbiri henüz ölçülmedi. Buraya sayı
 
 | Konu | Yol | Görüldü | Şekil | Maliyet | Kolektöre |
 |---|---|---|---|---|---|
-| Nesil/firmware | `Managers/1.FirmwareVersion` | ölçülmedi | — | — | — |
-| Power Redundancy[] | `Chassis/1/Power` | ölçülmedi | — | — | — |
-| Thermal Redundancy[] | `Chassis/1/Thermal` | ölçülmedi | — | — | — |
-| PSU sayısı + durum | `Chassis/1/Power.PowerSupplies[]` | ölçülmedi | — | — | — |
-| Fan sayısı + durum | `Chassis/1/Thermal.Fans[]` | ölçülmedi | — | — | — |
-| Sürücü sayısı + FailurePredicted dağılımı | `Systems/1/Storage/*/Drives/*` | ölçülmedi | — | — | — |
-| DIMM sayısı | `Systems/1/Memory/*` | ölçülmedi | — | — | — |
-| Firmware envanteri satır sayısı | `UpdateService/FirmwareInventory/*` | ölçülmedi | — | — | — |
-| IML girdi sayısı + en yeni `Created` | `Systems/1/LogServices/IML/Entries` | ölçülmedi | — | — | — |
-| `AggregateHealthStatus` var/yok | `Systems/1.Oem.Hpe.AggregateHealthStatus` | ölçülmedi | — | — | — |
+| Nesil/firmware | `Managers/1.FirmwareVersion` | var (string) | değer maskeli, nesil ölçülmedi | — | — |
+| Power Redundancy[] | `Chassis/1/Power` | var, 1 küme | `Mode`, `MinNumNeeded`, `MaxNumSupported`, `RedundancySet`×2, `Status` | — | aday |
+| Thermal Redundancy[] | `Chassis/1/Thermal` | **yok** | Thermal'da `Redundancy` alanı dönmedi | — | fan başına `Status` ile |
+| PSU sayısı + durum | `Chassis/1/Power.PowerSupplies[]` | 2 | `Status`, `LastPowerOutputWatts`, `LineInputVoltage`, `SerialNumber` | — | aday |
+| Fan sayısı + durum | `Chassis/1/Thermal.Fans[]` | 6 | `Reading`+`ReadingUnits`, `Status`; ayrıca `Temperatures[]` 77 sensör, `UpperThresholdCritical/Fatal` ile | — | aday |
+| Sürücü sayısı + FailurePredicted dağılımı | `Systems/1/Storage/*/Drives/*` | **ölçülmedi** | `Storage/1` → HTTP 404; kimlik sabit değil, koleksiyondan gezilmeli | — | probe düzeltmesi |
+| DIMM sayısı | `Systems/1/Memory/*` | ölçülmedi | yalnız bağlantı; `MemorySummary.TotalSystemMemoryGiB` var | — | — |
+| Firmware envanteri satır sayısı | `UpdateService/FirmwareInventory/*` | 36 | `Members@odata.count` | — | — |
+| IML girdi sayısı + en yeni `Created` | `Systems/1/LogServices/IML/Entries` | 207 | en yeni `Created` ölçülmedi | — | — |
+| `AggregateHealthStatus` var/yok | `Systems/1.Oem.Hpe.AggregateHealthStatus` | ölçülmedi | `Oem.Hpe` 40 alan, probe derinliği yetmedi; standart `Status.Health/HealthRollup` var | — | — |
 | `AgentlessManagementService` değeri | `Systems/1.Oem.Hpe.AggregateHealthStatus.AgentlessManagementService` | ölçülmedi | — | — | — |
-| `Systems/1.SerialNumber/UUID` ↔ vim25 `hardware.systemInfo` eşleşme sayısı | (çapraz kaynak) | ölçülmedi | — | — | — |
+| `Systems/1.SerialNumber/UUID` ↔ vim25 `hardware.systemInfo` eşleşme sayısı | (çapraz kaynak) | alanlar iki tarafta da var | değerler maskeli, eşleşme sayılmadı | — | — |
 | Uç nokta başına yanıt süresi | (hepsi) | ölçülmedi | — | — | — |
 
 ## Nesil/sürüm dağılımı
@@ -35,7 +41,14 @@ Estate'teki iLO nesli (5 mi 6 mı) ve firmware sürümü dağılımı: **ölçü
 
 `VsphereProbe --host-identity` çıktısındaki `hardware.systemInfo.{vendor,
 model,serialNumber,uuid}` ile bu dosyanın `Systems/1.{SerialNumber,UUID}`
-sütunlarının kaç host için eşleştiği (10 hosttan kaçı): **ölçülmedi**.
+sütunlarının kaç host için eşleştiği: **ölçülmedi** (tek iLO, değerler maskeli).
+
+vim25 tarafı, aynı gün, `KibarHolding-KBVc01`, 59 host:
+`hardware.systemInfo.uuid` **59/59**, `serialNumber` **33/59**,
+`otherIdentifyingInfo` 426 girdi (host başına ~7), `qualifiedName` 57/59,
+`vvolHostId` 35/59. Okuma 134 ms, 130 621 karakter. Seri numarası 26 hostta
+boş olduğundan birincil anahtar UUID, seri ikincil
+(docs/reference-approaches.md).
 
 ## Reddedilenler / bilinmeyenler (§10.7'den taşındı)
 

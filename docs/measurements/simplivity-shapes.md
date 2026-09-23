@@ -10,6 +10,17 @@ ve ayrıştırıcıların doğruluğunu kanıtlıyor. Aşağıdaki tablo canlı 
 estate'in gerçek değerlerini istiyor; hiçbiri henüz ölçülmedi, ve buraya
 sayı **uydurulmadı**.
 
+## 23 Eylül 2026 denemesi: bağlantı kurulamadı
+
+`RedfishProbe --kind simplivity --from-store KibarHolding-KBSVT --shapes --mask`
+→ `POST /api/oauth/token` **FAILED**: "The SSL connection could not be
+established". Sertifika doğrulaması gevşek (self-signed kabul) olduğu halde
+el sıkışma kurulmadı, yani sertifika değil TLS sürümü/şifre takımı ya da ağ.
+Aynı gün ebebek'in SVT_Vcenter bağlantısı da aynı hatayı veriyor. Tablo
+bu yüzden hâlâ boş; `hypervisor_object_id` ↔ moRef eşleşmesi de
+sayılamadı. Sonraki adım: OVC'nin kabul ettiği TLS sürümünü ağ tarafında
+görmek (probe'un iç istisnayı yazması yeterli olur).
+
 ## İlk soru (canlıda henüz cevapsız)
 
 23 Eylül'de ölçülen: olay akışında `com.simplivity.event.*` **0** (bkz.
