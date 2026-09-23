@@ -7,6 +7,9 @@
  * a script meant for `node`, not the app bundle.
  *
  * Run:  node design/catalogues.check.ts   (from web/)
+ *
+ * Requires Node >= 22.6 (built-in type stripping runs a .ts file directly);
+ * on an older Node run it with tsx or a .mjs copy, or it fails to start.
  */
 import { orderCatalogues } from '../src/lib/catalogues.ts'
 
