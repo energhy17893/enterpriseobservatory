@@ -65,6 +65,22 @@ public class VsphereInventorySourceTests
     // --- identity ---------------------------------------------------------
 
     [Fact]
+    public async Task The_vcenter_carries_its_instance_uuid_so_simplivity_hosts_can_join()
+    {
+        // SimpliVity names a host <instanceUuid>:HostSystem:host-N (measured
+        // on Kibar, 26 of 26); without this mark the prefix matches nothing.
+        var snapshot = await Read(Payload() with { VCenterInstanceUuid = "4C1D2E3F-0A1B-4C5D-8E9F-0123456789AB" });
+
+        var vCenter = snapshot.Entities.Single(e => e.Kind == EntityKind.VCenter);
+
+        Assert.Contains(vCenter.Marks, m =>
+            m.Kind == IdentityMarkKind.HardwareUuid && m.Value == "4c1d2e3f-0a1b-4c5d-8e9f-0123456789ab");
+        Assert.DoesNotContain(
+            (await Read(Payload())).Entities.Single(e => e.Kind == EntityKind.VCenter).Marks,
+            m => m.Kind == IdentityMarkKind.HardwareUuid);
+    }
+
+    [Fact]
     public async Task A_host_reports_the_marks_that_let_it_be_matched_later()
     {
         var snapshot = await Read(Payload(hosts: [Host()]));
