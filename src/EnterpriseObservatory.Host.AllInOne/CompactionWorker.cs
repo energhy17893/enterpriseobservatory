@@ -131,7 +131,16 @@ public sealed class CompactionWorker(
         {
             HostLog.CompactionFailed(_logger, error);
         }
-        else if (outcome.Report is { DidSomething: true } report)
+        else if (outcome.Report is { } finished)
+        {
+            HostLog.RetentionDeleted(
+                _logger,
+                (int)finished.DeleteDuration.TotalMilliseconds,
+                finished.SamplesDeleted,
+                finished.BucketsDeleted);
+        }
+
+        if (outcome.Report is { DidSomething: true } report)
         {
             HostLog.Compacted(
                 _logger,

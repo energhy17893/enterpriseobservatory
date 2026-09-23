@@ -116,6 +116,14 @@ internal static partial class HostLog
         ILogger logger, int written, int samplesDeleted, int bucketsDeleted);
 
     [LoggerMessage(
+        EventId = 1049,
+        Level = LogLevel.Information,
+        Message = "Retention delete took {Milliseconds} ms ({SamplesDeleted} samples, " +
+                  "{BucketsDeleted} buckets).")]
+    public static partial void RetentionDeleted(
+        ILogger logger, int milliseconds, int samplesDeleted, int bucketsDeleted);
+
+    [LoggerMessage(
         EventId = 1015,
         Level = LogLevel.Error,
         Message = "Compaction failed; the next pass will pick it up.")]

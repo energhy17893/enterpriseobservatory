@@ -966,10 +966,19 @@ public sealed class PostgresObservationStore : IObservationStore
             : null;
     }
 
+    // Not the pool's 30 s: on a sample table of tens of millions of rows the
+    // retention delete ran past it and the pass failed (23 September 2026).
+    // Only the deletes. The fold holds the watermark lock appends wait on, so
+    // a longer fold timeout would stall ingest the way the unbounded merge
+    // retry did; the deletes hold no such lock. If the logged duration passes
+    // 60 s, the answer is an index on at_utc, not a bigger number here.
+    private const int RetentionDeleteTimeoutSeconds = 120;
+
     private int DeleteAgedSamples(DateTimeOffset nowUtc, SeriesRetentionPolicy policy) =>
         _database.Write(connection =>
         {
             using var command = connection.CreateCommand();
+            command.CommandTimeout = RetentionDeleteTimeoutSeconds;
             command.CommandText = "DELETE FROM sample WHERE at_utc < @cutoff;";
             command.Parameters.AddWithValue("cutoff", Seconds(nowUtc - policy.Raw));
             return command.ExecuteNonQuery();
@@ -980,6 +989,7 @@ public sealed class PostgresObservationStore : IObservationStore
         _database.Write(connection =>
         {
             using var command = connection.CreateCommand();
+            command.CommandTimeout = RetentionDeleteTimeoutSeconds;
             command.CommandText = """
                 DELETE FROM bucket WHERE resolution = @resolution AND start_utc < @cutoff;
                 """;
@@ -1493,6 +1503,7 @@ public static class CompactionSequence
         // is the whole guarantee. See the remarks.
         var written = foldFiveMinutes() + foldOneHour();
 
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         var samplesDeleted = deleteAgedSamples();
         var bucketsDeleted = deleteAgedBuckets();
 
@@ -1501,6 +1512,7 @@ public static class CompactionSequence
             BucketsWritten = written,
             SamplesDeleted = samplesDeleted,
             BucketsDeleted = bucketsDeleted,
+            DeleteDuration = System.Diagnostics.Stopwatch.GetElapsedTime(started),
         };
     }
 }

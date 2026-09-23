@@ -136,6 +136,13 @@ public sealed record CompactionReport
 
     public int BucketsDeleted { get; init; }
 
+    /// <summary>
+    /// How long both retention deletes took. Logged every pass so the week
+    /// that decides whether <c>sample</c> needs an index on its age has its
+    /// numbers.
+    /// </summary>
+    public TimeSpan DeleteDuration { get; init; }
+
     // There was a SeriesForgotten count here, for a sweep step that deleted
     // series rows with nothing left. The step is gone (see the note in
     // PostgresObservationStore.Compact and ADR-0019) and the field went with
