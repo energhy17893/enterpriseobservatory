@@ -1585,6 +1585,9 @@ public partial class ReadModelTests
         public ComplianceTransitionsPage TransitionsSince(
             DateTimeOffset sinceUtc, DateTimeOffset? toUtc = null, string? catalogueRelease = null,
             string? controlId = null, EntityId? entity = null) => ComplianceTransitionsPage.Empty;
+
+        public IReadOnlyList<ComplianceTransition> LastTransitionsAtOrBefore(
+            string catalogueRelease, DateTimeOffset atUtc) => [];
     }
 
     /// <summary>
