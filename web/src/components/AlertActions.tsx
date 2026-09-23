@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { cn } from '@/lib/ui'
+import { ConfirmDestructive } from '@/components/Primitives'
 import type { AlertView } from '@/api/types'
 
 const SILENCE_OPTIONS = [
@@ -21,6 +22,7 @@ export function AlertActions({ alert }: { alert: AlertView }) {
   const queryClient = useQueryClient()
   const [error, setError] = useState<string | null>(null)
   const [silencing, setSilencing] = useState(false)
+  const [confirmingClear, setConfirmingClear] = useState(false)
 
   const act = useMutation({
     mutationFn: (run: () => Promise<unknown>) => run(),
@@ -68,13 +70,25 @@ export function AlertActions({ alert }: { alert: AlertView }) {
         {!resolved && (
           <Action
             busy={busy}
-            onClick={() => act.mutate(() => api.clear(alert.fingerprint))}
+            destructive
+            onClick={() => setConfirmingClear(true)}
             title="Declare it handled. Re-observing the same fault will not reopen it."
           >
             Clear
           </Action>
         )}
       </div>
+
+      <ConfirmDestructive
+        open={confirmingClear}
+        title={`Clear "${alert.title}"? This cannot be undone.`}
+        confirmLabel="Clear"
+        onConfirm={() => {
+          setConfirmingClear(false)
+          act.mutate(() => api.clear(alert.fingerprint))
+        }}
+        onCancel={() => setConfirmingClear(false)}
+      />
 
       {silencing && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -116,11 +130,14 @@ function Action({
   onClick,
   busy,
   title,
+  destructive,
 }: {
   children: string
   onClick: () => void
   busy: boolean
   title?: string
+  /** A distinct destructive look (A3) — Clear is permanent, unlike Acknowledge. */
+  destructive?: boolean
 }) {
   return (
     <button
@@ -129,8 +146,13 @@ function Action({
       disabled={busy}
       title={title}
       className={cn(
-        'rounded-md border border-border px-2 py-1 text-xs',
-        busy ? 'text-muted-foreground' : 'text-foreground hover:bg-page',
+        'rounded-md border px-2 py-1 text-xs',
+        destructive ? 'border-destructive' : 'border-border',
+        busy
+          ? 'text-muted-foreground'
+          : destructive
+            ? 'text-foreground hover:bg-destructive hover:text-destructive-on'
+            : 'text-foreground hover:bg-page',
       )}
     >
       {children}

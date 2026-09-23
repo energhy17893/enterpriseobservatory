@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { cn, ramp, type StatusName } from '@/lib/ui'
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
@@ -107,4 +107,80 @@ export function Empty({
 
 export function Loading({ what }: { what: string }) {
   return <Card className="p-8 text-center text-sm text-muted-foreground">Loading {what}…</Card>
+}
+
+/**
+ * A destructive confirmation step (A3: Clear is permanent and previously
+ * fired on one click, single and bulk, styled identically to Acknowledge).
+ *
+ * Uses a native `<dialog>` — no library needed for a modal. `showModal`
+ * traps focus and puts it on the first focusable element, which is `Keep`
+ * (DOM order), so the safe choice is the keyboard default; `Escape` fires the
+ * dialog's own `cancel` event, handled below the same way as clicking `Keep`.
+ * Focus returns to whatever opened the dialog on close, tracked via
+ * `document.activeElement` at open time rather than a caller-supplied ref, so
+ * this works for the single-row and the bulk-bar trigger alike.
+ */
+export function ConfirmDestructive({
+  open,
+  title,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean
+  title: string
+  confirmLabel: string
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const ref = useRef<HTMLDialogElement>(null)
+  const opener = useRef<Element | null>(null)
+  const titleId = useId()
+
+  useEffect(() => {
+    if (open) {
+      opener.current = document.activeElement
+      ref.current?.showModal()
+    } else {
+      ref.current?.close()
+      if (opener.current instanceof HTMLElement) {
+        opener.current.focus()
+      }
+    }
+  }, [open])
+
+  return (
+    <dialog
+      ref={ref}
+      aria-labelledby={titleId}
+      className="rounded-lg border border-destructive bg-card p-4 text-foreground backdrop:bg-black/40"
+      onCancel={(event) => {
+        // Escape reaches here by default; treat it exactly like Keep.
+        event.preventDefault()
+        onCancel()
+      }}
+    >
+      <p id={titleId} className="max-w-sm text-sm">
+        {title}
+      </p>
+      <div className="mt-4 flex justify-end gap-2">
+        <button
+          type="button"
+          autoFocus
+          onClick={onCancel}
+          className="rounded-md border border-border px-3 py-1 text-xs text-foreground hover:bg-page"
+        >
+          Keep
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          className="rounded-md border border-destructive bg-destructive px-3 py-1 text-xs text-destructive-on"
+        >
+          {confirmLabel}
+        </button>
+      </div>
+    </dialog>
+  )
 }

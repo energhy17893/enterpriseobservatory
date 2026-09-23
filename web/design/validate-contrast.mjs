@@ -94,6 +94,8 @@ function rulesFor(theme) {
         { label: 'border / card', fg: theme.border, bg: theme.card, min: 1.3 },
         { label: 'primaryOn / primary', fg: theme.primaryOn, bg: theme.primary, min: 4.5 },
         { label: 'primary / page (non-text)', fg: theme.primary, bg: theme.page, min: 3.0 },
+        // A3: destructive confirm button — on-text against its own background.
+        { label: 'destructiveOn / destructive', fg: theme.destructiveOn, bg: theme.destructive, min: 4.5 },
     );
 
     for (const s of STATUSES) {
