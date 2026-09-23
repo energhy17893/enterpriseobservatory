@@ -204,6 +204,11 @@ public sealed class SimplivityInventorySource(
                     ["state"] = state,
                     ["upgrade_state"] = Text(host, "upgrade_state"),
                     ["version"] = Text(host, "version"),
+                    // The OVC, by name only: the host carries no reference to
+                    // its VM. It folds onto its vSphere VM only when
+                    // /api/virtual_machines lists it with a
+                    // <uuid>:VirtualMachine:vm-N reference (VirtualMachines
+                    // below) — never by matching this name.
                     ["virtual_controller_name"] = Text(host, "virtual_controller_name"),
                 });
 
