@@ -7,6 +7,12 @@ import { AlertActions } from '@/components/AlertActions'
 import { BulkBar } from '@/components/BulkBar'
 import { ago, cn, severityStatus } from '@/lib/ui'
 
+// eo-ux §7: default page size is "to be measured" against the Kibar-sized
+// estate (a render-time benchmark), not guessed. 50 matches the API's own
+// undocumented default until that measurement exists — do not raise this
+// without one.
+const PAGE_SIZE = 50
+
 /**
  * The alert inbox: the primary triage surface.
  *
@@ -25,10 +31,18 @@ export function Alerts() {
 
   const severity = params.get('severity') ?? ''
   const search = params.get('search') ?? ''
+  const offsetParam = Number(params.get('offset') ?? '0')
+  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0
 
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ['alerts', severity, search],
-    queryFn: () => api.alerts({ severity: severity || undefined, search: search || undefined }),
+    queryKey: ['alerts', severity, search, offset],
+    queryFn: () =>
+      api.alerts({
+        severity: severity || undefined,
+        search: search || undefined,
+        offset,
+        limit: PAGE_SIZE,
+      }),
     refetchInterval: 15_000,
     // The list must not blink back to a spinner every fifteen seconds while
     // someone is reading it.
@@ -39,11 +53,26 @@ export function Alerts() {
     const next = new URLSearchParams(params)
     if (value === '') next.delete(key)
     else next.set(key, value)
+    // A filter change makes the current page meaningless — go back to the
+    // start of the (new) result set rather than stranding the operator past
+    // its end.
+    next.delete('offset')
     setParams(next, { replace: true })
 
     // A filter change makes the selection mean something else, so it goes.
     // Carrying it across would let an operator acknowledge a set they are no
     // longer looking at.
+    setSelected(new Set())
+  }
+
+  function setOffset(next: number) {
+    const nextParams = new URLSearchParams(params)
+    if (next <= 0) nextParams.delete('offset')
+    else nextParams.set('offset', String(next))
+    setParams(nextParams, { replace: true })
+
+    // Same reasoning as a filter change: the rows on screen are about to be
+    // different ones, so a selection made against the old page doesn't carry.
     setSelected(new Set())
   }
 
@@ -63,9 +92,33 @@ export function Alerts() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">All alerts</h1>
         {data !== undefined && (
-          <span className="text-sm text-muted-foreground tabular">
-            {data.items.length} of {data.total}
-          </span>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            {/* WCAG 4.1.3: the range changes on every page/filter change and
+                must be announced without the operator having to look. */}
+            <span className="tabular" role="status" aria-live="polite">
+              {data.total === 0
+                ? '0 of 0'
+                : `${offset + 1}–${Math.min(offset + PAGE_SIZE, data.total)} of ${data.total}`}
+            </span>
+            <button
+              type="button"
+              aria-label="Previous page of alerts"
+              disabled={offset === 0}
+              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+              className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              aria-label="Next page of alerts"
+              disabled={offset + PAGE_SIZE >= data.total}
+              onClick={() => setOffset(offset + PAGE_SIZE)}
+              className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         )}
       </div>
 
