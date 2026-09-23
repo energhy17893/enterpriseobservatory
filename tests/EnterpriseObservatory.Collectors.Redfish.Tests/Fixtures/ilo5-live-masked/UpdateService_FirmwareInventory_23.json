@@ -1,0 +1,32 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u0022542C1060\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/23",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "23",
+  "Description": "VK003840GXAWP",
+  "Name": "3.84TB 6G SATA SSD",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": "f9ff7698-6e7a-308d-e069-7dd0ac2f2206",
+      "DeviceContext": "Slot=Unknown:Port=3I:Box=2:Bay=1",
+      "Targets": [
+        "389321f3-621c-7989-2105-644816514960"
+      ]
+    }
+  },
+  "RelatedItem": [
+    {
+      "@odata.id": "/redfish/v1/Systems/1/Storage/DE07C000/Drives/11"
+    }
+  ],
+  "SoftwareId": "f9ff7698-6e7a-308d-e069-7dd0ac2f2206:389321f3-621c-7989-2105-644816514960",
+  "Status": {
+    "Health": "OK",
+    "State": "Enabled"
+  },
+  "Updateable": true,
+  "Version": "HPG1"
+}

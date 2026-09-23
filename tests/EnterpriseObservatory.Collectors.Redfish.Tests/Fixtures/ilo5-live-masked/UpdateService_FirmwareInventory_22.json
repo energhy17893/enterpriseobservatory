@@ -1,0 +1,23 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u00220539D502\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/22",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "22",
+  "Description": "102b0538159000e4",
+  "Name": "Embedded Video Controller",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": null,
+      "DeviceContext": "Embedded Device",
+      "DeviceInstance": "PciRoot(0x0)/Pci(0x1C,0x4)/Pci(0x0,0x1)",
+      "Targets": [
+        "b8b7a693-235d-0f7a-772a-6414357123a2"
+      ]
+    }
+  },
+  "Updateable": false,
+  "Version": "2.5"
+}

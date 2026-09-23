@@ -1,0 +1,22 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u00220539D502\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/6",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "6",
+  "Description": "PowerSupplies",
+  "Name": "Power Supply Firmware",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": "4bf74122-8331-3890-cde7-39527a1a5a48",
+      "DeviceContext": "Bay 1",
+      "Targets": [
+        "2767f084-6081-8739-9768-4ba05be078da"
+      ]
+    }
+  },
+  "Updateable": true,
+  "Version": "2.00"
+}

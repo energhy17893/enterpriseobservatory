@@ -1137,6 +1137,16 @@ public sealed class ReadModel(
 
     private const string SimplivityNamespace = "simplivity";
 
+    /// <summary>The Redfish keys an alert rests on; an iLO annotates only ESXi hosts (M6.1).</summary>
+    private static readonly string[] JudgedRedfishKeys =
+    [
+        InventoryVerdictKeys.RedfishAggregateHealth,
+        InventoryVerdictKeys.RedfishPsuRedundancy,
+        InventoryVerdictKeys.RedfishFanRedundancy,
+    ];
+
+    private const string RedfishNamespace = "redfish";
+
     private const string Unknown = "Unknown";
 
     /// <summary>Every annotated value on one entity, judged keys it lacks as null.</summary>
@@ -1148,9 +1158,12 @@ public sealed class ReadModel(
         foreach (var annotation in graph.Annotations.Where(a => a.Entity == entity.Id))
         {
             var prefix = annotation.Namespace + ".";
-            var judged = annotation.Namespace == SimplivityNamespace
-                ? JudgedSimplivityKeys.GetValueOrDefault(entity.Kind, [])
-                : [];
+            var judged = annotation.Namespace switch
+            {
+                SimplivityNamespace => JudgedSimplivityKeys.GetValueOrDefault(entity.Kind, []),
+                RedfishNamespace => JudgedRedfishKeys,
+                _ => [],
+            };
 
             views.AddRange(annotation.Settings.Keys.Union(judged, StringComparer.OrdinalIgnoreCase)
                 .Order(StringComparer.Ordinal)

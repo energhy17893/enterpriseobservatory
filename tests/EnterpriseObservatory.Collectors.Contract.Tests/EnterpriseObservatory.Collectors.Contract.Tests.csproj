@@ -21,8 +21,15 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Application\EnterpriseObservatory.Application.csproj" />
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Domain\EnterpriseObservatory.Domain.csproj" />
+    <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Redfish\EnterpriseObservatory.Collectors.Redfish.csproj" />
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Simplivity\EnterpriseObservatory.Collectors.Simplivity.csproj" />
     <ProjectReference Include="..\..\src\EnterpriseObservatory.Collectors.Vsphere\EnterpriseObservatory.Collectors.Vsphere.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The recorded iLO 5 and the fake that serves it, from the Redfish collector's tests. -->
+    <Compile Include="..\EnterpriseObservatory.Collectors.Redfish.Tests\FakeIlo.cs" Link="SourceContract\FakeIlo.cs" />
+    <None Include="..\EnterpriseObservatory.Collectors.Redfish.Tests\Fixtures\ilo5-live-masked\*.json" LinkBase="Fixtures\ilo5-live-masked" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

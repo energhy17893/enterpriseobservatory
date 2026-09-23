@@ -15,6 +15,8 @@ using EnterpriseObservatory.RedfishProbe;
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --dry --kind simplivity
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind redfish --mask
 //   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind simplivity --fields all
+//   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --from-store [name] --kind redfish --dump <dir>
+//   dotnet run --project tools/EnterpriseObservatory.RedfishProbe -- --remask <dumpDir> <outDir>
 
 var mask = args.Contains("--mask", StringComparer.OrdinalIgnoreCase);
 var dry = args.Contains("--dry", StringComparer.OrdinalIgnoreCase);
@@ -32,6 +34,29 @@ if (fieldsMode is not (null or "default" or "explicit" or "optional" or "all"))
 {
     Console.Error.WriteLine("--fields takes default, explicit, optional or all.");
     return 2;
+}
+
+// --dump <dir> (Redfish only): masked raw JSON of the M6.1 collector's
+// endpoints, one file per GET, for recorded test fixtures (RedfishDump).
+var dumpIndex = Array.FindIndex(args, a => string.Equals(a, "--dump", StringComparison.OrdinalIgnoreCase));
+var dumpDirectory = dumpIndex >= 0 && dumpIndex + 1 < args.Length ? args[dumpIndex + 1] : null;
+
+if (dumpIndex >= 0 && dumpDirectory is null)
+{
+    Console.Error.WriteLine("--dump takes a directory.");
+    return 2;
+}
+
+var remaskIndex = Array.FindIndex(args, a => string.Equals(a, "--remask", StringComparison.OrdinalIgnoreCase));
+if (remaskIndex >= 0)
+{
+    if (remaskIndex + 2 >= args.Length)
+    {
+        Console.Error.WriteLine("--remask takes an input and an output directory.");
+        return 2;
+    }
+
+    return RedfishDump.Remask(args[remaskIndex + 1], args[remaskIndex + 2]);
 }
 
 var kindIndex = Array.FindIndex(args, a => string.Equals(a, "--kind", StringComparison.OrdinalIgnoreCase));
@@ -94,6 +119,18 @@ Console.WriteLine($"=== Connection ===");
 Console.WriteLine($"  instance                         {Mask.Show(instanceId, mask)}");
 Console.WriteLine($"  endpoint                         {Mask.Show(baseAddress.Host, mask)}");
 Console.WriteLine($"  certificate validation            {(insecure ? "RELAXED (self-signed accepted)" : "enforced")}");
+
+if (dumpDirectory is not null)
+{
+    if (kind != "redfish")
+    {
+        Console.Error.WriteLine("--dump is Redfish only.");
+        return 2;
+    }
+
+    using var dumpClient = new RedfishClient(baseAddress, user, password, insecure);
+    return await RedfishDump.RunAsync(dumpClient, dumpDirectory, baseAddress.Host, cancellation.Token);
+}
 
 return kind == "redfish"
     ? await RunLiveRedfishAsync(baseAddress, user, password, insecure, mask, shapes, cancellation.Token)

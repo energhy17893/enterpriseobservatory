@@ -1,0 +1,23 @@
+{
+  "@odata.context": "/redfish/v1/$metadata#SoftwareInventory.SoftwareInventory",
+  "@odata.etag": "W/\u00220539D502\u0022",
+  "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/5",
+  "@odata.type": "#SoftwareInventory.v1_2_0.SoftwareInventory",
+  "Id": "5",
+  "Description": "PowerManagementController",
+  "Name": "Power Management Controller Firmware",
+  "Oem": {
+    "Hpe": {
+      "@odata.context": "/redfish/v1/$metadata#HpeiLOSoftwareInventory.HpeiLOSoftwareInventory",
+      "@odata.type": "#HpeiLOSoftwareInventory.v2_1_0.HpeiLOSoftwareInventory",
+      "DeviceClass": "0e45b04b-288c-6408-2026-e06c78e59b1e",
+      "DeviceContext": "System Board",
+      "Targets": [
+        "07891029-7006-9414-8533-760457827438",
+        "02384428-6826-1647-9377-037342981f07"
+      ]
+    }
+  },
+  "Updateable": true,
+  "Version": "1.1.4"
+}

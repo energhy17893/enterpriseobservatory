@@ -53,4 +53,16 @@ public class GraphFoldingDirectoryTests
         Assert.False(directory.Contains(EntityId.For("vc-1", "host-22")));
         Assert.Equal(EntityId.For("vc-1", "vm-101"), directory.VirtualMachineByInstanceUuid("5012abcd-0000-0000-0000-000000000101"));
     }
+
+    [Fact]
+    public void An_esxi_host_is_found_by_its_hardware_uuid_in_any_case_and_only_a_host()
+    {
+        var directory = Directory(
+            Of("vc-1", "host-4", EntityKind.EsxiHost, "31430760-2941-4f64-8973-44819448223c"),
+            Of("vc-1", "vm-7", EntityKind.VirtualMachine, "77777777-2941-4f64-8973-44819448223c"));
+
+        Assert.Equal(EntityId.For("vc-1", "host-4"), directory.HostByHardwareUuid("31430760-2941-4F64-8973-44819448223C"));
+        Assert.Null(directory.HostByHardwareUuid("77777777-2941-4f64-8973-44819448223c"));
+        Assert.Null(directory.HostBySerialNumber("DU62325C0N"));
+    }
 }

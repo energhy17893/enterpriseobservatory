@@ -475,6 +475,7 @@ builder.Services.AddSingleton(provider => new SourceConnectionCatalogue(
     {
         [ConnectionKinds.Vsphere] = provider.GetRequiredService<VsphereConnectionProbe>(),
         [ConnectionKinds.Simplivity] = new SimplivityConnectionProbe(),
+        [ConnectionKinds.Redfish] = new RedfishConnectionProbe(),
     }));
 
 builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegistry(
