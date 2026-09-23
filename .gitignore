@@ -49,7 +49,9 @@ Desktop.ini
 
 # Agent skill tooling (npx skills) — not part of the product
 .agents/
-.claude/skills/
+.claude/skills/*
+# project skills are versioned; installed ones are not
+!.claude/skills/eo-ux/
 skills-lock.json
 
 # Isolated worktrees for parallel agent builds. Both spellings: the CLI
