@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The tool's own project, not a copy of it: RedfishReport, SimplivityReport
+      and ShapeDump are internal, and InternalsVisibleTo below is what lets
+      these tests reach them. A console app referenced as a library is
+      ordinary in .NET; Program's top-level statements are simply never
+      invoked from here.
+    -->
+    <ProjectReference Include="..\..\tools\EnterpriseObservatory.RedfishProbe\EnterpriseObservatory.RedfishProbe.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Recorded sample data, not written from memory:
+        Fixtures/Redfish     — DMTF Redfish-Publications mockups (public-rackmount1,
+                                public-localstorage). See DMTF-SOURCES.md.
+        Fixtures/SimpliVity  — instance documents built from HPE's own published
+                                OmniStack REST schema (hpe-simplivity-swagger). See
+                                SIMPLIVITY-SOURCES.md. No live device responses exist
+                                for this estate yet (M6.0's gate).
+      No password, serial or UUID in any of these files is real; the tool never
+      constructs a fixture from a live credential.
+    -->
+    <None Update="Fixtures\**\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Fixtures\**\*.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
