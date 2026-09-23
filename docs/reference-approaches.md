@@ -965,6 +965,8 @@ başlatmada `MetricLookback`'e düşmesi tam da bizim #76'da yaşadığımız ç
 okuma). **Reddedilen:** Prometheus'un bloklaması (toplayıcı depoyu bekleyemez,
 turlar atlanır) ve OTel `block_on_overflow`.
 
+**Depo zaman aşımları (23 Eylül ölçümü, #125 ve sıkıştırma):** havuz varsayılanı 30 sn tek başına yanlış kaldıraç. Üç ifade üç farklı kural: (a) kuyruk merge'i — büyük birikim tek INSERT'te 30 sn'yi aşıp her denemede büyüyordu → 300 sn tavan + parça boşaltma (F5b); (b) fold (FoldOneSlice) — filigran kilidini tutar, her append o kilidi bekler → **30 sn bilinçli**, kaldıraç süre değil dilim boyutu (BucketsPerSlice); (c) saklama silmesi (DeleteAgedSamples/Buckets) — kilit tutmaz, 44,6M satırda `at_utc` öncü sütun olmadığından skip scan → 120 sn kendi zaman aşımı; BRIN(at_utc) ancak ölçüm 60 sn'yi geçerse (migrasyon 18). Kural: zaman aşımını uzatmadan önce ifadenin hangi kilidi tuttuğunu ve EXPLAIN'i oku.
+
 **F6 — öz-ölçü adları ve anlamı:**
 
 | Ürün | Ad / alan | Anlam | Kaynak |
@@ -1062,6 +1064,8 @@ nesnesinin gerçekten döndüğü; `hardware.systemInfo.{vendor,model,serialNumb
 vCenter'da olduğu ve `hypervisor_object_id`'nin moRef olup olmadığı; IML girdi
 sayısı ve `Created` sırası; iLO cevap süreleri (Telegraf 5 sn, Netdata 15 sn
 zaman aşımı kullanıyor).
+
+**Ölçüldü (23 Eylül, KibarHolding-KBVc01, 59 host):** `hardware.systemInfo.uuid` 59/59, `serialNumber` yalnız 33/59, vendor/model 59/59, `otherIdentifyingInfo` 426 giriş. **Karar (M6.2 kimlik katlama):** birincil anahtar UUID ↔ Redfish `Systems/1.UUID`; seri numarası yalnız ikincil doğrulama; eşleşmeyen host `katlanamadı` olarak açık kalır, tahmin yok.
 
 **Bulunamadı:** iLO maksimum oturum sayısı ve rate limit; "GET için LoginPriv
 yeter" açık cümlesi; SimpliVity 5.x API sürüm numarası ve eşzamanlı token sınırı.
