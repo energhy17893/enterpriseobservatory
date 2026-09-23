@@ -106,12 +106,16 @@ public class AnnotatingSourceAlertTests
     {
         var cycle = Cycle();
         var sources = new IInventorySource[] { Vsphere(), Simplivity(() => true) };
+        MonitoringCycleResult? last = null;
 
         for (var i = 0; i < 3; i++)
         {
-            await cycle.RunInventoryAsync(sources, Options, CancellationToken.None);
+            last = await cycle.RunInventoryAsync(sources, Options, CancellationToken.None);
             _clock.Advance(TimeSpan.FromMinutes(5));
         }
+
+        // The diagnostic the host logs (EventId 1052): in, passed, held.
+        Assert.Equal(new SourceAlertCount("svt-1", 1, 1, 1), last!.AlertsBySource.Single(c => c.Source == "svt-1"));
 
         var alert = HaAlert();
         Assert.NotNull(alert);

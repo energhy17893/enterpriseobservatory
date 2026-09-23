@@ -45,6 +45,16 @@ public sealed record MonitoringCycleResult
     public IReadOnlyList<string> SilentSources { get; init; } = [];
 
     /// <summary>
+    /// Per answering source: alerts in its snapshot, alerts of that source
+    /// handed to reconciliation, and instances of that source held after it.
+    /// </summary>
+    /// <remarks>
+    /// Diagnostic (S3 follow-up): the three side by side say which layer
+    /// loses a source's alert, if one does.
+    /// </remarks>
+    public IReadOnlyList<SourceAlertCount> AlertsBySource { get; init; } = [];
+
+    /// <summary>
     /// Sources that returned a snapshot this cycle.
     /// </summary>
     /// <remarks>
@@ -353,6 +363,14 @@ public sealed class MonitoringCycle(
             VanishedEntities = graph.Vanished.Count(),
             SilentSources = silent,
             ReportingSources = reporting,
+            AlertsBySource =
+            [
+                .. cycle.Snapshots.Select(s => new SourceAlertCount(
+                    s.SourceInstanceId,
+                    s.Alerts.Count,
+                    observed.Count(a => a.Source == s.SourceInstanceId),
+                    reconciliation.Instances.Count(i => i.Source == s.SourceInstanceId))),
+            ],
             CycleDuration = stopwatch.Elapsed,
             TransitionsAppended = reconciliation.TransitionsAppended,
             AgeClampedToUnknown = reconciliation.AgeClampedToUnknown,
@@ -934,3 +952,6 @@ public sealed class MonitoringCycle(
             : IdentityResolver.Resolve(candidates, now).SameAsEdges;
     }
 }
+
+/// <summary>One source's alerts through one inventory cycle. See <see cref="MonitoringCycleResult.AlertsBySource"/>.</summary>
+public sealed record SourceAlertCount(string Source, int InSnapshot, int PassedToReconciler, int HeldAfter);

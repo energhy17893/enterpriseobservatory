@@ -77,6 +77,12 @@ public sealed class MonitoringWorker(
                 HostLog.InventoryCycle(
                     _logger, result.ActiveEntities, result.VanishedEntities, result.Visible.Count);
 
+                foreach (var count in result.AlertsBySource)
+                {
+                    HostLog.InventoryAlertsBySource(
+                        _logger, count.Source, count.InSnapshot, count.PassedToReconciler, count.HeldAfter);
+                }
+
                 _selfMetrics.RecordInventory(new CycleMetricsSnapshot
                 {
                     AtUtc = result.AtUtc,

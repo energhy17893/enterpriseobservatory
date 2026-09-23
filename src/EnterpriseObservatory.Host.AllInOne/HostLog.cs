@@ -388,4 +388,24 @@ internal static partial class HostLog
         Level = LogLevel.Warning,
         Message = "Connection {InstanceId} closed without giving its session back: {Detail}.")]
     public static partial void SessionNotReleased(ILogger logger, string instanceId, string detail);
+
+    /// <summary>
+    /// What one SimpliVity read produced, counted where the snapshot is
+    /// complete (S3 follow-up diagnostic). Beside <see cref="InventoryAlertsBySource"/>,
+    /// it says which layer loses an alert.
+    /// </summary>
+    [LoggerMessage(
+        EventId = 1051,
+        Level = LogLevel.Information,
+        Message = "SimpliVity {Instance}: {Annotations} annotations, {Alerts} alerts, {FoldFailures} fold failures, {NotSafe} VMs not SAFE")]
+    public static partial void SimplivityRead(
+        ILogger logger, string instance, int annotations, int alerts, int foldFailures, int notSafe);
+
+    /// <summary>One answering source's alerts through the inventory cycle (S3 follow-up diagnostic).</summary>
+    [LoggerMessage(
+        EventId = 1052,
+        Level = LogLevel.Information,
+        Message = "Inventory alerts from {Instance}: {InSnapshot} in snapshot, {Passed} passed to reconciliation, {Held} held after it")]
+    public static partial void InventoryAlertsBySource(
+        ILogger logger, string instance, int inSnapshot, int passed, int held);
 }

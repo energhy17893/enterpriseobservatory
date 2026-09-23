@@ -74,6 +74,12 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
 
     /// <summary>A session or token that could not be given back on close; a warning, not an error.</summary>
     private readonly Action<string, string> _reportCloseWarning;
+
+    /// <summary>
+    /// Instance, annotations, alerts, fold failures, VMs not SAFE — one per
+    /// SimpliVity read (S3 follow-up diagnostic).
+    /// </summary>
+    private readonly Action<string, int, int, int, int> _reportSimplivityRead;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Built> _built = new(StringComparer.Ordinal);
 
@@ -166,8 +172,10 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         IClock clock,
         Action<string, string> reportUnusable,
         int maxRequestsPerSource = SourceRequestGate.DefaultLimit,
-        Action<string, string>? reportCloseWarning = null)
+        Action<string, string>? reportCloseWarning = null,
+        Action<string, int, int, int, int>? reportSimplivityRead = null)
     {
+        _reportSimplivityRead = reportSimplivityRead ?? ((_, _, _, _, _) => { });
         _reportCloseWarning = reportCloseWarning ?? ((_, _) => { });
         _catalogue = catalogue ?? throw new ArgumentNullException(nameof(catalogue));
         _graph = graph ?? throw new ArgumentNullException(nameof(graph));
@@ -568,6 +576,32 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// <see cref="GraphFoldingDirectory"/>, never the collector itself
     /// (ADR-0027 §4).
     /// </remarks>
+    /// <summary>
+    /// Counts a SimpliVity snapshot as the collector hands it over, before the
+    /// runner or the cycle touch it (S3 follow-up diagnostic).
+    /// </summary>
+    private sealed class CountedRead(IInventorySource inner, Action<string, int, int, int, int> report)
+        : IInventorySource
+    {
+        public string InstanceId => inner.InstanceId;
+
+        public async Task<InventorySnapshot> ReadAsync(CancellationToken cancellationToken)
+        {
+            var snapshot = await inner.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+            report(
+                snapshot.SourceInstanceId,
+                snapshot.Annotations.Count,
+                snapshot.Alerts.Count,
+                snapshot.Failures.Count,
+                snapshot.Annotations.Count(a =>
+                    a.Settings.TryGetValue("simplivity.ha_status", out var ha) &&
+                    !string.Equals(ha, "SAFE", StringComparison.Ordinal)));
+
+            return snapshot;
+        }
+    }
+
     internal const string SimplivityHasNoMetrics =
         "SimpliVity is read for inventory only; this build has no observation collector for it";
 
@@ -588,7 +622,9 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         return new Built(
             shape,
             () => CloseSimplivityAsync(connection.InstanceId, channel),
-            new SimplivityInventorySource(connection.InstanceId, channel, new GraphFoldingDirectory(_graph), _clock),
+            new CountedRead(
+                new SimplivityInventorySource(connection.InstanceId, channel, new GraphFoldingDirectory(_graph), _clock),
+                _reportSimplivityRead),
             // A stand-in, not nothing: without it the Observation health row
             // kept the last "no collector for kind" message forever. It stays
             // NotConfigured, so /health keeps it NotPolled, and now says why.
