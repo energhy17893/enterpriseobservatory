@@ -92,7 +92,7 @@ public static class ClusterConfigurationParser
         Set(ClusterHaSettings.DpmEnabled, cluster.Structures[ConfigurationExPath]
             .FirstOrDefault(n => Is(n, "dpmConfigInfo"))?.TextOf("enabled"));
 
-        // Polymorphic: ClusterFailoverResourceAdmissionControlPolicy,
+        // Polymorphic: ClusterFailoverResourcesAdmissionControlPolicy,
         // ClusterFailoverHostAdmissionControlPolicy, or the deprecated
         // ClusterFailoverLevelAdmissionControlPolicy. The concrete type is
         // what a rule cares about, not any one policy's own fields.

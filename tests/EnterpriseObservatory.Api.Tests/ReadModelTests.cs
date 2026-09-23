@@ -1045,7 +1045,7 @@ public partial class ReadModelTests
             "vc-1:domain-c1",
             (HaRules.EnabledSetting, "true"),
             (HaRules.AdmissionControlEnabledSetting, "true"),
-            ("dasConfig.admissionControlPolicy.type", "ClusterFailoverResourceAdmissionControlPolicy"),
+            ("dasConfig.admissionControlPolicy.type", "ClusterFailoverResourcesAdmissionControlPolicy"),
             (HaRules.HostMonitoringSetting, "enabled"),
             ("dasConfig.vmMonitoring", "vmAndAppMonitoring"),
             (HaRules.ApdResponseSetting, "restartConservative"),
@@ -1058,7 +1058,7 @@ public partial class ReadModelTests
 
         Assert.True(card.Enabled);
         Assert.True(card.AdmissionControlEnabled);
-        Assert.Equal("ClusterFailoverResourceAdmissionControlPolicy", card.AdmissionControlPolicyType);
+        Assert.Equal("ClusterFailoverResourcesAdmissionControlPolicy", card.AdmissionControlPolicyType);
         Assert.Equal("enabled", card.HostMonitoring);
         Assert.Equal("vmAndAppMonitoring", card.VmMonitoring);
         Assert.Equal("restartConservative", card.ApdResponse);

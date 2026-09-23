@@ -134,7 +134,7 @@ public class SimplivityChecksTests
     public void A_cluster_resource_percentage_policy_passes() =>
         Assert.Equal(
             ComplianceVerdict.Passing,
-            One(Evaluate([AdmissionCluster("ClusterFailoverResourceAdmissionControlPolicy")]), AdmissionControlPolicy).Verdict);
+            One(Evaluate([AdmissionCluster("ClusterFailoverResourcesAdmissionControlPolicy")]), AdmissionControlPolicy).Verdict);
 
     [Fact]
     public void Admission_control_off_is_left_to_the_continuity_control()

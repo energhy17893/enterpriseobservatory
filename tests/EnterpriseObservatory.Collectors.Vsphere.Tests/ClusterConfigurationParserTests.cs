@@ -11,7 +11,7 @@ namespace EnterpriseObservatory.Collectors.Vsphere.Tests;
 /// </summary>
 /// <remarks>
 /// The fixtures follow the vSphere Web Services API reference for
-/// <c>ClusterDasConfigInfo</c>, <c>ClusterFailoverResourceAdmissionControlPolicy</c>
+/// <c>ClusterDasConfigInfo</c>, <c>ClusterFailoverResourcesAdmissionControlPolicy</c>
 /// and <c>ClusterVmComponentProtectionSettings</c> (developer.broadcom.com and
 /// vdc-repo.vmware.com), which this file's remarks on
 /// <see cref="ClusterConfigurationParser"/> cite in full. They have not been
@@ -42,7 +42,7 @@ public class ClusterConfigurationParserTests
           <val xsi:type="ClusterConfigInfoEx"><dasConfig>
             <enabled>true</enabled>
             <admissionControlEnabled>true</admissionControlEnabled>
-            <admissionControlPolicy xsi:type="ClusterFailoverResourceAdmissionControlPolicy">
+            <admissionControlPolicy xsi:type="ClusterFailoverResourcesAdmissionControlPolicy">
               <autoComputePercentages>true</autoComputePercentages>
               <cpuFailoverResourcePercent>25</cpuFailoverResourcePercent>
               <memoryFailoverResourcePercent>25</memoryFailoverResourcePercent>
@@ -104,7 +104,7 @@ public class ClusterConfigurationParserTests
                 <hostMonitoring>enabled</hostMonitoring>
                 <vmComponentProtecting>disabled</vmComponentProtecting>
                 <failoverLevel>1</failoverLevel>
-                <admissionControlPolicy xsi:type="ClusterFailoverResourceAdmissionControlPolicy">
+                <admissionControlPolicy xsi:type="ClusterFailoverResourcesAdmissionControlPolicy">
                   <cpuFailoverResourcesPercent>50</cpuFailoverResourcesPercent>
                 </admissionControlPolicy>
                 <admissionControlEnabled>true</admissionControlEnabled>
@@ -119,7 +119,7 @@ public class ClusterConfigurationParserTests
         Assert.Equal("true", settings[ClusterHaSettings.Enabled]);
         Assert.Equal("enabled", settings[ClusterHaSettings.HostMonitoring]);
         Assert.Equal(
-            "ClusterFailoverResourceAdmissionControlPolicy",
+            "ClusterFailoverResourcesAdmissionControlPolicy",
             settings[ClusterHaSettings.AdmissionControlPolicyType]);
         Assert.Equal("0", settings[ClusterHaSettings.HeartbeatDatastoreCount]);
     }
@@ -152,7 +152,7 @@ public class ClusterConfigurationParserTests
         var settings = ClusterConfigurationParser.ReadHaSettings(Cluster(WellConfigured))!;
 
         Assert.Equal(
-            "ClusterFailoverResourceAdmissionControlPolicy",
+            "ClusterFailoverResourcesAdmissionControlPolicy",
             settings[ClusterHaSettings.AdmissionControlPolicyType]);
     }
 

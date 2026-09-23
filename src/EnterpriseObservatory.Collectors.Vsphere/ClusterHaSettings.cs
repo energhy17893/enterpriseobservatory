@@ -36,7 +36,7 @@ public static class ClusterHaSettings
 
     /// <summary>
     /// The concrete admission control policy in force, by its vim25 type name
-    /// — e.g. <c>ClusterFailoverResourceAdmissionControlPolicy</c>,
+    /// — e.g. <c>ClusterFailoverResourcesAdmissionControlPolicy</c>,
     /// <c>ClusterFailoverHostAdmissionControlPolicy</c>, or the deprecated
     /// <c>ClusterFailoverLevelAdmissionControlPolicy</c>.
     /// <c>ClusterDasConfigInfo.admissionControlPolicy</c>, read from its
