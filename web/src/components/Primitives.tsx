@@ -82,9 +82,19 @@ export function LoadFailure({ what, error }: { what: string; error: unknown }) {
   )
 }
 
-export function Empty({ children }: { children: ReactNode }) {
+export function Empty({
+  children,
+  action,
+}: {
+  children: ReactNode
+  /** e.g. a "Clear filters" button — kept out of `children` so callers don't have to lay out their own button row. */
+  action?: ReactNode
+}) {
   return (
-    <Card className="p-8 text-center text-sm text-muted-foreground">{children}</Card>
+    <Card className="p-8 text-center text-sm text-muted-foreground">
+      {children}
+      {action !== undefined && <div className="mt-3">{action}</div>}
+    </Card>
   )
 }
 
