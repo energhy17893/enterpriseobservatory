@@ -986,6 +986,29 @@ public class MonitoringCycleTests : IDisposable
         Assert.Contains("vc-1", result.SilentSources);
     }
 
+    [Fact]
+    public async Task An_inventory_only_source_is_not_reported_as_silent_but_a_failing_one_still_is()
+    {
+        // KibarHolding-KBSVT and the iLO connections have no observation role
+        // (IRoleNotApplicable, ADR-0026): they never answer a metrics read,
+        // and that must not be counted the same as a vCenter that failed to
+        // answer this cycle.
+        var inventoryOnly = new FakeRoleNotApplicableSource("simplivity-1");
+
+        var metrics = new FakeObservationSource("vc-1")
+        {
+            Behaviour = () => throw new InvalidOperationException("unreachable"),
+        };
+
+        var cycle = Cycle();
+
+        var result = await cycle.RunObservationsAsync(
+            [inventoryOnly, metrics], Options, CancellationToken.None);
+
+        Assert.DoesNotContain("simplivity-1", result.SilentSources);
+        Assert.Contains("vc-1", result.SilentSources);
+    }
+
     // --- the two cycles at the same moment ---------------------------------
 
     [Fact]

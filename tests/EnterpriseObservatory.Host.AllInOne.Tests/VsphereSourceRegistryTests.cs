@@ -296,7 +296,9 @@ public class VsphereSourceRegistryTests : IDisposable
         Assert.Equal(
             ["ilo-1", "vc-1"],
             Registry().Inventory.Select(s => s.InstanceId).OrderBy(id => id, StringComparer.Ordinal));
-        Assert.IsType<EnterpriseObservatory.Collectors.Redfish.RedfishInventorySource>(Registry().Inventory.Single(s => s.InstanceId == "ilo-1"));
+        // Wrapped for the per-read fold-rule diagnostic (HostLog.RedfishRead),
+        // the same way SimpliVity's inventory source is wrapped by CountedRead.
+        Assert.Equal("CountedRedfishRead", Registry().Inventory.Single(s => s.InstanceId == "ilo-1").GetType().Name);
         Assert.IsAssignableFrom<IRoleNotApplicable>(Registry().Observations.Single(s => s.InstanceId == "ilo-1"));
         Assert.Equal(["vc-1"], Registry().Events.Select(s => s.InstanceId));
         Assert.Empty(_logged);
@@ -328,6 +330,34 @@ public class VsphereSourceRegistryTests : IDisposable
         Assert.Contains("SimpliVity is read for inventory only", health.LastFailureDetail, StringComparison.Ordinal);
         Assert.DoesNotContain("no collector for kind", health.LastFailureDetail, StringComparison.Ordinal);
         Assert.Same(standIn, Registry().Observations.Single(s => s.InstanceId == "svt-1"));
+        Assert.Empty(_logged);
+    }
+
+    [Fact]
+    public async Task A_redfish_observation_row_says_inventory_only_and_stays_not_polled()
+    {
+        // Live, the iLO Observation row kept "this build has no collector for
+        // kind 'redfish'" from before M6.1: nothing refreshed it once the
+        // Redfish inventory collector shipped. Same fix as SimpliVity's, same
+        // shape: no role means no alarm (ADR-0026).
+        _connections.Add(Connection("ilo-1") with { Kind = ConnectionKinds.Redfish });
+        _connections.Add(Connection("vc-1"));
+
+        var result = await new ObservationCollectionPipeline(_clock).RunAsync(
+            Registry().Observations, [], CollectionPolicy.Default with { MaxRetries = 0 }, CancellationToken.None);
+
+        Assert.Equal(
+            ["vc-1"],
+            result.CollectionAlerts
+                .Where(a => a.Title == "Collector unreachable (metrics)")
+                .Select(a => a.Fingerprint.Value.Contains("ilo-1", StringComparison.Ordinal) ? "ilo-1" : "vc-1"));
+
+        var standIn = Registry().Observations.Single(s => s.InstanceId == "ilo-1");
+        var health = Assert.Single(result.Health, h => h.InstanceId == "ilo-1");
+        Assert.Equal(CollectionFailureKind.NotConfigured, health.LastFailureKind);
+        Assert.Contains("Redfish is read for inventory only", health.LastFailureDetail, StringComparison.Ordinal);
+        Assert.DoesNotContain("no collector for kind", health.LastFailureDetail, StringComparison.Ordinal);
+        Assert.Same(standIn, Registry().Observations.Single(s => s.InstanceId == "ilo-1"));
         Assert.Empty(_logged);
     }
 
