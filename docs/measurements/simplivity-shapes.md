@@ -30,6 +30,39 @@ görmek (ör. `openssl s_client -connect <ovc>:443 -tls1_2` başka bir
 makineden ya da OVC yöneticisinden), ardından Windows'ta o takımın açık olup
 olmadığı.
 
+**10.9.1.18 sonucu:** o düğüm erişilemez / ortak şifre takımı yok. Bağlantı
+aynı gün erişilebilir düğüm 10.5.1.23'e (CN `omnicube-ip1-23`) taşındı.
+
+## Canlı ölçüm, 23 Eylül 2026 13:30 (10.5.1.23, probe #134)
+
+`RedfishProbe --kind simplivity --from-store KibarHolding-KBSVT --mask` ve
+`--shapes --mask`. Salt-okunur.
+
+| Konu | Sonuç |
+|---|---|
+| `REST_API_Version` / `SVTFS_Version` | 1.28 / 6.3.0.98 |
+| Token alma | 136 ms, TLS varsayılan ile başarılı |
+| Host sayısı + `state` | 26, ALIVE=26 |
+| Küme `arbiter_*` / `upgrade_state` | 13 küme; 13'ünde de `arbiter_required/configured/connected = true`; `upgrade_state` boş (13/13) |
+| VM `ha_status` | DEGRADED=1, SAFE=499 — **ilk sayfa (500)**, toplam değil |
+| Yedek `state` | PROTECTED=497, SAVING=2, QUEUED=1 — **ilk sayfa (500)**, toplam değil |
+| `hypervisor_object_id` bir moRef mi | **0/26** çıplak vim25 moRef'e benzemiyor; biçimi maskeli, okunmadı |
+| Token iptali | `POST /api/oauth/revoke` → **401** |
+
+Kolektör için bulgular:
+
+- **Sayfalama:** yanıtlarda `count`, `limit`, `offset` var; probe yalnız ilk
+  sayfayı okuyor ve `count`'u yazmıyor. VM ve yedek toplamı ölçülmedi.
+  Kolektör `offset` ile gezmeli ya da toplam için `count`'u okumalı.
+- **Kimlik:** `hosts[]` `hypervisor_object_id`,
+  `compute_cluster_hypervisor_object_id`, `hypervisor_management_system(_name)`
+  taşıyor; vSphere host'uyla eşleşme biçimi maskesiz bir okumayla
+  belirlenmeli (ör. `<vc-uuid>:HostSystem:host-N` gibi bileşik mi).
+- **Oturum:** revoke 401 dönüyor, yani token bırakılmıyor (vSphere logout'un
+  karşılığı). Kolektör token'ı turlar arasında tekrar kullanmalı, her tur
+  yenisini almamalı.
+- **Maske:** küme adları `--mask` altında açık yazılıyor (probe düzeltmesi).
+
 ## İlk soru (canlıda henüz cevapsız)
 
 23 Eylül'de ölçülen: olay akışında `com.simplivity.event.*` **0** (bkz.
