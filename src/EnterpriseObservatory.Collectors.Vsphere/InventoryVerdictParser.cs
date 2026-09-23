@@ -76,6 +76,19 @@ public static class InventoryVerdicts
     /// <summary>VM: of those, the ones backed by an ISO file (M8.4).</summary>
     public const string ConnectedIsoCdroms = "cdrom.connectedIso";
 
+    /// <summary>
+    /// VM: legacy E1000 network adapters (<c>config.hardware.device</c>), by
+    /// count. Set to <c>0</c>, not left absent, when the device list was read
+    /// and none were found (eo-bestpractice: legacy virtual adapters).
+    /// </summary>
+    public const string LegacyAdapterE1000 = "adapter.legacy.e1000";
+
+    /// <summary>VM: legacy E1000e network adapters. See <see cref="LegacyAdapterE1000"/>.</summary>
+    public const string LegacyAdapterE1000e = "adapter.legacy.e1000e";
+
+    /// <summary>VM: legacy LSI Logic Parallel SCSI controllers. See <see cref="LegacyAdapterE1000"/>.</summary>
+    public const string LegacyAdapterLsiLogic = "adapter.legacy.lsiLogic";
+
     /// <summary>Cluster: <c>true</c> when a current EVC mode is set (M8.4).</summary>
     public const string EvcEnabled = "evc.enabled";
 
@@ -164,6 +177,7 @@ public static class InventoryVerdictParser
                 CopyValue(o, ConnectionStatePath, InventoryVerdicts.ConnectionState, verdicts);
                 CopyValue(o, ConsolidationNeededPath, InventoryVerdicts.ConsolidationNeeded, verdicts);
                 ReadCdroms(o, verdicts);
+                ReadLegacyAdapters(o, verdicts);
                 break;
 
             case "ClusterComputeResource":
@@ -353,6 +367,28 @@ public static class InventoryVerdictParser
         verdicts[InventoryVerdicts.ConnectedCdroms] = Count(connected.Count);
         verdicts[InventoryVerdicts.ConnectedIsoCdroms] =
             Count(connected.Count(d => d.TypeOf("backing") == "VirtualCdromIsoBackingInfo"));
+    }
+
+    /// <summary>
+    /// Legacy virtual adapters (eo-bestpractice: memory/legacy-adapters PR):
+    /// E1000/E1000e network cards and LSI Logic Parallel SCSI controllers,
+    /// each declared by its own xsi:type on the same device list
+    /// <see cref="ReadCdroms"/> already reads. Counted, not just flagged, so
+    /// the aggregated finding can say how many. Set to <c>0</c> rather than
+    /// left absent when the device list was read and none were found -- the
+    /// same "read means present, even as zero" rule as the CD/DVD count.
+    /// </summary>
+    private static void ReadLegacyAdapters(PropertyObject o, Dictionary<string, string> verdicts)
+    {
+        if (!o.Structures.TryGetValue(DevicePath, out var devices))
+        {
+            return;
+        }
+
+        verdicts[InventoryVerdicts.LegacyAdapterE1000] = Count(devices.Count(d => d.Type == "VirtualE1000"));
+        verdicts[InventoryVerdicts.LegacyAdapterE1000e] = Count(devices.Count(d => d.Type == "VirtualE1000e"));
+        verdicts[InventoryVerdicts.LegacyAdapterLsiLogic] =
+            Count(devices.Count(d => d.Type == "VirtualLsiLogicController"));
     }
 
     private static void ReadEvc(PropertyObject o, Dictionary<string, string> verdicts)

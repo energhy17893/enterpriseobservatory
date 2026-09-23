@@ -19,6 +19,15 @@ public static class InventoryVerdictKeys
     /// <summary>VM: of those, the ones backed by an ISO file.</summary>
     public const string ConnectedIsoCdroms = "cdrom.connectedIso";
 
+    /// <summary>VM: legacy E1000 network adapters, by count (eo-bestpractice).</summary>
+    public const string LegacyAdapterE1000 = "adapter.legacy.e1000";
+
+    /// <summary>VM: legacy E1000e network adapters, by count.</summary>
+    public const string LegacyAdapterE1000e = "adapter.legacy.e1000e";
+
+    /// <summary>VM: legacy LSI Logic Parallel SCSI controllers, by count.</summary>
+    public const string LegacyAdapterLsiLogic = "adapter.legacy.lsiLogic";
+
     /// <summary>VM: vCenter's <c>runtime.consolidationNeeded</c>, <c>true</c>/<c>false</c>.</summary>
     public const string ConsolidationNeeded = "consolidationNeeded";
 

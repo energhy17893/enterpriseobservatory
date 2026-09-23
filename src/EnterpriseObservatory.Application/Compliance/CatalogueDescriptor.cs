@@ -72,6 +72,9 @@ public sealed record CatalogueDescriptor
     /// <summary>The stable id of this product's own continuity catalogue.</summary>
     public const string ContinuityId = "eo-continuity";
 
+    /// <summary>The stable id of this product's own best-practice catalogue.</summary>
+    public const string BestPracticeId = "eo-bestpractice";
+
     /// <summary>The stable id of any Broadcom SCG edition.</summary>
     public const string ScgId = "scg";
 
@@ -91,15 +94,17 @@ public sealed record CatalogueDescriptor
         ArgumentNullException.ThrowIfNull(catalogue);
 
         var isContinuity = string.Equals(catalogue.Name, ContinuityCatalogue.Name, StringComparison.Ordinal);
+        var isBestPractice = string.Equals(catalogue.Name, BestPracticeCatalogue.Name, StringComparison.Ordinal);
+        var isProduct = isContinuity || isBestPractice;
 
         return new CatalogueDescriptor
         {
-            Id = isContinuity ? ContinuityId : ScgId,
+            Id = isContinuity ? ContinuityId : isBestPractice ? BestPracticeId : ScgId,
             Name = catalogue.Name,
-            Owner = isContinuity ? CatalogueOwner.Product : CatalogueOwner.Broadcom,
+            Owner = isProduct ? CatalogueOwner.Product : CatalogueOwner.Broadcom,
             Kind = catalogue.BindsById ? CatalogueKind.Computed : CatalogueKind.Passthrough,
             Release = catalogue.Release,
-            Licence = isContinuity ? string.Empty : $"Broadcom SCG licence (catalogues/scg/{catalogue.Name}/LICENSE)",
+            Licence = isProduct ? string.Empty : $"Broadcom SCG licence (catalogues/scg/{catalogue.Name}/LICENSE)",
         };
     }
 }
