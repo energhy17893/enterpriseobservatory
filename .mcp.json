@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "enterprise-observatory": {
+      "command": "node",
+      "args": ["tools/mcp/dist/index.js"],
+      "env": {
+        "EO_BASE_URL": "http://localhost:5000",
+        "EO_MCP_USERNAME": "${EO_MCP_USERNAME}",
+        "EO_MCP_PASSWORD": "${EO_MCP_PASSWORD}"
+      }
+    }
+  }
+}
