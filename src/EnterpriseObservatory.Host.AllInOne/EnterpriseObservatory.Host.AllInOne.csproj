@@ -32,6 +32,26 @@
   </ItemGroup>
 
   <!--
+    G-SVC: the product must run as a real Windows service rather than a
+    console process a sibling test PostgreSQL can take down with it via
+    CTRL_CLOSE (0xC000013A). Microsoft.Extensions.Hosting.WindowsServices adds
+    that with one call (UseWindowsService) and is a no-op everywhere else:
+    dev, `dotnet run`, and the test host below all behave exactly as before.
+
+    A service has no console, so stdout logging is not enough to diagnose a
+    crash after the fact; it needs a file that survives restarts. The
+    framework has no built-in file logging provider, which is why
+    Serilog.Extensions.Hosting + Serilog.Sinks.File are here: daily rolling,
+    14 files retained, added beside the existing console logger rather than
+    replacing it (UseSerilog with writeToProviders true).
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+  </ItemGroup>
+
+  <!--
     The compliance catalogues, as Broadcom published them, with their VERSION
     and LICENSE beside each. Copied next to the binary rather than embedded, so
     an operator can see exactly which file the product judges against.
