@@ -81,6 +81,31 @@ public sealed class RedfishInventorySource(
 
     public string InstanceId { get; } = instanceId ?? throw new ArgumentNullException(nameof(instanceId));
 
+    /// <summary>
+    /// When the last deep walk ran. Compared against a read's <c>ReadAtUtc</c>
+    /// by a caller that wants to know whether that particular read triggered
+    /// one, rather than re-emitting a walk from a previous cycle.
+    /// </summary>
+    public DateTimeOffset? LastDeepWalkAtUtc => _deep?.At;
+
+    /// <summary>
+    /// What a read produced, for a log line (HostLog.RedfishRead) — never the
+    /// UUID or serial number the fold matched on, only the rule's name.
+    /// </summary>
+    public readonly record struct ReadSummary(string Host, string FoldRule, int Alerts, bool DeepWalk);
+
+    /// <summary>Summarizes a snapshot this source just returned from <see cref="ReadAsync"/>.</summary>
+    public ReadSummary Summarize(InventorySnapshot snapshot)
+    {
+        var annotation = snapshot.Annotations.Count > 0 ? snapshot.Annotations[0] : null;
+
+        return new ReadSummary(
+            annotation?.Entity.Value ?? "not folded",
+            annotation?.Settings.GetValueOrDefault($"{Namespace}.fold_rule") ?? "none",
+            snapshot.Alerts.Count,
+            LastDeepWalkAtUtc == snapshot.ReadAtUtc);
+    }
+
     public async Task<InventorySnapshot> ReadAsync(CancellationToken cancellationToken)
     {
         var reads = new[] { SystemPath, PowerPath, ThermalPath }.Select(p => GetAsync(p, cancellationToken)).ToArray();

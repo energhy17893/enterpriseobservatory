@@ -49,6 +49,15 @@ internal sealed class FakeObservationSource(string instanceId) : IObservationSou
     }
 }
 
+/// <summary>An inventory-only source's observation stand-in (IRoleNotApplicable, ADR-0026).</summary>
+internal sealed class FakeRoleNotApplicableSource(string instanceId) : IObservationSource, IRoleNotApplicable
+{
+    public string InstanceId { get; } = instanceId;
+
+    public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
+        throw new InvalidOperationException($"'{InstanceId}' is not being polled: inventory only.");
+}
+
 internal sealed class RecordingNotifier : IAlertNotifier
 {
     public List<AlertInstance> Dispatched { get; } = [];

@@ -57,6 +57,25 @@ public class RedfishInventorySourceTests
     }
 
     [Fact]
+    public async Task Summarize_reports_the_fold_rule_never_the_uuid_or_serial()
+    {
+        // What HostLog.RedfishRead logs, per read (K3 follow-up): which rule
+        // folded, not what it matched on -- redfish.fold_rule is otherwise
+        // visible only on the entity page.
+        var (ilo, directory, clock) = Kibar();
+        var source = ilo.Source(directory, clock);
+
+        var snapshot = await source.ReadAsync(CancellationToken.None);
+        var summary = source.Summarize(snapshot);
+
+        Assert.Equal("uuid", summary.FoldRule);
+        Assert.Equal(Host.Value, summary.Host);
+        Assert.Equal(0, summary.Alerts);
+        Assert.True(summary.DeepWalk); // first read always walks
+        Assert.DoesNotContain(ilo.Uuid, summary.Host, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task A_cycle_is_three_gets_the_deep_walk_runs_daily()
     {
         var (ilo, directory, clock) = Kibar();

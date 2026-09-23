@@ -83,6 +83,9 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     /// SimpliVity read (S3 follow-up diagnostic).
     /// </summary>
     private readonly Action<string, int, int, int, int, string> _reportSimplivityRead;
+
+    /// <summary>Instance, host folded onto, fold rule, alerts, deep walk — one per Redfish read.</summary>
+    private readonly Action<string, string, string, int, string> _reportRedfishRead;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Built> _built = new(StringComparer.Ordinal);
 
@@ -184,10 +187,12 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
         int maxRequestsPerSource = SourceRequestGate.DefaultLimit,
         Action<string, string>? reportCloseWarning = null,
         Action<string, int, int, int, int, string>? reportSimplivityRead = null,
-        TimeSpan? configurationInterval = null)
+        TimeSpan? configurationInterval = null,
+        Action<string, string, string, int, string>? reportRedfishRead = null)
     {
         _configurationInterval = configurationInterval;
         _reportSimplivityRead = reportSimplivityRead ?? ((_, _, _, _, _, _) => { });
+        _reportRedfishRead = reportRedfishRead ?? ((_, _, _, _, _) => { });
         _reportCloseWarning = reportCloseWarning ?? ((_, _) => { });
         _catalogue = catalogue ?? throw new ArgumentNullException(nameof(catalogue));
         _graph = graph ?? throw new ArgumentNullException(nameof(graph));
@@ -676,6 +681,27 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     }
 
     /// <summary>
+    /// Counts a Redfish read as the collector hands it over: which fold rule
+    /// matched, never the UUID or serial it matched on (redfish.fold_rule is
+    /// otherwise visible only on the entity page).
+    /// </summary>
+    private sealed class CountedRedfishRead(RedfishInventorySource inner, Action<string, string, string, int, string> report)
+        : IInventorySource
+    {
+        public string InstanceId => inner.InstanceId;
+
+        public async Task<InventorySnapshot> ReadAsync(CancellationToken cancellationToken)
+        {
+            var snapshot = await inner.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var summary = inner.Summarize(snapshot);
+
+            report(snapshot.SourceInstanceId, summary.Host, summary.FoldRule, summary.Alerts, summary.DeepWalk ? "Yes" : "No");
+
+            return snapshot;
+        }
+    }
+
+    /// <summary>
     /// The stand-in for a role the kind does not have: NotPolled with a
     /// reason, and — unlike <see cref="UnusableSource"/> — no "Collector
     /// unreachable" alert (<see cref="IRoleNotApplicable"/>, ADR-0026).
@@ -749,7 +775,9 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
                 channel.Dispose();
                 return Task.CompletedTask;
             },
-            new RedfishInventorySource(connection.InstanceId, channel, new GraphFoldingDirectory(_graph), _clock),
+            new CountedRedfishRead(
+                new RedfishInventorySource(connection.InstanceId, channel, new GraphFoldingDirectory(_graph), _clock),
+                _reportRedfishRead),
             Observation: new RoleNotApplicable(connection.InstanceId, RedfishHasNoMetrics),
             Events: null);
     }

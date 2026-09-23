@@ -467,6 +467,9 @@ public sealed class MonitoringCycle(
         var graph = _graphStore.Current;
         var answered = cycle.Batches.Select(b => b.SourceInstanceId).ToList();
         var silent = sources
+            // A source with no observation role (IRoleNotApplicable, ADR-0026)
+            // never answers and never will; it is inventory-only, not silent.
+            .Where(s => s is not IRoleNotApplicable)
             .Select(s => s.InstanceId)
             .Where(id => !answered.Contains(id, StringComparer.Ordinal))
             .ToList();

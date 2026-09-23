@@ -493,7 +493,12 @@ builder.Services.AddSingleton<ISourceRegistry>(provider => new VsphereSourceRegi
         var log = provider.GetRequiredService<ILogger<VsphereSourceRegistry>>();
         HostLog.SimplivityRead(log, instance, annotations, alerts, foldFailures, notSafe, filled);
     },
-    monitoringOptions.ConfigurationInterval));
+    monitoringOptions.ConfigurationInterval,
+    (instance, host, rule, alerts, deepWalk) =>
+    {
+        var log = provider.GetRequiredService<ILogger<VsphereSourceRegistry>>();
+        HostLog.RedfishRead(log, instance, host, rule, alerts, deepWalk);
+    }));
 
 builder.Services.AddHostedService<MonitoringWorker>();
 builder.Services.AddHostedService<CompactionWorker>();

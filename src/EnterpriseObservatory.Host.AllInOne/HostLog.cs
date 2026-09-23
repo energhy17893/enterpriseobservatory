@@ -426,4 +426,17 @@ internal static partial class HostLog
         Message = "Inventory alerts from {Instance}: {InSnapshot} in snapshot, {Passed} passed to reconciliation, {Held} held after it")]
     public static partial void InventoryAlertsBySource(
         ILogger logger, string instance, int inSnapshot, int passed, int held);
+
+    /// <summary>
+    /// What one Redfish read produced: which fold rule matched (uuid,
+    /// uuid-byte-swapped, serial), never the UUID or serial itself. Beside
+    /// <see cref="SimplivityRead"/>: the same "what did this read actually do"
+    /// diagnostic for the other inventory-only source.
+    /// </summary>
+    [LoggerMessage(
+        EventId = 1062,
+        Level = LogLevel.Information,
+        Message = "Redfish {Instance}: folded onto {Host} by {Rule}; {Alerts} alerts; deep walk {DeepWalk}")]
+    public static partial void RedfishRead(
+        ILogger logger, string instance, string host, string rule, int alerts, string deepWalk);
 }
