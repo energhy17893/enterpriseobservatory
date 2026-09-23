@@ -24,8 +24,8 @@ public enum EventSubject
 /// </summary>
 /// <remarks>
 /// Data, not code. Adding the next event that deserves an alert is a row here
-/// and a test, never a second mechanism — the lesson <see cref="RemoteLogging"/>
-/// draws from vROps pinning its alarms to one vSphere release.
+/// and a test, never a second mechanism — the lesson the old remote-logging
+/// rule drew from vROps pinning its alarms to one vSphere release.
 /// </remarks>
 public sealed record EventCondition
 {

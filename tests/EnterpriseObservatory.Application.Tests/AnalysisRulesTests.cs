@@ -75,7 +75,6 @@ public class AnalysisRulesTests
             new HashSet<string>(StringComparer.Ordinal)
             {
                 StoragePathRedundancy.RuleId,
-                RemoteLogging.RuleId,
                 EventAlerts.RuleId,
                 DatastoreTimeToFull.RuleId,
                 CollectionCoverage.RuleId,

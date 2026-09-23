@@ -284,10 +284,6 @@ public sealed record MonitoringOptions
     public Analysis.StoragePathRedundancyPolicy StoragePathRedundancy { get; init; } =
         Analysis.StoragePathRedundancyPolicy.Default;
 
-    /// <summary>Which setting names the host's log target.</summary>
-    public Analysis.RemoteLoggingPolicy RemoteLogging { get; init; } =
-        Analysis.RemoteLoggingPolicy.Default;
-
     /// <summary>
     /// How far back a datastore's growth is read, and how near a fill date is
     /// an alert. See roadmap M4.3.

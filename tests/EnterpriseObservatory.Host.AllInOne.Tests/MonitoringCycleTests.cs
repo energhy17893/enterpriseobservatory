@@ -1647,41 +1647,6 @@ public class MonitoringCycleTests : IDisposable
         Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
     }
 
-    /// <summary>
-    /// A host reached over two paths, one of which the platform calls dead.
-    /// </summary>
-    [Fact]
-    public async Task The_remote_logging_rule_is_reached_by_the_inventory_cycle()
-    {
-        // The second rule on the inventory rhythm, and the first that reads a
-        // setting rather than a measurement. Dropping its call site would
-        // leave every unit test in RemoteLoggingTests green while the product
-        // never once mentions a host whose logs die with it.
-        //
-        // The fixture reports the setting as empty rather than omitting it,
-        // because omitting it is the "never read" case the rule stays silent
-        // about -- a wiring test built from that would pass whether or not
-        // the rule is called.
-        var cycle = Cycle();
-
-        var inventory = new FakeInventorySource("vc-1")
-        {
-            Behaviour = () => Snapshot(
-                "vc-1", _clock.UtcNow, entities: [HostWithoutSyslog()]),
-        };
-
-        await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
-        _clock.Advance(TimeSpan.FromMinutes(5));
-
-        var result = await cycle.RunInventoryAsync([inventory], Options, CancellationToken.None);
-
-        Assert.Contains(result.Visible, a => a.Title == "Host forwards no logs");
-
-        // A guarded rule that throws still reports, so the assertion above
-        // would be satisfied by the guard rather than the wire without this.
-        Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
-    }
-
     [Fact]
     public async Task The_fill_date_rule_is_reached_by_the_inventory_cycle_and_reads_the_history()
     {
@@ -1940,20 +1905,6 @@ public class MonitoringCycleTests : IDisposable
 
         Assert.DoesNotContain(result.Visible, a => a.Title == "Analysis rule failed");
     }
-
-    /// <summary>A host that answered about its log target, and said nothing.</summary>
-    private Entity HostWithoutSyslog() => new()
-    {
-        Id = new EntityId("vc-1:host-9"),
-        Kind = EntityKind.EsxiHost,
-        DisplayName = "esx09",
-        SourceInstanceId = "vc-1",
-        LastSeenUtc = _clock.UtcNow,
-        Settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Syslog.global.logHost"] = string.Empty,
-        },
-    };
 
     /// <remarks>
     /// The shape the collector produces: a runtime name per path, an adapter,
