@@ -488,7 +488,7 @@ public class ComplianceEngineTests
         service.Evaluate(silent, reportingSources: ["vc-1"]);
 
         Assert.Equal(["910-20260612-01", "eo-continuity-1"], _store.EvaluatedReleases);
-        Assert.Equal("910-20260612-01", service.Catalogue.Release);
+        Assert.Equal("910-20260612-01", CatalogueDescriptor.VendorGuide(service.Catalogues)?.Release);
         Assert.Equal(2, service.Catalogues.Count);
 
         var findings = service.Findings();

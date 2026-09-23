@@ -179,6 +179,8 @@ export interface AlertReportQuery extends Query {
 }
 
 export interface ComplianceReportQuery extends Query {
+  /** The catalogue's registry id (CatalogueScorecardView.id); the vendor guide when omitted. */
+  catalogue?: string
   control?: string
   entity?: string
   from?: string

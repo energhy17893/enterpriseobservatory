@@ -75,6 +75,16 @@ public sealed record CatalogueDescriptor
     /// <summary>The stable id of any Broadcom SCG edition.</summary>
     public const string ScgId = "scg";
 
+    /// <summary>
+    /// The vendor guide among loaded catalogues, found by ownership, never by
+    /// list position -- P1 removes that assumption. Null only when no
+    /// catalogue owned by Broadcom is loaded, which cannot happen in
+    /// production (<c>ComplianceService</c> always registers the vendor
+    /// guide) but keeps this honest for a catalogue list a test hands in.
+    /// </summary>
+    public static ComplianceCatalogue? VendorGuide(IReadOnlyList<ComplianceCatalogue> catalogues) =>
+        catalogues.FirstOrDefault(c => Of(c).Owner == CatalogueOwner.Broadcom);
+
     /// <summary>Describes a loaded catalogue; works for any of <see cref="ComplianceService.Catalogues"/>, in any order.</summary>
     public static CatalogueDescriptor Of(ComplianceCatalogue catalogue)
     {

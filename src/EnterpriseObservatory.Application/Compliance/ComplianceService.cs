@@ -223,9 +223,6 @@ public sealed class ComplianceService
     /// <summary>The longest owner an exception may name: a person, a team, or a mailbox.</summary>
     public const int MaximumOwnerLength = 200;
 
-    /// <summary>The vendor guide: the first catalogue, the one the screen's header names.</summary>
-    public ComplianceCatalogue Catalogue => Catalogues[0];
-
     /// <summary>Every catalogue, the vendor guide first.</summary>
     public IReadOnlyList<ComplianceCatalogue> Catalogues { get; }
 
@@ -274,7 +271,7 @@ public sealed class ComplianceService
         if (Catalogues.Count == 1 || controlId is not null)
         {
             return _store.TransitionsSince(
-                sinceUtc, toUtc, ReleaseOf(controlId) ?? Catalogue.Release, controlId, entity);
+                sinceUtc, toUtc, ReleaseOf(controlId) ?? Catalogues.Single().Release, controlId, entity);
         }
 
         var pages = Catalogues
@@ -292,6 +289,52 @@ public sealed class ComplianceService
         {
             Transitions = [.. merged.Take(ComplianceTransitionsPage.MaxRows)],
             Truncated = truncated,
+        };
+    }
+
+    /// <summary>
+    /// Verdict changes in [<paramref name="sinceUtc"/>, <paramref name="toUtc"/>],
+    /// for one named catalogue only -- what a per-catalogue report reads,
+    /// never guessing which catalogue is "the" one from list position.
+    /// </summary>
+    public ComplianceTransitionsPage TransitionsSince(
+        DateTimeOffset sinceUtc,
+        DateTimeOffset toUtc,
+        ComplianceCatalogue catalogue,
+        string? controlId,
+        EntityId? entity)
+    {
+        ArgumentNullException.ThrowIfNull(catalogue);
+
+        return _store.TransitionsSince(sinceUtc, toUtc, catalogue.Release, controlId, entity);
+    }
+
+    /// <summary>
+    /// Verdict changes into Failing, out of Failing, and into NotEvaluated for
+    /// one catalogue since <paramref name="sinceUtc"/> -- a COUNT over the
+    /// append-only transition log, never a replay and never a snapshot table
+    /// (ADR-0026's "derive from the log" principle).
+    /// </summary>
+    /// <remarks>
+    /// Counts transition rows, not (release, control, entity) groups: two
+    /// subjects of the same control and entity changing are two transitions,
+    /// and an entity-level transition (empty subject) is one -- the miscount
+    /// a coarser key would have caused before subject was part of a
+    /// transition's identity (migration 11).
+    /// </remarks>
+    public ComplianceCatalogueDelta DeltaSince(ComplianceCatalogue catalogue, DateTimeOffset sinceUtc)
+    {
+        ArgumentNullException.ThrowIfNull(catalogue);
+
+        var now = _clock.UtcNow;
+        var page = TransitionsSince(sinceUtc, now, catalogue, controlId: null, entity: null);
+
+        return new ComplianceCatalogueDelta
+        {
+            FailingIn = page.Transitions.Count(t => t.To == ComplianceVerdict.Failing),
+            FailingOut = page.Transitions.Count(
+                t => t.From == ComplianceVerdict.Failing && t.To != ComplianceVerdict.Failing),
+            NotEvaluatedIn = page.Transitions.Count(t => t.To == ComplianceVerdict.NotEvaluated),
         };
     }
 
@@ -381,7 +424,10 @@ public sealed class ComplianceService
             return ComplianceResult.Refused(ComplianceFailure.TooLong);
         }
 
-        var release = ReleaseOf(controlId) ?? Catalogue.Release;
+        // Only reached with an unknown controlId, when no finding below can
+        // match by ControlId regardless of release -- so the fallback value
+        // itself carries no meaning, and never names "the first catalogue".
+        var release = ReleaseOf(controlId) ?? string.Empty;
 
         var current = Findings().FirstOrDefault(f =>
             string.Equals(f.CatalogueRelease, release, StringComparison.Ordinal) &&
@@ -509,4 +555,19 @@ public sealed class ComplianceService
 
         return ComplianceResult.Done(exception with { RemovedBy = actor.AuditName, RemovedAtUtc = now });
     }
+}
+
+/// <summary>
+/// One catalogue's verdict deltas over a window (P2): how many subjects
+/// entered Failing, left Failing, and entered NotEvaluated. A count over
+/// <c>compliance_transition</c>, not a second, independently-maintained
+/// total -- see <see cref="ComplianceService.DeltaSince"/>.
+/// </summary>
+public sealed record ComplianceCatalogueDelta
+{
+    public required int FailingIn { get; init; }
+
+    public required int FailingOut { get; init; }
+
+    public required int NotEvaluatedIn { get; init; }
 }

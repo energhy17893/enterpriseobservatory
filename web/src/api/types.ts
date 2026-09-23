@@ -626,6 +626,22 @@ export interface CatalogueScorecardView {
   totalSubjects: number
   /** evaluableSubjects / totalSubjects; null when there are no subjects at all. */
   coverage: number | null
+  /** This catalogue's verdict deltas over the last seven days (P2). */
+  last7Days: CatalogueLast7DaysView
+}
+
+/**
+ * One catalogue's verdict deltas over the posture scorecard's trailing
+ * window (P2) -- a count of `compliance_transition` rows, derived from the
+ * append-only log rather than a second, independently-maintained total.
+ */
+export interface CatalogueLast7DaysView {
+  /** Subjects that started failing in the window. */
+  failingIn: number
+  /** Subjects that stopped failing in the window (passed, or left the evaluation). */
+  failingOut: number
+  /** Subjects that became not-evaluated in the window. */
+  notEvaluatedIn: number
 }
 
 export interface ComplianceView {

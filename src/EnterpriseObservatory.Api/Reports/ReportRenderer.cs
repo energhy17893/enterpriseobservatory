@@ -95,7 +95,13 @@ public sealed class ReportRenderer(ReadModel model, IClock clock, ComplianceServ
     private ReportContent RenderCompliance(ReportFrequency frequency, ComplianceService service)
     {
         var to = _clock.UtcNow;
-        var report = ComplianceApi.Report(service, null, null, to - PeriodFor(frequency), to);
+
+        // catalogueId null resolves to the vendor guide, same as the
+        // endpoint's old single-catalogue URL; null only when no catalogue
+        // owned by Broadcom is loaded, which is a dispatch failure like any
+        // other unrenderable report -- see the remarks above.
+        var report = ComplianceApi.Report(service, null, null, null, to - PeriodFor(frequency), to)
+            ?? throw new InvalidOperationException("No catalogue is loaded to report on.");
         var stamp = report.GeneratedAtUtc.ToString("yyyyMMdd-HHmm", CultureInfo.InvariantCulture);
 
         var body = string.Join(
