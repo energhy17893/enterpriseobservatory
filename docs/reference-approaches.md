@@ -1067,6 +1067,8 @@ zaman aşımı kullanıyor).
 
 **Ölçüldü (23 Eylül, KibarHolding-KBVc01, 59 host):** `hardware.systemInfo.uuid` 59/59, `serialNumber` yalnız 33/59, vendor/model 59/59, `otherIdentifyingInfo` 426 giriş. **Karar (M6.2 kimlik katlama):** birincil anahtar UUID ↔ Redfish `Systems/1.UUID`; seri numarası yalnız ikincil doğrulama; eşleşmeyen host `katlanamadı` olarak açık kalır, tahmin yok.
 
+**Ölçüldü (23 Eylül, Kibar, iLO 5 v3.18):** `Chassis/1/Power` Redundancy VAR (PSU 2), `Thermal` Redundancy YOK (fan 6); `Systems/1.Oem.Hpe.AggregateHealthStatus` **iLO 5'te de var** (13 alan, FanRedundancy ve PowerSupplyRedundancy dahil; yukarıdaki 'yalnız iLO 6' satırı yanlıştı); Storage 2 denetleyici 14 sürücü (`FailurePredicted` 0, `WearStatus` 0/14); DIMM 24; FirmwareInventory 36; IML 207 (en yeni 2026-06-09); AMS Ready. **Maliyet:** çağrı başına 0,32–0,82 s, IML 2,6 s, tam yürüyüş ~50 çağrı ≈ 25 s/iLO → 59 host seri okunamaz. **Karar (M6.1):** her turda 3 çağrı/host (Systems/1 + Power + Thermal ≈ 1,5 s), host başına paralellik 8 (Telegraf kuralı) → ≈ 12 s/tur; derin yürüyüş (Storage, Memory, Firmware) günde bir ve AggregateHealthStatus OK dışına düşünce; IML artımlı `=Created gt <filigran>`. SimpliVity (10.9.1.18): TCP 443 açık, TLS el sıkışması sunucu tarafından sıfırlanıyor (varsayılan ve zorlanmış TLS 1.2) — ölçülmedi; şüphe: SNI'siz IP ya da ortak şifre takımı yok.
+
 **Bulunamadı:** iLO maksimum oturum sayısı ve rate limit; "GET için LoginPriv
 yeter" açık cümlesi; SimpliVity 5.x API sürüm numarası ve eşzamanlı token sınırı.
 
