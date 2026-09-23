@@ -132,6 +132,18 @@ public interface IObservationSource
         Task.FromResult<DateTimeOffset?>(null);
 }
 
+/// <summary>
+/// A stand-in for a role its connection's kind does not have — SimpliVity has
+/// inventory and no metrics.
+/// </summary>
+/// <remarks>
+/// It still fails every read as <see cref="CollectionFailureKind.NotConfigured"/>,
+/// so its health row stays NotPolled and says why; but no "Collector
+/// unreachable" alert is raised for it. There is nothing to reach and nothing
+/// to fix: unknown is not an alarm (ADR-0026).
+/// </remarks>
+public interface IRoleNotApplicable;
+
 /// <summary>Why part of a collection did not succeed.</summary>
 public enum CollectionFailureKind
 {

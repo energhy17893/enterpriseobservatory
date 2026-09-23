@@ -216,6 +216,32 @@ public class SimplivityInventorySourceTests
     }
 
     [Fact]
+    public async Task An_ovc_folds_only_when_the_vm_list_carries_it_with_a_composite_reference()
+    {
+        // Not listed (the fixture): the OVC stays a name on its host, and no
+        // vSphere VM is looked up by that name.
+        var unlisted = await FakeOvc.FromFixtures().Source(Estate()).ReadAsync(CancellationToken.None);
+
+        Assert.Equal("SVAesx01", Settings(unlisted, Vc("host-21"))["simplivity.virtual_controller_name"]);
+        Assert.Equal(8, unlisted.Annotations.Count);
+
+        // Listed with <uuid>:VirtualMachine:vm-N: folded like any other VM.
+        var ovc = FakeOvc.FromFixtures();
+        var row = ovc.Collections["virtual_machines"][0]!.DeepClone();
+        row["id"] = "svt-ovc-1";
+        row["name"] = "SVAesx01";
+        row["hypervisor_object_id"] = $"{FakeOvc.VcenterUuid}:VirtualMachine:vm-900";
+        ovc.Collections["virtual_machines"].Add(row);
+
+        var listed = await ovc.Source(FakeDirectory.For(
+            "host-21", "host-22", "host-23", "domain-c7", "vm-101", "vm-102", "vm-103", "vm-104", "vm-900"))
+            .ReadAsync(CancellationToken.None);
+
+        Assert.Equal("SAFE", Settings(listed, Vc("vm-900"))["simplivity.ha_status"]);
+        Assert.Empty(listed.Failures);
+    }
+
+    [Fact]
     public async Task Every_key_is_in_the_simplivity_namespace()
     {
         var snapshot = await FakeOvc.FromFixtures().Source(Estate()).ReadAsync(CancellationToken.None);

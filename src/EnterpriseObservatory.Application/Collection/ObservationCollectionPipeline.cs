@@ -115,7 +115,10 @@ public sealed class ObservationCollectionPipeline(
         var batches = outcomes.Select(o => o.Result).OfType<ObservationBatch>().ToList();
 
         var alerts = outcomes
-            .SelectMany(o => o.CollectionAlerts)
+            .Zip(slotted)
+            // A role the kind does not have raises nothing (IRoleNotApplicable).
+            .Where(pair => pair.Second.Source is not IRoleNotApplicable)
+            .SelectMany(pair => pair.First.CollectionAlerts)
             .Concat(batches.SelectMany(DetailLevelAlerts))
             // Stamped here rather than at each producer: an alert with no scope
             // belongs to no evaluation, and the reconciler would resolve it on
