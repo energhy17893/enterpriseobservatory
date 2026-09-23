@@ -242,18 +242,22 @@ var complianceCatalogue = ComplianceCatalogueSource.Load(builder.Configuration);
 builder.Services.AddSingleton(complianceCatalogue);
 builder.Services.AddSingleton<IComplianceStore, PostgresComplianceStore>();
 
-// The product's own catalogue, eo-continuity, is evaluated beside the vendor
-// guide and never inside it (K1). SCG stays first and is judged exactly as
-// before; the continuity catalogue registers no check until K2 moves the M8
-// rules in, so it has no controls and writes no findings yet.
+// The product's own catalogues, eo-continuity and eo-bestpractice, are
+// evaluated beside the vendor guide and never inside it (K1). SCG stays
+// first and is judged exactly as before. Both product catalogues bind by
+// control id, so their checks share one dictionary -- their ids are
+// namespaced (eo-cont.*, eo-bp.*) and cannot collide.
 builder.Services.AddSingleton(services => new ComplianceService(
     [
         complianceCatalogue,
         ContinuityCatalogue.Build(ContinuityCatalogue.Production),
+        BestPracticeCatalogue.Build(BestPracticeCatalogue.Production),
     ],
     services.GetRequiredService<IComplianceStore>(),
     services.GetRequiredService<IClock>(),
-    ContinuityCatalogue.ChecksById(ContinuityCatalogue.Production)));
+    ContinuityCatalogue.ChecksById(ContinuityCatalogue.Production)
+        .Concat(BestPracticeCatalogue.ChecksById(BestPracticeCatalogue.Production))
+        .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal)));
 
 // --- who may do what -----------------------------------------------------
 //

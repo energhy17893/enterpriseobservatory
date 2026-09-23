@@ -18,6 +18,9 @@ public class InventoryVerdictKeyDriftTests
     {
         { InventoryVerdictKeys.ConnectedCdroms, InventoryVerdicts.ConnectedCdroms },
         { InventoryVerdictKeys.ConnectedIsoCdroms, InventoryVerdicts.ConnectedIsoCdroms },
+        { InventoryVerdictKeys.LegacyAdapterE1000, InventoryVerdicts.LegacyAdapterE1000 },
+        { InventoryVerdictKeys.LegacyAdapterE1000e, InventoryVerdicts.LegacyAdapterE1000e },
+        { InventoryVerdictKeys.LegacyAdapterLsiLogic, InventoryVerdicts.LegacyAdapterLsiLogic },
         { InventoryVerdictKeys.ConsolidationNeeded, InventoryVerdicts.ConsolidationNeeded },
         { InventoryVerdictKeys.EvcEnabled, InventoryVerdicts.EvcEnabled },
         { InventoryVerdictKeys.EvcModeKey, InventoryVerdicts.EvcModeKey },

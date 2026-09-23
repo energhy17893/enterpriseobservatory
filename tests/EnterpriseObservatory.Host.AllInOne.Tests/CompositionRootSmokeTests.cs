@@ -460,7 +460,7 @@ public sealed class CompositionRootSmokeTests : IDisposable
         // every one bound, beside the vendor guide.
         var compliance = _host.Services.GetRequiredService<ComplianceService>();
 
-        Assert.Equal(2, compliance.Catalogues.Count);
+        Assert.Equal(3, compliance.Catalogues.Count);
         Assert.Same(
             _host.Services.GetRequiredService<Domain.Compliance.ComplianceCatalogue>(),
             CatalogueDescriptor.VendorGuide(compliance.Catalogues));
@@ -470,6 +470,26 @@ public sealed class CompositionRootSmokeTests : IDisposable
             compliance.Catalogues[1].Controls.Select(c => c.ControlId));
         Assert.All(
             compliance.Controls().Where(c => c.CatalogueRelease == ContinuityCatalogue.Release),
+            c => Assert.True(c.IsEvaluated));
+    }
+
+    [Fact]
+    public void The_compliance_service_judges_the_best_practice_catalogue_beside_the_others()
+    {
+        // P3a: eo-bestpractice registers beside the vendor guide and
+        // eo-continuity, never inside either. Found by identity
+        // (CatalogueDescriptor.Id / release), never by position (P2).
+        var compliance = _host.Services.GetRequiredService<ComplianceService>();
+
+        var bestPractice = compliance.Catalogues.Single(c =>
+            CatalogueDescriptor.Of(c).Id == CatalogueDescriptor.BestPracticeId);
+
+        Assert.Equal(BestPracticeCatalogue.Release, bestPractice.Release);
+        Assert.Equal(
+            BestPracticeCatalogue.Production.Select(c => c.Control.ControlId),
+            bestPractice.Controls.Select(c => c.ControlId));
+        Assert.All(
+            compliance.Controls().Where(c => c.CatalogueRelease == BestPracticeCatalogue.Release),
             c => Assert.True(c.IsEvaluated));
     }
 
