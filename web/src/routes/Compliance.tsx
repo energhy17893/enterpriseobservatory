@@ -7,6 +7,7 @@ import { ago, cn, type StatusName } from '@/lib/ui'
 import { basisLabel } from '@/lib/basis'
 import type {
   AuthStateView,
+  CatalogueLast7DaysView,
   CatalogueScorecardView,
   ComplianceControlView,
   ComplianceExceptionView,
@@ -139,7 +140,28 @@ function CatalogueScorecard({ catalogue }: { catalogue: CatalogueScorecardView }
           ? 'no subjects evaluated yet'
           : `${(catalogue.coverage * 100).toFixed(0)}% coverage (${catalogue.evaluableSubjects} of ${catalogue.totalSubjects} subjects evaluated)`}
       </div>
+      <Last7DaysLine last7Days={catalogue.last7Days} />
     </Card>
+  )
+}
+
+/**
+ * P2: the posture scorecard's trailing-window delta, derived from
+ * compliance_transition (ADR-0026's replay-from-the-log principle) --
+ * entering failing (bad), leaving failing (good), entering not-evaluated
+ * (a coverage gap, said plainly rather than folded into either sign).
+ */
+function Last7DaysLine({ last7Days }: { last7Days: CatalogueLast7DaysView }) {
+  const { failingIn, failingOut, notEvaluatedIn } = last7Days
+
+  return (
+    <div className="text-xs text-muted-foreground">
+      last 7 days:{' '}
+      <span className={failingIn > 0 ? 'text-status-warning-text' : undefined}>+{failingIn}</span>
+      {' / '}
+      <span className={failingOut > 0 ? 'text-status-healthy-text' : undefined}>−{failingOut}</span> failing
+      {notEvaluatedIn > 0 && `, +${notEvaluatedIn} newly not evaluated`}
+    </div>
   )
 }
 

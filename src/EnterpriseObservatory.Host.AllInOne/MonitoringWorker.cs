@@ -195,8 +195,13 @@ public sealed class MonitoringWorker(
             var findings = _compliance.Evaluate(
                 [.. graph.Active], reportingSources, graph, TakeDemand(graph));
 
+            // Named by ownership, never by list position -- P1 removes that
+            // assumption; null only when no catalogue owned by Broadcom is
+            // loaded, which does not happen with this host's composition.
+            var vendorCatalogue = CatalogueDescriptor.VendorGuide(_compliance.Catalogues);
+
             HostLog.ComplianceEvaluated(
-                _logger, findings, _compliance.Catalogue.Name, _compliance.Catalogue.Release);
+                _logger, findings, vendorCatalogue?.Name ?? string.Empty, vendorCatalogue?.Release ?? string.Empty);
 
             MoveContinuityAlarms();
         }

@@ -145,6 +145,27 @@ public sealed record CatalogueScorecardView
     /// never a manufactured 0% or 100% for "nothing to judge".
     /// </summary>
     public double? Coverage { get; init; }
+
+    /// <summary>This catalogue's verdict deltas over the last seven days (P2).</summary>
+    public required CatalogueLast7DaysView Last7Days { get; init; }
+}
+
+/// <summary>
+/// One catalogue's verdict deltas over the posture scorecard's trailing
+/// window (P2) — a count of <c>compliance_transition</c> rows, derived from
+/// the append-only log rather than a second, independently-maintained total
+/// (ADR-0026).
+/// </summary>
+public sealed record CatalogueLast7DaysView
+{
+    /// <summary>Subjects that started failing in the window.</summary>
+    public required int FailingIn { get; init; }
+
+    /// <summary>Subjects that stopped failing in the window (passed, or left the evaluation).</summary>
+    public required int FailingOut { get; init; }
+
+    /// <summary>Subjects that became not-evaluated in the window.</summary>
+    public required int NotEvaluatedIn { get; init; }
 }
 
 /// <summary>The whole compliance screen's summary.</summary>
@@ -364,22 +385,31 @@ public static class ComplianceApi
 
         reports.MapGet("/compliance", (
                 ComplianceService service,
+                string? catalogue,
                 string? control,
                 string? entity,
                 DateTimeOffset? from,
                 DateTimeOffset? to) =>
-            Report(service, control, entity, from, to))
+            Report(service, catalogue, control, entity, from, to) is { } report
+                ? Results.Ok(report)
+                : Results.NotFound())
             .WithName("GetComplianceReport");
 
         reports.MapGet("/compliance.csv", (
                 ComplianceService service,
+                string? catalogue,
                 string? control,
                 string? entity,
                 DateTimeOffset? from,
                 DateTimeOffset? to,
                 string? section) =>
         {
-            var report = Report(service, control, entity, from, to);
+            var report = Report(service, catalogue, control, entity, from, to);
+
+            if (report is null)
+            {
+                return Results.NotFound();
+            }
 
             // "history" is the one other section this report has; anything
             // else -- including nothing -- is the findings detail, the report
@@ -410,7 +440,24 @@ public static class ComplianceApi
     /// </remarks>
     public static readonly TimeSpan DefaultHistoryWindow = TimeSpan.FromDays(30);
 
-    /// <summary>Builds the compliance report: everything an auditor asks for, in one read.</summary>
+    /// <summary>
+    /// Resolves a catalogue by its registry id (<see cref="CatalogueDescriptor.Id"/>);
+    /// the vendor guide when <paramref name="catalogueId"/> is null (the
+    /// report's old, single-catalogue URL keeps working), found by
+    /// ownership, never by list position. Null when the id names no loaded
+    /// catalogue.
+    /// </summary>
+    private static ComplianceCatalogue? ResolveCatalogue(ComplianceService service, string? catalogueId) =>
+        catalogueId is null
+            ? CatalogueDescriptor.VendorGuide(service.Catalogues)
+            : service.Catalogues.FirstOrDefault(
+                c => string.Equals(CatalogueDescriptor.Of(c).Id, catalogueId, StringComparison.Ordinal));
+
+    /// <summary>
+    /// Builds the compliance report for one catalogue: everything an auditor
+    /// asks for, in one read. Null when <paramref name="catalogueId"/> names
+    /// no loaded catalogue.
+    /// </summary>
     /// <remarks>
     /// Every field comes from <see cref="ComplianceService"/> the same way
     /// <see cref="Summary"/> and <see cref="Findings"/> above read it --
@@ -418,14 +465,22 @@ public static class ComplianceApi
     /// A report that disagreed with the screen an operator worked from would
     /// be worse than no report.
     /// </remarks>
-    public static ComplianceReportView Report(
+    public static ComplianceReportView? Report(
         ComplianceService service,
+        string? catalogueId,
         string? control,
         string? entity,
         DateTimeOffset? fromUtc,
         DateTimeOffset? toUtc)
     {
         ArgumentNullException.ThrowIfNull(service);
+
+        var catalogue = ResolveCatalogue(service, catalogueId);
+
+        if (catalogue is null)
+        {
+            return null;
+        }
 
         var now = service.Now;
         var to = toUtc ?? now;
@@ -436,11 +491,13 @@ public static class ComplianceApi
         var removedExceptions = exceptions.Where(e => e.RemovedAtUtc is not null).ToList();
 
         var findings = service.Findings()
+            .Where(f => string.Equals(f.CatalogueRelease, catalogue.Release, StringComparison.Ordinal))
             .Where(f => control is null || string.Equals(f.ControlId, control, StringComparison.Ordinal))
             .Where(f => entity is null || string.Equals(f.Entity.Value, entity, StringComparison.Ordinal))
             .ToList();
 
         var controlsById = service.Controls()
+            .Where(b => string.Equals(b.CatalogueRelease, catalogue.Release, StringComparison.Ordinal))
             .GroupBy(b => b.Control.ControlId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.First().Control, StringComparer.Ordinal);
 
@@ -449,6 +506,7 @@ public static class ComplianceApi
             .ToDictionary(g => g.Key, g => Count(g, exceptions, now), StringComparer.Ordinal);
 
         var boundControls = service.Controls()
+            .Where(bound => string.Equals(bound.CatalogueRelease, catalogue.Release, StringComparison.Ordinal))
             .Where(bound => control is null ||
                 string.Equals(bound.Control.ControlId, control, StringComparison.Ordinal));
 
@@ -463,7 +521,7 @@ public static class ComplianceApi
         // all the store's to apply in SQL now -- see IComplianceStore.TransitionsSince
         // -- so this handler only shapes what came back into report rows.
         var historyPage = service.TransitionsSince(
-            from, to, control, string.IsNullOrEmpty(entity) ? null : new EntityId(entity));
+            from, to, catalogue, control, string.IsNullOrEmpty(entity) ? null : new EntityId(entity));
 
         var history = historyPage.Transitions
             .Select(t => new ComplianceReportTransitionRow
@@ -484,8 +542,8 @@ public static class ComplianceApi
         return new ComplianceReportView
         {
             GeneratedAtUtc = now,
-            CatalogueName = service.Catalogue.Name,
-            CatalogueRelease = service.Catalogue.Release,
+            CatalogueName = catalogue.Name,
+            CatalogueRelease = catalogue.Release,
             Scope = DescribeScope(control, entity),
             LastEvaluatedUtc = findings.Count == 0 ? null : findings.Max(f => f.LastEvaluatedUtc),
             StaleCount = findings.Count(f => f.Stale),
@@ -623,21 +681,22 @@ public static class ComplianceApi
             .ToDictionary(g => g.Key, g => Count(g, exceptions, now), StringComparer.Ordinal);
 
         // The vendor guide, found by who owns it, never by "the first
-        // catalogue" -- P1 removes that assumption. Falls back to whichever
-        // catalogue is loaded first only when none is Broadcom's, which
-        // cannot happen in production (ComplianceService always registers
-        // the vendor guide) but keeps this total for any catalogue list a
-        // test hands in.
-        var vendorCatalogue = service.Catalogues.FirstOrDefault(
-            c => CatalogueDescriptor.Of(c).Owner == CatalogueOwner.Broadcom) ?? service.Catalogues[0];
+        // catalogue" -- P1 removes that assumption. Null only when no
+        // catalogue owned by Broadcom is loaded, which cannot happen in
+        // production (ComplianceService always registers the vendor guide);
+        // a test with no Broadcom-owned catalogue then gets an honestly
+        // empty header rather than a name borrowed from whichever catalogue
+        // happened to load first.
+        var vendorCatalogue = CatalogueDescriptor.VendorGuide(service.Catalogues);
+        var sevenDaysAgo = now - SevenDayWindow;
 
         return new ComplianceView
         {
-            Source = ComplianceSources.Of(vendorCatalogue.Name),
-            CatalogueName = vendorCatalogue.Name,
-            CatalogueRelease = vendorCatalogue.Release,
-            CatalogueProblem = vendorCatalogue.Problem,
-            Catalogues = [.. service.Catalogues.Select(c => Scorecard(c, findings, exceptions, now))],
+            Source = vendorCatalogue is null ? string.Empty : ComplianceSources.Of(vendorCatalogue.Name),
+            CatalogueName = vendorCatalogue?.Name ?? string.Empty,
+            CatalogueRelease = vendorCatalogue?.Release ?? string.Empty,
+            CatalogueProblem = vendorCatalogue?.Problem,
+            Catalogues = [.. service.Catalogues.Select(c => Scorecard(service, c, findings, exceptions, now, sevenDaysAgo))],
             DefaultControlsSkipped = service.Catalogues.Sum(c => c.DefaultControlsSkipped),
             Controls =
             [
@@ -721,16 +780,28 @@ public static class ComplianceApi
         ];
     }
 
+    /// <summary>How far back the posture scorecard's "last 7 days" delta looks.</summary>
+    public static readonly TimeSpan SevenDayWindow = TimeSpan.FromDays(7);
+
+    private static readonly CatalogueLast7DaysView NoDelta = new()
+    {
+        FailingIn = 0,
+        FailingOut = 0,
+        NotEvaluatedIn = 0,
+    };
+
     /// <summary>
     /// One catalogue's scorecard, counted only over its own findings —
     /// <see cref="ComplianceFinding.CatalogueRelease"/> is the identity's own
     /// field, so no catalogue's row can pick up another's rows.
     /// </summary>
     private static CatalogueScorecardView Scorecard(
+        ComplianceService service,
         ComplianceCatalogue catalogue,
         IReadOnlyList<ComplianceFinding> allFindings,
         IReadOnlyList<ComplianceWaiver> exceptions,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        DateTimeOffset sevenDaysAgo)
     {
         var descriptor = CatalogueDescriptor.Of(catalogue);
 
@@ -748,6 +819,7 @@ public static class ComplianceApi
                 EvaluableSubjects = 0,
                 TotalSubjects = 0,
                 Coverage = null,
+                Last7Days = NoDelta,
             };
         }
 
@@ -759,6 +831,8 @@ public static class ComplianceApi
         // NotEvaluated never contributes to the numerator (ADR-0026).
         var evaluable = counts.Passing + counts.Failing + counts.Accepted + counts.Excepted;
         var total = evaluable + counts.NotEvaluated;
+
+        var delta = service.DeltaSince(catalogue, sevenDaysAgo);
 
         return new CatalogueScorecardView
         {
@@ -772,6 +846,12 @@ public static class ComplianceApi
             EvaluableSubjects = evaluable,
             TotalSubjects = total,
             Coverage = total == 0 ? null : (double)evaluable / total,
+            Last7Days = new CatalogueLast7DaysView
+            {
+                FailingIn = delta.FailingIn,
+                FailingOut = delta.FailingOut,
+                NotEvaluatedIn = delta.NotEvaluatedIn,
+            },
         };
     }
 

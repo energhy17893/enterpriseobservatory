@@ -36,12 +36,17 @@ const STATE_STATUS: Record<FindingState, StatusName> = {
 export function ComplianceReport() {
   const [params, setParams] = useSearchParams()
 
+  // The catalogue this report is for -- from P1's registry (CatalogueScorecardView.id),
+  // set by which Reports.tsx card the caller followed. Omitted resolves to
+  // the vendor guide, same as this route's URL before P2.
+  const catalogue = params.get('catalogue') ?? ''
   const control = params.get('control') ?? ''
   const entity = params.get('entity') ?? ''
   const from = params.get('from') ?? ''
   const to = params.get('to') ?? ''
 
   const query = {
+    catalogue: catalogue || undefined,
     control: control || undefined,
     entity: entity || undefined,
     from: from ? new Date(from).toISOString() : undefined,
@@ -49,7 +54,7 @@ export function ComplianceReport() {
   }
 
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ['reports', 'compliance', control, entity, from, to],
+    queryKey: ['reports', 'compliance', catalogue, control, entity, from, to],
     queryFn: () => api.complianceReport(query),
   })
 

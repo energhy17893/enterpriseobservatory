@@ -461,7 +461,9 @@ public sealed class CompositionRootSmokeTests : IDisposable
         var compliance = _host.Services.GetRequiredService<ComplianceService>();
 
         Assert.Equal(2, compliance.Catalogues.Count);
-        Assert.Same(_host.Services.GetRequiredService<Domain.Compliance.ComplianceCatalogue>(), compliance.Catalogue);
+        Assert.Same(
+            _host.Services.GetRequiredService<Domain.Compliance.ComplianceCatalogue>(),
+            CatalogueDescriptor.VendorGuide(compliance.Catalogues));
         Assert.Equal(ContinuityCatalogue.Release, compliance.Catalogues[1].Release);
         Assert.Equal(
             ContinuityCatalogue.Production.Select(c => c.Control.ControlId),

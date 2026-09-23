@@ -1,5 +1,13 @@
 import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/api/client'
 import { Card } from '@/components/Primitives'
+import type { CatalogueScorecardView } from '@/api/types'
+
+/** Same label the compliance screen and the report's own header use -- see ComplianceSources on the server. */
+function sourceLabel(catalogue: CatalogueScorecardView): string {
+  return catalogue.owner === 'Broadcom' ? 'Broadcom SCG' : 'eo-continuity'
+}
 
 /**
  * The reports index: M5's whole point, one screen at a time.
@@ -10,6 +18,14 @@ import { Card } from '@/components/Primitives'
  * about this screen is specific to alerts.
  */
 export function Reports() {
+  // P2: one compliance-report card per registered catalogue (SCG and
+  // eo-continuity today, later catalogues come for free) rather than one
+  // card assuming a single vendor guide. The continuity catalogue's own
+  // auditor-format report (ContinuityReport.tsx) keeps its separate card
+  // below -- this list is the generic per-control/per-finding report.
+  const { data } = useQuery({ queryKey: ['compliance'], queryFn: api.compliance })
+  const catalogues = data?.catalogues ?? []
+
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">Reports</h1>
@@ -36,14 +52,16 @@ export function Reports() {
           </Card>
         </Link>
 
-        <Link to="/reports/compliance">
-          <Card className="h-full p-4 hover:border-primary">
-            <div className="font-medium">Compliance report</div>
-            <div className="mt-1 text-sm text-muted-foreground">
-              Findings, exceptions and change history, in the format an auditor asks for. CSV and printable.
-            </div>
-          </Card>
-        </Link>
+        {catalogues.map((catalogue) => (
+          <Link key={catalogue.id} to={`/reports/compliance?catalogue=${encodeURIComponent(catalogue.id)}`}>
+            <Card className="h-full p-4 hover:border-primary">
+              <div className="font-medium">{sourceLabel(catalogue)} compliance report</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Findings, exceptions and change history, in the format an auditor asks for. CSV and printable.
+              </div>
+            </Card>
+          </Link>
+        ))}
 
         <Link to="/reports/capacity">
           <Card className="h-full p-4 hover:border-primary">
