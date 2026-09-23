@@ -38,6 +38,11 @@ import type {
   MailTestView,
   ReportSubscriptionView,
   ReportSubscriptionCommand,
+  SetupStateView,
+  SetupCommand,
+  SetupResultView,
+  DatabaseView,
+  DatabaseActionView,
 } from './types'
 
 /**
@@ -325,4 +330,14 @@ export const api = {
   capacityReportCsvUrl: () => new URL('/api/reports/capacity.csv', window.location.origin).toString(),
   continuityReport: () => get<ContinuityReportView>('/api/reports/continuity'),
   continuityReportCsvUrl: () => new URL('/api/reports/continuity.csv', window.location.origin).toString(),
+
+  // First-run setup (G-DB). Only answered while the installation has no
+  // database, and only from this machine.
+  setupState: () => get<SetupStateView>('/api/setup'),
+  runSetup: (command: SetupCommand) => post<SetupResultView>('/api/setup', command),
+
+  // The Database card. Administrator only; nothing here returns a password.
+  database: () => get<DatabaseView>('/api/database'),
+  testDatabase: () => post<DatabaseActionView>('/api/database/test', {}),
+  rotateDatabasePassword: () => post<DatabaseActionView>('/api/database/rotate', {}),
 }
