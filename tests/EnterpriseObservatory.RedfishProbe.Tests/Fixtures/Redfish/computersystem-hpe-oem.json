@@ -1,0 +1,61 @@
+{
+    "@odata.type": "#ComputerSystem.v1_29_0.ComputerSystem",
+    "Id": "1",
+    "Name": "Computer System",
+    "SerialNumber": "CZ00000001",
+    "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+    },
+    "Oem": {
+        "Hpe": {
+            "@odata.type": "#HpeComputerSystemExt.v2_9_0.HpeComputerSystemExt",
+            "AggregateHealthStatus": {
+                "AgentlessManagementService": "Enabled",
+                "BiosOrHardwareHealth": {
+                    "Status": {
+                        "Health": "OK"
+                    }
+                },
+                "FanRedundancy": "Redundant",
+                "Fans": {
+                    "Status": {
+                        "Health": "OK"
+                    }
+                },
+                "Memory": {
+                    "Status": {
+                        "Health": "OK"
+                    }
+                },
+                "Power": {
+                    "Status": {
+                        "Health": "OK"
+                    }
+                },
+                "PowerSupplyRedundancy": "Redundant",
+                "Processor": {
+                    "Status": {
+                        "Health": "OK"
+                    }
+                },
+                "SmartStorageBattery": {
+                    "Status": {
+                        "Health": "OK"
+                    }
+                },
+                "Storage": {
+                    "Status": {
+                        "Health": "OK"
+                    }
+                },
+                "Temperature": {
+                    "Status": {
+                        "Health": "OK"
+                    }
+                }
+            }
+        }
+    },
+    "@odata.id": "/redfish/v1/Systems/1"
+}

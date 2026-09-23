@@ -31,6 +31,7 @@
     <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\thermal.json" Link="SampleData\Redfish\thermal.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\computersystem.json" Link="SampleData\Redfish\computersystem.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\manager.json" Link="SampleData\Redfish\manager.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\storage-collection.json" Link="SampleData\Redfish\storage-collection.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\storage.json" Link="SampleData\Redfish\storage.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\drive-1.json" Link="SampleData\Redfish\drive-1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tests\EnterpriseObservatory.RedfishProbe.Tests\Fixtures\Redfish\memory-dimm1.json" Link="SampleData\Redfish\memory-dimm1.json" CopyToOutputDirectory="PreserveNewest" />

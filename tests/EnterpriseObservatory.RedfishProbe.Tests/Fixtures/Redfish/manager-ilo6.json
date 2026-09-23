@@ -1,0 +1,13 @@
+{
+    "@odata.type": "#Manager.v1_25_0.Manager",
+    "Id": "1",
+    "Name": "Manager",
+    "ManagerType": "BMC",
+    "Model": "iLO 6",
+    "FirmwareVersion": "iLO 6 v1.64",
+    "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+    },
+    "@odata.id": "/redfish/v1/Managers/1"
+}
