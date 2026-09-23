@@ -1,0 +1,635 @@
+{
+  "host": {
+    "serial_number": "XX9X9X999X",
+    "manufacturer": "HPE",
+    "model_number": "HPE SimpliVity 380 Gen11",
+    "firmware_revision": "",
+    "status": "GREEN",
+    "name": "XXXXXXXXX99.XXXXX.XXX",
+    "host_id": "99999999-XXX9-X999-9X99-99XXX999X99X",
+    "raid_card": {
+      "serial_number": "XXXXX9X99X99X9",
+      "manufacturer": "",
+      "model_number": "",
+      "firmware_revision": "03.01.44.040",
+      "status": "GREEN",
+      "product_name": "HPE SR932i-p Gen11",
+      "has_bbu": true
+    },
+    "battery": {
+      "percent_charged": -1,
+      "health": "HEALTHY",
+      "manufacturing_date": "",
+      "serial_number": "",
+      "model_number": "",
+      "firmware_revision": "",
+      "status": "GREEN",
+      "manufacturer": ""
+    },
+    "accelerator_card": {
+      "temperature": 0,
+      "serial_number": "",
+      "model_number": "",
+      "firmware_revision": "",
+      "status": ""
+    },
+    "logical_drives": [
+      {
+        "serial_number": "999999X9999X9X9999999X99XX99X999",
+        "manufacturer": "",
+        "model_number": "",
+        "firmware_revision": "",
+        "status": "GREEN",
+        "name": "XXXXXXX XXXXX 9",
+        "drive_sets": [
+          {
+            "serial_number": "",
+            "manufacturer": "",
+            "model_number": "",
+            "firmware_revision": "",
+            "status": "GREEN",
+            "health": "HEALTHY",
+            "drive_number": 0,
+            "physical_drives": [
+              {
+                "serial_number": "99999XX9XX99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 9,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-1"
+              },
+              {
+                "serial_number": "99999XX9XX99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 10,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-2"
+              },
+              {
+                "serial_number": "99999XX9XX99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 11,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-3"
+              },
+              {
+                "serial_number": "99999XX9XX9X",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 12,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-4"
+              },
+              {
+                "serial_number": "99999X999XX9",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 13,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-5"
+              },
+              {
+                "serial_number": "99999X999X9X",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 14,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-6"
+              }
+            ]
+          }
+        ],
+        "capacity": 13491304882176,
+        "cache_state": "Write Back",
+        "health": "HEALTHY"
+      },
+      {
+        "serial_number": "999999X9999X99XX9X99X9XX9XXX99XX",
+        "manufacturer": "",
+        "model_number": "",
+        "firmware_revision": "",
+        "status": "GREEN",
+        "name": "XXXXXXX XXXXX 9",
+        "drive_sets": [
+          {
+            "serial_number": "",
+            "manufacturer": "",
+            "model_number": "",
+            "firmware_revision": "",
+            "status": "GREEN",
+            "health": "HEALTHY",
+            "drive_number": 0,
+            "physical_drives": [
+              {
+                "serial_number": "99999XX9XX99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 9,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-1"
+              },
+              {
+                "serial_number": "99999XX9XX9X",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 12,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-4"
+              }
+            ]
+          },
+          {
+            "serial_number": "",
+            "manufacturer": "",
+            "model_number": "",
+            "firmware_revision": "",
+            "status": "GREEN",
+            "health": "HEALTHY",
+            "drive_number": 1,
+            "physical_drives": [
+              {
+                "serial_number": "99999XX9XX99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 10,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-2"
+              },
+              {
+                "serial_number": "99999X999XX9",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 13,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-5"
+              }
+            ]
+          },
+          {
+            "serial_number": "",
+            "manufacturer": "",
+            "model_number": "",
+            "firmware_revision": "",
+            "status": "GREEN",
+            "health": "HEALTHY",
+            "drive_number": 2,
+            "physical_drives": [
+              {
+                "serial_number": "99999XX9XX99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 11,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-3"
+              },
+              {
+                "serial_number": "99999X999X9X",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 14,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX99X",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-6"
+              }
+            ]
+          }
+        ],
+        "capacity": 3298534883328,
+        "cache_state": "Write Back",
+        "health": "HEALTHY"
+      },
+      {
+        "serial_number": "999999X9999XX999X9999X9X99X999X9",
+        "manufacturer": "",
+        "model_number": "",
+        "firmware_revision": "",
+        "status": "GREEN",
+        "name": "XXXXXXX XXXXX 9",
+        "drive_sets": [
+          {
+            "serial_number": "",
+            "manufacturer": "",
+            "model_number": "",
+            "firmware_revision": "",
+            "status": "GREEN",
+            "health": "HEALTHY",
+            "drive_number": 0,
+            "physical_drives": [
+              {
+                "serial_number": "99999X999X99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 15,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-7"
+              },
+              {
+                "serial_number": "99999X999X99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 16,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-8"
+              },
+              {
+                "serial_number": "99999X999XX9",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 3,
+                "slot": 17,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "3-1"
+              },
+              {
+                "serial_number": "99999XX9XX99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 3,
+                "slot": 18,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "3-2"
+              },
+              {
+                "serial_number": "99999XX9XX9X",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 3,
+                "slot": 19,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "3-3"
+              },
+              {
+                "serial_number": "99999X999X9X",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 3,
+                "slot": 20,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "3-4"
+              }
+            ]
+          }
+        ],
+        "capacity": 13706052591616,
+        "cache_state": "Write Back",
+        "health": "HEALTHY"
+      },
+      {
+        "serial_number": "999999X9999X9X9X9999XX9X99X9X9X9",
+        "manufacturer": "",
+        "model_number": "",
+        "firmware_revision": "",
+        "status": "GREEN",
+        "name": "XXXXXXX XXXXX 9",
+        "drive_sets": [
+          {
+            "serial_number": "",
+            "manufacturer": "",
+            "model_number": "",
+            "firmware_revision": "",
+            "status": "GREEN",
+            "health": "HEALTHY",
+            "drive_number": 0,
+            "physical_drives": [
+              {
+                "serial_number": "99999X999XX9",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 3,
+                "slot": 17,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "3-1"
+              },
+              {
+                "serial_number": "99999X999X9X",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 3,
+                "slot": 20,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "3-4"
+              }
+            ]
+          },
+          {
+            "serial_number": "",
+            "manufacturer": "",
+            "model_number": "",
+            "firmware_revision": "",
+            "status": "GREEN",
+            "health": "HEALTHY",
+            "drive_number": 1,
+            "physical_drives": [
+              {
+                "serial_number": "99999X999X99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 15,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-7"
+              },
+              {
+                "serial_number": "99999XX9XX99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 3,
+                "slot": 18,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "3-2"
+              }
+            ]
+          },
+          {
+            "serial_number": "",
+            "manufacturer": "",
+            "model_number": "",
+            "firmware_revision": "",
+            "status": "GREEN",
+            "health": "HEALTHY",
+            "drive_number": 2,
+            "physical_drives": [
+              {
+                "serial_number": "99999X999X99",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 2,
+                "slot": 16,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "2-8"
+              },
+              {
+                "serial_number": "99999XX9XX9X",
+                "manufacturer": "HPE",
+                "model_number": "VK003840GXNZD",
+                "firmware_revision": "HPG0",
+                "status": "GREEN",
+                "enclosure": 3,
+                "slot": 19,
+                "capacity": 3804310232104,
+                "wwn": "99999XX999XXX999",
+                "health": "HEALTHY",
+                "percent_rebuilt": -1,
+                "life_remaining": 99,
+                "additional_status": [
+                  "SSD life Healthy"
+                ],
+                "media_type": "SSD",
+                "drive_position": "3-3"
+              }
+            ]
+          }
+        ],
+        "capacity": 3298534883328,
+        "cache_state": "Write Back",
+        "health": "HEALTHY"
+      }
+    ]
+  }
+}
