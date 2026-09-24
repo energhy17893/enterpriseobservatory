@@ -784,6 +784,11 @@ public static class EventAlerts
     /// whose events are not known to have been read through — the rule itself
     /// does not read watermarks.
     /// </para>
+    /// <para>
+    /// Evidence times here are the events' own; the time to live counts from
+    /// them. <see cref="EventReadFreshness"/> later re-dates a verdict to its
+    /// source's read-through time, for the age clamp only.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<SubjectVerdict> Judge(
         IReadOnlyList<SourceEvent> events,
@@ -1038,7 +1043,11 @@ public static class EventAlerts
                 $"{On(track.SubjectName, key.Instance)} at {raise.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)} UTC" +
                 $"{Repeats(track)}: \"{raise.Message}\" {HowItCloses(condition)}",
             Category = condition.Category,
-            Source = Platform,
+
+            // The vCenter whose event stream raised it (ADR-0027 rule 6), not
+            // "platform": EventReadFreshness judges it by that stream's read.
+            // The fingerprint keeps Platform, so no alert changes identity.
+            Source = key.Source,
             Entity = entity,
             IsDerived = true,
         };

@@ -584,6 +584,12 @@ public class EventAlertsTests
         Assert.Equal(AlertLifecycleState.Open, fresh.State);
         Assert.False(fresh.IsStale, $"stale while vc-1's events are read: {fresh.StaleReason}");
 
+        // Owned by the vCenter that sent the event; the moved evidence time
+        // touches neither when it was first seen nor what its text says.
+        Assert.Equal("vc-1", fresh.Source);
+        Assert.Equal(raisedAt.AddMinutes(1), fresh.FirstSeenUtc);
+        Assert.Contains("at 2026-09-21 12:00 UTC", fresh.Description, StringComparison.Ordinal);
+
         // Its Events role stops: the watermark falls behind, inventory still answers.
         var later = raisedAt.AddHours(2).AddMinutes(15);
         reader.Watermark = ReadThrough("vc-1", raisedAt.AddHours(2));
@@ -592,6 +598,34 @@ public class EventAlertsTests
         var silent = Assert.Single(stored);
         Assert.True(silent.IsStale);
         Assert.Equal(UnknownReason.SourceSilent, silent.StaleReason);
+    }
+
+    [Fact]
+    public void A_clear_first_read_long_after_it_was_sent_still_resolves()
+    {
+        // After a gap in the event read, the clear arrives older than the
+        // scope's age window. It is still vCenter's own statement, read through.
+        var rule = new EventAlertsRule();
+        var reader = new SteppingReader();
+        var step = MonitoringOptions.Default.InventoryInterval;
+        var limit = (2 * step) + MonitoringOptions.Default.Collection.ForInterval(step).SourceTimeout;
+        var lost = Event(1, "esx.problem.net.redundancy.lost", T0, host: Esx01);
+
+        reader.Events = [lost];
+        IReadOnlyList<AlertInstance> stored = [];
+        foreach (var now in new[] { T0.AddMinutes(1), T0.AddMinutes(2) })
+        {
+            reader.Watermark = ReadThrough("vc-1", now);
+            stored = Reconcile(rule, reader, stored, now, limit);
+        }
+
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(stored).State);
+
+        reader.Events = [lost, Event(2, "esx.clear.net.redundancy.restored", T0.AddMinutes(3), host: Esx01)];
+        reader.Watermark = ReadThrough("vc-1", T0.AddHours(2));
+        stored = Reconcile(rule, reader, stored, T0.AddHours(2), limit);
+
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
     }
 
     [Fact]
