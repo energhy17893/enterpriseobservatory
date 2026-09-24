@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
-import { ago } from '@/lib/ui'
+import { ago, cn, ramp } from '@/lib/ui'
 import type { AuthStateView, ReportSubscriptionCommand, ReportSubscriptionView } from '@/api/types'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -151,7 +151,7 @@ function Row({
           </div>
 
           {subscription.lastError !== null && (
-            <div className="mt-1 text-xs text-critical-on">{subscription.lastError}</div>
+            <div className={cn('mt-1 text-xs', ramp('Critical').text)}>{subscription.lastError}</div>
           )}
         </div>
 
@@ -313,7 +313,7 @@ function Editor({
           <span>Enabled</span>
         </label>
 
-        {note !== null && <div className="text-sm text-critical-on">{note}</div>}
+        {note !== null && <div className={cn('text-sm', ramp('Critical').text)}>{note}</div>}
 
         <div className="flex flex-wrap gap-2">
           <button
