@@ -179,7 +179,7 @@ alert either.
 States: **(none)**; **Pending** (raised, not confirmed); **Active** (`Open`, `Acknowledged`
 and `Silenced`: the operator's sub-state is kept across every row below), which is either
 *fresh* or *stale*; **Unknown** (new, from the 2-day rule); **Resolved**; **Cleared**
-(`Resolved` + `ClearedByOperator`, sticky).
+(`Resolved` + `ClearedByOperator`; re-opens on newer evidence, see the row below).
 
 Instance fields: `EvidenceAtUtc` (the last fresh Present/Absent), `StaleSinceUtc`,
 `StaleReason`, `StaleDetail` (all null when fresh), and `ConsecutiveAbsent`. `R` is raw
@@ -194,7 +194,7 @@ that if ADR-0017 changes the retention, the limit changes with it.
 | Active, stale | → fresh (`EvidenceReturned` event); `ConsecutiveAbsent = 0`; no notification unless the severity rose | → fresh; `ConsecutiveAbsent = 1`; resolves only if N = 1 | stays stale (reason updated). **If `now − EvidenceAtUtc ≥ R` → Unknown** (`EvidenceExpired`) |
 | **Unknown** | → back to the sub-state held before (read from the last transition's `From`); `EvidenceReturned`; **not re-notified** (ADR point 5) unless escalated | → Active fresh with `ConsecutiveAbsent = 1` (the count restarts); resolves at N | stays Unknown |
 | Resolved | `ConditionReturned` → Active once hysteresis confirms (as today) | retire (as today) | kept unchanged |
-| Cleared (sticky) | stays cleared; `LastSeenUtc` updated (as today) | `ConsecutiveAbsent + 1`; retire at N | kept unchanged |
+| Cleared | evidence no newer than the clear: stays cleared, `LastSeenUtc` updated (the clear wins its own cycle); newer evidence: a new episode, `Raised` with "cleared by <actor> at <T>, condition reported again", notified as any raise | `ConsecutiveAbsent + 1`; retire at N | kept unchanged |
 
 Invariants the tests should pin, one test each:
 

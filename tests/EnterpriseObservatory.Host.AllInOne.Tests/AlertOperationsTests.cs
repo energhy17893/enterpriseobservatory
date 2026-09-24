@@ -108,20 +108,27 @@ public class AlertOperationsTests
     // --- clearing ---------------------------------------------------------
 
     [Fact]
-    public void A_clear_outlives_the_condition()
+    public void A_clear_holds_its_own_cycle_and_the_next_report_reopens_it()
     {
-        // Re-observing the same fault must not reopen it, or clearing a known
-        // and accepted condition would be useless.
+        // vROps "Cancel alert": regenerated while the symptoms remain. The
+        // tool for "stop it for a while" is Silence, not Clear.
         Given(Alert("psu"));
 
         _operations.Clear(Fingerprint("psu"), Ertugrul);
 
-        var observed = AlertLifecycle.OnObserved(
-            _alerts.All.Single(), Definition("psu"), HysteresisPolicy.Default, T0.AddMinutes(1));
+        var sameCycle = AlertLifecycle.OnObserved(
+            _alerts.All.Single(), Definition("psu"), HysteresisPolicy.Default, T0);
 
-        Assert.Equal(AlertLifecycleState.Resolved, observed.State);
-        Assert.True(observed.ClearedByOperator);
-        Assert.Equal(AlertNotificationKind.None, observed.PendingNotification);
+        Assert.Equal(AlertLifecycleState.Resolved, sameCycle.State);
+        Assert.True(sameCycle.ClearedByOperator);
+        Assert.Equal(AlertNotificationKind.None, sameCycle.PendingNotification);
+
+        var nextCycle = AlertLifecycle.OnObserved(
+            sameCycle, Definition("psu"), HysteresisPolicy.Default, T0.AddMinutes(1));
+
+        Assert.Equal(AlertLifecycleState.Open, nextCycle.State);
+        Assert.Equal(T0.AddMinutes(1), nextCycle.FirstSeenUtc);
+        Assert.Equal(AlertNotificationKind.Raised, nextCycle.PendingNotification);
     }
 
     // --- silencing --------------------------------------------------------

@@ -17,7 +17,7 @@ public enum AlertSeverity
 /// <para>
 /// The same fault re-observed on every polling cycle must produce the same
 /// fingerprint, otherwise nothing downstream — deduplication, hysteresis,
-/// acknowledgement, sticky clear — can work at all.
+/// acknowledgement, clear — can work at all.
 /// </para>
 /// <para>
 /// The composition is deliberately coarse: it identifies a <em>problem on a

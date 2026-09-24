@@ -250,6 +250,51 @@ public class GraphAndAlertTests : IDisposable
     }
 
     [SkippableFact]
+    public void A_cleared_condition_reported_again_is_stored_as_a_new_episode()
+    {
+        RequireDatabase();
+
+        // The clear stays in the first episode's history; the re-open is a
+        // second episode whose opening row says why it is back.
+        var store = new PostgresAlertStateStore(_live.Database);
+        var definition = new AlertDefinition
+        {
+            Fingerprint = Alert().Fingerprint,
+            Severity = AlertSeverity.Warning,
+            Title = "one",
+            Description = "something",
+            Category = "Inventory",
+            Source = "vc-1",
+            Entity = Id("host-1"),
+        };
+
+        store.Reconcile("Inventory", (_, _) => new AlertReconciliationResult { Instances = [Alert()] });
+        store.Mutate(Alert().Fingerprint, i => AlertLifecycle.Clear(i, "ertugrul", T0.AddMinutes(5)));
+
+        store.Reconcile("Inventory", (stored, _) => new AlertReconciliationResult
+        {
+            Instances = [.. stored.Select(i => AlertLifecycle.OnObserved(
+                i, definition, HysteresisPolicy.Default, T0.AddMinutes(10)) with { Scope = "Inventory" })],
+        });
+
+        _live.Restart();
+
+        var reloaded = new PostgresAlertStateStore(_live.Database);
+        var current = Assert.Single(reloaded.All);
+        Assert.Equal(AlertLifecycleState.Open, current.State);
+        Assert.Equal(T0.AddMinutes(10), current.FirstSeenUtc);
+
+        var opening = Assert.Single(current.History);
+        Assert.Equal(AlertTransitionReason.Raised, opening.Reason);
+        Assert.Equal("cleared by ertugrul at 2026-09-20T12:05:00Z, condition reported again", opening.Detail);
+
+        Assert.Equal(2, reloaded.EpisodeCounts([current.Fingerprint])[current.Fingerprint]);
+        var first = Assert.Single(reloaded.ResolvedBetween(T0, T0.AddHours(1)));
+        Assert.Equal(T0, first.FirstSeenUtc);
+        Assert.True(first.ClearedByOperator);
+    }
+
+    [SkippableFact]
     public void An_acknowledgement_survives_the_next_cycle()
     {
         RequireDatabase();

@@ -82,10 +82,18 @@ public static class AlertLifecycle
                 "Observation does not belong to this instance.", nameof(observed));
         }
 
-        // An operator's clear outlives the condition. Re-observing must not
-        // reopen or re-notify; only the fault disappearing ends the clear.
+        // A clear resolves the episode, and wins its own cycle: evidence no
+        // newer than the clear is what the operator cleared. Newer evidence
+        // is the condition reported again, a new episode (vROps "Cancel
+        // alert", Zabbix manual close). Silence is for "stop it for a while".
         if (existing is { State: AlertLifecycleState.Resolved, ClearedByOperator: true })
         {
+            var clear = existing.History.LastOrDefault(t => t.Reason == AlertTransitionReason.OperatorCleared);
+            if (clear is null || evidence > clear.AtUtc)
+            {
+                return Reopen(observed, nowUtc, suppressedBy, evidence, clear);
+            }
+
             return existing with
             {
                 LastSeenUtc = nowUtc,
@@ -122,6 +130,9 @@ public static class AlertLifecycle
             Severity = observed.Severity,
             Title = observed.Title,
             Description = observed.Description,
+
+            // The source belongs to the evidence; the fingerprint is the identity.
+            Source = observed.Source,
             ConsecutiveHits = hits,
             IsConfirmed = confirmed,
             LastSeenUtc = nowUtc,
@@ -183,7 +194,8 @@ public static class AlertLifecycle
 
         if (existing.State == AlertLifecycleState.Resolved)
         {
-            // A sticky clear ends once the fault has been gone N times over.
+            // A clear held against a still-reported condition ends once the
+            // fault has been gone N times over.
             // It stopped firing on an earlier cycle, so this is not a new
             // cessation; if it ever returns it is born fresh and can notify.
             if (existing.ClearedByOperator && existing.ConsecutiveAbsent + 1 < resolution.ConsecutiveAbsent)
@@ -458,6 +470,32 @@ public static class AlertLifecycle
 
     private static AlertNotificationKind Highest(AlertNotificationKind a, AlertNotificationKind b) =>
         a > b ? a : b;
+
+    private static readonly HysteresisPolicy ConfirmAtOnce = new() { WarningConsecutiveHits = 1, CriticalConsecutiveHits = 1 };
+
+    /// <summary>
+    /// A new episode for a cleared condition reported again. Confirmed at once:
+    /// the condition was confirmed before the clear and never went away.
+    /// </summary>
+    private static AlertInstance Reopen(
+        AlertDefinition observed,
+        DateTimeOffset nowUtc,
+        string? suppressedBy,
+        DateTimeOffset evidenceAtUtc,
+        AlertTransition? clear)
+    {
+        var raised = Raise(observed, ConfirmAtOnce, nowUtc, suppressedBy, evidenceAtUtc);
+        var detail = clear is null
+            ? "cleared, condition reported again"
+            : string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"cleared by {clear.Actor} at {clear.AtUtc.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}, condition reported again");
+
+        return raised with
+        {
+            History = [raised.History[0] with { Reason = AlertTransitionReason.Raised, Detail = detail }],
+        };
+    }
 
     private static AlertInstance Raise(
         AlertDefinition observed,
