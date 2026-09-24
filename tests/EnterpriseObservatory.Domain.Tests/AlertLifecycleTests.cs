@@ -158,6 +158,22 @@ public class AlertLifecycleTests
         Assert.Equal(AlertNotificationKind.Escalated, i.PendingNotification);
     }
 
+    [Fact]
+    public void A_stored_alert_takes_the_source_of_its_latest_observation()
+    {
+        // #200 moved event alerts from "platform" to the vCenter instance.
+        // The source belongs to the evidence; the fingerprint is the identity.
+        var stored = Confirmed() with { Source = "platform" };
+
+        var i = AlertLifecycle.OnObserved(
+            stored, Alert() with { Source = "KibarHolding-KBVc01" }, HysteresisPolicy.Default, Cycle(2));
+
+        Assert.Equal("KibarHolding-KBVc01", i.Source);
+        Assert.Equal(stored.Fingerprint, i.Fingerprint);
+        Assert.Equal(stored.FirstSeenUtc, i.FirstSeenUtc);
+        Assert.Equal(stored.History, i.History);
+    }
+
     // --- operator clear ---------------------------------------------------
 
     [Fact]

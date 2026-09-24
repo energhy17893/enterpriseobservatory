@@ -130,6 +130,9 @@ public static class AlertLifecycle
             Severity = observed.Severity,
             Title = observed.Title,
             Description = observed.Description,
+
+            // The source belongs to the evidence; the fingerprint is the identity.
+            Source = observed.Source,
             ConsecutiveHits = hits,
             IsConfirmed = confirmed,
             LastSeenUtc = nowUtc,
