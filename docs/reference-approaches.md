@@ -1232,6 +1232,15 @@ Resolve (Datadog).
 görsel biçimi; Veeam ONE gri durum; Dynatrace'te acknowledge; Strato boş durum
 sayfası; Atlassian tabloda varsayılan satır/sayfa.
 
+**Varlık sayfası ölçümü (24 Eylül 2026, EX1):** `/api/entities`
+kind=VirtualMachine limit=100 offset=1000 ile ölçüldü. Satır başına telde
+yaklaşık 300 bayt, 100 satır ≈ 30 KB. Kaynaklar toplamında 1.442 VM (Kibar
+1.100). API offset/limit'i zaten alıyor (ReadModel `EntityQuery`). Sunucu her
+çağrıda limitten bağımsız olarak tüm grafın sağlığını türetiyor; yani sayfa
+boyu sunucu işini değil, yükü ve okumayı belirliyor. Karar: varlık gezgininde
+sayfa boyu **100** (sayfa ≈ 30 KB, Kibar'ın VM'leri 11 sayfa), sayfa içindeki
+satırlar sanallaştırılmış kalır (`web/src/routes/Entities.tsx` `PAGE_SIZE`).
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:

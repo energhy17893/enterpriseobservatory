@@ -20,6 +20,7 @@ one or open a proposal to promote a route-local function into
 | `AlertActions` | `web/src/components/AlertActions.tsx:20` | Acknowledge / silence / resolve controls for one `AlertView`. Every action is attributed (ADR-0013). |
 | `AlertRow` | `web/src/components/AlertRow.tsx` | The one alert row (ADR-0007 §5) — badge/state/`Notification suppressed`/`Derived`, entity link, `AlertActions`, selection checkbox with an accessible name (`Select alert: <title>`). Used by both `Alerts.tsx` (flat inbox) and `Events.tsx` (grouped/ungrouped/suggestions). Props: `alert: AlertView`, `selected: boolean`, `onToggle: () => void`. |
 | `BulkBar` | `web/src/components/BulkBar.tsx:21` | Appears when rows are multi-selected; shows the count before any destructive action (README principle 4 — many rows, one decision, still N audit entries). |
+| `Pager` | `web/src/components/Pager.tsx` | The A1 pager: "a–b of total" (announced, `aria-live`) plus Previous/Next, disabled at the ends. Props: `offset`, `pageSize`, `total`, `onOffset(next)`, `unit?` (plural noun, e.g. `"entities"`). The caller keeps `offset` in the URL and deletes it on any filter change. Used by `Alerts.tsx`, `Events.tsx` (vCenter events) and `Entities.tsx`. Reference §11.7: real pagination, not infinite scroll. |
 | `Shell` | `web/src/components/Shell.tsx:69` | App frame / nav shell, takes `identity: AuthStateView`. |
 | `SeriesChart` | `web/src/components/SeriesChart.tsx` | Time-series chart component (binary-detected by grep; not text-inspected in this pass — read it directly if you need its props). |
 

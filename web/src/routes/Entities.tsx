@@ -3,11 +3,28 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
+import { Card, Empty, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
+import { Pager } from '@/components/Pager'
 import { ago, cn, healthBasisShort, healthStatus } from '@/lib/ui'
-import type { EntityView } from '@/api/types'
+import type { EntityKind, EntityView } from '@/api/types'
 
-const KINDS = ['', 'EsxiHost', 'VirtualMachine', 'Datastore', 'Cluster'] as const
+// EX4: the filter buttons and the Kind column say the same words. '' is "All".
+const KIND_LABELS: Partial<Record<EntityKind | '', string>> = {
+  '': 'All',
+  EsxiHost: 'ESXi host',
+  VirtualMachine: 'Virtual machine',
+  Datastore: 'Datastore',
+  Cluster: 'Cluster',
+  VCenter: 'vCenter',
+}
+const KINDS = Object.keys(KIND_LABELS) as (EntityKind | '')[]
+
+// Measured 24 Sep 2026 (/api/entities kind=VirtualMachine, reference-approaches
+// §11): ~300 B per row on the wire, so 100 rows ≈ 30 KB a page, and Kibar's
+// 1,100 VMs are 11 pages. The server derives health for the whole graph on
+// every call whatever the limit, so this sizes payload and reading, not
+// server work. Rows within a page stay virtualised.
+const PAGE_SIZE = 100
 
 // 52, not 44: a grey (Unknown) row needs a second, short line saying why
 // (source silent / only unknown alerts / not observed) -- K3, a grey entity
@@ -27,15 +44,19 @@ export function Entities() {
   const kind = params.get('kind') ?? ''
   const search = params.get('search') ?? ''
   const includeVanished = params.get('includeVanished') === 'true'
+  const offsetParam = Number(params.get('offset') ?? '0')
+  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0
+  const filtered = kind !== '' || search !== '' || includeVanished
 
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ['entities', kind, search, includeVanished],
+    queryKey: ['entities', kind, search, includeVanished, offset],
     queryFn: () =>
       api.entities({
         kind: kind || undefined,
         search: search || undefined,
         includeVanished,
-        limit: 500,
+        offset,
+        limit: PAGE_SIZE,
       }),
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
@@ -45,6 +66,15 @@ export function Entities() {
     const next = new URLSearchParams(params)
     if (value === '') next.delete(key)
     else next.set(key, value)
+    // A filter change makes the current page meaningless: back to its start.
+    next.delete('offset')
+    setParams(next, { replace: true })
+  }
+
+  function setOffset(value: number) {
+    const next = new URLSearchParams(params)
+    if (value <= 0) next.delete('offset')
+    else next.set('offset', String(value))
     setParams(next, { replace: true })
   }
 
@@ -53,9 +83,7 @@ export function Entities() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Entity explorer</h1>
         {data !== undefined && (
-          <span className="text-sm text-muted-foreground tabular">
-            {data.items.length} of {data.total}
-          </span>
+          <Pager offset={offset} pageSize={PAGE_SIZE} total={data.total} onOffset={setOffset} unit="entities" />
         )}
       </div>
 
@@ -70,7 +98,7 @@ export function Entities() {
               kind === value ? 'bg-primary text-primary-on' : 'text-muted-foreground',
             )}
           >
-            {value === '' ? 'All' : value}
+            {KIND_LABELS[value]}
           </button>
         ))}
         <input
@@ -96,7 +124,48 @@ export function Entities() {
       ) : isPending ? (
         <Loading what="entities" />
       ) : data.items.length === 0 ? (
-        <Empty>No entity matches. If nothing has been collected yet, check the collectors.</Empty>
+        // EX2 (reference §11.8): "none at all" and "filtered out" are
+        // different screens, each with its own next step.
+        data.total > 0 ? (
+          // A kept URL whose page no longer exists: not an empty estate.
+          <Empty
+            action={
+              <button
+                type="button"
+                onClick={() => setOffset(0)}
+                className="rounded-md border border-border px-3 py-1 text-xs text-foreground"
+              >
+                First page
+              </button>
+            }
+          >
+            This page is past the last of {data.total.toLocaleString('en-US')} entities.
+          </Empty>
+        ) : filtered ? (
+          <Empty
+            action={
+              <button
+                type="button"
+                onClick={() => setParams({}, { replace: true })}
+                className="rounded-md border border-border px-3 py-1 text-xs text-foreground"
+              >
+                Clear filters
+              </button>
+            }
+          >
+            No entity matches these filters.
+          </Empty>
+        ) : (
+          <Empty
+            action={
+              <Link to="/collectors" className="text-xs underline underline-offset-2">
+                Check the collectors
+              </Link>
+            }
+          >
+            Nothing has been collected yet.
+          </Empty>
+        )
       ) : (
         <EntityTable rows={data.items} />
       )}
@@ -154,7 +223,9 @@ function EntityTable({ rows }: { rows: EntityView[] }) {
                       <span className="ml-2 text-xs text-muted-foreground">(maintenance)</span>
                     )}
                   </div>
-                  <Identifier>{entity.kind}</Identifier>
+                  <div className="truncate text-sm text-muted-foreground">
+                    {KIND_LABELS[entity.kind] ?? entity.kind}
+                  </div>
                   <div className="flex min-w-0 flex-col justify-center gap-0.5">
                     <div className="flex flex-wrap items-center gap-1">
                       <StatusBadge status={healthStatus(entity.health)}>{entity.health}</StatusBadge>
@@ -179,7 +250,7 @@ function EntityTable({ rows }: { rows: EntityView[] }) {
                       )
                     )}
                   </div>
-                  <div className="text-right tabular">{entity.alertCount || ''}</div>
+                  <div className="text-right tabular">{entity.alertCount || '-'}</div>
                   <div className="text-right text-xs text-muted-foreground">
                     {ago(entity.lastSeenUtc)}
                   </div>
