@@ -79,11 +79,14 @@ public sealed class PostgresObservationStore : IObservationStore
     private readonly ConcurrentDictionary<SeriesKey, long> _seriesIds = new();
 
     /// <summary>The default for <see cref="BucketsPerSlice"/>.</summary>
-    // Six, halved from twelve on 23 September 2026: the per-slice log line
-    // (EventId 1060) measured five-minute slices of 17.5, 25.7 and 18.1 s on
-    // the Kibar estate, against the thirty-second timeout, and four
-    // consecutive sweeps failed on it. Half the buckets, half the rows under
-    // the watermark lock; the lock's timeout stays thirty seconds.
+    // A ceiling, not the size. Six, halved from twelve on 23 September 2026
+    // after five-minute slices of 17.5, 25.7 and 18.1 s; on 24 September six
+    // buckets still took 27.6 and 28.3 s (100,174 and 111,126 buckets written)
+    // and 74 sweeps timed out. Slice cost is series × buckets and the series
+    // count is the customer's, so no constant fits every estate: the fold
+    // halves the slice on a timeout and grows it back while it is fast. See
+    // docs/measurements/fold-slice-adaptive.md. The timeout stays thirty
+    // seconds.
     public const int DefaultBucketsPerSlice = 6;
 
     /// <summary>
@@ -91,10 +94,9 @@ public sealed class PostgresObservationStore : IObservationStore
     /// </summary>
     /// <remarks>
     /// Six: half an hour of raw samples for the five-minute tier, six hours of
-    /// five-minute buckets for the hourly one. Twelve (about 1.5 million source
-    /// rows) measured 17–26 s per slice on the live estate, too close to the
-    /// thirty-second timeout an append waits at most one slice for. See
-    /// <see cref="Fold"/>.
+    /// five-minute buckets for the hourly one. The largest size the adaptive
+    /// slice (see <see cref="Fold"/>) grows back to; it starts here and halves
+    /// on every timeout, down to one bucket.
     /// </remarks>
     public int BucketsPerSlice
     {
@@ -112,6 +114,26 @@ public sealed class PostgresObservationStore : IObservationStore
     /// watermark lock is not held while it runs.
     /// </summary>
     public Action<FoldSlice>? SliceCommitted { get; init; }
+
+    /// <summary>
+    /// Called when a tier's slice size changes: the tier, the old size and the
+    /// new one, in buckets. Smaller means a slice timed out.
+    /// </summary>
+    public Action<SeriesResolution, int, int>? SliceSizeChanged { get; init; }
+
+    /// <summary>
+    /// Called inside a slice's transaction after its buckets are written and
+    /// before it commits. A test seam: throwing here rolls the slice back, as
+    /// a command timeout would.
+    /// </summary>
+    public Action<FoldSlice>? SliceFolding { get; init; }
+
+    // Per tier, in memory: a restart starts again from BucketsPerSlice.
+    private readonly Dictionary<SeriesResolution, SliceSize> _sliceSizes = new()
+    {
+        [SeriesResolution.FiveMinutes] = new(),
+        [SeriesResolution.OneHour] = new(),
+    };
 
     public PostgresObservationStore(PostgresDatabase database)
     {
@@ -629,10 +651,15 @@ public sealed class PostgresObservationStore : IObservationStore
     /// is: two days folded in one transaction would take the fold's own
     /// statement past the same timeout, fail every pass, and drop cycles while
     /// doing it. A slice is at most <see cref="BucketsPerSlice"/> buckets of
-    /// the target tier — by default an hour of raw, about 1.6 million samples,
-    /// for the five-minute tier and twelve hours of five-minute buckets, about
-    /// 1.3 million rows, for the hourly one — and the lock is released between
-    /// slices.
+    /// the target tier, and the lock is released between slices.
+    /// </para>
+    /// <para>
+    /// Adaptive, because a slice's cost is series × buckets and the series
+    /// count belongs to the estate. A slice that hits the command timeout rolled
+    /// back whole, watermark included, so the same slice is retried at half the
+    /// size, down to one bucket; a one-bucket slice that still times out fails
+    /// the sweep as before. Three slices in a row under ten seconds double it
+    /// again, up to <see cref="BucketsPerSlice"/>.
     /// </para>
     /// <para>
     /// Every slice is complete on its own: its buckets, the next tier's marker
@@ -655,22 +682,80 @@ public sealed class PostgresObservationStore : IObservationStore
         var completeTo = SeriesResolutions.BucketStart(nowUtc - policy.CompactionGrace, target);
         var floor = RefoldWindow.Floor(nowUtc, policy, target);
         var total = 0;
+        var size = _sliceSizes[target];
 
         while (true)
         {
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var buckets = size.Current(BucketsPerSlice);
+            FoldSlice? folded;
 
-            if (_database.Write(connection =>
-                FoldOneSlice(connection, source, target, floor, completeTo)) is not { } slice)
+            try
+            {
+                folded = _database.Write(connection =>
+                    FoldOneSlice(connection, source, target, floor, completeTo, buckets));
+            }
+            catch (Exception ex) when (buckets > 1 && IsTimeout(ex))
+            {
+                // Rolled back, watermark included: the next turn retries the
+                // same slice, smaller.
+                SliceSizeChanged?.Invoke(target, buckets, size.Shrink(buckets));
+                continue;
+            }
+
+            if (folded is not { } slice)
             {
                 break;
             }
 
+            var duration = System.Diagnostics.Stopwatch.GetElapsedTime(started);
             total += slice.BucketsWritten;
-            SliceCommitted?.Invoke(slice with { Duration = System.Diagnostics.Stopwatch.GetElapsedTime(started) });
+            SliceCommitted?.Invoke(slice with { Duration = duration });
+
+            if (size.Grow(buckets, duration, BucketsPerSlice) is { } grown)
+            {
+                SliceSizeChanged?.Invoke(target, buckets, grown);
+            }
         }
 
         return total;
+    }
+
+    /// <summary>A command timeout, however Npgsql reports it.</summary>
+    private static bool IsTimeout(Exception ex) =>
+        ex is NpgsqlException { InnerException: TimeoutException }
+            or PostgresException { SqlState: PostgresErrorCodes.QueryCanceled };
+
+    /// <summary>One tier's adaptive slice size. Compaction is single-threaded.</summary>
+    private sealed class SliceSize
+    {
+        private static readonly TimeSpan Fast = TimeSpan.FromSeconds(10);
+        private const int FastSlicesToGrow = 3;
+
+        private int _size;
+        private int _fastInARow;
+
+        public int Current(int max) => _size > 0 && _size < max ? _size : max;
+
+        public int Shrink(int from)
+        {
+            _fastInARow = 0;
+            return _size = Math.Max(1, from / 2);
+        }
+
+        /// <summary>Counts a committed slice; the new size if it grew, else null.</summary>
+        public int? Grow(int from, TimeSpan took, int max)
+        {
+            _fastInARow = took < Fast ? _fastInARow + 1 : 0;
+
+            if (_fastInARow < FastSlicesToGrow || from >= max)
+            {
+                return null;
+            }
+
+            _fastInARow = 0;
+            return _size = Math.Min(max, from * 2);
+        }
     }
 
     /// <summary>
@@ -682,7 +767,8 @@ public sealed class PostgresObservationStore : IObservationStore
         SeriesResolution source,
         SeriesResolution target,
         DateTimeOffset floor,
-        DateTimeOffset completeTo)
+        DateTimeOffset completeTo,
+        int bucketsPerSlice)
     {
         // Locked for the slice, so an append noting a late sample either lands
         // before this reads or waits and sees the watermark this writes. See
@@ -698,7 +784,7 @@ public sealed class PostgresObservationStore : IObservationStore
             return null;
         }
 
-        var end = RefoldWindow.SliceEnd(start, completeTo, target, BucketsPerSlice);
+        var end = RefoldWindow.SliceEnd(start, completeTo, target, bucketsPerSlice);
 
         var written = source == SeriesResolution.Raw
             ? FoldFromSamples(connection, target, start, end)
@@ -737,7 +823,10 @@ public sealed class PostgresObservationStore : IObservationStore
         var (completedTo, dirtyFrom) = RefoldWindow.After(mark?.CompletedTo, end);
         SetWatermark(connection, target, completedTo, dirtyFrom);
 
-        return new FoldSlice(target, start, end, written);
+        var slice = new FoldSlice(target, start, end, written) { SliceBuckets = bucketsPerSlice };
+        SliceFolding?.Invoke(slice);
+
+        return slice;
     }
 
     /// <summary>The tiers folded from this one.</summary>
@@ -1452,6 +1541,9 @@ public sealed record FoldSlice(
     /// should shrink before the thirty-second timeout is reached.
     /// </summary>
     public TimeSpan Duration { get; init; }
+
+    /// <summary>The slice size it was folded at, in buckets of its tier.</summary>
+    public int SliceBuckets { get; init; }
 }
 
 /// <summary>

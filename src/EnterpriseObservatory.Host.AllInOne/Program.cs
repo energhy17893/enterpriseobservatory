@@ -228,7 +228,9 @@ builder.Services.AddSingleton<IObservationStore>(provider =>
     return new PostgresObservationStore(provider.GetRequiredService<PostgresDatabase>())
     {
         SliceCommitted = slice => HostLog.FoldSliceCommitted(
-            logger, slice.Resolution, slice.BucketsWritten, slice.Duration.TotalMilliseconds),
+            logger, slice.Resolution, slice.BucketsWritten, slice.SliceBuckets, slice.Duration.TotalMilliseconds),
+        SliceSizeChanged = (resolution, from, to) => HostLog.FoldSliceSizeChanged(
+            logger, resolution, from, to, to < from ? "the slice timed out" : "three slices under 10 s"),
     };
 });
 builder.Services.AddSingleton<ICollectionGapStore, PostgresCollectionGapStore>();

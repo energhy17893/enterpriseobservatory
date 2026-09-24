@@ -118,9 +118,17 @@ internal static partial class HostLog
     [LoggerMessage(
         EventId = 1060,
         Level = LogLevel.Information,
-        Message = "Fold slice to {Resolution}: {Buckets} buckets in {Milliseconds:0} ms.")]
+        Message = "Fold slice to {Resolution}: {Buckets} buckets ({SliceBuckets}-bucket slice) in {Milliseconds:0} ms.")]
     public static partial void FoldSliceCommitted(
-        ILogger logger, EnterpriseObservatory.Domain.SeriesResolution resolution, int buckets, double milliseconds);
+        ILogger logger, EnterpriseObservatory.Domain.SeriesResolution resolution, int buckets, int sliceBuckets,
+        double milliseconds);
+
+    [LoggerMessage(
+        EventId = 1063,
+        Level = LogLevel.Information,
+        Message = "Fold slice size for {Resolution}: {From} -> {To} buckets ({Reason}).")]
+    public static partial void FoldSliceSizeChanged(
+        ILogger logger, EnterpriseObservatory.Domain.SeriesResolution resolution, int from, int to, string reason);
 
     [LoggerMessage(
         EventId = 1049,

@@ -530,6 +530,93 @@ public class CompactionTests : IDisposable
         Assert.Equal((13, 900d), (hour.Count, hour.Max));
     }
 
+    /// <summary>A real Npgsql command timeout, one second long.</summary>
+    private void TimeOut() => _live.ReadRaw(connection =>
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT pg_sleep(3);";
+        command.CommandTimeout = 1;
+        return command.ExecuteNonQuery();
+    });
+
+    [SkippableFact]
+    public void A_slice_that_times_out_halves_until_it_fits_and_the_hour_completes()
+    {
+        RequireDatabase();
+
+        // Slice cost is series × buckets and the series count is the
+        // customer's, so the size cannot be a constant. Here any five-minute
+        // slice above two buckets hits a real command timeout inside its
+        // transaction; the fold halves, retries the same slice, and finishes.
+        var changes = new List<(SeriesResolution Tier, int From, int To)>();
+        var slices = new List<FoldSlice>();
+        var store = new PostgresObservationStore(_live.Database)
+        {
+            SliceFolding = slice =>
+            {
+                if (slice.Resolution == SeriesResolution.FiveMinutes && slice.SliceBuckets > 2)
+                {
+                    TimeOut();
+                }
+            },
+            SliceCommitted = slices.Add,
+            SliceSizeChanged = (tier, from, to) => changes.Add((tier, from, to)),
+        };
+        var entity = Subject("adaptive-shrink");
+
+        AppendEvery(store, entity, TimeSpan.FromMinutes(5), T0, [.. Enumerable.Repeat(1d, 12)]);
+        store.Compact(T0.AddHours(2), new SeriesRetentionPolicy());
+
+        Assert.Equal((SeriesResolution.FiveMinutes, 6, 3), changes[0]);
+        Assert.Equal((SeriesResolution.FiveMinutes, 3, 1), changes[1]);
+        Assert.All(
+            slices.Where(s => s.Resolution == SeriesResolution.FiveMinutes),
+            s => Assert.True(s.SliceBuckets <= 2, $"A {s.SliceBuckets}-bucket slice committed."));
+
+        Assert.Equal(12, Read(store, entity, T0, T0.AddHours(1), SeriesResolution.FiveMinutes).Points.Count);
+        var hour = Assert.Single(Read(store, entity, T0, T0.AddHours(1), SeriesResolution.OneHour).Points);
+        Assert.Equal(12, hour.Count);
+    }
+
+    [SkippableFact]
+    public void A_fast_fold_grows_the_slice_back_to_the_configured_maximum()
+    {
+        RequireDatabase();
+
+        // One timeout halves the slice; three fast slices in a row double it
+        // again, and it never grows past BucketsPerSlice.
+        var timedOut = false;
+        var changes = new List<(SeriesResolution Tier, int From, int To)>();
+        var slices = new List<FoldSlice>();
+        var store = new PostgresObservationStore(_live.Database)
+        {
+            BucketsPerSlice = 4,
+            SliceFolding = slice =>
+            {
+                if (!timedOut && slice.Resolution == SeriesResolution.FiveMinutes)
+                {
+                    timedOut = true;
+                    TimeOut();
+                }
+            },
+            SliceCommitted = slices.Add,
+            SliceSizeChanged = (tier, from, to) => changes.Add((tier, from, to)),
+        };
+        var entity = Subject("adaptive-grow");
+
+        AppendEvery(store, entity, TimeSpan.FromMinutes(5), T0, [.. Enumerable.Repeat(1d, 24)]);
+        store.Compact(T0.AddHours(3), new SeriesRetentionPolicy());
+
+        Assert.Equal(
+            [(SeriesResolution.FiveMinutes, 4, 2), (SeriesResolution.FiveMinutes, 2, 4)],
+            changes);
+
+        var fives = slices.Where(s => s.Resolution == SeriesResolution.FiveMinutes).ToList();
+        Assert.Equal([2, 2, 2], fives.Take(3).Select(s => s.SliceBuckets));
+        Assert.All(fives.Skip(3), s => Assert.Equal(4, s.SliceBuckets));
+        Assert.Equal(24, Read(store, entity, T0, T0.AddHours(2), SeriesResolution.FiveMinutes).Points.Count);
+    }
+
     [SkippableFact]
     public void A_watermark_stops_the_second_pass_redoing_the_first()
     {
