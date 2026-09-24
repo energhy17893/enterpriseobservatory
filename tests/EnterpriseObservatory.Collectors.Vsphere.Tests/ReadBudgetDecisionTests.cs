@@ -67,6 +67,46 @@ public class ReadBudgetDecisionTests
     }
 
     [Fact]
+    public async Task Datastores_measured_through_their_hosts_are_not_counted_as_a_type_read_directly()
+    {
+        // Live KBVc01: "Datastore 0/119" every cycle, while every datastore had
+        // its latency series from the hosts. No query is ever made on a
+        // Datastore (VsphereCounters.Datastore is empty), so it has no
+        // read/total of its own to report (ADR-0009).
+        using var api = new SimulatedVcenter { Volumes = ["ds-1", "ds-2", "ds-3"] };
+
+        var batch = await Source(api, new SyntheticTargets(virtualMachines: 10, hosts: 5, datastores: 3))
+            .ReadAsync(api.Token);
+
+        Assert.Equal(
+            ["ds-1", "ds-2", "ds-3"],
+            batch.Observations.Select(o => o.Entity.Value)
+                .Where(e => e.StartsWith("ds-", StringComparison.Ordinal)).Distinct().Order(StringComparer.Ordinal));
+        Assert.Equal(
+            ["HostSystem 5/5", "VirtualMachine 10/10"],
+            batch.Coverage.Select(c => $"{c.ObjectType} {c.Answered}/{c.Asked}").Order(StringComparer.Ordinal));
+        Assert.DoesNotContain(batch.Failures, f => f.Target == "Datastore");
+    }
+
+    [Fact]
+    public async Task A_deadline_names_the_type_it_cut_off_but_not_datastores_whose_samples_arrived()
+    {
+        // The out-of-time warning said "0 of 119 Datastore entities read; the
+        // other 119 … have no sample" on the Collectors screen while their
+        // samples had arrived with the hosts read before the deadline.
+        using var api = new SimulatedVcenter { Volumes = ["ds-1", "ds-2"], CancelAt = TimeSpan.FromSeconds(21.6) };
+
+        var batch = await Source(api, new SyntheticTargets(virtualMachines: 2000, hosts: 5, datastores: 2))
+            .ReadAsync(api.Token);
+
+        Assert.Contains(batch.Observations, o => o.Entity.Value == "ds-1");
+        var timeout = Assert.Single(batch.Failures, f => f.Kind == CollectionFailureKind.Timeout);
+        Assert.Equal("VirtualMachine", timeout.Target);
+        Assert.DoesNotContain(batch.Failures, f => f.Target == "Datastore");
+        Assert.DoesNotContain(batch.Coverage, c => c.ObjectType == "Datastore");
+    }
+
+    [Fact]
     public async Task The_next_cycle_resumes_where_the_last_one_ran_out()
     {
         // Measured after the first cut of T1.1: keeping partial progress kept
