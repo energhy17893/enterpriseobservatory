@@ -328,6 +328,32 @@ public class ComplianceEvaluationTests
     }
 
     [Fact]
+    public void A_silent_host_keeps_every_verdict_as_stale_when_its_settings_did_not_survive_a_restart()
+    {
+        // 24 September 2026: the product restarted while every Kibar source
+        // was unreachable. Settings live in memory only, so the graph came back
+        // without them, and re-judging the silent hosts turned every verdict
+        // into NotEvaluated -- thousands of transitions for one outage.
+        var failing = One(LogForwarding, Host("vc-1:host-1", settings: ("Syslog.global.logHost", "")));
+        var passing = One(LogForwarding, Host("vc-1:host-2", settings: ("Syslog.global.logHost", "udp://x:514")));
+
+        IReadOnlyList<Entity> afterRestart =
+        [
+            Host("vc-1:host-1") with { SourceInstanceId = "vc-1" },
+            Host("vc-1:host-2") with { SourceInstanceId = "vc-1" },
+        ];
+
+        var findings = ComplianceEvaluation.Evaluate(
+            Catalogue(LogForwarding), afterRestart, [failing, passing], T0.AddHours(12), reportingSources: []);
+
+        Assert.Equal(2, findings.Count);
+        Assert.All(findings, f => Assert.True(f.Stale));
+        Assert.Equal(ComplianceVerdict.Failing, findings.Single(f => f.Entity.Value == "vc-1:host-1").Verdict);
+        Assert.Equal(ComplianceVerdict.Passing, findings.Single(f => f.Entity.Value == "vc-1:host-2").Verdict);
+        Assert.All(findings, f => Assert.Equal(T0, f.FirstSeenUtc));
+    }
+
+    [Fact]
     public void A_reading_dated_in_the_future_is_stamped_no_later_than_now()
     {
         var host = Host(settings: ("Syslog.global.logHost", "")) with { LastSeenUtc = T0.AddMinutes(10) };

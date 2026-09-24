@@ -145,8 +145,9 @@ public static class ComplianceEvaluation
     /// <param name="reportingSources">
     /// The sources that answered in the inventory cycle this evaluation
     /// follows, or null to treat every host's source as having answered. A
-    /// host whose source is not among them is judged on the settings it last
-    /// reported and its findings are marked <see cref="ComplianceFinding.Stale"/>.
+    /// host whose source is not among them keeps the findings it last had,
+    /// marked <see cref="ComplianceFinding.Stale"/>; it is judged on what the
+    /// graph holds only when it has none.
     /// </param>
     /// <returns>
     /// One finding per verdict each check returns — keyed by (control, entity,
@@ -159,10 +160,11 @@ public static class ComplianceEvaluation
     /// </returns>
     /// <remarks>
     /// Every finding is stamped with when its host was last read, not with
-    /// <paramref name="nowUtc"/>. The graph keeps a silent vCenter's hosts as
-    /// they were (see <see cref="EntityGraph.Merge"/>), so judging them again
-    /// re-derives an old verdict from old settings; dating that verdict now
-    /// would make a reading nobody took look current.
+    /// <paramref name="nowUtc"/>: dating an old reading now would make a
+    /// reading nobody took look current. A silent source's findings are
+    /// carried rather than re-judged: the graph keeps its hosts
+    /// (see <see cref="EntityGraph.Merge"/>) but not their settings across
+    /// a restart.
     /// </remarks>
     public static IReadOnlyList<ComplianceFinding> Evaluate(
         ComplianceCatalogue catalogue,
@@ -187,6 +189,8 @@ public static class ComplianceEvaluation
             .Where(f => string.Equals(f.CatalogueRelease, catalogue.Release, StringComparison.Ordinal))
             .GroupBy(f => (f.ControlId, f.Entity, f.Subject))
             .ToDictionary(g => g.Key, g => g.First());
+
+        var lastByEntity = before.Values.ToLookup(f => (f.ControlId, f.Entity));
 
         var live = entities
             .Where(e => e.ObservationState != ObservationState.Vanished)
@@ -213,6 +217,16 @@ public static class ComplianceEvaluation
             foreach (var entity in live.Where(e => e.Kind == check.AppliesTo))
             {
                 var stale = reporting is not null && !reporting.Contains(entity.SourceInstanceId);
+
+                // A silent source keeps its last state (ADR-0026 §3). Not
+                // re-judged: entity settings are not stored, so after a
+                // restart the graph holds none, and judging them would turn
+                // every verdict into "not evaluated" and back (24 Sep 2026).
+                if (stale && lastByEntity[(bound.Control.ControlId, entity.Id)].ToList() is { Count: > 0 } kept)
+                {
+                    findings.AddRange(kept.Select(f => f with { Stale = true }));
+                    continue;
+                }
 
                 // Never later than now: a collector whose clock runs ahead
                 // must not date a reading in the future.
