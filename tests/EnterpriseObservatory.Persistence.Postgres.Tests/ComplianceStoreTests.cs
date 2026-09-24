@@ -1,3 +1,5 @@
+using EnterpriseObservatory.Application.Collection;
+using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Compliance;
 
@@ -226,6 +228,66 @@ public class ComplianceStoreTests : IDisposable
         var history = store.Transitions(Release, "esxi-8.logs-remote", new EntityId("vc-1:host-1"), "");
 
         Assert.Equal(ComplianceVerdict.Passing, Assert.Single(history).To);
+    }
+
+    [SkippableFact]
+    public void A_restart_while_the_source_is_silent_writes_no_transition()
+    {
+        RequireDatabase();
+
+        // The mechanism of 24 September 2026: entity settings are not stored,
+        // so the graph a restart loads has none, and the first cycle after it
+        // judged the silent vCenter's hosts on nothing.
+        var catalogue = new ComplianceCatalogue
+        {
+            Release = Release,
+            Name = "vsphere-8.0",
+            Controls =
+            [
+                new ComplianceControl
+                {
+                    ControlId = "esxi-8.logs-remote",
+                    Component = "VMware ESXi",
+                    Parameter = "Syslog.global.logHost",
+                    BaselineValue = "Site-Specific Log Server",
+                },
+            ],
+        };
+
+        var host = new Entity
+        {
+            Id = new EntityId("vc-1:host-1"),
+            Kind = EntityKind.EsxiHost,
+            DisplayName = "esx-01",
+            SourceInstanceId = "vc-1",
+            LastSeenUtc = T0,
+            Settings = new Dictionary<string, string> { ["Syslog.global.logHost"] = "udp://10.0.0.5:514" },
+        };
+
+        var clock = new Clock { UtcNow = T0 };
+        new PostgresEntityGraphStore(_live.Database).Replace(
+            new EntityGraph { Entities = new Dictionary<EntityId, Entity> { [host.Id] = host } });
+        new ComplianceService(catalogue, new PostgresComplianceStore(_live.Database), clock)
+            .Evaluate([host], reportingSources: ["vc-1"]);
+
+        var transitions = Count("SELECT count(*) FROM compliance_transition;");
+
+        _live.Restart();
+
+        clock.UtcNow = T0.AddHours(12);
+        var graph = new PostgresEntityGraphStore(_live.Database).Current;
+        var store = new PostgresComplianceStore(_live.Database);
+        new ComplianceService(catalogue, store, clock).Evaluate([.. graph.Active], reportingSources: [], graph);
+
+        var finding = Assert.Single(store.Findings);
+        Assert.Equal(ComplianceVerdict.Passing, finding.Verdict);
+        Assert.True(finding.Stale);
+        Assert.Equal(transitions, Count("SELECT count(*) FROM compliance_transition;"));
+    }
+
+    private sealed class Clock : IClock
+    {
+        public DateTimeOffset UtcNow { get; set; }
     }
 
     [SkippableFact]
