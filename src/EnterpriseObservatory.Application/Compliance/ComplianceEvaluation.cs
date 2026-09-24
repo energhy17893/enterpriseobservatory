@@ -220,15 +220,20 @@ public static class ComplianceEvaluation
         foreach (var bound in Bind(catalogue, checks, checksById).Where(b => b.IsEvaluated))
         {
             var check = bound.Check!;
+            var readsSilentNamespace = silentNamespaces is not null &&
+                check.ReadsNamespaces.Any(n => silentNamespaces.Contains(n, StringComparer.OrdinalIgnoreCase));
 
             foreach (var entity in live.Where(e => e.Kind == check.AppliesTo))
             {
-                var stale = reporting is not null && !reporting.Contains(entity.SourceInstanceId);
+                var stale = (reporting is not null && !reporting.Contains(entity.SourceInstanceId)) ||
+                            readsSilentNamespace;
 
                 // A silent source keeps its last state (ADR-0026 §3). Not
-                // re-judged: entity settings are not stored, so after a
-                // restart the graph holds none, and judging them would turn
-                // every verdict into "not evaluated" and back (24 Sep 2026).
+                // re-judged: entity settings and annotations are not stored,
+                // so after a restart the graph holds none, and judging them
+                // would turn every verdict into "not evaluated" and back
+                // (24 Sep 2026). The same for a namespace the check reads
+                // whose source has not answered yet.
                 if (stale && lastByEntity[(bound.Control.ControlId, entity.Id)].ToList() is { Count: > 0 } kept)
                 {
                     findings.AddRange(kept.Select(f => f with { Stale = true }));

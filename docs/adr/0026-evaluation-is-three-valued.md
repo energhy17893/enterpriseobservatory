@@ -197,3 +197,11 @@ eder. `Failed()`'ın `Critical` değil `Unknown` dönmesinin gerekçesi budur.
   ölçülemez; değeri başka yerdedir — doğruluk, ve bir şey bozulduğunda artık
   neyin durmayacağı: eskiden bu sekiz kuralın her biri, eksik bir sayaç ya da
   küçük bir popülasyon karşısında alarmı sessizce çözerdi; artık çözmüyor.
+## Uygulama notu (24 Eylül 2026) — bulgular ve yeniden başlatma
+
+Yeniden başlatmadan sonra susan kaynakların bulguları yeniden yargılanmaz,
+son hâlleriyle bayat taşınır (#187): varlık ayarları tasarım gereği
+saklanmaz (`PostgresEntityGraphStore.cs` `Replace`, :67–72). Bir kontrolün
+okuduğu açıklama ad alanı (ADR-0027; bugün yalnızca `BackupFreshnessCheck` →
+`simplivity`) henüz cevap vermediyse bulgusu aynı şekilde taşınır; yalnızca
+devre dışı ya da silinmiş bağlantıları olan bir ad alanı cevap vermiş sayılır.
