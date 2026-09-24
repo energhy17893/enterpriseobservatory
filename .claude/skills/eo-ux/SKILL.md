@@ -167,12 +167,15 @@ Kibar's measured estate: **1,100 VMs, 119 datastores, 59 hosts.** List
 screens (entity explorer, compliance findings, alerts) need a default page
 size and filters sized to that estate, not to a demo dataset.
 
-- **Default page size: to be measured.** Do not hardcode a number in a PR
-  without a measurement backing it (a virtualized-list frame budget or a
-  render-time benchmark on the Kibar-sized estate). Record the decision as
-  "to be measured" until that measurement exists, per
-  `memory/measurement-query-assumptions.md`'s rule: a published threshold
-  needs a measurement file and a test behind it.
+- **Default page size: 100 rows for entities (measured 24 Sep 2026), 50 for
+  alerts and events (A1/E2).** Measurement, reference-approaches.md §11:
+  `/api/entities` costs ~300 bytes per row on the wire and the server
+  derives health for the whole graph per call regardless of `limit`, so the
+  page size governs payload and reading, not server work; 100 rows ≈ 30 KB,
+  11 pages for Kibar's 1,100 VMs. Use the shared `Pager`
+  (`web/src/components/Pager.tsx`, see `references/components.md`) — never a
+  route-local copy. A different size needs its own measurement first, per
+  `memory/measurement-query-assumptions.md`.
 - Filters are load-bearing at this scale, not a nice-to-have — a 1,100-row
   list without a working filter is not shippable.
 - **No infinite scroll — use real pagination.** Reference §11.7: NN/g's
