@@ -205,3 +205,7 @@ saklanmaz (`PostgresEntityGraphStore.cs` `Replace`, :67–72). Bir kontrolün
 okuduğu açıklama ad alanı (ADR-0027; bugün yalnızca `BackupFreshnessCheck` →
 `simplivity`) henüz cevap vermediyse bulgusu aynı şekilde taşınır; yalnızca
 devre dışı ya da silinmiş bağlantıları olan bir ad alanı cevap vermiş sayılır.
+Taşıma, açıklamanın ufkuyla (`AnnotationCarryForward`, 2 gün) sınırlıdır; sessizlik
+ad alanının bağlantılarının en son envanter cevabından (`collector_health.last_success_utc`,
+kaydı yoksa süreç başlangıcı) ölçülür, ufuk aşılınca kontrol açıklamasız çalışır ve
+"değerlendirilemedi" hangi kaynağın ne kadardır sustuğunu söyler.

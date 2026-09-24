@@ -418,7 +418,7 @@ public sealed class ComplianceService
         IReadOnlyCollection<string>? reportingSources = null,
         EntityGraph? graph = null,
         DemandSnapshot? demand = null,
-        IReadOnlyCollection<string>? silentNamespaces = null)
+        IReadOnlyCollection<SilentNamespace>? silentNamespaces = null)
     {
         ArgumentNullException.ThrowIfNull(entities);
 

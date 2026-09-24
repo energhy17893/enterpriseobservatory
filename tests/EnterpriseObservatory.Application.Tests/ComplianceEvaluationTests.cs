@@ -373,8 +373,52 @@ public class ComplianceEvaluationTests
             Connection("svt-2", ConnectionKinds.Simplivity),
         ];
 
-        Assert.Equal(["simplivity"], ComplianceEvaluation.SilentNamespaces(connections, ["vc-1"]));
-        Assert.Empty(ComplianceEvaluation.SilentNamespaces(connections, ["vc-1", "svt-2"]));
+        var silent = Assert.Single(ComplianceEvaluation.SilentNamespaces(connections, ["vc-1"], [], T0));
+        Assert.Equal("simplivity", silent.Namespace);
+        Assert.Equal("SimpliVity svt-1, svt-2", silent.Sources);
+        Assert.Empty(ComplianceEvaluation.SilentNamespaces(connections, ["vc-1", "svt-2"], [], T0));
+    }
+
+    private static CollectorHealth Answered(string id, DateTimeOffset? at, CollectorRole role = CollectorRole.Inventory) => new()
+    {
+        InstanceId = id,
+        Role = role,
+        Health = HealthState.Unknown,
+        LastSuccessUtc = at,
+    };
+
+    [Fact]
+    public void A_namespace_is_silent_since_the_last_inventory_answer_of_any_of_its_connections()
+    {
+        IReadOnlyList<SourceConnection> connections =
+        [
+            Connection("svt-1", ConnectionKinds.Simplivity),
+            Connection("svt-2", ConnectionKinds.Simplivity),
+        ];
+
+        var silent = Assert.Single(ComplianceEvaluation.SilentNamespaces(
+            connections,
+            [],
+            [
+                Answered("svt-1", T0.AddHours(-30)),
+                Answered("svt-2", T0.AddHours(-20)),
+                Answered("svt-2", T0.AddHours(-1), CollectorRole.Observation),
+            ],
+            T0));
+
+        Assert.Equal(T0.AddHours(-20), silent.SinceUtc);
+    }
+
+    [Fact]
+    public void A_connection_that_never_answered_is_silent_since_the_process_started()
+    {
+        var silent = Assert.Single(ComplianceEvaluation.SilentNamespaces(
+            [Connection("svt-1", ConnectionKinds.Simplivity)], [], [Answered("svt-1", null)], T0));
+
+        Assert.Equal(T0, silent.SinceUtc);
+
+        Assert.Equal(T0, Assert.Single(ComplianceEvaluation.SilentNamespaces(
+            [Connection("svt-1", ConnectionKinds.Simplivity)], [], [], T0)).SinceUtc);
     }
 
     [Fact]
@@ -384,8 +428,8 @@ public class ComplianceEvaluationTests
         // check on its last verdict forever.
         Assert.Empty(ComplianceEvaluation.SilentNamespaces(
             [Connection("vc-1", ConnectionKinds.Vsphere), Connection("svt-1", ConnectionKinds.Simplivity, enabled: false)],
-            ["vc-1"]));
-        Assert.Empty(ComplianceEvaluation.SilentNamespaces([Connection("vc-1", ConnectionKinds.Vsphere)], ["vc-1"]));
+            ["vc-1"], [], T0));
+        Assert.Empty(ComplianceEvaluation.SilentNamespaces([Connection("vc-1", ConnectionKinds.Vsphere)], ["vc-1"], [], T0));
     }
 
     [Fact]
