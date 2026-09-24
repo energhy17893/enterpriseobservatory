@@ -270,7 +270,7 @@ public class BackupFreshnessCheckTests
         var after = Of(
             ComplianceEvaluation.Evaluate(
                 Catalogue, [vm], [before], T0.AddMinutes(10), checksById: ById,
-                reportingSources: ["vc-1"], silentNamespaces: ["simplivity"],
+                reportingSources: ["vc-1"], silentNamespaces: [SilentSince(T0.AddMinutes(-5))],
                 graph: EntityGraph.Empty with { Entities = new Dictionary<EntityId, Entity> { [vm.Id] = vm } }),
             vm);
 
@@ -288,11 +288,47 @@ public class BackupFreshnessCheckTests
         var finding = Of(
             ComplianceEvaluation.Evaluate(
                 Catalogue, [vm], [], T0, checksById: ById,
-                reportingSources: ["vc-1"], silentNamespaces: ["simplivity"],
+                reportingSources: ["vc-1"], silentNamespaces: [SilentSince(T0.AddMinutes(-5))],
                 graph: EntityGraph.Empty with { Entities = new Dictionary<EntityId, Entity> { [vm.Id] = vm } }),
             vm);
 
         Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
         Assert.True(finding.Stale);
+    }
+
+    private static SilentNamespace SilentSince(DateTimeOffset since) => new("simplivity", "SimpliVity svt-1", since);
+
+    private static ComplianceFinding AfterSilence(TimeSpan silent)
+    {
+        var vm = Vm("vc-1:vm-1");
+        var before = Of(Evaluate([WithSimplivity(vm, T0.AddHours(-2))]), vm);
+
+        return Of(
+            ComplianceEvaluation.Evaluate(
+                Catalogue, [vm], [before], T0 + silent, checksById: ById,
+                reportingSources: ["vc-1"], silentNamespaces: [SilentSince(T0)],
+                graph: EntityGraph.Empty with { Entities = new Dictionary<EntityId, Entity> { [vm.Id] = vm } }),
+            vm);
+    }
+
+    [Fact]
+    public void A_namespace_silent_within_the_annotation_horizon_is_carried_stale()
+    {
+        var finding = AfterSilence(TimeSpan.FromHours(47));
+
+        Assert.Equal(ComplianceVerdict.Passing, finding.Verdict);
+        Assert.True(finding.Stale);
+    }
+
+    [Fact]
+    public void A_namespace_silent_past_the_annotation_horizon_is_not_evaluated_and_says_why()
+    {
+        // The finding must not outlive the annotation it rests on (ADR-0027's
+        // two days): past it the check runs with the annotation absent.
+        var finding = AfterSilence(TimeSpan.FromHours(49));
+
+        Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
+        Assert.StartsWith("SimpliVity svt-1 has not answered for 2 days 1 hour; ", finding.Reason, StringComparison.Ordinal);
+        Assert.Contains("last backup time is not known", finding.Reason, StringComparison.Ordinal);
     }
 }

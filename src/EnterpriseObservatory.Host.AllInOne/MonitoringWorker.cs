@@ -34,6 +34,7 @@ public sealed class MonitoringWorker(
     IObservationStore series,
     IOperationalMetricsStore selfMetrics,
     ISourceConnectionStore connections,
+    ICollectorHealthStore health,
     ConfigurationCollectionPipeline configuration,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
@@ -45,6 +46,11 @@ public sealed class MonitoringWorker(
 
     private readonly ISourceConnectionStore _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
+
+    private readonly ICollectorHealthStore _health = health ?? throw new ArgumentNullException(nameof(health));
+
+    /// <summary>When the first evaluation ran: the silence of a connection with no answer on record.</summary>
+    private DateTimeOffset? _startedUtc;
 
     private readonly IOperationalMetricsStore _selfMetrics =
         selfMetrics ?? throw new ArgumentNullException(nameof(selfMetrics));
@@ -262,9 +268,11 @@ public sealed class MonitoringWorker(
         try
         {
             var graph = _graph.Current;
+            _startedUtc ??= _compliance.Now;
             var findings = _compliance.Evaluate(
                 [.. graph.Active], reportingSources, graph, TakeDemand(graph),
-                ComplianceEvaluation.SilentNamespaces(_connections.All, reportingSources));
+                ComplianceEvaluation.SilentNamespaces(
+                    _connections.All, reportingSources, _health.Current, _startedUtc.Value));
 
             // Named by ownership, never by list position -- P1 removes that
             // assumption; null only when no catalogue owned by Broadcom is

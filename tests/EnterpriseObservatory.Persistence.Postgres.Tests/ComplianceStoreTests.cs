@@ -325,7 +325,7 @@ public class ComplianceStoreTests : IDisposable
         void Cycle(PostgresComplianceStore store, Entity estate, IReadOnlyCollection<string> reporting) =>
             new ComplianceService([catalogue], store, clock, byId).Evaluate(
                 [estate], reporting, EntityGraph.Empty with { Entities = new Dictionary<EntityId, Entity> { [estate.Id] = estate } },
-                silentNamespaces: ComplianceEvaluation.SilentNamespaces(connections, reporting));
+                silentNamespaces: ComplianceEvaluation.SilentNamespaces(connections, reporting, [], clock.UtcNow));
 
         new PostgresEntityGraphStore(_live.Database).Replace(
             new EntityGraph { Entities = new Dictionary<EntityId, Entity> { [vm.Id] = annotated } });

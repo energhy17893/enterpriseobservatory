@@ -130,6 +130,7 @@ public class ConfigurationTierTests
             observations,
             new OperationalMetricsStore(),
             new TestConnectionStore(),
+            health,
             new ConfigurationCollectionPipeline(clock, health),
             NullLogger<MonitoringWorker>.Instance);
 

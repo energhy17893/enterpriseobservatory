@@ -146,7 +146,15 @@ public static class ComplianceEvaluation
     /// <param name="silentNamespaces">
     /// Annotation namespaces none of whose sources answered this cycle (see
     /// <see cref="SilentNamespaces"/>). A check that reads one keeps its last
-    /// findings, stale, exactly as a silent entity source does.
+    /// findings, stale, exactly as a silent entity source does — until the
+    /// namespace has been silent longer than <paramref name="namespaceCarryLimit"/>.
+    /// Past it the check runs with the annotation absent, and a "not
+    /// evaluated" says which source has been silent and for how long.
+    /// </param>
+    /// <param name="namespaceCarryLimit">
+    /// How long a silent namespace's findings are carried; ADR-0027's
+    /// annotation horizon (<see cref="EntityRetentionPolicy.AnnotationCarryForward"/>)
+    /// when null: a finding must not outlive the annotation it rests on.
     /// </param>
     /// <param name="reportingSources">
     /// The sources that answered in the inventory cycle this evaluation
@@ -182,7 +190,8 @@ public static class ComplianceEvaluation
         IReadOnlyDictionary<string, IComplianceCheck>? checksById = null,
         EntityGraph? graph = null,
         DemandSnapshot? demand = null,
-        IReadOnlyCollection<string>? silentNamespaces = null)
+        IReadOnlyCollection<SilentNamespace>? silentNamespaces = null,
+        TimeSpan? namespaceCarryLimit = null)
     {
         ArgumentNullException.ThrowIfNull(catalogue);
         ArgumentNullException.ThrowIfNull(entities);
@@ -220,8 +229,12 @@ public static class ComplianceEvaluation
         foreach (var bound in Bind(catalogue, checks, checksById).Where(b => b.IsEvaluated))
         {
             var check = bound.Check!;
-            var readsSilentNamespace = silentNamespaces is not null &&
-                check.ReadsNamespaces.Any(n => silentNamespaces.Contains(n, StringComparer.OrdinalIgnoreCase));
+            var limit = namespaceCarryLimit ?? EntityRetentionPolicy.Default.AnnotationCarryForward;
+            var silent = (silentNamespaces ?? [])
+                .Where(n => check.ReadsNamespaces.Contains(n.Namespace, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            var readsSilentNamespace = silent.Any(n => nowUtc - n.SinceUtc <= limit);
+            var expired = readsSilentNamespace ? [] : silent;
 
             foreach (var entity in live.Where(e => e.Kind == check.AppliesTo))
             {
@@ -244,8 +257,12 @@ public static class ComplianceEvaluation
                 // must not date a reading in the future.
                 var readAt = entity.LastSeenUtc < nowUtc ? entity.LastSeenUtc : nowUtc;
 
-                foreach (var verdict in Distinct(check.Judge(bound.Control, entity, context)))
+                foreach (var judged in Distinct(check.Judge(bound.Control, entity, context)))
                 {
+                    var verdict = judged.Verdict == ComplianceVerdict.NotEvaluated && expired.Count > 0
+                        ? judged with { Reason = Silence(expired, nowUtc) + Uncapitalised(judged.Reason) }
+                        : judged;
+
                     var now = Finding(bound, entity, verdict, catalogue.Release, readAt) with { Stale = stale };
 
                     findings.Add(before.TryGetValue((now.ControlId, now.Entity, now.Subject), out var last)
@@ -259,19 +276,36 @@ public static class ComplianceEvaluation
     }
 
     /// <summary>
-    /// The annotation namespaces with no answering source this cycle.
+    /// The annotation namespaces with no answering source this cycle, and since when.
     /// </summary>
+    /// <param name="connections">Every configured connection.</param>
+    /// <param name="reportingSources">The sources that answered this inventory cycle.</param>
+    /// <param name="health">
+    /// Collector health; its inventory <see cref="CollectorHealth.LastSuccessUtc"/>
+    /// is stored, so the silence is measured across a restart.
+    /// </param>
+    /// <param name="startedUtc">When this process started: the silence of a connection that has no answer on record.</param>
     /// <remarks>
-    /// A namespace is its connection kind (<see cref="ConnectionKinds"/>).
-    /// Only enabled connections count: one disabled or removed has nothing
-    /// left to wait for, and counting it silent would freeze its checks on
-    /// their last verdict forever.
+    /// A namespace is its connection kind (<see cref="ConnectionKinds"/>),
+    /// silent since the most recent inventory answer of any of its
+    /// connections. Only enabled connections count: one disabled or removed
+    /// has nothing left to wait for, and counting it silent would freeze its
+    /// checks on their last verdict.
     /// </remarks>
-    public static IReadOnlyList<string> SilentNamespaces(
-        IEnumerable<SourceConnection> connections, IReadOnlyCollection<string> reportingSources)
+    public static IReadOnlyList<SilentNamespace> SilentNamespaces(
+        IEnumerable<SourceConnection> connections,
+        IReadOnlyCollection<string> reportingSources,
+        IReadOnlyList<CollectorHealth> health,
+        DateTimeOffset startedUtc)
     {
         ArgumentNullException.ThrowIfNull(connections);
         ArgumentNullException.ThrowIfNull(reportingSources);
+        ArgumentNullException.ThrowIfNull(health);
+
+        DateTimeOffset LastAnswer(SourceConnection c) =>
+            health.FirstOrDefault(h => h.Role == CollectorRole.Inventory &&
+                                       string.Equals(h.InstanceId, c.InstanceId, StringComparison.Ordinal))
+                ?.LastSuccessUtc ?? startedUtc;
 
         return
         [
@@ -279,9 +313,37 @@ public static class ComplianceEvaluation
                 .Where(c => c.IsEnabled)
                 .GroupBy(c => c.Kind, StringComparer.Ordinal)
                 .Where(g => !g.Any(c => reportingSources.Contains(c.InstanceId, StringComparer.Ordinal)))
-                .Select(g => g.Key),
+                .Select(g => new SilentNamespace(
+                    g.Key,
+                    $"{KindName(g.Key)} {string.Join(", ", g.Select(c => c.InstanceId))}",
+                    g.Max(LastAnswer))),
         ];
     }
+
+    private static string KindName(string kind) => kind switch
+    {
+        ConnectionKinds.Simplivity => "SimpliVity",
+        ConnectionKinds.Redfish => "Redfish",
+        ConnectionKinds.Vsphere => "vCenter",
+        _ => kind,
+    };
+
+    /// <summary>"SimpliVity KBSVT has not answered for 2 days 3 hours; ".</summary>
+    private static string Silence(IReadOnlyList<SilentNamespace> silent, DateTimeOffset nowUtc) =>
+        string.Concat(silent.Select(n => $"{n.Sources} has not answered for {Duration(nowUtc - n.SinceUtc)}; "));
+
+    private static string Duration(TimeSpan span)
+    {
+        static string Of(int n, string unit) => n == 1 ? $"1 {unit}" : $"{n} {unit}s";
+
+        var days = (int)span.TotalDays;
+        return days == 0 ? Of(span.Hours, "hour")
+            : span.Hours == 0 ? Of(days, "day")
+            : $"{Of(days, "day")} {Of(span.Hours, "hour")}";
+    }
+
+    private static string Uncapitalised(string? reason) =>
+        string.IsNullOrEmpty(reason) ? "the check did not say why it could not conclude." : char.ToLowerInvariant(reason[0]) + reason[1..];
 
     /// <summary>One verdict per subject: a check that repeats one is taken at its first word.</summary>
     private static IEnumerable<CheckVerdict> Distinct(IReadOnlyList<CheckVerdict> verdicts) =>
@@ -350,3 +412,9 @@ public static class ComplianceEvaluation
     private static string Describe(string component) =>
         string.IsNullOrWhiteSpace(component) ? "something else" : component;
 }
+
+/// <summary>An annotation namespace none of whose connections answered this cycle.</summary>
+/// <param name="Namespace">The namespace, which is its connection kind.</param>
+/// <param name="Sources">Who has not answered, as a "not evaluated" names them: "SimpliVity KBSVT".</param>
+/// <param name="SinceUtc">The most recent answer of any of its connections.</param>
+public sealed record SilentNamespace(string Namespace, string Sources, DateTimeOffset SinceUtc);
