@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
-import { ago, cn } from '@/lib/ui'
+import { ago, cn, ramp } from '@/lib/ui'
 import type {
   AuthStateView,
   ConnectionCommand,
@@ -241,7 +241,9 @@ function DatabaseCard() {
             <div
               className={cn(
                 'mt-2 rounded-md border px-3 py-2 text-sm',
-                outcome.succeeded ? 'border-healthy text-healthy-on' : 'border-critical text-critical-on',
+                outcome.succeeded
+                  ? cn(ramp('Healthy').surface, ramp('Healthy').border, ramp('Healthy').text)
+                  : cn(ramp('Critical').surface, ramp('Critical').border, ramp('Critical').text),
               )}
             >
               {outcome.detail}
@@ -355,14 +357,14 @@ function Row({ connection, onEdit }: { connection: ConnectionView; onEdit: () =>
           </div>
 
           {connection.acceptUntrustedCertificate && (
-            <div className="mt-1 text-xs text-warning-on">
+            <div className={cn('mt-1 text-xs', ramp('Warning').text)}>
               Accepting an untrusted certificate: traffic is encrypted, the server is not
               authenticated.
             </div>
           )}
 
           {connection.passwordUnreadable && (
-            <div className="mt-1 text-xs text-critical-on">
+            <div className={cn('mt-1 text-xs', ramp('Critical').text)}>
               A password is stored but cannot be decrypted — this happens when a database is
               restored without the key material beside it. Enter the password again.
             </div>
@@ -376,7 +378,7 @@ function Row({ connection, onEdit }: { connection: ConnectionView; onEdit: () =>
             {connection.createdBy !== '' && ` · added by ${connection.createdBy}`}
           </Identifier>
 
-          {note !== null && <div className="mt-1 text-sm text-critical-on">{note}</div>}
+          {note !== null && <div className={cn('mt-1 text-sm', ramp('Critical').text)}>{note}</div>}
         </div>
 
         <div className="flex shrink-0 gap-2">
@@ -607,8 +609,8 @@ function Editor({
               probe.noCollector
                 ? 'border-border text-muted-foreground'
                 : probe.succeeded
-                  ? 'border-healthy text-healthy-on'
-                  : 'border-critical text-critical-on',
+                  ? cn(ramp('Healthy').surface, ramp('Healthy').border, ramp('Healthy').text)
+                  : cn(ramp('Critical').surface, ramp('Critical').border, ramp('Critical').text),
             )}
           >
             {probe.detail}
@@ -618,7 +620,7 @@ function Editor({
           </div>
         )}
 
-        {note !== null && <div className="text-sm text-critical-on">{note}</div>}
+        {note !== null && <div className={cn('text-sm', ramp('Critical').text)}>{note}</div>}
 
         <div className="flex flex-wrap gap-2">
           {/*

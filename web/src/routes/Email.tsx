@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, LoadFailure, Loading } from '@/components/Primitives'
-import { cn } from '@/lib/ui'
+import { cn, ramp } from '@/lib/ui'
 import type { AuthStateView, SmtpSettingsCommand, MailTestView, SmtpTlsMode } from '@/api/types'
 
 const TLS_MODES: { value: SmtpTlsMode; label: string; hint: string }[] = [
@@ -178,7 +178,7 @@ export function Email({ identity }: { identity: AuthStateView }) {
               />
               <span>
                 Send credentials over this unencrypted connection anyway
-                <span className="block text-xs text-warning-on">
+                <span className={cn('block text-xs', ramp('Warning').text)}>
                   Refused unless checked. Only correct for a relay reachable solely on a closed
                   management network.
                 </span>
@@ -210,14 +210,16 @@ export function Email({ identity }: { identity: AuthStateView }) {
             <div
               className={cn(
                 'rounded-md border px-3 py-2 text-sm',
-                test.succeeded ? 'border-healthy text-healthy-on' : 'border-critical text-critical-on',
+                test.succeeded
+                  ? cn(ramp('Healthy').surface, ramp('Healthy').border, ramp('Healthy').text)
+                  : cn(ramp('Critical').surface, ramp('Critical').border, ramp('Critical').text),
               )}
             >
               {test.detail}
             </div>
           )}
 
-          {note !== null && <div className="text-sm text-critical-on">{note}</div>}
+          {note !== null && <div className={cn('text-sm', ramp('Critical').text)}>{note}</div>}
 
           <div className="flex flex-wrap items-center gap-2">
             <button
