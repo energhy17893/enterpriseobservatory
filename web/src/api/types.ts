@@ -479,7 +479,7 @@ export interface ProbeView {
   identified: string | null
   /** Shown differently: the next attempt may lock the account out. */
   credentialsRejected: boolean
-  /** True when there is no collector for this kind yet -- not an error. */
+  /** True when no collector could answer for this kind -- not an error. */
   noCollector: boolean
 }
 
