@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
 import { AlertRow } from '@/components/AlertRow'
 import { BulkBar } from '@/components/BulkBar'
+import { Pager } from '@/components/Pager'
 import { ago, cn, severityStatus } from '@/lib/ui'
 import type {
   EventFeedView,
@@ -396,32 +397,13 @@ function VcenterEvents() {
           aria-label="Search vCenter events"
           className="w-full max-w-md rounded-md border border-border bg-page px-3 py-1.5 text-sm"
         />
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          {/* WCAG 4.1.3: the range changes on every page or search and is announced. */}
-          <span className="tabular" role="status" aria-live="polite">
-            {total === 0
-              ? '0 of 0'
-              : `${offset + 1}–${Math.min(offset + EVENT_PAGE_SIZE, total)} of ${total}`}
-          </span>
-          <button
-            type="button"
-            aria-label="Previous page of vCenter events"
-            disabled={offset === 0}
-            onClick={() => setParam('offset', String(Math.max(0, offset - EVENT_PAGE_SIZE)))}
-            className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
-          >
-            Previous
-          </button>
-          <button
-            type="button"
-            aria-label="Next page of vCenter events"
-            disabled={offset + EVENT_PAGE_SIZE >= total}
-            onClick={() => setParam('offset', String(offset + EVENT_PAGE_SIZE))}
-            className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
-          >
-            Next
-          </button>
-        </div>
+        <Pager
+          offset={offset}
+          pageSize={EVENT_PAGE_SIZE}
+          total={total}
+          onOffset={(next) => setParam('offset', String(next))}
+          unit="vCenter events"
+        />
       </div>
 
       {data.events.length === 0 ? (
