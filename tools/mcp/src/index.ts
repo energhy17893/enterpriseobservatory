@@ -143,8 +143,14 @@ function fit(data: unknown): { text: string; structured: unknown } {
   let text = JSON.stringify(data);
   if (text.length <= CHARACTER_LIMIT) return { text, structured: data };
 
+  // The list to cut is the answer itself or its largest array property
+  // (items, findings, controls, sources…) — whichever carries the bulk.
   const container = data as Record<string, unknown>;
-  const key = Array.isArray(data) ? null : Array.isArray(container.items) ? "items" : Array.isArray(container.findings) ? "findings" : null;
+  const key = Array.isArray(data)
+    ? null
+    : Object.entries(container)
+        .filter(([, v]) => Array.isArray(v))
+        .sort(([, a], [, b]) => JSON.stringify(b).length - JSON.stringify(a).length)[0]?.[0] ?? null;
   const list = (key === null ? data : container[key]) as unknown[] | undefined;
 
   if (Array.isArray(list)) {
