@@ -16,10 +16,9 @@ import type {
  *
  * A kind is more than a label: it is what the API validates the command
  * against (see ConnectionsApi.UnknownKind) and what
- * SourceConnectionCatalogue.ProbeAsync uses to pick a prober. Redfish and
- * SimpliVity are listed here before either has a collector, on purpose —
- * ADR-0015 wants credentials entered through the product, and the prober
- * arrives in M6.0b. Saving one now means it is ready the day its module lands.
+ * SourceConnectionCatalogue.ProbeAsync uses to pick a prober. All three have
+ * a collector now — vSphere from the start, Redfish since M6.1 (#178),
+ * SimpliVity since S3 (#146) — so every kind offered here can be polled.
  */
 const KIND_LABELS: Record<string, string> = {
   vsphere: 'vSphere',
@@ -30,7 +29,7 @@ const KIND_LABELS: Record<string, string> = {
 const KIND_ADDRESS_PLACEHOLDERS: Record<string, string> = {
   vsphere: 'https://vcenter.example.local',
   redfish: 'https://ilo-host/',
-  simplivity: 'https://ovc-or-vcenter/',
+  simplivity: 'https://ovc-ip-or-mva/',
 }
 
 const KINDS = Object.keys(KIND_LABELS)
@@ -48,11 +47,7 @@ function blank(kind: string): ConnectionCommand {
     password: '',
     acceptUntrustedCertificate: false,
     pageSize: 250,
-    // Suggested, not forced: a kind with no collector yet would otherwise be
-    // polled every cycle for nothing but a "no collector for this kind yet"
-    // result. Left editable, because the person entering it may already know
-    // the module is about to land.
-    isEnabled: kind === 'vsphere',
+    isEnabled: true,
   }
 }
 
@@ -400,7 +395,15 @@ function Row({ connection, onEdit }: { connection: ConnectionView; onEdit: () =>
           </button>
           <button
             type="button"
-            onClick={() => remove.mutate()}
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Remove connection '${connection.instanceId}'? It stops being polled: its entities keep their last known state but show as stale, and its open alerts stay open and stale too — neither resolves on its own.`,
+                )
+              ) {
+                remove.mutate()
+              }
+            }}
             disabled={configured || remove.isPending}
             className={cn(
               'rounded-md border border-border px-2 py-1 text-sm',
@@ -482,9 +485,6 @@ function Editor({
                 // Page size is vSphere-specific; carrying it across to a kind
                 // that has no use for it would show a stale value nobody set.
                 pageSize: blank(kind).pageSize,
-                // Suggested, not forced -- see blank(). Only nudged here
-                // because the person is actively picking the kind right now.
-                isEnabled: blank(kind).isEnabled,
               })
             }}
             disabled={!isNew}
@@ -502,7 +502,7 @@ function Editor({
           label="Name"
           hint={
             isNew
-              ? 'Used to build every entity id from this vCenter, so it has to be stable. It cannot be changed later.'
+              ? 'Used to build every entity id from this connection, so it has to be stable. It cannot be changed later.'
               : 'Fixed. Changing it would orphan every entity built from the old name.'
           }
         >
@@ -593,14 +593,6 @@ function Editor({
           />
           <span>Poll this connection</span>
         </label>
-
-        {command.kind !== 'vsphere' && (
-          <div className="text-xs text-muted-foreground">
-            There is no collector for {kindLabel(command.kind)} yet. The connection can still be
-            saved — its credentials will be ready the day the module lands — but leaving it
-            unpolled until then avoids a connection that only ever reports "no collector yet".
-          </div>
-        )}
 
         {probe !== null && (
           <div

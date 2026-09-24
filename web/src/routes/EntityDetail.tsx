@@ -169,7 +169,7 @@ export function EntityDetail() {
       </section>
 
       <section className="space-y-2">
-        <h2 className="text-sm font-medium">Connections</h2>
+        <h2 className="text-sm font-medium">Relationships</h2>
         {/*
           Clickable, which is the point. The product's end-to-end triangulation
           claim is only real if an operator can walk host → HBA → switch port →
