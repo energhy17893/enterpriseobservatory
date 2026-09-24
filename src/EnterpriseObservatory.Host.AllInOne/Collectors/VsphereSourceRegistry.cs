@@ -711,9 +711,11 @@ public sealed class VsphereSourceRegistry : ISourceRegistry, IDisposable
     {
         public string InstanceId { get; } = instanceId;
 
+        public string Reason { get; } = $"'{instanceId}' is not being polled: {reason}.";
+
+        // The pipeline never calls this (IRoleNotApplicable); kept honest in case something does.
         public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
-            throw new ConnectionNotUsableException(
-                $"'{InstanceId}' is not being polled: {reason}.", CollectionFailureKind.NotConfigured);
+            throw new ConnectionNotUsableException(Reason, CollectionFailureKind.NotConfigured);
     }
 
     internal const string SimplivityHasNoMetrics =

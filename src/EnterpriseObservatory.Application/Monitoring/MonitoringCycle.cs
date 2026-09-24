@@ -78,6 +78,13 @@ public sealed record MonitoringCycleResult
     public TimeSpan CycleDuration { get; init; }
 
     /// <summary>
+    /// The metric cycle's per-source batches and collector health, as the
+    /// runner left them; null for an inventory cycle. For the host's
+    /// per-source log line (HostLog 1064).
+    /// </summary>
+    public ObservationCycleResult? ObservationCollection { get; init; }
+
+    /// <summary>
     /// <c>alert_history</c> rows this cycle's reconciliation appended. See
     /// <see cref="AlertReconciliationResult.TransitionsAppended"/>.
     /// </summary>
@@ -564,6 +571,7 @@ public sealed class MonitoringCycle(
             CycleDuration = stopwatch.Elapsed,
             TransitionsAppended = reconciliation.TransitionsAppended,
             AgeClampedToUnknown = reconciliation.AgeClampedToUnknown,
+            ObservationCollection = cycle,
         };
     }
 

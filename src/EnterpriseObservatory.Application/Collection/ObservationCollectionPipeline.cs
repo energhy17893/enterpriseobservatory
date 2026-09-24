@@ -97,8 +97,21 @@ public sealed class ObservationCollectionPipeline(
             }
         }
 
-        var outcomes = await Task.WhenAll(slotted.Select(pair =>
-            _runner.RunAsync(
+        var outcomes = await Task.WhenAll(slotted.Select(pair => pair.Source is IRoleNotApplicable notApplicable
+            // Not attempted, so not failed and not backed off: a fresh row every
+            // cycle, NotPolled with its reason (ADR-0026), and no alert.
+            ? Task.FromResult(new SourceRunOutcome<ObservationBatch>(
+                null,
+                new CollectorHealth
+                {
+                    InstanceId = pair.Source.InstanceId,
+                    Role = CollectorRole.Observation,
+                    Health = Domain.HealthState.Unknown,
+                    LastFailureKind = CollectionFailureKind.NotConfigured,
+                    LastFailureDetail = notApplicable.Reason,
+                },
+                []))
+            : _runner.RunAsync(
                 pair.Source.InstanceId,
                 CollectorRole.Observation,
                 ct => pair.Slot.ReadAsync(pair.Source, ct),
@@ -115,10 +128,7 @@ public sealed class ObservationCollectionPipeline(
         var batches = outcomes.Select(o => o.Result).OfType<ObservationBatch>().ToList();
 
         var alerts = outcomes
-            .Zip(slotted)
-            // A role the kind does not have raises nothing (IRoleNotApplicable).
-            .Where(pair => pair.Second.Source is not IRoleNotApplicable)
-            .SelectMany(pair => pair.First.CollectionAlerts)
+            .SelectMany(o => o.CollectionAlerts)
             .Concat(batches.SelectMany(DetailLevelAlerts))
             // Stamped here rather than at each producer: an alert with no scope
             // belongs to no evaluation, and the reconciler would resolve it on

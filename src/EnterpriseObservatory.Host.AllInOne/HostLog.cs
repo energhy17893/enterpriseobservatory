@@ -130,6 +130,19 @@ internal static partial class HostLog
     public static partial void FoldSliceSizeChanged(
         ILogger logger, EnterpriseObservatory.Domain.SeriesResolution resolution, int from, int to, string reason);
 
+    /// <summary>
+    /// One source's metric read, every cycle: so today's cadence can be
+    /// compared with yesterday's from the host log alone.
+    /// </summary>
+    [LoggerMessage(
+        EventId = 1064,
+        Level = LogLevel.Information,
+        Message = "Observation {Instance}: {Outcome} in {Milliseconds:0} ms of a {BudgetSeconds:0.#} s budget; " +
+                  "read {Types}; out of time: {OutOfTime}.")]
+    public static partial void ObservationSourceRead(
+        ILogger logger, string instance, string outcome, double milliseconds, double budgetSeconds, string types,
+        string outOfTime);
+
     [LoggerMessage(
         EventId = 1049,
         Level = LogLevel.Information,

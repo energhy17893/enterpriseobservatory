@@ -189,6 +189,7 @@ public sealed class VsphereObservationSource(
         var observations = new List<Observation>();
         var backfill = new List<Observation>();
         var failures = new List<CollectionFailure>();
+        var coverage = new List<PropertyCoverage>();
 
         var catalog = await _api.GetCounterCatalogAsync(cancellationToken).ConfigureAwait(false);
 
@@ -220,7 +221,7 @@ public sealed class VsphereObservationSource(
             {
                 await ReadTypeAsync(
                     entityType, moRefs, byKey, maxQueryMetrics, now, live, memory,
-                    observations, backfill, failures, cancellationToken).ConfigureAwait(false);
+                    observations, backfill, failures, coverage, cancellationToken).ConfigureAwait(false);
             }
             catch (VsphereApiException ex) when (!EndsTheSession(ex.Kind))
             {
@@ -234,6 +235,7 @@ public sealed class VsphereObservationSource(
                 foreach (var (untouched, untouchedMoRefs) in types.Skip(i + 1))
                 {
                     failures.Add(OutOfTime(untouched, read: 0, untouchedMoRefs.Count));
+                    coverage.Add(Covered(untouched, read: 0, untouchedMoRefs.Count));
                 }
 
                 break;
@@ -267,6 +269,7 @@ public sealed class VsphereObservationSource(
             Observations = observations,
             Backfill = backfill,
             Failures = failures,
+            Coverage = coverage,
 
             // Data for the runner, applied only once the batch is accepted.
             Advance = new MarksAdvance(live),
@@ -1208,6 +1211,15 @@ public sealed class VsphereObservationSource(
             "An estate this size does not fit one collection interval at this vCenter's query speed.",
     };
 
+    /// <summary>How much of a type this read got through, for the per-cycle log line.</summary>
+    private static PropertyCoverage Covered(VsphereEntityType entityType, int read, int total) => new()
+    {
+        ObjectType = entityType.ToString(),
+        Property = "realtime",
+        Asked = total,
+        Answered = read,
+    };
+
     /// <summary>How many entities the probe tries before calling the target list stale.</summary>
     /// <remarks>
     /// One deleted entity at the head of the list is ordinary churn between
@@ -1228,6 +1240,7 @@ public sealed class VsphereObservationSource(
         List<Observation> observations,
         List<Observation> backfill,
         List<CollectionFailure> failures,
+        List<PropertyCoverage> coverage,
         CancellationToken cancellationToken)
     {
         var progress = new TypeProgress();
@@ -1248,6 +1261,9 @@ public sealed class VsphereObservationSource(
         }
         finally
         {
+            // Every way out, so a type read in full says read = total.
+            coverage.Add(Covered(entityType, progress.Read, moRefs.Count - progress.Gone.Count));
+
             if (progress.Gone.Count > 0)
             {
                 failures.Add(NoLongerExist(entityType, progress.Gone));

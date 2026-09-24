@@ -54,8 +54,10 @@ internal sealed class FakeRoleNotApplicableSource(string instanceId) : IObservat
 {
     public string InstanceId { get; } = instanceId;
 
+    public string Reason => $"'{InstanceId}' is not being polled: inventory only.";
+
     public Task<ObservationBatch> ReadAsync(ObservationReadContext context, CancellationToken cancellationToken) =>
-        throw new InvalidOperationException($"'{InstanceId}' is not being polled: inventory only.");
+        throw new InvalidOperationException(Reason);
 }
 
 internal sealed class RecordingNotifier : IAlertNotifier
