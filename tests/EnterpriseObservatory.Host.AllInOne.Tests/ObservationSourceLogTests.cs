@@ -83,6 +83,7 @@ public class ObservationSourceLogTests
             observations,
             new OperationalMetricsStore(),
             new TestConnectionStore(),
+            health,
             new ConfigurationCollectionPipeline(clock, health),
             factory.CreateLogger<MonitoringWorker>());
 
