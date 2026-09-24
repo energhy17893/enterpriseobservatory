@@ -371,15 +371,20 @@ public class EventReadWatermarkTests
     }
 
     [Fact]
-    public void A_condition_still_reported_stays_present_whatever_the_watermark()
+    public void A_condition_still_reported_is_present_as_of_a_fresh_read_and_source_silent_on_a_stale_one()
     {
-        // What was read is evidence; the watermark only says what may be missing.
+        // An event cannot be re-read: its evidence holds while its vCenter's
+        // stream is read through, dated at that read (ADR-0026 §3). A clear may
+        // sit unread behind a stale watermark, so there it is unknown.
         var held = HeldFor();
 
-        var verdict = Assert.Single(new EventAlertsRule().Evaluate(
-            Context(new Events([Report()], ReadThrough("vc-1", T0.AddHours(-2))), held)));
+        var fresh = Assert.IsType<ConditionPresent>(Assert.Single(new EventAlertsRule().Evaluate(
+            Context(new Events([Report()], ReadThrough("vc-1", T0)), held))));
+        Assert.Equal(T0, fresh.EvidenceAtUtc);
 
-        Assert.IsType<ConditionPresent>(verdict);
+        var stale = Assert.IsType<Unknown>(Assert.Single(new EventAlertsRule().Evaluate(
+            Context(new Events([Report()], ReadThrough("vc-1", T0.AddHours(-2))), held))));
+        Assert.Equal(UnknownReason.SourceSilent, stale.Reason);
     }
 
     [Fact]

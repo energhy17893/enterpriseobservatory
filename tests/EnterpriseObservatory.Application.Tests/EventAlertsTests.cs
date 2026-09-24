@@ -522,8 +522,152 @@ public class EventAlertsTests
         Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
     }
 
+    [Fact]
+    public void An_event_alert_is_fresh_while_its_vcenter_events_are_read_and_source_silent_when_they_are_not()
+    {
+        // The live symptom: "SimpliVity VM data access not optimized" on
+        // ALRFM01 read InputStale eight minutes after its event, against the
+        // Inventory scope's age window. An event cannot be re-read; its
+        // evidence is the event, and it holds while the vCenter whose event
+        // stream raised it keeps being read (ADR-0026 §3, ADR-0027 rule 6).
+        var rule = new EventAlertsRule();
+        var reader = new SteppingReader();
+        var options = MonitoringOptions.Default;
+        var interval = options.InventoryInterval;
+        var limit = (2 * interval) + options.Collection.ForInterval(interval).SourceTimeout;
+        var raisedAt = T0;
+        var alrfm01 = new EventObjectRef { MoRef = "vm-42", Name = "ALRFM01" };
+
+        reader.Events =
+        [
+            Event(1, "com.simplivity.event.vm.data.access.not.optimized", raisedAt,
+                "Data access is not optimized for ALRFM01 on datastore ds-svt.", Esx01, Prod, alrfm01),
+        ];
+
+        IReadOnlyList<AlertInstance> Cycle(IReadOnlyList<AlertInstance> stored, DateTimeOffset now)
+        {
+            var context = new RuleContext
+            {
+                ReadGraph = () => EntityGraph.Empty,
+                NowUtc = now,
+                Options = options,
+                Series = new NoSeries(),
+                Events = reader,
+                HeldBy = id => id == rule.RuleId
+                    ? [.. stored.Where(i => i.RuleId == id).Select(i => new HeldAlert(i.Fingerprint, i.Entity))]
+                    : [],
+            };
+
+            return AlertReconciler.Reconcile(new AlertReconciliationRequest
+            {
+                Scope = AlertScopes.Inventory,
+                Stored = stored,
+                NowUtc = now,
+                Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
+                // The vCenter's inventory keeps answering throughout.
+                Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
+                RawRetention = TimeSpan.FromDays(2),
+                EvidenceLimit = limit,
+            }).Instances;
+        }
+
+        // Its Events role reads through every cycle.
+        IReadOnlyList<AlertInstance> stored = [];
+        foreach (var now in new[] { raisedAt.AddMinutes(1), raisedAt.AddMinutes(2), raisedAt.AddHours(2) })
+        {
+            reader.Watermark = ReadThrough("vc-1", now);
+            stored = Cycle(stored, now);
+        }
+
+        var fresh = Assert.Single(stored);
+        Assert.True(raisedAt.AddHours(2) - raisedAt > limit);
+        Assert.Equal(AlertLifecycleState.Open, fresh.State);
+        Assert.False(fresh.IsStale, $"stale while vc-1's events are read: {fresh.StaleReason}");
+
+        // Owned by the vCenter that sent the event; the moved evidence time
+        // touches neither when it was first seen nor what its text says.
+        Assert.Equal("vc-1", fresh.Source);
+        Assert.Equal(raisedAt.AddMinutes(1), fresh.FirstSeenUtc);
+        Assert.Contains("at 2026-09-21 12:00 UTC", fresh.Description, StringComparison.Ordinal);
+
+        // Its Events role stops: the watermark falls behind, inventory still answers.
+        var later = raisedAt.AddHours(2).AddMinutes(15);
+        reader.Watermark = ReadThrough("vc-1", raisedAt.AddHours(2));
+        stored = Cycle(stored, later);
+
+        var silent = Assert.Single(stored);
+        Assert.True(silent.IsStale);
+        Assert.Equal(UnknownReason.SourceSilent, silent.StaleReason);
+    }
+
+    [Fact]
+    public void A_clear_first_read_long_after_it_was_sent_still_resolves()
+    {
+        // After a gap in the event read, the clear arrives older than the
+        // scope's age window. It is still vCenter's own statement, read through.
+        var rule = new EventAlertsRule();
+        var reader = new SteppingReader();
+        var step = MonitoringOptions.Default.InventoryInterval;
+        var limit = (2 * step) + MonitoringOptions.Default.Collection.ForInterval(step).SourceTimeout;
+        var lost = Event(1, "esx.problem.net.redundancy.lost", T0, host: Esx01);
+
+        reader.Events = [lost];
+        IReadOnlyList<AlertInstance> stored = [];
+        foreach (var now in new[] { T0.AddMinutes(1), T0.AddMinutes(2) })
+        {
+            reader.Watermark = ReadThrough("vc-1", now);
+            stored = Reconcile(rule, reader, stored, now, limit);
+        }
+
+        Assert.Equal(AlertLifecycleState.Open, Assert.Single(stored).State);
+
+        reader.Events = [lost, Event(2, "esx.clear.net.redundancy.restored", T0.AddMinutes(3), host: Esx01)];
+        reader.Watermark = ReadThrough("vc-1", T0.AddHours(2));
+        stored = Reconcile(rule, reader, stored, T0.AddHours(2), limit);
+
+        Assert.DoesNotContain(stored, i => i.State == AlertLifecycleState.Open);
+    }
+
+    [Fact]
+    public void A_fresh_watermark_does_not_hold_an_event_alert_past_its_time_to_live()
+    {
+        // The time to live counts from the event, not from the read that keeps
+        // the alert fresh: a watermark moving every cycle must not keep it open.
+        var rule = new EventAlertsRule();
+        var reader = new SteppingReader();
+        var ttl = EventAlertPolicy.DefaultTimeToLive;
+        var step = MonitoringOptions.Default.InventoryInterval;
+
+        reader.Events =
+        [
+            Event(1, "com.simplivity.event.vm.data.access.not.optimized", T0,
+                "Data access is not optimized for db01 on datastore ds-svt.", Esx01, Prod, Db01),
+        ];
+
+        var options = MonitoringOptions.Default;
+        var limit = (2 * step) + options.Collection.ForInterval(step).SourceTimeout;
+
+        IReadOnlyList<AlertInstance> stored = [];
+        DateTimeOffset? closedAt = null;
+
+        for (var now = T0.AddMinutes(1); now < T0.AddHours(30); now += step)
+        {
+            reader.Watermark = ReadThrough("vc-1", now);
+            var wasOpen = stored.Any(i => i.State == AlertLifecycleState.Open);
+            stored = Reconcile(rule, reader, stored, now, limit);
+
+            if (wasOpen && !stored.Any(i => i.State == AlertLifecycleState.Open))
+            {
+                closedAt ??= now;
+            }
+        }
+
+        Assert.NotNull(closedAt);
+        Assert.InRange(closedAt.Value, T0 + ttl, T0 + ttl + (2 * step));
+    }
+
     private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
-        TRule rule, IEventReader events, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        TRule rule, IEventReader events, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc, TimeSpan? evidenceLimit = null)
         where TRule : IAnalysisRule
     {
         var context = new RuleContext
@@ -546,6 +690,7 @@ public class EventAlertsTests
             Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
             Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
             RawRetention = TimeSpan.FromDays(2),
+            EvidenceLimit = evidenceLimit,
         }).Instances;
     }
 
