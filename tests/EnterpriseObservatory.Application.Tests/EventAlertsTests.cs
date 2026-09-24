@@ -594,8 +594,46 @@ public class EventAlertsTests
         Assert.Equal(UnknownReason.SourceSilent, silent.StaleReason);
     }
 
+    [Fact]
+    public void A_fresh_watermark_does_not_hold_an_event_alert_past_its_time_to_live()
+    {
+        // The time to live counts from the event, not from the read that keeps
+        // the alert fresh: a watermark moving every cycle must not keep it open.
+        var rule = new EventAlertsRule();
+        var reader = new SteppingReader();
+        var ttl = EventAlertPolicy.DefaultTimeToLive;
+        var step = MonitoringOptions.Default.InventoryInterval;
+
+        reader.Events =
+        [
+            Event(1, "com.simplivity.event.vm.data.access.not.optimized", T0,
+                "Data access is not optimized for db01 on datastore ds-svt.", Esx01, Prod, Db01),
+        ];
+
+        var options = MonitoringOptions.Default;
+        var limit = (2 * step) + options.Collection.ForInterval(step).SourceTimeout;
+
+        IReadOnlyList<AlertInstance> stored = [];
+        DateTimeOffset? closedAt = null;
+
+        for (var now = T0.AddMinutes(1); now < T0.AddHours(30); now += step)
+        {
+            reader.Watermark = ReadThrough("vc-1", now);
+            var wasOpen = stored.Any(i => i.State == AlertLifecycleState.Open);
+            stored = Reconcile(rule, reader, stored, now, limit);
+
+            if (wasOpen && !stored.Any(i => i.State == AlertLifecycleState.Open))
+            {
+                closedAt ??= now;
+            }
+        }
+
+        Assert.NotNull(closedAt);
+        Assert.InRange(closedAt.Value, T0 + ttl, T0 + ttl + (2 * step));
+    }
+
     private static IReadOnlyList<AlertInstance> Reconcile<TRule>(
-        TRule rule, IEventReader events, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc)
+        TRule rule, IEventReader events, IReadOnlyList<AlertInstance> stored, DateTimeOffset nowUtc, TimeSpan? evidenceLimit = null)
         where TRule : IAnalysisRule
     {
         var context = new RuleContext
@@ -618,6 +656,7 @@ public class EventAlertsTests
             Evaluations = [new RuleEvaluation(rule.RuleId, rule.Resolution, rule.Evaluate(context))],
             Sources = new EvidenceSources { Reporting = ["vc-1"], OwnerOf = _ => "vc-1" },
             RawRetention = TimeSpan.FromDays(2),
+            EvidenceLimit = evidenceLimit,
         }).Instances;
     }
 
