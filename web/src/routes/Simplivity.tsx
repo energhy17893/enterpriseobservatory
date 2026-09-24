@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, Metric, StatusBadge } from '@/components/Primitives'
 import { AlertRow } from '@/components/AlertRow'
 import { BulkBar } from '@/components/BulkBar'
+import { Pager } from '@/components/Pager'
 import { ago, cn, healthStatus, type StatusName } from '@/lib/ui'
 import type {
   SimplivityBackupView,
@@ -88,7 +89,7 @@ function dash(value: string | number | null) {
  * `svt-federation-show`, the Admin Guide's status cards and the Upgrade
  * Guide's "Check the federation" (reference-approaches §10.8). It computes no
  * alert and no finding: the alerts below are the inbox's instances filtered
- * by source.
+ * by source, and by category for the platform's SimpliVity event rules.
  */
 export function Simplivity() {
   const { data, isPending, isError, error } = useQuery({
@@ -119,6 +120,14 @@ export function Simplivity() {
           <Source key={source.instanceId} source={source} rpoHours={data.backupRpoHours} />
         ))
       )}
+
+      {/* The event rules raise these with source "platform": no connection's section lists them. */}
+      <InboxAlerts
+        filter={{ category: 'SimpliVity' }}
+        heading="Alerts in category SimpliVity"
+        level="h2"
+        empty="No alert in category SimpliVity is in the inbox."
+      />
     </div>
   )
 }
@@ -181,7 +190,12 @@ function Source({ source, rpoHours }: { source: SimplivitySourceView; rpoHours: 
       <StorageHa rows={source.notSafeVms} />
       <Backups rows={source.backups.olderThanRpo} rpoHours={rpoHours} />
       <Hardware rows={source.hardware} />
-      <SourceAlerts source={source.instanceId} />
+      <InboxAlerts
+        filter={{ source: source.instanceId }}
+        heading={`Open alerts from ${source.instanceId}`}
+        level="h3"
+        empty="No alert from this connection is open."
+      />
     </section>
   )
 }
@@ -535,14 +549,30 @@ function Hardware({ rows }: { rows: SimplivityHardwareView[] }) {
   )
 }
 
-/** The inbox's own instances, filtered by source (ADR-0007 §5) — not a second list. */
-function SourceAlerts({ source }: { source: string }) {
+/**
+ * The inbox's own instances, filtered (ADR-0007 §5) — not a second list. A
+ * connection's REST alerts carry its instance id as source and category
+ * "Availability"; the platform's SimpliVity event rules carry source
+ * "platform" and category "SimpliVity" (ADR-0027 rule 6). Two filters, two
+ * sections, never merged.
+ */
+function InboxAlerts({
+  filter,
+  heading,
+  level: Heading,
+  empty,
+}: {
+  filter: { source: string } | { category: string }
+  heading: string
+  level: 'h2' | 'h3'
+  empty: string
+}) {
   const [offset, setOffset] = useState(0)
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
 
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ['alerts', 'source', source, offset],
-    queryFn: () => api.alerts({ source, offset, limit: PAGE_SIZE }),
+    queryKey: ['alerts', filter, offset],
+    queryFn: () => api.alerts({ ...filter, offset, limit: PAGE_SIZE }),
     refetchInterval: 15_000,
     placeholderData: keepPreviousData,
   })
@@ -558,35 +588,18 @@ function SourceAlerts({ source }: { source: string }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-sm font-medium">Open alerts from {source}</h3>
+        <Heading className={Heading === 'h2' ? 'text-lg font-semibold' : 'text-sm font-medium'}>{heading}</Heading>
         {data !== undefined && data.total > PAGE_SIZE && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span className="tabular" role="status" aria-live="polite">
-              {offset + 1}–{Math.min(offset + PAGE_SIZE, data.total)} of {data.total}
-            </span>
-            <button
-              type="button"
-              disabled={offset === 0}
-              onClick={() => {
-                setOffset(Math.max(0, offset - PAGE_SIZE))
-                setSelected(new Set())
-              }}
-              className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              disabled={offset + PAGE_SIZE >= data.total}
-              onClick={() => {
-                setOffset(offset + PAGE_SIZE)
-                setSelected(new Set())
-              }}
-              className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
-            >
-              Next
-            </button>
-          </div>
+          <Pager
+            offset={offset}
+            pageSize={PAGE_SIZE}
+            total={data.total}
+            unit="alerts"
+            onOffset={(next) => {
+              setOffset(next)
+              setSelected(new Set())
+            }}
+          />
         )}
       </div>
       {isError ? (
@@ -594,7 +607,7 @@ function SourceAlerts({ source }: { source: string }) {
       ) : isPending ? (
         <Loading what="alerts" />
       ) : data.items.length === 0 ? (
-        <Empty>No alert from this connection is open.</Empty>
+        <Empty>{empty}</Empty>
       ) : (
         <>
           <BulkBar selected={[...selected]} onDone={() => setSelected(new Set())} />
