@@ -73,6 +73,13 @@ public sealed class SimplivityInventorySource(
     /// so a tie cut by a page boundary may come back in another order on the
     /// next page. Overlapping pages, de-duplicated by id, cover a tie up to
     /// this size; a larger one shows as distinct &lt; count, a partial read.
+    /// <para>
+    /// A partial read sends no backup date, and nothing carries the last one:
+    /// ADR-0027's carry applies only while the source is silent, and here it
+    /// answered. Those VMs are judged on the vSphere backup attribute alone
+    /// for that cycle. If a customer estate shows partial reads, keep the last
+    /// complete backup map in the source (up to the 2-day carry) instead.
+    /// </para>
     /// </remarks>
     public const int PageOverlap = 50;
 
