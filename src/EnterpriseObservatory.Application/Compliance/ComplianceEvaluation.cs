@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Compliance;
 
@@ -142,6 +143,11 @@ public static class ComplianceEvaluation
     /// <param name="checksById">For a catalogue that binds by control id: its checks.</param>
     /// <param name="graph">The estate as a graph, for checks that look beyond their entity; built from <paramref name="entities"/> when null.</param>
     /// <param name="demand">Precomputed demand for N+1 checks; null when none.</param>
+    /// <param name="silentNamespaces">
+    /// Annotation namespaces none of whose sources answered this cycle (see
+    /// <see cref="SilentNamespaces"/>). A check that reads one keeps its last
+    /// findings, stale, exactly as a silent entity source does.
+    /// </param>
     /// <param name="reportingSources">
     /// The sources that answered in the inventory cycle this evaluation
     /// follows, or null to treat every host's source as having answered. A
@@ -175,7 +181,8 @@ public static class ComplianceEvaluation
         IReadOnlyCollection<string>? reportingSources = null,
         IReadOnlyDictionary<string, IComplianceCheck>? checksById = null,
         EntityGraph? graph = null,
-        DemandSnapshot? demand = null)
+        DemandSnapshot? demand = null,
+        IReadOnlyCollection<string>? silentNamespaces = null)
     {
         ArgumentNullException.ThrowIfNull(catalogue);
         ArgumentNullException.ThrowIfNull(entities);
@@ -213,15 +220,20 @@ public static class ComplianceEvaluation
         foreach (var bound in Bind(catalogue, checks, checksById).Where(b => b.IsEvaluated))
         {
             var check = bound.Check!;
+            var readsSilentNamespace = silentNamespaces is not null &&
+                check.ReadsNamespaces.Any(n => silentNamespaces.Contains(n, StringComparer.OrdinalIgnoreCase));
 
             foreach (var entity in live.Where(e => e.Kind == check.AppliesTo))
             {
-                var stale = reporting is not null && !reporting.Contains(entity.SourceInstanceId);
+                var stale = (reporting is not null && !reporting.Contains(entity.SourceInstanceId)) ||
+                            readsSilentNamespace;
 
                 // A silent source keeps its last state (ADR-0026 §3). Not
-                // re-judged: entity settings are not stored, so after a
-                // restart the graph holds none, and judging them would turn
-                // every verdict into "not evaluated" and back (24 Sep 2026).
+                // re-judged: entity settings and annotations are not stored,
+                // so after a restart the graph holds none, and judging them
+                // would turn every verdict into "not evaluated" and back
+                // (24 Sep 2026). The same for a namespace the check reads
+                // whose source has not answered yet.
                 if (stale && lastByEntity[(bound.Control.ControlId, entity.Id)].ToList() is { Count: > 0 } kept)
                 {
                     findings.AddRange(kept.Select(f => f with { Stale = true }));
@@ -244,6 +256,31 @@ public static class ComplianceEvaluation
         }
 
         return findings;
+    }
+
+    /// <summary>
+    /// The annotation namespaces with no answering source this cycle.
+    /// </summary>
+    /// <remarks>
+    /// A namespace is its connection kind (<see cref="ConnectionKinds"/>).
+    /// Only enabled connections count: one disabled or removed has nothing
+    /// left to wait for, and counting it silent would freeze its checks on
+    /// their last verdict forever.
+    /// </remarks>
+    public static IReadOnlyList<string> SilentNamespaces(
+        IEnumerable<SourceConnection> connections, IReadOnlyCollection<string> reportingSources)
+    {
+        ArgumentNullException.ThrowIfNull(connections);
+        ArgumentNullException.ThrowIfNull(reportingSources);
+
+        return
+        [
+            .. connections
+                .Where(c => c.IsEnabled)
+                .GroupBy(c => c.Kind, StringComparer.Ordinal)
+                .Where(g => !g.Any(c => reportingSources.Contains(c.InstanceId, StringComparer.Ordinal)))
+                .Select(g => g.Key),
+        ];
     }
 
     /// <summary>One verdict per subject: a check that repeats one is taken at its first word.</summary>

@@ -285,6 +285,75 @@ public class ComplianceStoreTests : IDisposable
         Assert.Equal(transitions, Count("SELECT count(*) FROM compliance_transition;"));
     }
 
+    [SkippableFact]
+    public void A_restart_where_simplivity_answers_a_cycle_after_vsphere_writes_no_transition()
+    {
+        RequireDatabase();
+
+        // Annotations are not stored either: after a restart the vCenter
+        // answered first, the VM came back without its SimpliVity backup
+        // time, and backup freshness went NotEvaluated until SimpliVity
+        // answered a cycle later.
+        var catalogue = ContinuityCatalogue.Build(
+            [.. ContinuityCatalogue.Production.Where(c => c.Control.ControlId == ContinuityControls.BackupFreshness)]);
+        var byId = ContinuityCatalogue.ChecksById(ContinuityCatalogue.Production);
+
+        IReadOnlyList<SourceConnection> connections =
+        [
+            new() { InstanceId = "vc-1", Kind = ConnectionKinds.Vsphere, BaseAddress = new Uri("https://vc-1"), Username = "r" },
+            new() { InstanceId = "svt-1", Kind = ConnectionKinds.Simplivity, BaseAddress = new Uri("https://svt-1"), Username = "r" },
+        ];
+
+        var vm = new Entity
+        {
+            Id = new EntityId("vc-1:vm-1"),
+            Kind = EntityKind.VirtualMachine,
+            DisplayName = "vm-1",
+            SourceInstanceId = "vc-1",
+            LastSeenUtc = T0,
+        };
+        var annotated = vm with
+        {
+            Settings = new Dictionary<string, string>
+            {
+                [InventoryVerdictKeys.SimplivityBackupLastUtc] = T0.AddHours(-2).ToString("o", System.Globalization.CultureInfo.InvariantCulture),
+            },
+        };
+
+        var clock = new Clock { UtcNow = T0 };
+
+        void Cycle(PostgresComplianceStore store, Entity estate, IReadOnlyCollection<string> reporting) =>
+            new ComplianceService([catalogue], store, clock, byId).Evaluate(
+                [estate], reporting, EntityGraph.Empty with { Entities = new Dictionary<EntityId, Entity> { [estate.Id] = estate } },
+                silentNamespaces: ComplianceEvaluation.SilentNamespaces(connections, reporting));
+
+        new PostgresEntityGraphStore(_live.Database).Replace(
+            new EntityGraph { Entities = new Dictionary<EntityId, Entity> { [vm.Id] = annotated } });
+        Cycle(new PostgresComplianceStore(_live.Database), annotated, ["vc-1", "svt-1"]);
+
+        var transitions = Count("SELECT count(*) FROM compliance_transition;");
+
+        _live.Restart();
+
+        var store = new PostgresComplianceStore(_live.Database);
+        var loaded = new PostgresEntityGraphStore(_live.Database).Current.Entities[vm.Id];
+
+        clock.UtcNow = T0.AddMinutes(2);
+        Cycle(store, loaded, ["vc-1"]);
+
+        var carried = Assert.Single(store.Findings);
+        Assert.Equal(ComplianceVerdict.Passing, carried.Verdict);
+        Assert.True(carried.Stale);
+
+        clock.UtcNow = T0.AddMinutes(4);
+        Cycle(store, annotated, ["vc-1", "svt-1"]);
+
+        var back = Assert.Single(store.Findings);
+        Assert.Equal(ComplianceVerdict.Passing, back.Verdict);
+        Assert.False(back.Stale);
+        Assert.Equal(transitions, Count("SELECT count(*) FROM compliance_transition;"));
+    }
+
     private sealed class Clock : IClock
     {
         public DateTimeOffset UtcNow { get; set; }

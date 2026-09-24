@@ -123,6 +123,13 @@ public interface IComplianceCheck
     /// verdict with the reason — "HA settings not read", never "HA disabled".
     /// </remarks>
     IReadOnlyList<CheckVerdict> Judge(ComplianceControl control, Entity entity, CheckContext context);
+
+    /// <summary>
+    /// The annotation namespaces (ADR-0027) this check reads besides the
+    /// entity's own settings; while none of a namespace's sources answers,
+    /// its findings are carried stale rather than re-judged.
+    /// </summary>
+    IReadOnlyCollection<string> ReadsNamespaces => [];
 }
 
 /// <summary>

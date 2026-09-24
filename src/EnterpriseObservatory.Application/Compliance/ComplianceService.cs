@@ -406,6 +406,7 @@ public sealed class ComplianceService
     /// </param>
     /// <param name="graph">The estate as a graph; built from <paramref name="entities"/> when null.</param>
     /// <param name="demand">Precomputed demand for N+1 checks; null when none.</param>
+    /// <param name="silentNamespaces">Annotation namespaces with no answering source; see <see cref="ComplianceEvaluation.SilentNamespaces"/>.</param>
     /// <returns>How many findings the evaluations hold.</returns>
     /// <remarks>
     /// A catalogue that could not be loaded is skipped; the others are still
@@ -416,7 +417,8 @@ public sealed class ComplianceService
         IReadOnlyList<Entity> entities,
         IReadOnlyCollection<string>? reportingSources = null,
         EntityGraph? graph = null,
-        DemandSnapshot? demand = null)
+        DemandSnapshot? demand = null,
+        IReadOnlyCollection<string>? silentNamespaces = null)
     {
         ArgumentNullException.ThrowIfNull(entities);
 
@@ -435,7 +437,8 @@ public sealed class ComplianceService
                     reportingSources: reportingSources,
                     checksById: _checksById,
                     graph: graph,
-                    demand: demand);
+                    demand: demand,
+                    silentNamespaces: silentNamespaces);
                 count += findings.Count;
                 return findings;
             });

@@ -249,4 +249,50 @@ public class BackupFreshnessCheckTests
         Assert.Equal(ComplianceVerdict.Failing, finding.Verdict);
         Assert.Contains("(SimpliVity 40 hours ago)", finding.Observed, StringComparison.Ordinal);
     }
+    // --- a silent annotation namespace (24 Sep 2026) ------------------------
+
+    [Fact]
+    public void The_check_declares_it_reads_the_simplivity_namespace()
+    {
+        Assert.Equal(["simplivity"], new BackupFreshnessCheck().ReadsNamespaces);
+    }
+
+    [Fact]
+    public void A_silent_simplivity_keeps_the_last_verdict_as_stale_when_the_annotation_is_gone()
+    {
+        // After a restart the vCenter answered one cycle before SimpliVity:
+        // the VM was read fresh, but its SimpliVity annotation was gone
+        // (annotations live in memory), and the verdict went NotEvaluated.
+        var vm = Vm("vc-1:vm-1");
+        var before = Of(Evaluate([WithSimplivity(vm, T0.AddHours(-2))]), vm);
+        Assert.Equal(ComplianceVerdict.Passing, before.Verdict);
+
+        var after = Of(
+            ComplianceEvaluation.Evaluate(
+                Catalogue, [vm], [before], T0.AddMinutes(10), checksById: ById,
+                reportingSources: ["vc-1"], silentNamespaces: ["simplivity"],
+                graph: EntityGraph.Empty with { Entities = new Dictionary<EntityId, Entity> { [vm.Id] = vm } }),
+            vm);
+
+        Assert.Equal(ComplianceVerdict.Passing, after.Verdict);
+        Assert.True(after.Stale);
+        Assert.Equal(before.FirstSeenUtc, after.FirstSeenUtc);
+        Assert.Equal(before.LastEvaluatedUtc, after.LastEvaluatedUtc);
+    }
+
+    [Fact]
+    public void A_silent_simplivity_with_no_previous_finding_is_judged_and_marked_stale()
+    {
+        var vm = Vm("vc-1:vm-1");
+
+        var finding = Of(
+            ComplianceEvaluation.Evaluate(
+                Catalogue, [vm], [], T0, checksById: ById,
+                reportingSources: ["vc-1"], silentNamespaces: ["simplivity"],
+                graph: EntityGraph.Empty with { Entities = new Dictionary<EntityId, Entity> { [vm.Id] = vm } }),
+            vm);
+
+        Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
+        Assert.True(finding.Stale);
+    }
 }
