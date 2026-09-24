@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
-import { ago, healthStatus } from '@/lib/ui'
+import { ago, collectorRoleLabel, healthStatus } from '@/lib/ui'
 
 /**
  * The monitoring system observing itself.
@@ -43,15 +43,14 @@ export function Collectors() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{collector.instanceId}</span>
                   {/*
-                    The role is shown because the two fail independently: an
+                    The role is shown because the four fail independently: an
                     account may be able to list inventory and still be denied
-                    metrics by the platform's statistics level. "We cannot list
-                    your inventory" and "we cannot read your metrics" have
-                    different fixes. See ADR-0009.
+                    metrics by the platform's statistics level, or events, or
+                    configuration. "We cannot list your inventory" and "we
+                    cannot read your metrics" have different fixes. See
+                    ADR-0009.
                   */}
-                  <Identifier>
-                    {collector.role === 'Inventory' ? 'inventory' : 'metrics'}
-                  </Identifier>
+                  <Identifier>{collectorRoleLabel(collector.role)}</Identifier>
                   <StatusBadge status={healthStatus(collector.health)}>
                     {collector.health}
                   </StatusBadge>

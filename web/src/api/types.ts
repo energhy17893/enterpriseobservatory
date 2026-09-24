@@ -234,7 +234,7 @@ export interface TimeToFullView {
 
 export interface CollectorView {
   instanceId: string
-  role: 'Inventory' | 'Observation'
+  role: 'Inventory' | 'Observation' | 'Events' | 'Configuration'
   health: HealthState
   consecutiveFailures: number
   isBackingOff: boolean
