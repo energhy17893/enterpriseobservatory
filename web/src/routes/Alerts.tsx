@@ -388,7 +388,7 @@ function GroupRow({
 
       <ConfirmDestructive
         open={confirmingClear}
-        title={`Clear ${group.count} alerts? This cannot be undone.`}
+        title={`Clear ${group.count} alerts? Clear marks it resolved now; if the condition is reported again it re-opens. To stop it for a while, use Silence.`}
         confirmLabel={`Clear ${group.count}`}
         onConfirm={() => act.mutate(() => api.clearMany(fingerprints))}
         onCancel={() => setConfirmingClear(false)}

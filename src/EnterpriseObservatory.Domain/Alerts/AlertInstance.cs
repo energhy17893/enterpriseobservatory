@@ -176,10 +176,10 @@ public sealed record AlertInstance
     /// condition going away.
     /// </summary>
     /// <remarks>
-    /// This is what makes a clear "stick": re-observing the same condition must
-    /// not reopen or re-notify. A permanent hardware fault awaiting a part
-    /// would otherwise re-alert on every polling cycle and destroy the
-    /// operator's trust in notifications.
+    /// A clear resolves the episode and wins its own cycle: evidence no newer
+    /// than the clear does not reopen it. Newer evidence is the condition
+    /// reported again and opens a new episode (vROps "Cancel alert", Zabbix
+    /// manual close). Silence, which has an end, is for "stop it for a while".
     /// </remarks>
     public required bool ClearedByOperator { get; init; }
 

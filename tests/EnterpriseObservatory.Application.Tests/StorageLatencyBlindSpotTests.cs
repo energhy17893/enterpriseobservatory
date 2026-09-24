@@ -578,26 +578,14 @@ public class StorageLatencyBlindSpotTests
     }
 
     [Fact]
-    public void One_bulk_clear_settles_the_estate_and_survives_the_operator_making_progress()
+    public void One_bulk_clear_resolves_the_estate_until_the_volumes_are_reported_again()
     {
-        // "We do not use Storage I/O Control here" is one decision, and this is
-        // the measurement of what that decision costs: one bulk clear, and the
-        // inbox is empty and stays empty.
-        //
-        // This is why the rule was left alone. The complaint that twenty-five
-        // alerts take twenty-five actions to silence is answered a layer up --
-        // AlertOperations.ClearMany, /alerts/clear-many, and the inbox's
-        // select-all -- and an operator's clear is sticky, so re-observing the
-        // same volumes next cycle does not reopen or re-notify.
-        //
-        // The second half is the part a proportion-driven rule could not do at
-        // all. When the operator then enables SIOC on six volumes, the count
-        // moves from 25 to 19 and every surviving alert's wording changes, but
-        // the nineteen clears hold and the six fixed volumes retire quietly.
-        // Acting on the alert is not punished. Were the shape to flip to a
-        // single estate-wide alert at some proportion, crossing that line
-        // retires every per-volume fingerprint and the clears go with them --
-        // measured at 25 retired, 0 surviving, 25 re-notified on the way back.
+        // "We do not use Storage I/O Control here" is one decision, taken once
+        // over the whole selection (AlertOperations.ClearMany, the inbox's
+        // select-all). A clear resolves what the operator saw and wins its own
+        // cycle; the next cycle still reports the same volumes, so each opens
+        // a new episode (vROps "Cancel alert": regenerated while the symptoms
+        // remain). Silence, with an end, is the tool for "stop it for a while".
         var observed = StorageLatencyBlindSpot.Evaluate(Estate(blind: 25, measured: 16));
 
         // Two cycles, because a warning confirms on the second hit.
@@ -606,35 +594,20 @@ public class StorageLatencyBlindSpotTests
 
         Assert.Equal(25, confirmed.Visible.Count);
 
-        // The decision, taken once over the whole selection.
         List<AlertInstance> cleared =
             [.. confirmed.Instances.Select(i => AlertLifecycle.Clear(i, "operator", T0.AddMinutes(2)))];
 
-        var settled = Reconcile(observed, cleared, 3);
+        var sameCycle = Reconcile(observed, cleared, 2);
 
-        Assert.Empty(settled.Visible);
-        Assert.Empty(settled.ToNotify);
-        Assert.Empty(settled.Retired);
-        Assert.Equal(25, settled.Instances.Count(i => i.ClearedByOperator));
+        Assert.Empty(sameCycle.Visible);
+        Assert.Empty(sameCycle.ToNotify);
+        Assert.Equal(25, sameCycle.Instances.Count(i => i.ClearedByOperator));
 
-        // Now six of them get Storage I/O Control after all. The proportion
-        // moves, the wording moves, the identities do not.
-        var progressed = StorageLatencyBlindSpot.Evaluate(Estate(blind: 19, measured: 22));
+        var nextCycle = Reconcile(observed, sameCycle.Instances, 3);
 
-        Assert.Equal(19, progressed.Count);
-        Assert.All(progressed, a =>
-            Assert.Contains("19 of the 41 volume(s)", a.Description, StringComparison.Ordinal));
-
-        var after = Reconcile(progressed, settled.Instances, 4);
-
-        Assert.Empty(after.Visible);
-        Assert.Empty(after.ToNotify);
-        Assert.Equal(19, after.Instances.Count(i => i.ClearedByOperator));
-
-        // The six that were fixed are gone rather than lingering as cleared
-        // rows: the fault disappeared, which is the one thing that ends a
-        // sticky clear.
-        Assert.Equal(6, after.Retired.Count);
+        Assert.Equal(25, nextCycle.Visible.Count);
+        Assert.Equal(25, nextCycle.ToNotify.Count);
+        Assert.All(nextCycle.Instances, i => Assert.Equal(T0.AddMinutes(3), i.FirstSeenUtc));
     }
 
     private static AlertReconciliationResult Reconcile(

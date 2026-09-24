@@ -72,7 +72,7 @@ export function AlertActions({ alert }: { alert: AlertView }) {
             busy={busy}
             destructive
             onClick={() => setConfirmingClear(true)}
-            title="Declare it handled. Re-observing the same fault will not reopen it."
+            title="Mark it resolved now. It re-opens if the condition is reported again."
           >
             Clear
           </Action>
@@ -81,7 +81,7 @@ export function AlertActions({ alert }: { alert: AlertView }) {
 
       <ConfirmDestructive
         open={confirmingClear}
-        title={`Clear "${alert.title}"? This cannot be undone.`}
+        title={`Clear "${alert.title}"? Clear marks it resolved now; if the condition is reported again it re-opens. To stop it for a while, use Silence.`}
         confirmLabel="Clear"
         onConfirm={() => {
           setConfirmingClear(false)

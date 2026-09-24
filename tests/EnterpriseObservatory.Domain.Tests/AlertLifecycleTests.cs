@@ -158,22 +158,17 @@ public class AlertLifecycleTests
         Assert.Equal(AlertNotificationKind.Escalated, i.PendingNotification);
     }
 
-    // --- sticky clear -----------------------------------------------------
+    // --- operator clear ---------------------------------------------------
 
     [Fact]
-    public void An_operator_clear_survives_the_condition_still_firing()
+    public void A_clear_wins_its_own_cycle()
     {
-        // A permanent hardware fault awaiting a replacement part would
-        // otherwise re-alert on every polling cycle and destroy trust in
-        // notifications.
+        // The report the clear was made against is not a new one.
         var i = AlertLifecycle.Clear(Confirmed(), "ertugrul", Cycle(2));
         Assert.Equal(AlertLifecycleState.Resolved, i.State);
         Assert.True(i.ClearedByOperator);
 
-        for (var cycle = 3; cycle < 20; cycle++)
-        {
-            i = AlertLifecycle.OnObserved(i, Alert(), HysteresisPolicy.Default, Cycle(cycle));
-        }
+        i = AlertLifecycle.OnObserved(i, Alert(), HysteresisPolicy.Default, Cycle(2));
 
         Assert.Equal(AlertLifecycleState.Resolved, i.State);
         Assert.Equal(AlertNotificationKind.None, i.PendingNotification);
@@ -181,10 +176,33 @@ public class AlertLifecycleTests
     }
 
     [Fact]
+    public void A_cleared_condition_reported_in_a_later_cycle_opens_a_new_episode()
+    {
+        // vROps "Cancel alert", Zabbix manual close: the alert is regenerated
+        // when the condition is reported again. Silence is the tool for
+        // "stop it for a while", not Clear.
+        var cleared = AlertLifecycle.Clear(Confirmed(), "ertugrul", Cycle(2));
+        cleared = AlertLifecycle.OnObserved(cleared, Alert(), HysteresisPolicy.Default, Cycle(2));
+
+        var i = AlertLifecycle.OnObserved(cleared, Alert(), HysteresisPolicy.Default, Cycle(3));
+
+        Assert.Equal(AlertLifecycleState.Open, i.State);
+        Assert.True(i.IsVisible);
+        Assert.False(i.ClearedByOperator);
+        Assert.Equal(Cycle(3), i.FirstSeenUtc);
+        Assert.Equal(AlertNotificationKind.Raised, i.PendingNotification);
+
+        var opening = Assert.Single(i.History);
+        Assert.Equal(AlertTransitionReason.Raised, opening.Reason);
+        Assert.Equal(
+            "cleared by ertugrul at 2026-09-18T12:01:00Z, condition reported again", opening.Detail);
+    }
+
+    [Fact]
     public void A_cleared_alert_is_retired_once_the_condition_actually_goes_away()
     {
         var i = AlertLifecycle.Clear(Confirmed(), "ertugrul", Cycle(2));
-        i = AlertLifecycle.OnObserved(i, Alert(), HysteresisPolicy.Default, Cycle(3));
+        i = AlertLifecycle.OnObserved(i, Alert(), HysteresisPolicy.Default, Cycle(2));
 
         var result = Gone(i, Cycle(4));
 

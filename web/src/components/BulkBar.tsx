@@ -126,7 +126,7 @@ export function BulkBar({
 
       <ConfirmDestructive
         open={confirmingClear}
-        title={`Clear ${selected.length} alert${selected.length === 1 ? '' : 's'}? This cannot be undone.`}
+        title={`Clear ${selected.length} alert${selected.length === 1 ? '' : 's'}? Clear marks it resolved now; if the condition is reported again it re-opens. To stop it for a while, use Silence.`}
         confirmLabel={`Clear ${selected.length}`}
         onConfirm={() => {
           setConfirmingClear(false)
