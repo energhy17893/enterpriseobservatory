@@ -20,9 +20,13 @@ Environment (set by the operator; the server never stores or prints them):
 Self-signed HTTPS: set `NODE_EXTRA_CA_CERTS` to the product's CA, or use the
 http origin on the same machine.
 
-The repo's `.mcp.json` registers the server for Claude Code as
-`enterprise-observatory`; credentials come from the user environment via
-`${EO_MCP_USERNAME}` / `${EO_MCP_PASSWORD}`.
+Register it for Claude Code at user scope (the repo ships no `.mcp.json`, so
+a developer's own project-level file is never overwritten); the credentials
+are read from the user environment at start:
+
+```bash
+claude mcp add --scope user enterprise-observatory -- node C:/src/enterpriseobservatory/tools/mcp/dist/index.js
+```
 
 ## Tools (all read-only)
 
