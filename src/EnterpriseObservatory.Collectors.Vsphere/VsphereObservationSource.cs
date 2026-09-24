@@ -206,7 +206,11 @@ public sealed class VsphereObservationSource(
         // self-metric even on a cycle whose read then fails outright.
         var serverNow = context.ServerNowUtc ?? now;
 
-        var types = _targets.Current.ByType().ToList();
+        // Only types something is asked of. A datastore is measured through its
+        // hosts (VsphereCounters.Datastore is empty), so listed here it was
+        // counted "0 of N read" every cycle and, after a deadline, named as
+        // having no sample while its host-side samples had arrived (ADR-0009).
+        var types = _targets.Current.ByType().Where(t => VsphereCounters.For(t.Type).Count > 0).ToList();
 
         SeedMarks(types, context.StoredMarks, memory.Marks);
         var gapToOpen = GapIfBehind(types, context, memory.Marks, serverNow, now);

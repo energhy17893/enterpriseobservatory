@@ -48,6 +48,10 @@ internal sealed class SimulatedVcenter : IVsphereApi, IDisposable
     /// <remarks>vim25 fails the whole query for one such object, as it does for a deleted one.</remarks>
     public Dictionary<string, VsphereFaultKind> Faulty { get; init; } = new(StringComparer.Ordinal);
 
+    /// <summary>Volumes each host reports its per-datastore counters for, one instance each.</summary>
+    /// <remarks>Where a live vCenter keeps datastore counters: on the host, the volume in the instance.</remarks>
+    public IReadOnlyList<string> Volumes { get; init; } = [];
+
     /// <summary>Virtual time at which the source's token is cancelled, if any.</summary>
     public TimeSpan? CancelAt { get; set; }
 
@@ -181,14 +185,17 @@ internal sealed class SimulatedVcenter : IVsphereApi, IDisposable
                 EntityMoRef = moRef,
                 Values =
                 [
-                    .. counters.Select(c => new CounterValue
-                    {
-                        CounterName = c.Key,
-                        Raw = 1,
-                        Rollup = c.Rollup,
-                        Interval = TimeSpan.FromSeconds(20),
-                        Unit = c.Unit,
-                    }),
+                    .. counters.SelectMany(c =>
+                        (VsphereCounters.InstanceNamesAnEntity(c.Key) ? Volumes : [string.Empty])
+                        .Select(instance => new CounterValue
+                        {
+                            CounterName = c.Key,
+                            Instance = instance,
+                            Raw = 1,
+                            Rollup = c.Rollup,
+                            Interval = TimeSpan.FromSeconds(20),
+                            Unit = c.Unit,
+                        })),
                 ],
             }),
         ]);
@@ -222,17 +229,21 @@ internal sealed class SimulatedVcenter : IVsphereApi, IDisposable
 }
 
 /// <summary>A target list of N virtual machines, every one resolvable.</summary>
-internal sealed class SyntheticTargets(int virtualMachines, int hosts = 0) : IVsphereSampleTargetProvider
+/// <remarks>A datastore's volume identifier is its moRef, so <c>ds-1</c> resolves to <c>ds-1</c>.</remarks>
+internal sealed class SyntheticTargets(int virtualMachines, int hosts = 0, int datastores = 0)
+    : IVsphereSampleTargetProvider
 {
     public VsphereSampleTargets Current { get; } = new()
     {
         VirtualMachines = [.. Enumerable.Range(1, virtualMachines).Select(i => $"vm-{i}")],
         Hosts = [.. Enumerable.Range(1, hosts).Select(i => $"host-{i}")],
+        Datastores = [.. Enumerable.Range(1, datastores).Select(i => $"ds-{i}")],
     };
 
     public EntityId? ResolveEntity(string moRef) => new EntityId(moRef);
 
-    public EntityId? ResolveVolume(string volumeIdentifier) => null;
+    public EntityId? ResolveVolume(string volumeIdentifier) =>
+        Current.Datastores.Contains(volumeIdentifier, StringComparer.Ordinal) ? new EntityId(volumeIdentifier) : null;
 
     public string? DisplayNameOf(string moRef) => null;
 }
