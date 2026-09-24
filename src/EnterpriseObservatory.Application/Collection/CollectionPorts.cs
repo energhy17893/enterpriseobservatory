@@ -137,12 +137,18 @@ public interface IObservationSource
 /// inventory and no metrics.
 /// </summary>
 /// <remarks>
-/// It still fails every read as <see cref="CollectionFailureKind.NotConfigured"/>,
-/// so its health row stays NotPolled and says why; but no "Collector
-/// unreachable" alert is raised for it. There is nothing to reach and nothing
-/// to fix: unknown is not an alarm (ADR-0026).
+/// The runner never reads it: its health row is written as NotPolled
+/// (<see cref="CollectionFailureKind.NotConfigured"/>, with
+/// <see cref="Reason"/> as the detail) with no attempt, no failure and no
+/// backoff counted, and no "Collector unreachable" alert is raised for it.
+/// There is nothing to reach and nothing to fix: unknown is not an alarm
+/// (ADR-0026).
 /// </remarks>
-public interface IRoleNotApplicable;
+public interface IRoleNotApplicable
+{
+    /// <summary>Why the role is not polled, in the operator's terms.</summary>
+    string Reason { get; }
+}
 
 /// <summary>Why part of a collection did not succeed.</summary>
 public enum CollectionFailureKind
@@ -364,6 +370,14 @@ public sealed record ObservationBatch
     public IReadOnlyList<Observation> Backfill { get; init; } = [];
 
     public IReadOnlyList<CollectionFailure> Failures { get; init; } = [];
+
+    /// <summary>
+    /// Per entity type, how many were asked and how many this read got
+    /// through — a type read in full says so (Answered = Asked), which is
+    /// what a cut-off one is compared against. Empty for a source that does
+    /// not count; diagnostic only, nothing decides on it.
+    /// </summary>
+    public IReadOnlyList<PropertyCoverage> Coverage { get; init; } = [];
 
     /// <summary>
     /// How the source's learned state moves once this batch is safely kept.

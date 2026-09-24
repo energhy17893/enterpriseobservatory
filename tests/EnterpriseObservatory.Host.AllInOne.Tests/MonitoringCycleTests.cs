@@ -1009,6 +1009,39 @@ public class MonitoringCycleTests : IDisposable
         Assert.Contains("vc-1", result.SilentSources);
     }
 
+    [Fact]
+    public async Task An_inventory_only_source_after_100_cycles_has_no_attempts_failures_or_backoff()
+    {
+        // Live, KBSVT's Observation row read consecutiveFailures 138 and
+        // isBackingOff true: the runner "attempted" a stand-in that can only
+        // throw. The row stays (it says why there are no metrics) but is
+        // never attempted.
+        var inventoryOnly = new FakeRoleNotApplicableSource("simplivity-1");
+        var cycle = Cycle();
+
+        for (var i = 0; i < 100; i++)
+        {
+            await cycle.RunObservationsAsync([inventoryOnly], Options, CancellationToken.None);
+            _clock.Advance(Options.ObservationInterval);
+        }
+
+        var row = Assert.Single(_health.Current, h => h.InstanceId == "simplivity-1");
+        Assert.Equal(CollectorRole.Observation, row.Role);
+        Assert.Equal(HealthState.Unknown, row.Health);
+        Assert.Equal(CollectionFailureKind.NotConfigured, row.LastFailureKind);
+        Assert.Equal(0, row.ConsecutiveFailures);
+        Assert.False(row.IsBackingOff);
+        Assert.Null(row.LastAttemptUtc);
+        Assert.Null(row.LastSuccessUtc);
+        Assert.Equal(0, row.TotalAttempts);
+        Assert.Equal(0, row.TotalFailures);
+        Assert.Contains("is not being polled", row.LastFailureDetail, StringComparison.Ordinal);
+
+        var health = HealthAssessment.Assess(
+            _health.Current, Options, HealthOptions.Default, new Dictionary<CollectionGapState, int>(), _clock.UtcNow);
+        Assert.Equal(SourceStatus.NotPolled, Assert.Single(health.Sources, s => s.InstanceId == "simplivity-1").Status);
+    }
+
     // --- the two cycles at the same moment ---------------------------------
 
     [Fact]

@@ -103,6 +103,7 @@ public sealed class MonitoringWorker(
                     .ConfigureAwait(false);
 
                 HostLog.ObservationCycle(_logger, result.Observations.Count, result.Visible.Count);
+                LogSourceReads(result);
 
                 _selfMetrics.RecordObservation(new CycleMetricsSnapshot
                 {
@@ -356,6 +357,44 @@ public sealed class MonitoringWorker(
         else if (count > 0)
         {
             _saidThereAreNoSources = false;
+        }
+    }
+
+    /// <summary>
+    /// One line per source per metric cycle (HostLog 1064): duration against
+    /// the budget, each entity type read of total, and the out-of-time detail
+    /// when it fired. Sources not polled (IRoleNotApplicable) ran nothing.
+    /// </summary>
+    private void LogSourceReads(MonitoringCycleResult result)
+    {
+        if (result.ObservationCollection is not { } collection)
+        {
+            return;
+        }
+
+        var budget = _options.Collection.ForInterval(_options.ObservationInterval).SourceTimeout;
+
+        foreach (var health in collection.Health.Where(h => h.LastFailureKind != CollectionFailureKind.NotConfigured))
+        {
+            var batch = collection.Batches.FirstOrDefault(b =>
+                string.Equals(b.SourceInstanceId, health.InstanceId, StringComparison.Ordinal));
+
+            var outOfTime = batch?.Failures
+                .Where(f => f.Kind == CollectionFailureKind.Timeout)
+                .Select(f => f.Detail)
+                .Distinct(StringComparer.Ordinal)
+                .ToList() ?? [];
+
+            HostLog.ObservationSourceRead(
+                _logger,
+                health.InstanceId,
+                batch is not null ? "read" : $"not read ({health.LastFailureDetail ?? "previous read still running"})",
+                health.LastDuration?.TotalMilliseconds ?? 0,
+                budget.TotalSeconds,
+                batch is { Coverage.Count: > 0 }
+                    ? string.Join(", ", batch.Coverage.Select(c => $"{c.ObjectType} {c.Answered}/{c.Asked}"))
+                    : "no per-type counts",
+                outOfTime.Count == 0 ? "no" : string.Join(" | ", outOfTime));
         }
     }
 

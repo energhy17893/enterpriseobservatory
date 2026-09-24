@@ -30,6 +30,24 @@ public class ReadBudgetDecisionTests
         var timeout = Assert.Single(batch.Failures, f => f.Kind == CollectionFailureKind.Timeout);
         Assert.Equal("VirtualMachine", timeout.Target);
         Assert.Contains($"{vms} of 2000", timeout.Detail, StringComparison.Ordinal);
+
+        var coverage = Assert.Single(batch.Coverage);
+        Assert.Equal(("VirtualMachine", vms, 2000), (coverage.ObjectType, coverage.Answered, coverage.Asked));
+    }
+
+    [Fact]
+    public async Task A_type_read_in_full_counts_read_equal_to_total()
+    {
+        // The per-cycle log line (HostLog 1064) compares a full read with a
+        // cut-off one, so a full read has to say so, not stay silent.
+        using var api = new SimulatedVcenter();
+
+        var batch = await Source(api, new SyntheticTargets(virtualMachines: 10, hosts: 5)).ReadAsync(api.Token);
+
+        Assert.DoesNotContain(batch.Failures, f => f.Kind == CollectionFailureKind.Timeout);
+        Assert.Equal(
+            ["HostSystem 5/5", "VirtualMachine 10/10"],
+            batch.Coverage.Select(c => $"{c.ObjectType} {c.Answered}/{c.Asked}").Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -45,6 +63,7 @@ public class ReadBudgetDecisionTests
         Assert.NotEmpty(batch.Observations);
         Assert.Contains(batch.Failures, f => f.Kind == CollectionFailureKind.Timeout && f.Target == "HostSystem");
         Assert.Contains(batch.Failures, f => f.Kind == CollectionFailureKind.Timeout && f.Target == "VirtualMachine");
+        Assert.Contains(batch.Coverage, c => c is { ObjectType: "VirtualMachine", Answered: 0, Asked: 100 });
     }
 
     [Fact]
