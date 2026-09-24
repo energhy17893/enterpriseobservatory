@@ -1,0 +1,22 @@
+{
+  "name": "enterprise-observatory-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server exposing Enterprise Observatory's read-only API (alerts, entities, findings, collectors, reports)",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "npm run build && node dist/smoke.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.2"
+  }
+}
