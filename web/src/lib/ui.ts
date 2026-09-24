@@ -140,6 +140,13 @@ export function findingLabel(state: FindingState): string {
   return state === 'NotEvaluated' ? 'Not evaluated' : state
 }
 /**
+ * The one empty-cell value (eo-ux §6; reference §11.7, UK Analysis Function):
+ * a missing value is shown, never left blank. Hyphen-minus, not an em dash --
+ * the em dash is prose punctuation on these screens.
+ */
+export const EMPTY = '-'
+
+/**
  * How long ago something happened, in words.
  *
  * Deliberately blunt at the coarse end: past a day, the exact figure stops

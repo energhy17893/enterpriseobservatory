@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, Metric, StatusBadge } from '@/components/Primitives'
-import type { StatusName } from '@/lib/ui'
+import { EMPTY, type StatusName } from '@/lib/ui'
 import type { CapacityReportRow, CapacityReportView, TimeToFullView } from '@/api/types'
 
 /**
@@ -147,13 +147,13 @@ function ReportRow({ row }: { row: CapacityReportRow }) {
     <tr className="border-b border-border [break-inside:avoid] last:border-0">
       <td className="px-3 py-2 align-top font-medium">{row.name}</td>
       <td className="px-3 py-2 align-top text-muted-foreground">
-        {row.datastoreType ?? <span className="text-muted-foreground">—</span>} · {row.source}
+        {row.datastoreType ?? <span className="text-muted-foreground">{EMPTY}</span>} · {row.source}
       </td>
       <td className="px-3 py-2 align-top tabular">{formatBytes(row.capacityBytes)}</td>
       <td className="px-3 py-2 align-top tabular">{formatBytes(row.usedBytes)}</td>
       <td className="px-3 py-2 align-top tabular">{formatBytes(row.freeBytes)}</td>
       <td className="px-3 py-2 align-top tabular">
-        {row.percentUsed !== null ? `${row.percentUsed.toFixed(1)}%` : '—'}
+        {row.percentUsed !== null ? `${row.percentUsed.toFixed(1)}%` : EMPTY}
       </td>
       <td className="px-3 py-2 align-top tabular">{formatBytes(row.provisionedBytes)}</td>
       <td className="px-3 py-2 align-top tabular">
@@ -162,7 +162,7 @@ function ReportRow({ row }: { row: CapacityReportRow }) {
             {row.overcommitRatio.toFixed(2)}×
           </StatusBadge>
         ) : (
-          '—'
+          EMPTY
         )}
       </td>
       <td className="px-3 py-2 align-top">
@@ -194,7 +194,7 @@ function TimeToFullCell({ estimate }: { estimate: TimeToFullView }) {
 
   const days = estimate.days ?? 0
   const status = fillStatus(days)
-  const date = estimate.fullAtUtc?.slice(0, 10) ?? '—'
+  const date = estimate.fullAtUtc?.slice(0, 10) ?? EMPTY
 
   return (
     <div className="text-xs">
@@ -225,7 +225,7 @@ function refusal(summary: string): string {
 
 /** Bytes as GB or TB, one decimal -- the unit a spreadsheet reader already thinks in. */
 function formatBytes(bytes: number | null): string {
-  if (bytes === null) return '—'
+  if (bytes === null) return EMPTY
 
   const gb = bytes / 1024 ** 3
   return gb >= 1024 ? `${(gb / 1024).toFixed(2)} TB` : `${gb.toFixed(1)} GB`

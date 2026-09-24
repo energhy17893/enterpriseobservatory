@@ -117,9 +117,9 @@ context, follow its source reference.
   ran with one that ran and found nothing.
 - **A stale answer is not shown as fresh.** Mark it explicitly ("stale since
   …"), never silently update the display with an old value (ADR-0007 §6;
-  `web/src/lib/ui.ts` `isStale`/`STALE_AFTER_MS`; `StaleBadge` in
-  `web/src/routes/Compliance.tsx`, `entity.healthIsStale` in
-  `web/src/routes/Entities.tsx`/`EntityDetail.tsx`).
+  `web/src/lib/ui.ts` `isStale`/`STALE_AFTER_MS`; the one `StaleBadge` in
+  `web/src/components/Primitives.tsx`, used by Entities, EntityDetail and
+  Compliance).
 - **Acknowledged/silenced is its own state, distinct from resolved** —
   reference §11.4: evaluation keeps running, notification stops, the item
   stays visible in the list (Grafana, Veeam ONE, PRTG); a resolve must not be

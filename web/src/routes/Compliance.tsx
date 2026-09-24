@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
-import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
+import { Card, Empty, Identifier, LoadFailure, Loading, StaleBadge, StatusBadge } from '@/components/Primitives'
 import { ago, cn, type StatusName } from '@/lib/ui'
 import { basisLabel } from '@/lib/basis'
 import { orderCatalogues } from '@/lib/catalogues'
@@ -67,20 +67,6 @@ function scorecardStatus(counts: FindingCountsView): { status: StatusName; label
 /** The server refuses longer; see ComplianceService. */
 const MAX_REASON = 2000
 const MAX_OWNER = 200
-
-/**
- * Said beside the counts, never folded into them: a stale failing finding is
- * still failing. What it is not is current — its vCenter did not answer last
- * cycle, so the verdict is the last one that could be reached.
- */
-function StaleBadge({ count }: { count: number }) {
-  if (count === 0) return null
-  return (
-    <StatusBadge status="Unknown">
-      Stale {count}
-    </StatusBadge>
-  )
-}
 
 /**
  * P1: one catalogue's scorecard row (K3 §1.1's catalogue as a first-class

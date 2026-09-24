@@ -13,6 +13,7 @@ one or open a proposal to promote a route-local function into
 | `Card` | `web/src/components/Primitives.tsx:4` | Base container, `rounded-lg border border-border bg-card`. |
 | `StatusBadge` | `web/src/components/Primitives.tsx:10` | **This is the pill component — there is no `StatusPill`.** Colour + dot + text, per ADR-0008 §3. Takes a `StatusName` (`Healthy`/`Warning`/`Critical`/`Info`/`Unknown`). |
 | `Metric` | `web/src/components/Primitives.tsx:39` | Big-number card for triage rows; count is the largest element ("read from across the room"). |
+| `StaleBadge` | `web/src/components/Primitives.tsx` | The one stale mark (ED5): `StatusBadge` Unknown + the word. `{ sinceUtc? }` → "stale" / "stale since 3h ago" (one entity, one HA finding); `{ count }` → "Stale N", nothing at zero (Compliance counts). Used by `Entities.tsx` (row, since on the second line), `EntityDetail.tsx` (header, HA findings), `Compliance.tsx`. Never write a stale mark by hand. |
 | `Identifier` | `web/src/components/Primitives.tsx:62` | Monospace (Fira Code) span for WWN/IP/UUID-style values. |
 | `LoadFailure` | `web/src/components/Primitives.tsx:72` | **The empty-state-for-errors component** — a failed request, styled with the `Unknown` ramp. Distinct from "no rows": never let a failed fetch render as if the list is simply empty (README principle 1). |
 | `Empty` | `web/src/components/Primitives.tsx:85` | Plain "nothing here" row for a genuinely empty result set. |
@@ -32,11 +33,11 @@ one or open a proposal to promote a route-local function into
 | `FindingRow` | **Not a shared component — it's a route-local function**, defined separately in two places: `web/src/routes/Compliance.tsx:544` and `web/src/routes/reports/ComplianceReport.tsx:340` (different props/shape in each). There is no single reusable `FindingRow` in `web/src/components`. |
 | scorecard | **Not a shared component.** `CatalogueScorecard` is a route-local function in `web/src/routes/Compliance.tsx:103`, backed by `CatalogueScorecardView` (`web/src/api/types.ts:612`) and `scorecardStatus()` (`Compliance.tsx:68`). |
 | empty-state row | Two different real things, don't conflate them: `Empty` (`Primitives.tsx:85`, genuinely no rows) vs. `LoadFailure` (`Primitives.tsx:72`, the request failed). Neither is called "empty-state row" in code. |
-| unknown/stale row | **Does not exist as one reusable component.** Handled ad hoc per screen: `StaleBadge` is route-local to `web/src/routes/Compliance.tsx:87`; the entity list's stale/unknown treatment is inline JSX in `web/src/routes/Entities.tsx` (~line 161, `entity.healthIsStale` + `StatusBadge status="Unknown"`) and `web/src/routes/EntityDetail.tsx` (~line 79). All three duplicate similar logic. |
+| unknown/stale row | No row component; the stale mark is the shared `StaleBadge` (`Primitives.tsx`, ED5). |
 | "accepted" badge | **Does not exist as a badge/component.** "Accepted" is plain inline text next to a finding in `web/src/routes/Compliance.tsx` (~line 586: `finding.acceptedBy`/`acceptedReason`), not a badge component. `FindingState` includes `'Accepted'` (`web/src/api/types.ts`), mapped to the `Info` status ramp by `findingStatus()` in `web/src/lib/ui.ts:120`. |
 
-**These five gaps (`FindingRow` ×2, `CatalogueScorecard`, the duplicated
-stale/unknown handling, and the missing accepted badge) are candidates for
+**These four gaps (`FindingRow` ×2, `CatalogueScorecard`, and the
+missing accepted badge; the stale mark was promoted in ED5) are candidates for
 promotion to shared `web/src/components`, not decided here — that's U2's
 call, made against real screen work, not speculatively in this skill.**
 
@@ -44,7 +45,7 @@ call, made against real screen work, not speculatively in this skill.**
 
 | File | What it's for |
 |---|---|
-| `web/src/lib/ui.ts` | `cn()`, `ramp()` (the only place a status becomes a Tailwind class), `healthStatus`, `severityStatus`, `healthBasisLabel`/`healthBasisShort`, `findingStatus`/`findingLabel`, `ago()`, `isStale`/`STALE_AFTER_MS`. Start here before writing a new status→colour mapping. |
+| `web/src/lib/ui.ts` | `cn()`, `ramp()` (the only place a status becomes a Tailwind class), `healthStatus`, `severityStatus`, `healthBasisLabel`/`healthBasisShort`, `findingStatus`/`findingLabel`, `ago()`, `isStale`/`STALE_AFTER_MS`, `EMPTY` (the one empty-cell value, `-`, ED4). Start here before writing a new status→colour mapping. |
 | `web/src/lib/basis.ts` | `basisLabel()`/`NO_CITATION` — the "basis:" line text, shared with the CSV/mailed report wording (see §4/§6 of SKILL.md). |
 | `web/design/tokens.mjs` | Single source of truth for all colour tokens (ADR-0008 §4). |
 | `web/design/generate-css.mjs` | Generates `web/src/styles/tokens.css` from `tokens.mjs` — never hand-edit the generated file. |
@@ -55,7 +56,6 @@ call, made against real screen work, not speculatively in this skill.**
 These exist and work, but are not shared — each is defined inside its own
 route file and duplicated where similar UI is needed elsewhere:
 
-- `StaleBadge` — `web/src/routes/Compliance.tsx:87`
 - `ControlRow` — `web/src/routes/Compliance.tsx:421`
 - `FindingRow` — `web/src/routes/Compliance.tsx:544`
 - `ControlRow` (different one) / `FindingRow` / `RemovedExceptionRow` / `HistoryRow` — `web/src/routes/reports/ComplianceReport.tsx:326,340,388,401`

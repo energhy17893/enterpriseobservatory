@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, Metric, StatusBadge } from '@/components/Primitives'
-import { cn, type StatusName } from '@/lib/ui'
+import { EMPTY, cn, type StatusName } from '@/lib/ui'
 import type {
   ComplianceControlView,
   ComplianceExceptionView,
@@ -166,7 +166,7 @@ function ReportBody({ data }: { data: ComplianceReportView }) {
         <div className="text-lg font-semibold">Enterprise Observatory</div>
         <div className="text-sm text-muted-foreground">Compliance report</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Catalogue {data.catalogueName || '—'} · release {data.catalogueRelease || '—'} — generated{' '}
+          Catalogue {data.catalogueName || EMPTY} · release {data.catalogueRelease || EMPTY} — generated{' '}
           {new Date(data.generatedAtUtc).toISOString()} — scope: {data.scope}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
@@ -275,7 +275,7 @@ function ReportBody({ data }: { data: ComplianceReportView }) {
                 </td>
                 <td className="px-3 py-2 align-top">{control.title}</td>
                 <td className="px-3 py-2 align-top text-muted-foreground">
-                  {control.notEvaluatedReason ?? '—'}
+                  {control.notEvaluatedReason ?? EMPTY}
                 </td>
               </tr>
             ))}
@@ -359,7 +359,7 @@ function FindingRow({ row }: { row: ComplianceReportFindingRow }) {
           <div className="mt-1 text-xs text-muted-foreground">{row.notEvaluatedReason}</div>
         )}
       </td>
-      <td className="px-3 py-2 align-top text-xs text-muted-foreground">{row.observed ?? '—'}</td>
+      <td className="px-3 py-2 align-top text-xs text-muted-foreground">{row.observed ?? EMPTY}</td>
       <td className="px-3 py-2 align-top text-xs text-muted-foreground">{row.expected}</td>
       <td className={cn('px-3 py-2 align-top tabular text-xs')}>{formatUtc(row.lastEvaluatedUtc)}</td>
       <td className="px-3 py-2 align-top text-xs">
@@ -378,7 +378,7 @@ function FindingRow({ row }: { row: ComplianceReportFindingRow }) {
           </div>
         )}
         {row.acceptedBy === null && row.exceptionId === null && (
-          <span className="text-muted-foreground">—</span>
+          <span className="text-muted-foreground">{EMPTY}</span>
         )}
       </td>
     </tr>
@@ -392,7 +392,7 @@ function RemovedExceptionRow({ exception }: { exception: ComplianceExceptionView
       <td className="px-3 py-2 align-top">{exception.entityId ?? 'All entities'}</td>
       <td className="px-3 py-2 align-top">{exception.owner}</td>
       <td className="px-3 py-2 align-top text-muted-foreground">{exception.reason}</td>
-      <td className="px-3 py-2 align-top text-xs">{exception.removedBy ?? '—'}</td>
+      <td className="px-3 py-2 align-top text-xs">{exception.removedBy ?? EMPTY}</td>
       <td className="px-3 py-2 align-top tabular text-xs">{formatUtc(exception.removedAtUtc)}</td>
     </tr>
   )
@@ -412,5 +412,5 @@ function HistoryRow({ row }: { row: ComplianceReportTransitionRow }) {
 
 /** ISO-8601 UTC, the same wire format the CSV export uses -- unambiguous on a printed page. */
 function formatUtc(iso: string | null): string {
-  return iso === null ? '—' : new Date(iso).toISOString().replace('.000Z', 'Z')
+  return iso === null ? EMPTY : new Date(iso).toISOString().replace('.000Z', 'Z')
 }

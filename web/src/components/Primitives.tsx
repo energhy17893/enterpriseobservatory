@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
-import { cn, ramp, type StatusName } from '@/lib/ui'
+import { ago, cn, ramp, type StatusName } from '@/lib/ui'
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
   return (
@@ -34,6 +34,28 @@ export function StatusBadge({ status, children }: { status: StatusName; children
       <span className={cn('size-1.5 rounded-full', tone.dot)} aria-hidden="true" />
       {children}
     </span>
+  )
+}
+
+/**
+ * The one stale mark (ADR-0007 §6, eo-ux §4): a stale answer is said, never
+ * shown as fresh. Colour, dot and the word "stale" (reference §11.3) on the
+ * Unknown ramp.
+ *
+ * `{ sinceUtc }` marks one thing ("stale" / "stale since 3h ago");
+ * `{ count }` says how many of a set are stale ("Stale 4"), and renders
+ * nothing at zero. A stale failing finding is still failing -- the count is
+ * said beside the verdicts, never folded into them.
+ */
+export function StaleBadge(props: { sinceUtc?: string | null } | { count: number }) {
+  if ('count' in props) {
+    if (props.count === 0) return null
+    return <StatusBadge status="Unknown">Stale {props.count}</StatusBadge>
+  }
+  return (
+    <StatusBadge status="Unknown">
+      stale{props.sinceUtc && <> since {ago(props.sinceUtc)}</>}
+    </StatusBadge>
   )
 }
 
