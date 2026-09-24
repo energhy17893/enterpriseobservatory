@@ -262,7 +262,8 @@ public sealed class MonitoringWorker(
         {
             var graph = _graph.Current;
             var findings = _compliance.Evaluate(
-                [.. graph.Active], reportingSources, graph, TakeDemand(graph));
+                [.. graph.Active], reportingSources, graph, TakeDemand(graph),
+                ComplianceEvaluation.SilentNamespaces(_connections.All, reportingSources));
 
             // Named by ownership, never by list position -- P1 removes that
             // assumption; null only when no catalogue owned by Broadcom is

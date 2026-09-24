@@ -1,4 +1,5 @@
 using System.Globalization;
+using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Compliance;
 using static EnterpriseObservatory.Application.Compliance.ContinuityControls;
@@ -52,6 +53,9 @@ public sealed class BackupFreshnessCheck(TimeSpan? rpo = null) : IComplianceChec
     public TimeSpan Rpo { get; } = rpo ?? DefaultRpo;
 
     public EntityKind AppliesTo => EntityKind.VirtualMachine;
+
+    /// <summary>SimpliVity's backup time is an annotation (<see cref="InventoryVerdictKeys.SimplivityBackupLastUtc"/>).</summary>
+    public IReadOnlyCollection<string> ReadsNamespaces => [ConnectionKinds.Simplivity];
 
     public IReadOnlyList<CheckVerdict> Judge(ComplianceControl control, Entity entity, CheckContext context)
     {

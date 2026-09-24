@@ -1,3 +1,4 @@
+using EnterpriseObservatory.Application.Collection;
 using EnterpriseObservatory.Application.Compliance;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Compliance;
@@ -351,6 +352,40 @@ public class ComplianceEvaluationTests
         Assert.Equal(ComplianceVerdict.Failing, findings.Single(f => f.Entity.Value == "vc-1:host-1").Verdict);
         Assert.Equal(ComplianceVerdict.Passing, findings.Single(f => f.Entity.Value == "vc-1:host-2").Verdict);
         Assert.All(findings, f => Assert.Equal(T0, f.FirstSeenUtc));
+    }
+
+    private static SourceConnection Connection(string id, string kind, bool enabled = true) => new()
+    {
+        InstanceId = id,
+        Kind = kind,
+        BaseAddress = new Uri("https://" + id),
+        Username = "reader",
+        IsEnabled = enabled,
+    };
+
+    [Fact]
+    public void A_namespace_is_silent_when_none_of_its_enabled_connections_answered()
+    {
+        IReadOnlyList<SourceConnection> connections =
+        [
+            Connection("vc-1", ConnectionKinds.Vsphere),
+            Connection("svt-1", ConnectionKinds.Simplivity),
+            Connection("svt-2", ConnectionKinds.Simplivity),
+        ];
+
+        Assert.Equal(["simplivity"], ComplianceEvaluation.SilentNamespaces(connections, ["vc-1"]));
+        Assert.Empty(ComplianceEvaluation.SilentNamespaces(connections, ["vc-1", "svt-2"]));
+    }
+
+    [Fact]
+    public void A_namespace_whose_only_connection_is_disabled_or_removed_counts_as_answered()
+    {
+        // Otherwise switching the SimpliVity connection off would freeze the
+        // check on its last verdict forever.
+        Assert.Empty(ComplianceEvaluation.SilentNamespaces(
+            [Connection("vc-1", ConnectionKinds.Vsphere), Connection("svt-1", ConnectionKinds.Simplivity, enabled: false)],
+            ["vc-1"]));
+        Assert.Empty(ComplianceEvaluation.SilentNamespaces([Connection("vc-1", ConnectionKinds.Vsphere)], ["vc-1"]));
     }
 
     [Fact]
