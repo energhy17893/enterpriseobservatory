@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { Card, Empty, LoadFailure, Loading, Metric, StatusBadge } from '@/components/Primitives'
+import { EMPTY } from '@/lib/ui'
 import { basisLabel } from '@/lib/basis'
 import type {
   ContinuityControlInfo,
@@ -269,7 +270,7 @@ function ClusterRow({ row, byId }: { row: ContinuityReportRow; byId: Map<string,
       <td className="px-3 py-2 align-top">
         {notPassing.length === 0 ? (
           <span className="text-xs text-muted-foreground">
-            {checked === 0 ? '—' : `none (${checked} of ${row.controls.length} controls checked)`}
+            {checked === 0 ? EMPTY : `none (${checked} of ${row.controls.length} controls checked)`}
           </span>
         ) : (
           <ul className="space-y-1">
@@ -308,7 +309,7 @@ function ControlSummaryRow({ row }: { row: ContinuityControlRow }) {
       </td>
       <td className="px-3 py-2 align-top text-xs">
         {row.failingNames.length === 0 ? (
-          <span className="text-muted-foreground">—</span>
+          <span className="text-muted-foreground">{EMPTY}</span>
         ) : (
           <Names names={row.failingNames} more={row.moreFailing} />
         )}
@@ -336,7 +337,7 @@ function CountCell({ counts }: { counts: ContinuityStateCounts }) {
   const any = open(counts) + counts.passing > 0
 
   if (!any) {
-    return <span className="text-xs text-muted-foreground">—</span>
+    return <span className="text-xs text-muted-foreground">{EMPTY}</span>
   }
 
   if (open(counts) === 0) {

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, Metric, StatusBadge } from '@/components/Primitives'
-import { cn, severityStatus } from '@/lib/ui'
+import { EMPTY, cn, severityStatus } from '@/lib/ui'
 import type { AlertLifecycleState, AlertReportRow, AlertSeverity } from '@/api/types'
 
 const SEVERITIES: AlertSeverity[] = ['Critical', 'Warning', 'Info']
@@ -263,7 +263,7 @@ function ReportRow({ row }: { row: AlertReportRow }) {
             )}
           </>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span className="text-muted-foreground">{EMPTY}</span>
         )}
       </td>
       <td className="px-3 py-2 align-top text-muted-foreground">
@@ -275,12 +275,12 @@ function ReportRow({ row }: { row: AlertReportRow }) {
       <td className="px-3 py-2 align-top text-xs">
         {row.acknowledgedBy !== null
           ? <>{row.acknowledgedBy}<br />{formatUtc(row.acknowledgedAtUtc)}</>
-          : <span className="text-muted-foreground">—</span>}
+          : <span className="text-muted-foreground">{EMPTY}</span>}
       </td>
       <td className="px-3 py-2 align-top text-xs">
         {row.clearedBy !== null
           ? <>{row.clearedBy}<br />{formatUtc(row.clearedAtUtc)}</>
-          : <span className="text-muted-foreground">—</span>}
+          : <span className="text-muted-foreground">{EMPTY}</span>}
       </td>
     </tr>
   )
@@ -288,5 +288,5 @@ function ReportRow({ row }: { row: AlertReportRow }) {
 
 /** ISO-8601 UTC, the same wire format the CSV export uses -- unambiguous on a printed page. */
 function formatUtc(iso: string | null): string {
-  return iso === null ? '—' : new Date(iso).toISOString().replace('.000Z', 'Z')
+  return iso === null ? EMPTY : new Date(iso).toISOString().replace('.000Z', 'Z')
 }

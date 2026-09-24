@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { Card, LoadFailure, Loading, Metric, StatusBadge } from '@/components/Primitives'
-import { ago, cn, ramp } from '@/lib/ui'
+import { EMPTY, ago, cn, ramp } from '@/lib/ui'
 import type { HealthState } from '@/api/types'
 
 const HEALTH_ORDER: HealthState[] = ['Critical', 'Warning', 'Healthy', 'Unknown']
@@ -104,7 +104,7 @@ export function Overview() {
               value={
                 selfMetrics.data.inventory.atUtc
                   ? `${selfMetrics.data.inventory.durationSeconds.toFixed(1)}s`
-                  : '—'
+                  : EMPTY
               }
               hint={
                 selfMetrics.data.inventory.atUtc
@@ -117,7 +117,7 @@ export function Overview() {
               value={
                 selfMetrics.data.observation.atUtc
                   ? `${selfMetrics.data.observation.durationSeconds.toFixed(1)}s`
-                  : '—'
+                  : EMPTY
               }
               hint={
                 selfMetrics.data.observation.atUtc

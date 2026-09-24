@@ -3,9 +3,9 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/client'
-import { Card, Empty, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
+import { Card, Empty, LoadFailure, Loading, StaleBadge, StatusBadge } from '@/components/Primitives'
 import { Pager } from '@/components/Pager'
-import { ago, cn, healthBasisShort, healthStatus } from '@/lib/ui'
+import { EMPTY, ago, cn, healthBasisShort, healthStatus } from '@/lib/ui'
 import type { EntityKind, EntityView } from '@/api/types'
 
 // EX4: the filter buttons and the Kind column say the same words. '' is "All".
@@ -229,14 +229,17 @@ function EntityTable({ rows }: { rows: EntityView[] }) {
                   <div className="flex min-w-0 flex-col justify-center gap-0.5">
                     <div className="flex flex-wrap items-center gap-1">
                       <StatusBadge status={healthStatus(entity.health)}>{entity.health}</StatusBadge>
-                      {entity.healthIsStale && <StatusBadge status="Unknown">stale</StatusBadge>}
+                      {entity.healthIsStale && <StaleBadge />}
                     </div>
                     {/*
                       K3: grey must say why, and a stale colour must say since
                       when -- both in words short enough for a table row. A
                       stale wins the line when both apply: "since" is the more
                       actionable fact once the colour itself is explained by
-                      the badge text above.
+                      the badge text above. The since stays on this line, not in
+                      the StaleBadge: "stale since 12m ago" beside the health
+                      badge does not fit the 7rem column, and a wrapped badge
+                      plus this line overflows ROW_HEIGHT.
                     */}
                     {entity.healthIsStale ? (
                       <span className="truncate text-[11px] text-muted-foreground">
@@ -250,7 +253,7 @@ function EntityTable({ rows }: { rows: EntityView[] }) {
                       )
                     )}
                   </div>
-                  <div className="text-right tabular">{entity.alertCount || '-'}</div>
+                  <div className="text-right tabular">{entity.alertCount || EMPTY}</div>
                   <div className="text-right text-xs text-muted-foreground">
                     {ago(entity.lastSeenUtc)}
                   </div>

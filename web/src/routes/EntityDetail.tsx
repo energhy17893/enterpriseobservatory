@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { api, ApiError } from '@/api/client'
-import { Card, Empty, Identifier, LoadFailure, Loading, StatusBadge } from '@/components/Primitives'
+import { Card, Empty, Identifier, LoadFailure, Loading, StaleBadge, StatusBadge } from '@/components/Primitives'
 import { SeriesChart } from '@/components/SeriesChart'
 import { AlertActions } from '@/components/AlertActions'
-import { ago, findingLabel, findingStatus, healthBasisLabel, healthStatus, ramp, severityStatus } from '@/lib/ui'
+import { EMPTY, ago, findingLabel, findingStatus, healthBasisLabel, healthStatus, ramp, severityStatus } from '@/lib/ui'
 import { basisLabel } from '@/lib/basis'
 import { CarriedForward, SimplivityValue } from '@/routes/Simplivity'
 import type {
@@ -78,11 +78,7 @@ export function EntityDetail() {
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold">{entity.displayName}</h1>
           <StatusBadge status={healthStatus(entity.health)}>{entity.health}</StatusBadge>
-          {entity.healthIsStale && (
-            <StatusBadge status="Unknown">
-              stale{entity.healthStaleSinceUtc && <> since {ago(entity.healthStaleSinceUtc)}</>}
-            </StatusBadge>
-          )}
+          {entity.healthIsStale && <StaleBadge sinceUtc={entity.healthStaleSinceUtc} />}
           {entity.observationState !== 'Active' && (
             <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
               {entity.observationState === 'Vanished' ? 'Vanished' : 'In maintenance'}
@@ -204,7 +200,7 @@ export function EntityDetail() {
                 className="flex flex-wrap items-center justify-between gap-3 px-3 py-2"
               >
                 <span className="text-sm text-muted-foreground">{mark.kind}</span>
-                <span className="font-mono text-xs">{mark.value}</span>
+                <Identifier>{mark.value}</Identifier>
                 <Identifier>from {mark.source}</Identifier>
               </div>
             ))}
@@ -239,7 +235,7 @@ function TimeToFull({ estimate }: { estimate: TimeToFullView }) {
   }
 
   const days = estimate.days ?? 0
-  const date = estimate.fullAtUtc ? estimate.fullAtUtc.slice(0, 10) : '—'
+  const date = estimate.fullAtUtc ? estimate.fullAtUtc.slice(0, 10) : EMPTY
 
   return (
     <Card className="p-3 text-sm">
@@ -276,19 +272,19 @@ function HaScorecard({ card }: { card: HaScorecardView }) {
       value: yesNo(card.admissionControlEnabled),
       bad: card.admissionControlEnabled === false,
     },
-    { label: 'Admission control policy', value: card.admissionControlPolicyType ?? '—' },
-    { label: 'Host monitoring', value: card.hostMonitoring ?? '—', bad: card.hostMonitoring === 'disabled' },
-    { label: 'VM monitoring', value: card.vmMonitoring ?? '—' },
-    { label: 'APD response', value: card.apdResponse ?? '—', bad: card.apdResponse === 'disabled' },
-    { label: 'PDL response', value: card.pdlResponse ?? '—', bad: card.pdlResponse === 'disabled' },
+    { label: 'Admission control policy', value: card.admissionControlPolicyType ?? EMPTY },
+    { label: 'Host monitoring', value: card.hostMonitoring ?? EMPTY, bad: card.hostMonitoring === 'disabled' },
+    { label: 'VM monitoring', value: card.vmMonitoring ?? EMPTY },
+    { label: 'APD response', value: card.apdResponse ?? EMPTY, bad: card.apdResponse === 'disabled' },
+    { label: 'PDL response', value: card.pdlResponse ?? EMPTY, bad: card.pdlResponse === 'disabled' },
     {
       label: 'Heartbeat datastores',
-      value: card.heartbeatDatastoreCount === null ? '—' : String(card.heartbeatDatastoreCount),
+      value: card.heartbeatDatastoreCount === null ? EMPTY : String(card.heartbeatDatastoreCount),
       bad: card.heartbeatDatastoreCount !== null && card.heartbeatDatastoreCount < 2,
     },
     {
       label: 'Heartbeat datastore policy',
-      value: card.heartbeatDatastoreCandidatePolicy ?? '—',
+      value: card.heartbeatDatastoreCandidatePolicy ?? EMPTY,
     },
   ]
 
@@ -337,10 +333,10 @@ function HaScorecard({ card }: { card: HaScorecardView }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <StatusBadge status={findingStatus(finding.state)}>{findingLabel(finding.state)}</StatusBadge>
                   <span className="font-medium">{finding.title}</span>
-                  {finding.stale && <span className="text-xs text-muted-foreground">(stale)</span>}
+                  {finding.stale && <StaleBadge />}
                 </div>
                 <div className="mt-1 text-sm text-muted-foreground">
-                  {finding.state === 'NotEvaluated' ? finding.reason : finding.observed ?? '—'}
+                  {finding.state === 'NotEvaluated' ? finding.reason : finding.observed ?? EMPTY}
                   {finding.acceptedBy && ` — accepted by ${finding.acceptedBy}: ${finding.acceptedReason ?? ''}`}
                 </div>
                 {/*
@@ -427,7 +423,7 @@ function ClusterFailoverResource({
 }
 
 function yesNo(value: boolean | null): string {
-  return value === null ? '—' : value ? 'Yes' : 'No'
+  return value === null ? EMPTY : value ? 'Yes' : 'No'
 }
 
 function windowText(estimate: TimeToFullView): string {
@@ -515,7 +511,7 @@ function Annotations({ annotations }: { annotations: AnnotationView[] }) {
                   {a.value === null || SIMPLIVITY_STATES.has(a.key) ? (
                     <SimplivityValue value={a.value} />
                   ) : (
-                    <span className="font-mono text-xs">{a.value}</span>
+                    <Identifier>{a.value}</Identifier>
                   )}
                 </div>
               ))}
