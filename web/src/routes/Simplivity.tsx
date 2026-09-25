@@ -6,7 +6,8 @@ import { Card, Empty, Identifier, LoadFailure, Loading, Metric, StatusBadge } fr
 import { AlertRow } from '@/components/AlertRow'
 import { BulkBar } from '@/components/BulkBar'
 import { Pager } from '@/components/Pager'
-import { ago, cn, healthStatus, type StatusName } from '@/lib/ui'
+import { ago, cn, EMPTY, healthStatus, type StatusName } from '@/lib/ui'
+import { counterStatus, simplivityStatus } from '@/lib/simplivity'
 import type {
   SimplivityBackupView,
   SimplivityClusterView,
@@ -20,36 +21,6 @@ import type {
 // at 100; alert sections page at 50 like the alert inbox (A1).
 const TABLE_PAGE_SIZE = 100
 const ALERT_PAGE_SIZE = 50
-
-/**
- * HPE's own words as a status (reference-approaches §10.8): FAULTY/DEFUNCT
- * red, SUSPECTED/DEGRADED yellow, SYNCING and OUT_OF_SCOPE informational (not
- * Centreon's "anything but SAFE warns"). Null — the source did not answer —
- * is Unknown, never SAFE (ADR-0026, §11.1). Presentation only; the alerts are
- * the collector's.
- */
-export function simplivityStatus(value: string | null): StatusName {
-  switch (value) {
-    case null:
-    case 'UNKNOWN':
-      return 'Unknown'
-    case 'ALIVE':
-    case 'SAFE':
-    case 'GREEN':
-    case 'HEALTHY':
-      return 'Healthy'
-    case 'FAULTY':
-    case 'DEFUNCT':
-    case 'RED':
-      return 'Critical'
-    case 'SUSPECTED':
-    case 'DEGRADED':
-    case 'YELLOW':
-      return 'Warning'
-    default:
-      return 'Info'
-  }
-}
 
 /** A value the source did not give: grey and said so, never blank and never "fine". */
 export function SimplivityValue({ value }: { value: string | null }) {
@@ -76,11 +47,11 @@ function arbiterStatus(cluster: SimplivityClusterView): StatusName {
 }
 
 function yesNo(value: boolean | null) {
-  return value === null ? '-' : value ? 'yes' : 'no'
+  return value === null ? EMPTY : value ? 'yes' : 'no'
 }
 
 function dash(value: string | number | null) {
-  return value === null ? '-' : value
+  return value === null ? EMPTY : value
 }
 
 /**
@@ -139,9 +110,8 @@ function counter(counts: Record<string, number>, good: string) {
   const total = Object.values(counts).reduce((sum, n) => sum + n, 0)
   const ok = counts[good] ?? 0
   const unknown = counts['Unknown'] ?? 0
-  const status: StatusName = total - ok - unknown > 0 ? 'Warning' : unknown > 0 ? 'Unknown' : 'Healthy'
 
-  return { value: total === 0 ? '-' : `${ok}/${total}`, status, hint: unknown > 0 ? `${unknown} unknown` : undefined }
+  return { value: total === 0 ? EMPTY : `${ok}/${total}`, status: counterStatus(counts, good), hint: unknown > 0 ? `${unknown} unknown` : undefined }
 }
 
 function Source({ source, rpoHours }: { source: SimplivitySourceView; rpoHours: number | null }) {
@@ -182,7 +152,7 @@ function Source({ source, rpoHours }: { source: SimplivitySourceView; rpoHours: 
         <Metric label="Arbiters connected" {...arbiters} />
         <Metric
           label="Backups older than RPO"
-          value={rpoHours === null ? '-' : stale}
+          value={rpoHours === null ? EMPTY : stale}
           status={rpoHours === null ? 'Unknown' : stale > 0 ? 'Warning' : 'Healthy'}
           hint={`${source.backups.withBackup} VMs with a backup, ${source.backups.withoutBackup} without`}
         />
@@ -301,7 +271,10 @@ function ClusterRows({ cluster }: { cluster: SimplivityClusterView }) {
           {cluster.upgradeState === null ? <SimplivityValue value={null} /> : cluster.upgradeState}
         </td>
         <td className="px-3 py-2 font-mono text-xs">{dash(cluster.version)}</td>
-        <td className="px-3 py-2">-</td>
+        {/* §11.7 [z]: a cluster has no virtual controller -- not applicable, not missing. */}
+        <td className="px-3 py-2" title="not applicable">
+          {EMPTY}
+        </td>
         {/* §11.6's layer counter: ALIVE out of the hosts folded here, of the members SimpliVity lists. */}
         <td className="px-3 py-2 text-right tabular">
           {alive}/{cluster.hosts.length} ALIVE
@@ -331,7 +304,7 @@ function HostRow({ host, indent }: { host: SimplivityHostView; indent?: boolean 
       </td>
       <td className="px-3 py-2 font-mono text-xs">{dash(host.version)}</td>
       <td className="px-3 py-2 font-mono text-xs">{dash(host.virtualControllerName)}</td>
-      <td className="px-3 py-2 text-right">-</td>
+      <td className="px-3 py-2 text-right">{EMPTY}</td>
     </tr>
   )
 }
