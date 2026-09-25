@@ -369,3 +369,252 @@ public sealed class SimplivityNtpCheck : IComplianceCheck
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal));
 }
+
+/// <summary>
+/// One of HPE's vSphere-side rules for an OmniStack host and its OVC
+/// (reference-approaches §10.8, cross-environment table; S2b).
+/// </summary>
+/// <remarks>
+/// <para>
+/// Entity = the host, subject <c>''</c>: the OVC, its vmkernel adapter and
+/// its lockdown list are each one per host. Only hosts that carry a
+/// <c>simplivity.*</c> annotation.
+/// </para>
+/// <para>
+/// The OVC is the VM that runs on this host (a RunsOn edge) and whose name
+/// is the host's <c>simplivity.virtual_controller_name</c>, never a VM found
+/// by name pattern alone.
+/// </para>
+/// </remarks>
+public sealed class SimplivityHostCheck(SimplivityHostCheck.Aspect aspect) : IComplianceCheck
+{
+    public enum Aspect
+    {
+        OvcReservation,
+        OvcNotInPool,
+        LockdownException,
+        VmkernelMtu,
+        DrsMustGroup,
+    }
+
+    /// <summary>
+    /// HPE's port groups on an OmniStack host's storage switch, as seen live
+    /// (docs/measurements/s2b-cross-env-shapes.md, 26 of 26 hosts): the
+    /// storage vmkernel adapter sits on <c>SVT_StorPG</c>, the OVC's storage
+    /// and federation NICs on the other two. Federation has no vmkernel adapter.
+    /// </summary>
+    public static readonly IReadOnlySet<string> SimplivityPortGroups =
+        new HashSet<string>(["SVT_StorPG", "SVT_StoragePortGroup", "SVT_FedPortGroup"], StringComparer.OrdinalIgnoreCase);
+
+    public const int JumboMtu = 9000;
+
+    /// <summary>HPE: a DRS "must run on" group should not hold more than this many VMs per host.</summary>
+    public const int MustGroupVmsPerHost = 100;
+
+    public Aspect Judges { get; } = aspect;
+
+    public EntityKind AppliesTo => EntityKind.EsxiHost;
+
+    public IReadOnlyList<CheckVerdict> Judge(ComplianceControl control, Entity entity, CheckContext context)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (!SimplivityScope.IsAnnotated(entity))
+        {
+            return [];
+        }
+
+        return
+        [
+            Judges switch
+            {
+                Aspect.OvcReservation => OvcReservation(entity, context.Graph),
+                Aspect.OvcNotInPool => OvcNotInPool(entity, context.Graph),
+                Aspect.LockdownException => LockdownException(entity),
+                Aspect.VmkernelMtu => VmkernelMtu(entity),
+                Aspect.DrsMustGroup => DrsMustGroup(entity, context.Graph),
+                _ => throw new InvalidOperationException($"Unknown aspect {Judges}."),
+            },
+        ];
+    }
+
+    /// <summary>The host's OVC, or why it was not found.</summary>
+    private static (Entity? Ovc, string? Reason) Ovc(Entity host, EntityGraph graph)
+    {
+        if (host.Settings.GetValueOrDefault(InventoryVerdictKeys.SimplivityVirtualControllerName) is not { Length: > 0 } name)
+        {
+            return (null, "The host's OVC name (simplivity.virtual_controller_name) was not read.");
+        }
+
+        var ovc = graph.Relationships
+            .Where(r => r.Kind == RelationshipKind.RunsOn && r.To == host.Id)
+            .Select(r => graph.Entities.GetValueOrDefault(r.From))
+            .OfType<Entity>()
+            .FirstOrDefault(v => v.Kind == EntityKind.VirtualMachine &&
+                                 v.ObservationState != ObservationState.Vanished &&
+                                 string.Equals(v.DisplayName, name, StringComparison.Ordinal));
+
+        return ovc is null ? (null, $"No VM named {name} runs on this host.") : (ovc, null);
+    }
+
+    private static Entity? ClusterOf(Entity host, EntityGraph graph) =>
+        graph.Relationships
+            .Where(r => r.Kind == RelationshipKind.PartOf && r.From == host.Id)
+            .Select(r => graph.Entities.GetValueOrDefault(r.To))
+            .OfType<Entity>()
+            .FirstOrDefault(c => c.Kind == EntityKind.Cluster);
+
+    private static CheckVerdict OvcReservation(Entity host, EntityGraph graph)
+    {
+        const string expected = "the OVC's memory fully reserved";
+
+        var (ovc, missing) = Ovc(host, graph);
+        if (ovc is null)
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason: missing);
+        }
+
+        if (!long.TryParse(ovc.Settings.GetValueOrDefault(InventoryVerdictKeys.MemoryReservationMb), out var reserved) ||
+            ovc.Sizing?.ConfiguredMemoryMb is not { } configured)
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
+                $"{ovc.DisplayName}'s memory reservation (config.memoryAllocation.reservation) or size (config.hardware.memoryMB) was not read.");
+        }
+
+        return reserved == configured
+            ? Verdict(ComplianceVerdict.Passing, expected, $"{ovc.DisplayName}: {reserved} MB of {configured} MB reserved")
+            : Verdict(ComplianceVerdict.Failing, expected,
+                $"{ovc.DisplayName}: {reserved} MB of {configured} MB reserved; HPE's admission control formula assumes all of it");
+    }
+
+    private static CheckVerdict OvcNotInPool(Entity host, EntityGraph graph)
+    {
+        const string expected = "the OVC in the cluster's root resource pool, not a child pool";
+
+        var (ovc, missing) = Ovc(host, graph);
+        if (ovc is null)
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason: missing);
+        }
+
+        if (ovc.Settings.GetValueOrDefault(InventoryVerdictKeys.ResourcePool) is not { Length: > 0 } pool)
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
+                $"{ovc.DisplayName}'s resource pool (resourcePool) was not read.");
+        }
+
+        if (ClusterOf(host, graph)?.Settings.GetValueOrDefault(InventoryVerdictKeys.ResourcePool) is not { Length: > 0 } root)
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
+                "The cluster's root resource pool (ClusterComputeResource.resourcePool) was not read.");
+        }
+
+        return string.Equals(pool, root, StringComparison.Ordinal)
+            ? Verdict(ComplianceVerdict.Passing, expected, $"{ovc.DisplayName}: in the cluster's root pool")
+            : Verdict(ComplianceVerdict.Failing, expected, $"{ovc.DisplayName}: in resource pool {pool}, not the cluster's root ({root})");
+    }
+
+    /// <remarks>
+    /// Which ESXi account is the Digital Vault one is not collected, so a
+    /// non-empty exception list is not judged: only an empty one is known to
+    /// lack it. Lockdown off needs no exception and passes.
+    /// </remarks>
+    private static CheckVerdict LockdownException(Entity host)
+    {
+        const string expected = "lockdown mode off, or the Digital Vault account among its exception users";
+
+        if (host.LockdownMode is not { Length: > 0 } mode)
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason: "The host's lockdown mode (config.lockdownMode) was not read.");
+        }
+
+        if (string.Equals(mode, "lockdownDisabled", StringComparison.Ordinal))
+        {
+            return Verdict(ComplianceVerdict.Passing, expected, "lockdown mode off");
+        }
+
+        if (!host.Settings.TryGetValue(InventoryVerdictKeys.LockdownExceptions, out var raw))
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, mode, reason:
+                "The lockdown exception users (HostAccessManager.QueryLockdownExceptions) were not read.");
+        }
+
+        var users = Lines(raw);
+
+        return users.Length == 0
+            ? Verdict(ComplianceVerdict.Failing, expected, $"{mode}, no exception users: an OmniStack upgrade fails")
+            : Verdict(ComplianceVerdict.NotEvaluated, expected, $"{mode}, exception users: {FirstFew(users)}", reason:
+                "Which ESXi account is SimpliVity's Digital Vault account is not collected, so whether it is among the exception users is not known.");
+    }
+
+    /// <remarks>
+    /// The storage vmkernel adapter's MTU and the MTU of every standard switch
+    /// carrying one of HPE's port groups. A vmkernel adapter on a distributed
+    /// port carries no port group name, so a host whose storage adapter is on
+    /// one is not evaluated rather than passed.
+    /// </remarks>
+    private static CheckVerdict VmkernelMtu(Entity host)
+    {
+        const string expected = "MTU 9000 on the SimpliVity storage vmkernel adapter and its switch";
+
+        if (!host.Settings.TryGetValue(InventoryVerdictKeys.VmkernelMtu, out var vmk) ||
+            !host.Settings.TryGetValue(InventoryVerdictKeys.PortGroupSwitchMtu, out var switches))
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
+                "The vmkernel adapters (config.network.vnic) or standard switches (config.network.vswitch) were not read.");
+        }
+
+        var adapters = Svt(vmk).Select(p => (What: $"vmkernel on {p.PortGroup}", p.Mtu)).ToList();
+
+        if (adapters.Count == 0)
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
+                "No vmkernel adapter on a standard port group named SVT_StorPG, HPE's storage port group.");
+        }
+
+        var all = adapters.Concat(Svt(switches).Select(p => (What: $"switch of {p.PortGroup}", p.Mtu))).ToList();
+        var low = all.Where(a => a.Mtu != JumboMtu).Select(a => $"{a.What} {a.Mtu}").ToList();
+
+        return low.Count > 0
+            ? Verdict(ComplianceVerdict.Failing, expected, $"MTU below 9000: {FirstFew(low)}")
+            : Verdict(ComplianceVerdict.Passing, expected, $"MTU 9000 on {all.Count} adapters and port groups");
+
+        static IEnumerable<(string PortGroup, int? Mtu)> Svt(string lines) =>
+            Lines(lines)
+                .Select(l => l.Split('=', 2))
+                .Where(p => p.Length == 2 && SimplivityPortGroups.Contains(p[0]))
+                .Select(p => (p[0], int.TryParse(p[1], out var m) ? m : (int?)null));
+    }
+
+    /// <remarks>
+    /// Counts every VM an enabled mandatory VM-host rule binds to a host
+    /// group this host is in. ponytail: a VM bound by one rule to a group of
+    /// several hosts counts on each of them, the worst case; divide by the
+    /// group's size if HPE's number turns out to mean the average.
+    /// </remarks>
+    private static CheckVerdict DrsMustGroup(Entity host, EntityGraph graph)
+    {
+        var expected = $"no more than {MustGroupVmsPerHost} VMs in DRS \"must run on\" groups per host";
+
+        if (ClusterOf(host, graph) is not { } cluster || !ConfigurationRead(cluster))
+        {
+            return Verdict(ComplianceVerdict.NotEvaluated, expected, reason:
+                "The cluster's DRS rules and groups (configurationEx) were not read.");
+        }
+
+        var vms = cluster.DrsRules
+            .Where(r => r is { Enabled: true, Mandatory: true, Kind: DrsRuleKind.VmHostAffine } &&
+                        r.HostEntityIds.Contains(host.Id.Value, StringComparer.Ordinal))
+            .SelectMany(r => r.VirtualMachineEntityIds)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        return vms > MustGroupVmsPerHost
+            ? Verdict(ComplianceVerdict.Failing, expected, $"{vms} VMs in must-run groups on this host")
+            : Verdict(ComplianceVerdict.Passing, expected, $"{vms} {(vms == 1 ? "VM" : "VMs")} in must-run groups on this host");
+    }
+
+    private static string[] Lines(string value) =>
+        value.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+}

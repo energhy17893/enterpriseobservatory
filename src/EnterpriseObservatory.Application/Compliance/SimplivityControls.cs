@@ -32,6 +32,23 @@ public static class SimplivityControls
     /// <summary>Cluster, subject <c>''</c>: every host of the OmniStack cluster has the same NTP servers.</summary>
     public const string NtpConsistent = "svt.ntp-consistent";
 
+    // S2b: the host-side cross-environment rules.
+
+    /// <summary>ESXi host, subject <c>''</c>: its OVC's memory is fully reserved.</summary>
+    public const string OvcReservation = "svt.ovc-reservation";
+
+    /// <summary>ESXi host, subject <c>''</c>: its OVC sits in the cluster's root resource pool.</summary>
+    public const string OvcNotInPool = "svt.ovc-not-in-pool";
+
+    /// <summary>ESXi host, subject <c>''</c>: in lockdown mode, the Digital Vault account is an exception user.</summary>
+    public const string LockdownException = "svt.lockdown-exception";
+
+    /// <summary>ESXi host, subject <c>''</c>: the SimpliVity storage vmkernel adapter and its switch run MTU 9000.</summary>
+    public const string VmkMtu = "svt.vmk-mtu";
+
+    /// <summary>ESXi host, subject <c>''</c>: no more than 100 VMs in DRS "must run on" groups.</summary>
+    public const string DrsMustGroup = "svt.drs-must-group";
+
     private const string AdminGuide = "HPE SimpliVity Administration Guide 5.2.0 (sd00005173)";
 
     /// <summary>
@@ -72,6 +89,30 @@ public static class SimplivityControls
             AdminGuide + " GUID-E3460A32 (NTP the same on OVC, ESXi and vCenter; only the ESXi hosts are " +
             "compared, the OVC's and vCenter's own NTP are not collected)",
             new SimplivityNtpCheck()),
+        Check(OvcReservation, "ESX", "OVC memory fully reserved — OmniStack host",
+            "config.memoryAllocation.reservation, config.hardware.memoryMB (the OVC VM)",
+            AdminGuide + " GUID-5AACD6F9, GUID-3BB703E5 (OVC VM settings left as deployed); GUID-5EBC5FC4 " +
+            "(the admission control formula counts the OVC's reservation)",
+            new SimplivityHostCheck(SimplivityHostCheck.Aspect.OvcReservation)),
+        Check(OvcNotInPool, "ESX", "OVC not in a resource pool — OmniStack host",
+            "resourcePool (the OVC VM and the cluster's root)",
+            AdminGuide + " GUID-5AACD6F9, GUID-3BB703E5 (the OVC VM is not placed in a resource pool)",
+            new SimplivityHostCheck(SimplivityHostCheck.Aspect.OvcNotInPool)),
+        Check(LockdownException, "ESX", "Digital Vault account is a lockdown exception — OmniStack host",
+            "config.lockdownMode, HostAccessManager.QueryLockdownExceptions",
+            AdminGuide + " GUID-4B8A8E70 (in lockdown mode the Digital Vault ESXi account is in the Exception " +
+            "Users list, or an upgrade fails); HPE SimpliVity Upgrade Guide (sd00005177) GUID-4AA963F4",
+            new SimplivityHostCheck(SimplivityHostCheck.Aspect.LockdownException)),
+        Check(VmkMtu, "ESX", "Storage network MTU 9000 — OmniStack host",
+            "config.network.vnic[].spec.mtu, config.network.vswitch[].mtu (port groups SVT_StorPG, " +
+            "SVT_StoragePortGroup, SVT_FedPortGroup)",
+            "HPE SimpliVity networking (a50000783enw; storage/federation MTU 9000 end to end); " + AdminGuide +
+            " GUID-E3460A32",
+            new SimplivityHostCheck(SimplivityHostCheck.Aspect.VmkernelMtu)),
+        Check(DrsMustGroup, "ESX", "At most 100 VMs in DRS must-run groups — OmniStack host",
+            "configurationEx.rule, configurationEx.group",
+            AdminGuide + " GUID-87E50895, GUID-FA0E3F6C (DRS \"must run on\" group: no more than 100 VMs per host)",
+            new SimplivityHostCheck(SimplivityHostCheck.Aspect.DrsMustGroup)),
     ];
 
     private static SimplivityCheck Check(

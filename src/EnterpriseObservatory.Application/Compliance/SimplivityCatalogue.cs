@@ -16,7 +16,8 @@ public sealed record SimplivityCheck(ComplianceControl Control, IComplianceCheck
 /// Every control judges only entities that carry a <c>simplivity.*</c>
 /// annotation (ADR-0027); anything else is out of scope and gets no finding
 /// at all, not NotEvaluated. S2a covers data collected today; S2b adds the
-/// HPE admission-control formula.
+/// host-side rules (OVC reservation and pool, lockdown exception, storage
+/// MTU, DRS must groups).
 /// </remarks>
 public static class SimplivityCatalogue
 {
