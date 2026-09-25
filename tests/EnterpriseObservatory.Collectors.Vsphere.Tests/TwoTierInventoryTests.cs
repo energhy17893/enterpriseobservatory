@@ -31,7 +31,13 @@ public class TwoTierInventoryTests
         }
 
         Assert.Equal(
-            ["config.option", "config.storageDevice.scsiLun", "config.certificate", "runtime.healthSystemRuntime"],
+            [
+                "config.option", "config.storageDevice.scsiLun", "config.certificate", "runtime.healthSystemRuntime",
+
+                // P3b: small, but setup that rarely changes.
+                "config.powerSystemInfo.currentPolicy.shortName", "hardware.numaInfo.numNodes",
+                "hardware.cpuInfo.numCpuCores",
+            ],
             VsphereClient.ConfigurationPropertiesFor("HostSystem"));
         Assert.Equal(
             ["config.hardware.device", "layoutEx.file", "layoutEx.disk"],

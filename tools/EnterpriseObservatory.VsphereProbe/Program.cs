@@ -106,7 +106,13 @@ using var handler = new EnterpriseObservatory.VsphereProbe.InventoryTimingHandle
     VsphereSessionChannel.CreateHandler(options));
 using var channel = new VsphereSessionChannel(handler, options);
 var client = new VsphereClient(channel, options);
-using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+// A large estate's configuration tier outlasts the default (--time-inventory
+// on 59 hosts / 1100 VMs, P3b): --timeout-minutes N lifts it.
+var timeoutIndex = Array.FindIndex(args, a =>
+    string.Equals(a, "--timeout-minutes", StringComparison.OrdinalIgnoreCase));
+var timeoutMinutes = timeoutIndex >= 0 && timeoutIndex + 1 < args.Length &&
+    int.TryParse(args[timeoutIndex + 1], out var minutes) && minutes > 0 ? minutes : 3;
+using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(timeoutMinutes));
 
 try
 {
@@ -248,6 +254,16 @@ try
     if (args.Contains("--candidates-pr2", StringComparer.OrdinalIgnoreCase))
     {
         await EnterpriseObservatory.VsphereProbe.Candidates.RunPr2Async(client, cancellation.Token);
+        return 0;
+    }
+
+    // P3b's gate: host power policy / NUMA / cores and VM hot-add / version,
+    // each read alone, then the eo-bestpractice firing estimate.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --candidates-p3b
+    if (args.Contains("--candidates-p3b", StringComparer.OrdinalIgnoreCase))
+    {
+        await EnterpriseObservatory.VsphereProbe.Candidates.RunP3bAsync(client, cancellation.Token);
         return 0;
     }
 
@@ -826,7 +842,7 @@ catch (HttpRequestException ex)
 catch (OperationCanceledException)
 {
     Section("Failed");
-    Console.Error.WriteLine("  Timed out after 3 minutes.");
+    Console.Error.WriteLine($"  Timed out after {timeoutMinutes} minutes.");
     return 1;
 }
 finally

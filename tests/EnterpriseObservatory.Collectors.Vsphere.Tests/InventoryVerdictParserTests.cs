@@ -367,6 +367,50 @@ public class InventoryVerdictParserTests
         Assert.False(verdicts.ContainsKey(InventoryVerdicts.HostMaxEvcModeKey));
     }
 
+    // --- P3b: power policy, NUMA width, CPU hot-add, hardware version ----------------
+    //
+    // Measured (docs/measurements/p3b-bestpractice-shapes.md): each path read
+    // alone arrived as one flat value on every object (59 hosts, 1100 VMs).
+    // Values are the enums seen live; xsi:types follow the vim25 schema.
+
+    private const string HostP3b = """
+        <propSet><name>config.powerSystemInfo.currentPolicy.shortName</name><val xsi:type="xsd:string">dynamic</val></propSet>
+        <propSet><name>hardware.numaInfo.numNodes</name><val xsi:type="xsd:int">2</val></propSet>
+        <propSet><name>hardware.cpuInfo.numCpuCores</name><val xsi:type="xsd:short">24</val></propSet>
+        """;
+
+    [Fact]
+    public void A_host_carries_its_power_policy_and_cores_per_NUMA_node()
+    {
+        var verdicts = InventoryVerdictParser.Read(Single("HostSystem", "host-1", HostP3b));
+
+        Assert.Equal("dynamic", verdicts[InventoryVerdicts.PowerPolicy]);
+        Assert.Equal("12", verdicts[InventoryVerdicts.NumaCoresPerNode]);
+    }
+
+    [Fact]
+    public void Cores_per_NUMA_node_needs_both_the_node_count_and_the_core_count()
+    {
+        var verdicts = InventoryVerdictParser.Read(Single("HostSystem", "host-1", """
+            <propSet><name>hardware.numaInfo.numNodes</name><val xsi:type="xsd:int">2</val></propSet>
+            """));
+
+        Assert.False(verdicts.ContainsKey(InventoryVerdicts.NumaCoresPerNode));
+        Assert.False(verdicts.ContainsKey(InventoryVerdicts.PowerPolicy));
+    }
+
+    [Fact]
+    public void A_vm_carries_its_cpu_hot_add_flag_and_hardware_version()
+    {
+        var verdicts = InventoryVerdictParser.Read(Single("VirtualMachine", "vm-1", """
+            <propSet><name>config.cpuHotAddEnabled</name><val xsi:type="xsd:boolean">true</val></propSet>
+            <propSet><name>config.version</name><val xsi:type="xsd:string">vmx-17</val></propSet>
+            """));
+
+        Assert.Equal("true", verdicts[InventoryVerdicts.CpuHotAddEnabled]);
+        Assert.Equal("vmx-17", verdicts[InventoryVerdicts.HardwareVersion]);
+    }
+
     // --- datastore -----------------------------------------------------------------
 
     private static string Mount(string host, bool mounted) => $"""

@@ -102,6 +102,25 @@ public static class InventoryVerdicts
     /// </summary>
     public const string SnapshotCount = "snapshot.count";
 
+    /// <summary>
+    /// Host: <c>config.powerSystemInfo.currentPolicy.shortName</c> as vCenter
+    /// words it (<c>static</c> = High Performance, <c>dynamic</c> = Balanced,
+    /// <c>low</c>, <c>custom</c>) (eo-bestpractice, P3b).
+    /// </summary>
+    public const string PowerPolicy = "power.policy";
+
+    /// <summary>
+    /// Host: physical cores per NUMA node, <c>hardware.cpuInfo.numCpuCores</c>
+    /// divided by <c>hardware.numaInfo.numNodes</c>. Absent unless both were read.
+    /// </summary>
+    public const string NumaCoresPerNode = "numa.coresPerNode";
+
+    /// <summary>VM: <c>config.cpuHotAddEnabled</c>, <c>true</c>/<c>false</c>.</summary>
+    public const string CpuHotAddEnabled = "cpuHotAdd.enabled";
+
+    /// <summary>VM: <c>config.version</c>, the virtual hardware version (<c>vmx-19</c>).</summary>
+    public const string HardwareVersion = "hardware.version";
+
     /// <summary>Cluster: <c>true</c> when a current EVC mode is set (M8.4).</summary>
     public const string EvcEnabled = "evc.enabled";
 
@@ -165,6 +184,16 @@ public static class InventoryVerdictParser
     /// </summary>
     public const string HostMaxEvcModePath = "summary.maxEVCModeKey";
 
+    // P3b (docs/measurements/p3b-bestpractice-shapes.md): scalar sub-paths,
+    // each read alone live without a fault. currentPolicy whole arrives
+    // flattened without field names; numaInfo whole is ~9.5 KB a host, most
+    // of it pciId lists nothing reads.
+    public const string HostPowerPolicyPath = "config.powerSystemInfo.currentPolicy.shortName";
+    public const string HostNumaNodesPath = "hardware.numaInfo.numNodes";
+    public const string HostCpuCoresPath = "hardware.cpuInfo.numCpuCores";
+    public const string VmCpuHotAddPath = "config.cpuHotAddEnabled";
+    public const string VmHardwareVersionPath = "config.version";
+
     public const string MaintenanceModePath = "summary.maintenanceMode";
     public const string DatastoreHostPath = "host";
 
@@ -184,6 +213,8 @@ public static class InventoryVerdictParser
                 ReadHardwareHealth(o, verdicts);
                 ReadCertificate(o, verdicts);
                 CopyValue(o, HostMaxEvcModePath, InventoryVerdicts.HostMaxEvcModeKey, verdicts);
+                CopyValue(o, HostPowerPolicyPath, InventoryVerdicts.PowerPolicy, verdicts);
+                ReadNumaCoresPerNode(o, verdicts);
                 break;
 
             case "VirtualMachine":
@@ -191,6 +222,8 @@ public static class InventoryVerdictParser
                 CopyValue(o, ConsolidationNeededPath, InventoryVerdicts.ConsolidationNeeded, verdicts);
                 ReadCdroms(o, verdicts);
                 ReadLegacyAdapters(o, verdicts);
+                CopyValue(o, VmCpuHotAddPath, InventoryVerdicts.CpuHotAddEnabled, verdicts);
+                CopyValue(o, VmHardwareVersionPath, InventoryVerdicts.HardwareVersion, verdicts);
                 // Absent = 0 is correct here, not a guess: vSphere does not send an
                 // unset property at all, and a VM with no snapshot has 'snapshot' unset.
                 // The property is in the VM request, so a VM that arrived was asked.
@@ -406,6 +439,20 @@ public static class InventoryVerdictParser
         verdicts[InventoryVerdicts.LegacyAdapterE1000e] = Count(devices.Count(d => d.Type == "VirtualE1000e"));
         verdicts[InventoryVerdicts.LegacyAdapterLsiLogic] =
             Count(devices.Count(d => d.Type == "VirtualLsiLogicController"));
+    }
+
+    /// <summary>
+    /// Physical cores per NUMA node: the width a VM's vCPUs must fit in to stay
+    /// on one node (vSphere 8.0 U3 Performance Best Practices, vNUMA). Nodes
+    /// are taken as equal, as every measured host's were.
+    /// </summary>
+    private static void ReadNumaCoresPerNode(PropertyObject o, Dictionary<string, string> verdicts)
+    {
+        if (PropertyCollectorParser.ReadLong(o.Values, HostCpuCoresPath) is { } cores &&
+            PropertyCollectorParser.ReadLong(o.Values, HostNumaNodesPath) is { } nodes && nodes > 0)
+        {
+            verdicts[InventoryVerdicts.NumaCoresPerNode] = (cores / nodes).ToString(CultureInfo.InvariantCulture);
+        }
     }
 
     private static void ReadEvc(PropertyObject o, Dictionary<string, string> verdicts)

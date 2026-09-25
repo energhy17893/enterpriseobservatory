@@ -1,3 +1,4 @@
+using System.Globalization;
 using EnterpriseObservatory.Domain;
 using EnterpriseObservatory.Domain.Compliance;
 using static EnterpriseObservatory.Application.Compliance.ContinuityControls;
@@ -137,5 +138,143 @@ public sealed class LegacyVirtualAdapterCheck : IComplianceCheck
             $"{(withAdapter.Count == 1 ? "machine" : "machines")}: {FirstFew(names)}";
 
         return Verdict(ComplianceVerdict.Failing, expected, observed, subject: type.Subject);
+    }
+}
+
+/// <summary>
+/// An ESXi host whose power management policy is not High Performance
+/// (vSphere 8.0 U3 Performance Best Practices guide, host power management):
+/// the lower-power policies trade latency for watts, which shows up as CPU
+/// ready and slower wake-ups on the guests.
+/// </summary>
+/// <remarks>
+/// Entity = the host, subject <c>''</c>. Read from
+/// <c>config.powerSystemInfo.currentPolicy.shortName</c>; vCenter's
+/// <c>static</c> is High Performance. Not read is not evaluated.
+/// </remarks>
+public sealed class HostPowerPolicyCheck : IComplianceCheck
+{
+    private const string Expected = "High Performance power policy";
+
+    public EntityKind AppliesTo => EntityKind.EsxiHost;
+
+    public IReadOnlyList<CheckVerdict> Judge(ComplianceControl control, Entity entity, CheckContext context)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+
+        if (!entity.Settings.TryGetValue(InventoryVerdictKeys.PowerPolicy, out var policy) || policy.Length == 0)
+        {
+            return
+            [
+                Verdict(ComplianceVerdict.NotEvaluated, Expected, reason:
+                    "The host's power policy (config.powerSystemInfo.currentPolicy) was not read."),
+            ];
+        }
+
+        return policy == "static"
+            ? [Verdict(ComplianceVerdict.Passing, Expected, "High Performance")]
+            : [Verdict(ComplianceVerdict.Failing, Expected, PolicyName(policy))];
+    }
+
+    private static string PolicyName(string shortName) => shortName switch
+    {
+        "dynamic" => "Balanced",
+        "low" => "Low Power",
+        "custom" => "Custom",
+        _ => shortName,
+    };
+}
+
+/// <summary>
+/// A virtual machine that loses vNUMA to CPU hot-add (vSphere 8.0 U3
+/// Performance Best Practices guide; VMware KB 438023): with hot-add on and
+/// hardware version below 20, vNUMA is disabled, and a VM with more vCPUs
+/// than its host's cores per NUMA node then spans nodes the guest cannot see.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Entity = the VM, subject <c>''</c>: the fix is the VM's own setting (turn
+/// hot-add off, or upgrade to hardware version 20+). All three conditions
+/// must hold; one that is false passes, one that was not read (including the
+/// host it runs on, or that host's NUMA width) is not evaluated.
+/// </para>
+/// <para>
+/// No weaker "hot-add on and below vmx-20" fallback: the read-only role reads
+/// the NUMA width (59 of 59 hosts, measured), and the weak form matched 630
+/// of 1100 machines against 32 for the guide's condition.
+/// </para>
+/// </remarks>
+public sealed class CpuHotAddVnumaCheck : IComplianceCheck
+{
+    private const string Expected =
+        "CPU hot-add off, or hardware version 20+, or no more vCPUs than a host NUMA node has cores";
+
+    public EntityKind AppliesTo => EntityKind.VirtualMachine;
+
+    public IReadOnlyList<CheckVerdict> Judge(ComplianceControl control, Entity entity, CheckContext context)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (!entity.Settings.TryGetValue(InventoryVerdictKeys.CpuHotAddEnabled, out var hotAdd) ||
+            !bool.TryParse(hotAdd, out var hotAddOn))
+        {
+            return [NotRead("CPU hot-add setting (config.cpuHotAddEnabled)")];
+        }
+
+        if (!hotAddOn)
+        {
+            return [Verdict(ComplianceVerdict.Passing, Expected, "CPU hot-add off")];
+        }
+
+        if (!entity.Settings.TryGetValue(InventoryVerdictKeys.HardwareVersion, out var version) ||
+            VmxNumber(version) is not { } vmx)
+        {
+            return [NotRead("hardware version (config.version)")];
+        }
+
+        if (vmx >= 20)
+        {
+            return [Verdict(ComplianceVerdict.Passing, Expected, $"CPU hot-add on, {version} keeps vNUMA")];
+        }
+
+        if (entity.Sizing?.VirtualCpuCount is not { } vcpus)
+        {
+            return [NotRead("vCPU count (config.hardware.numCPU)")];
+        }
+
+        if (CoresPerNode(context.Graph, entity.Id) is not { } cores)
+        {
+            return [NotRead("host's cores per NUMA node (hardware.numaInfo, hardware.cpuInfo)")];
+        }
+
+        var observed = $"CPU hot-add on, {version}, {vcpus} vCPUs, host NUMA node {cores} cores";
+
+        return vcpus > cores
+            ? [Verdict(ComplianceVerdict.Failing, Expected, observed)]
+            : [Verdict(ComplianceVerdict.Passing, Expected, observed)];
+    }
+
+    private static CheckVerdict NotRead(string what) =>
+        Verdict(ComplianceVerdict.NotEvaluated, Expected, reason: $"The virtual machine's {what} was not read.");
+
+    private static int? VmxNumber(string version) =>
+        version.StartsWith("vmx-", StringComparison.Ordinal) &&
+        int.TryParse(version.AsSpan(4), NumberStyles.None,
+            CultureInfo.InvariantCulture, out var n)
+            ? n
+            : null;
+
+    private static int? CoresPerNode(EntityGraph graph, EntityId vm)
+    {
+        var edge = graph.Relationships.FirstOrDefault(r => r.Kind == RelationshipKind.RunsOn && r.From == vm);
+
+        return edge is not null &&
+               graph.Entities.TryGetValue(edge.To, out var host) &&
+               host.Settings.TryGetValue(InventoryVerdictKeys.NumaCoresPerNode, out var raw) &&
+               int.TryParse(raw, NumberStyles.None,
+                   CultureInfo.InvariantCulture, out var cores) && cores > 0
+            ? cores
+            : null;
     }
 }
