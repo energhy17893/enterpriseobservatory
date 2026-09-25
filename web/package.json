@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "tokens": "node design/generate-css.mjs > src/styles/tokens.css",
     "tokens:check": "node design/validate-contrast.mjs",
-    "catalogues:check": "node design/catalogues.check.ts"
+    "catalogues:check": "node design/catalogues.check.ts && node design/simplivity.check.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
