@@ -430,6 +430,16 @@ public static class VsphereSoapRequests
         """);
     }
 
+    /// <summary>
+    /// A host's lockdown exception users (S2b, eo-simplivity: the Digital
+    /// Vault account must be one). A read: it changes nothing.
+    /// </summary>
+    public static string QueryLockdownExceptions(string hostAccessManagerMoRef) => Envelope($"""
+            <vim25:QueryLockdownExceptions>
+              <vim25:_this type="HostAccessManager">{Escape(hostAccessManagerMoRef)}</vim25:_this>
+            </vim25:QueryLockdownExceptions>
+        """);
+
     /// <summary>Reads who is signed in to this vCenter, and which session is ours.</summary>
     /// <remarks>
     /// A read, like everything else here. <c>sessionList</c> needs a privilege a

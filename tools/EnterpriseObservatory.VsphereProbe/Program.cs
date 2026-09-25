@@ -267,6 +267,20 @@ try
         return 0;
     }
 
+    // S2b's gate: the OVC's reservation and resource pool, vmkernel MTU,
+    // QueryLockdownExceptions with the read-only role, DRS must groups and
+    // CPU models. --raw <dir> also writes one OVC's replies, UNMASKED, to
+    // mask by hand before any becomes a fixture.
+    //
+    //   dotnet run --project tools/EnterpriseObservatory.VsphereProbe -- --from-store --candidates-s2b
+    if (args.Contains("--candidates-s2b", StringComparer.OrdinalIgnoreCase))
+    {
+        var rawIndex = Array.FindIndex(args, a => string.Equals(a, "--raw", StringComparison.OrdinalIgnoreCase));
+        await EnterpriseObservatory.VsphereProbe.S2bCandidates.RunAsync(
+            client, rawIndex >= 0 && rawIndex + 1 < args.Length ? args[rawIndex + 1] : null, cancellation.Token);
+        return 0;
+    }
+
     // M8.8's gate: custom field definitions, the VM custom value paths each
     // read alone, and the backup field's value format as counts only.
     //

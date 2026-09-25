@@ -675,6 +675,14 @@ public sealed partial class VsphereClient
             // declared as the concrete HostListSummary, and the path was read
             // alone live on 10 of 10 hosts without a fault.
             InventoryVerdictParser.HostMaxEvcModePath,
+
+            // S2b, eo-simplivity (docs/measurements/s2b-cross-env-shapes.md),
+            // each read alone live on 59 of 59 hosts without a fault. The
+            // vmkernel adapters, whole, for their port group and MTU (~1.3 KB
+            // a host); the access manager's reference, for
+            // QueryLockdownExceptions on a host in lockdown mode (~0.2 KB).
+            InventoryVerdictParser.VnicPath,
+            InventoryVerdictParser.HostAccessManagerPath,
         ],
         ["VirtualMachine"] =
         [
@@ -719,6 +727,13 @@ public sealed partial class VsphereClient
             // machine each, read alone live on 1100 of 1100 without a fault.
             InventoryVerdictParser.VmCpuHotAddPath,
             InventoryVerdictParser.VmHardwareVersionPath,
+
+            // S2b, eo-simplivity (docs/measurements/s2b-cross-env-shapes.md):
+            // the OVC's memory reservation, beside the limit above, and its
+            // resource pool. Each read alone live on 1100 of 1100 VMs without
+            // a fault; resourcePool is unset on a template (50 of 1100).
+            InventoryVerdictParser.MemoryReservationPath,
+            InventoryVerdictParser.ResourcePoolPath,
         ],
         ["ClusterComputeResource"] =
         [
@@ -741,6 +756,10 @@ public sealed partial class VsphereClient
             // vCenter, like configurationEx's children.
             InventoryVerdictParser.ConfigIssuePath,
             InventoryVerdictParser.ClusterSummaryPath,
+
+            // S2b, eo-simplivity: the root resource pool, which an OVC must
+            // sit in. Read alone live on 32 of 32 clusters without a fault.
+            InventoryVerdictParser.ResourcePoolPath,
         ],
         ["Datastore"] =
         [
@@ -923,6 +942,9 @@ public sealed partial class VsphereClient
             var backupFields = await ReadLastBackupFieldsAsync(content, failures, cancellationToken)
                 .ConfigureAwait(false);
 
+            var lockdownExceptions = await ReadLockdownExceptionsAsync(objects, failures, cancellationToken)
+                .ConfigureAwait(false);
+
             var payload = new VsphereInventoryPayload
             {
                 VCenterName = string.IsNullOrWhiteSpace(content.Name) ? InstanceId : content.Name,
@@ -932,7 +954,16 @@ public sealed partial class VsphereClient
                 Hosts =
                 [
                     .. objects.Where(o => o.Type == "HostSystem")
-                        .Select(o => ToHost(o) with { ConfigurationReadAtUtc = ReadAtOf(o) }),
+                        .Select(o => ToHost(o) is var host && lockdownExceptions.TryGetValue(o.MoRef, out var users)
+                            ? host with
+                            {
+                                ConfigurationReadAtUtc = ReadAtOf(o),
+                                Verdicts = new Dictionary<string, string>(host.Verdicts, StringComparer.OrdinalIgnoreCase)
+                                {
+                                    [InventoryVerdicts.LockdownExceptions] = string.Join('\n', users),
+                                },
+                            }
+                            : host with { ConfigurationReadAtUtc = ReadAtOf(o) }),
                 ],
                 VirtualMachines =
                 [
@@ -1367,6 +1398,66 @@ public sealed partial class VsphereClient
     /// is recorded and survived, like the alarm definitions below.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// The lockdown exception users of every host in lockdown mode (S2b,
+    /// eo-simplivity), one <c>QueryLockdownExceptions</c> each.
+    /// </summary>
+    /// <remarks>
+    /// A method, not a property, so it cannot ride on the inventory
+    /// retrieval. Asked only of a host whose lockdown mode is on: a host with
+    /// it off needs no exception, and on the measured estate that is every
+    /// host (59 of 59), so the read costs nothing there. Allowed to the
+    /// read-only role (measured, 59 of 59). A refusal is recorded and costs
+    /// that host's list only; the host is then absent from the result, which
+    /// the check reads as "not read".
+    /// </remarks>
+    private async Task<Dictionary<string, IReadOnlyList<string>>> ReadLockdownExceptionsAsync(
+        IReadOnlyList<PropertyObject> objects,
+        List<VsphereReadFailure> failures,
+        CancellationToken cancellationToken)
+    {
+        var read = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+
+        foreach (var host in objects.Where(o => o.Type == "HostSystem"))
+        {
+            if (HostConfigurationParser.ReadLockdownMode(host) is not { } mode ||
+                string.Equals(mode, "lockdownDisabled", StringComparison.Ordinal) ||
+                PropertyCollectorParser.ReadString(host.Values, InventoryVerdictParser.HostAccessManagerPath) is not { Length: > 0 } manager)
+            {
+                continue;
+            }
+
+            try
+            {
+                var reply = await SendAsync(VsphereSoapRequests.QueryLockdownExceptions(manager), cancellationToken)
+                    .ConfigureAwait(false);
+
+                read[host.MoRef] = ParseLockdownExceptions(reply);
+            }
+            catch (VsphereApiException ex)
+            {
+                failures.Add(new VsphereReadFailure
+                {
+                    Target = $"HostSystem {host.MoRef}: QueryLockdownExceptions",
+                    Detail = ex.Message,
+                    IsPermissionDenied = ex.Kind == VsphereFaultKind.NoPermission,
+                });
+            }
+        }
+
+        return read;
+    }
+
+    /// <summary>The user names in a <c>QueryLockdownExceptions</c> reply; none is an empty list.</summary>
+    public static IReadOnlyList<string> ParseLockdownExceptions(string reply) =>
+    [
+        .. VsphereXml.Parse(reply)
+            .Descendants()
+            .Where(e => e.Name.LocalName == "returnval")
+            .Select(e => e.Value.Trim())
+            .Where(v => v.Length > 0),
+    ];
+
     private async Task<IReadOnlyList<PropertyNode>> ReadRootFolderAlarmStatesAsync(
         VsphereServiceContent content,
         List<VsphereReadFailure> failures,

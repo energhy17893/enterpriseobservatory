@@ -40,6 +40,13 @@ public class InventoryVerdictKeyDriftTests
         { InventoryVerdictKeys.BackupValue, InventoryVerdicts.BackupValue },
         { InventoryVerdictKeys.BackupLastUtc, InventoryVerdicts.BackupLastUtc },
         { InventoryVerdictKeys.BackupTimeBasis, InventoryVerdicts.BackupTimeBasis },
+
+        // S2b, eo-simplivity.
+        { InventoryVerdictKeys.MemoryReservationMb, InventoryVerdicts.MemoryReservationMb },
+        { InventoryVerdictKeys.ResourcePool, InventoryVerdicts.ResourcePool },
+        { InventoryVerdictKeys.VmkernelMtu, InventoryVerdicts.VmkernelMtu },
+        { InventoryVerdictKeys.PortGroupSwitchMtu, InventoryVerdicts.PortGroupSwitchMtu },
+        { InventoryVerdictKeys.LockdownExceptions, InventoryVerdicts.LockdownExceptions },
     };
 
     [Theory]

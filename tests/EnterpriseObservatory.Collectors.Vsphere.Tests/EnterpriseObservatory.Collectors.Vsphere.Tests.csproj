@@ -28,5 +28,9 @@
     <None Update="Fixtures/vsphere8-counter-catalogue.tsv">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!-- S2b: live KBVc01 replies, masked (docs/measurements/s2b-cross-env-shapes.md). -->
+    <None Update="Fixtures/S2b/*.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>
