@@ -25,6 +25,7 @@ import { ComplianceReport } from '@/routes/reports/ComplianceReport'
 import { CapacityReport } from '@/routes/reports/CapacityReport'
 import { ContinuityReport } from '@/routes/reports/ContinuityReport'
 import { Appearance } from '@/routes/Appearance'
+import { Wallboard } from '@/routes/Wallboard'
 import { applyThemeSet, getThemeSet } from '@/lib/theme'
 import './styles/index.css'
 
@@ -70,7 +71,11 @@ function Application() {
     return <Setup />
   }
 
-  if (isError || data === undefined) {
+  // Only when there is no answer at all. A failed refetch (window focus while
+  // the server is down) keeps the last one, so an open screen -- the
+  // wallboard above all -- stays up and reports staleness itself instead of
+  // being replaced by this line (ADR-0007 §6: never a blank screen).
+  if (data === undefined) {
     return (
       <div className="p-6 text-sm text-status-warning-text">
         The server could not be reached. Nothing on this screen would be current anyway.
@@ -85,6 +90,8 @@ function Application() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Outside the Shell: no nav, header or footer (ADR-0007 §6). Still behind the sign-in gate above. */}
+        <Route path="wallboard" element={<Wallboard />} />
         <Route element={<Shell identity={data} />}>
           <Route index element={<Overview />} />
           <Route path="events" element={<Events />} />

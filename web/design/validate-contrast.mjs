@@ -175,6 +175,36 @@ for (const [themeName, theme] of Object.entries(themes)) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Wallboard (U4): AAA 7:1 hedefi (WCAG 1.4.6, reference-approaches §11.10
+// kural 11). Kapı değil, uyarı: bir rampa geçemezse token değişikliği ayrı
+// PR'ın işi; burada yalnızca listelenir ve çıkış kodunu etkilemez.
+// ---------------------------------------------------------------------------
+
+const warnings = [];
+console.log('\n=== WALLBOARD (AAA 7:1 hedefi, kapi degil) ===');
+for (const [setName, themes] of Object.entries(sets))
+for (const [themeName, theme] of Object.entries(themes)) {
+    const rules = [
+        ...STATUSES.map((s) => ({ label: `${s}: text / surface`, fg: theme.status[s].text, bg: theme.status[s].surface })),
+        // Tile değerleri kartın üzerinde durur.
+        ...STATUSES.map((s) => ({ label: `${s}: text / card`, fg: theme.status[s].text, bg: theme.card })),
+        // Bayat çerçeve: değerler düz metin, unknown yüzeyi üzerinde.
+        { label: 'foreground / unknown surface (stale frame)', fg: theme.foreground, bg: theme.status.unknown.surface },
+    ];
+    for (const rule of rules) {
+        const ratio = contrast(rule.fg, rule.bg);
+        const ok = ratio >= 7;
+        const line = `${setName}/${themeName}  ${ratio.toFixed(2).padStart(5)}:1  ${rule.label}   ${toHex(rule.fg)} on ${toHex(rule.bg)}`;
+        if (!ok) warnings.push(line);
+        console.log(`  ${ok ? 'PASS' : 'WARN'}  ${line}`);
+    }
+}
+if (warnings.length > 0) {
+    console.log(`\nWALLBOARD WARN (${warnings.length}, kapiyi kirmaz; token degisikligi ayri PR):`);
+    for (const w of warnings) console.log(`  WARN  ${w}`);
+}
+
 console.log('');
 if (gamutFailures > 0) {
     console.log(`${gamutFailures} renk sRGB gamut disinda.`);

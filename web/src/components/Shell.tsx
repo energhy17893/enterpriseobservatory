@@ -25,6 +25,8 @@ const GROUPS = [
       { to: '/', label: 'Overview', end: true },
       { to: '/events', label: 'Events' },
       { to: '/alerts', label: 'All alerts' },
+      // The NOC screen (ADR-0007 §6): its own tab, since it has no way back.
+      { to: '/wallboard', label: 'Wallboard', newTab: true },
     ],
   },
   {
@@ -95,9 +97,20 @@ export function Shell({ identity }: { identity: AuthStateView }) {
             <ul>
               {group.items.map((item) => (
                 <li key={item.to}>
-                  <NavItem to={item.to} exact={'end' in item ? item.end : false}>
-                    {item.label}
-                  </NavItem>
+                  {'newTab' in item ? (
+                    <a
+                      href={item.to}
+                      target="_blank"
+                      rel="noopener"
+                      className="block rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground"
+                    >
+                      {item.label}
+                    </a>
+                  ) : (
+                    <NavItem to={item.to} exact={'end' in item ? item.end : false}>
+                      {item.label}
+                    </NavItem>
+                  )}
                 </li>
               ))}
             </ul>
