@@ -53,14 +53,17 @@ type SourceFilter = 'All' | string
  * scorecard reads at a glance without opening a single control. "Accepted"
  * still counts as failing (ADR-0024 -- accepting a finding does not make it
  * compliant); "excepted" does not (an exception takes a finding out of the
- * non-compliant count).
+ * non-compliant count). Failing is amber, not red: findings are not alerts
+ * and Critical is reserved for alerts (ADR-0024), so the scorecard uses the
+ * same ramp STATE_STATUS gives a Failing finding (eo-ux §3, one ramp per
+ * state; PO3).
  */
 function scorecardStatus(counts: FindingCountsView): { status: StatusName; label: string } {
   const failing = counts.failing + counts.accepted > 0
   const unevaluated = counts.notEvaluated > 0
 
   if (failing && unevaluated) return { status: 'Warning', label: 'Mixed' }
-  if (failing) return { status: 'Critical', label: 'Failing remain' }
+  if (failing) return { status: 'Warning', label: 'Failing remain' }
   if (unevaluated) return { status: 'Unknown', label: 'Not fully evaluated' }
   return { status: 'Healthy', label: 'All passed' }
 }
@@ -584,7 +587,7 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
           </div>
           {finding.stale && (
             <div className="mt-1 text-xs text-muted-foreground">
-              its source did not answer since {ago(finding.lastEvaluatedUtc)}
+              its source did not answer
             </div>
           )}
           <div className="mt-1 text-xs text-muted-foreground">
