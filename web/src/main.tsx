@@ -71,7 +71,11 @@ function Application() {
     return <Setup />
   }
 
-  if (isError || data === undefined) {
+  // Only when there is no answer at all. A failed refetch (window focus while
+  // the server is down) keeps the last one, so an open screen -- the
+  // wallboard above all -- stays up and reports staleness itself instead of
+  // being replaced by this line (ADR-0007 §6: never a blank screen).
+  if (data === undefined) {
     return (
       <div className="p-6 text-sm text-status-warning-text">
         The server could not be reached. Nothing on this screen would be current anyway.
