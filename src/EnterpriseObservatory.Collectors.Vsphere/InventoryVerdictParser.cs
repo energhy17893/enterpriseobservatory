@@ -158,6 +158,37 @@ public static class InventoryVerdicts
 
     /// <summary>VM: the clock the value was read in, since it carries no offset.</summary>
     public const string BackupTimeBasis = "backup.timeBasis";
+
+    // S2b, eo-simplivity (docs/measurements/s2b-cross-env-shapes.md).
+
+    /// <summary>VM: <c>config.memoryAllocation.reservation</c>, in MB as vCenter sends it.</summary>
+    public const string MemoryReservationMb = "memory.reservationMb";
+
+    /// <summary>
+    /// VM: the resource pool it sits in; cluster: its root resource pool.
+    /// A moRef. Absent on a template, which has none.
+    /// </summary>
+    public const string ResourcePool = "resourcePool";
+
+    /// <summary>
+    /// Host: each vmkernel adapter on a standard port group as
+    /// <c>portgroup=mtu</c>, one per line; empty when it has none. An adapter
+    /// on a distributed port has no port group name and is left out.
+    /// </summary>
+    public const string VmkernelMtu = "vmk.mtu";
+
+    /// <summary>
+    /// Host: each standard port group as <c>portgroup=mtu</c> of the standard
+    /// switch that carries it, one per line; empty when it has no standard switch.
+    /// </summary>
+    public const string PortGroupSwitchMtu = "vswitch.portgroupMtu";
+
+    /// <summary>
+    /// Host in lockdown mode: its lockdown exception users, one per line;
+    /// empty when there are none. Absent when the host is not in lockdown
+    /// mode (not asked) or the call was refused.
+    /// </summary>
+    public const string LockdownExceptions = "lockdown.exceptions";
 }
 
 /// <summary>Reads <see cref="InventoryVerdicts"/> out of one retrieved object.</summary>
@@ -197,6 +228,20 @@ public static class InventoryVerdictParser
     public const string MaintenanceModePath = "summary.maintenanceMode";
     public const string DatastoreHostPath = "host";
 
+    /// <summary>
+    /// Beside <c>config.memoryAllocation.limit</c>. Measured the same as
+    /// <c>resourceConfig.memoryAllocation.reservation</c> on 1100 of 1100 VMs,
+    /// and 8 bytes a VM smaller.
+    /// </summary>
+    public const string MemoryReservationPath = "config.memoryAllocation.reservation";
+
+    public const string ResourcePoolPath = "resourcePool";
+    public const string VnicPath = "config.network.vnic";
+    public const string VswitchPath = "config.network.vswitch";
+    public const string HostAccessManagerPath = "configManager.hostAccessManager";
+
+    private const string PortGroupKeyPrefix = "key-vim.host.PortGroup-";
+
     private static readonly string[] SensorStates = ["green", "yellow", "red", "unknown"];
 
     public static IReadOnlyDictionary<string, string> Read(PropertyObject o)
@@ -215,6 +260,7 @@ public static class InventoryVerdictParser
                 CopyValue(o, HostMaxEvcModePath, InventoryVerdicts.HostMaxEvcModeKey, verdicts);
                 CopyValue(o, HostPowerPolicyPath, InventoryVerdicts.PowerPolicy, verdicts);
                 ReadNumaCoresPerNode(o, verdicts);
+                ReadVmkernelMtu(o, verdicts);
                 break;
 
             case "VirtualMachine":
@@ -228,10 +274,13 @@ public static class InventoryVerdictParser
                 // unset property at all, and a VM with no snapshot has 'snapshot' unset.
                 // The property is in the VM request, so a VM that arrived was asked.
                 verdicts[InventoryVerdicts.SnapshotCount] = Count(VsphereClient.ReadSnapshots(o).Count);
+                CopyValue(o, MemoryReservationPath, InventoryVerdicts.MemoryReservationMb, verdicts);
+                CopyValue(o, ResourcePoolPath, InventoryVerdicts.ResourcePool, verdicts);
                 break;
 
             case "ClusterComputeResource":
                 ReadEvc(o, verdicts);
+                CopyValue(o, ResourcePoolPath, InventoryVerdicts.ResourcePool, verdicts);
                 break;
 
             case "Datastore":
@@ -470,6 +519,42 @@ public static class InventoryVerdictParser
         {
             verdicts[InventoryVerdicts.EvcModeKey] = key;
         }
+    }
+
+    /// <summary>
+    /// Measured: <c>HostVirtualNic</c> with <c>portgroup</c> (empty on a
+    /// distributed port) and <c>spec.mtu</c>; <c>HostVirtualSwitch</c> with
+    /// <c>mtu</c> and its port groups as <c>key-vim.host.PortGroup-&lt;name&gt;</c>
+    /// keys. An empty array arrives as an empty value, so a read with no
+    /// adapter or no standard switch is an empty verdict, not an absent one.
+    /// </summary>
+    private static void ReadVmkernelMtu(PropertyObject o, Dictionary<string, string> verdicts)
+    {
+        if (o.Structures.TryGetValue(VnicPath, out var vnics))
+        {
+            verdicts[InventoryVerdicts.VmkernelMtu] = Lines(vnics
+                .Where(n => n.TextOf("portgroup").Length > 0 && n.Child("spec")?.TextOf("mtu") is { Length: > 0 })
+                .Select(n => $"{n.TextOf("portgroup")}={n.Child("spec")!.TextOf("mtu")}"));
+        }
+        else if (o.Values.TryGetValue(VnicPath, out var flat) && flat.Length == 0)
+        {
+            verdicts[InventoryVerdicts.VmkernelMtu] = string.Empty;
+        }
+
+        if (o.Structures.TryGetValue(VswitchPath, out var switches))
+        {
+            verdicts[InventoryVerdicts.PortGroupSwitchMtu] = Lines(switches
+                .Where(s => s.TextOf("mtu").Length > 0)
+                .SelectMany(s => s.All("portgroup")
+                    .Where(p => p.Text.StartsWith(PortGroupKeyPrefix, StringComparison.Ordinal))
+                    .Select(p => $"{p.Text[PortGroupKeyPrefix.Length..]}={s.TextOf("mtu")}")));
+        }
+        else if (o.Values.TryGetValue(VswitchPath, out var flat) && flat.Length == 0)
+        {
+            verdicts[InventoryVerdicts.PortGroupSwitchMtu] = string.Empty;
+        }
+
+        static string Lines(IEnumerable<string> lines) => string.Join('\n', lines);
     }
 
     private static void ReadMounts(PropertyObject o, Dictionary<string, string> verdicts)

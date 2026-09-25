@@ -142,6 +142,44 @@ public sealed partial class VsphereClient
         }
     }
 
+    /// <summary>
+    /// One object's property, the reply as vCenter sent it, for the probe to
+    /// mask and keep as a test fixture. Not called by collection.
+    /// </summary>
+    public async Task<string> ReadCandidateRawAsync(
+        string managedObjectType, string moRef, string path, CancellationToken cancellationToken)
+    {
+        var content = await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+
+        return await SendAsync(
+            VsphereSoapRequests.RetrieveObjectProperties(content.PropertyCollector, managedObjectType, [moRef], [path]),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Calls <c>QueryLockdownExceptions</c> on one host's access manager, for
+    /// the probe: whether the read-only role may, and the reply's size.
+    /// </summary>
+    /// <returns>The exception user names and the reply as sent, or a fault.</returns>
+    public async Task<(IReadOnlyList<string> Users, string? Fault, string Reply)> ReadLockdownExceptionsAsync(
+        string hostAccessManagerMoRef, CancellationToken cancellationToken)
+    {
+        await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var reply = await SendAsync(
+                VsphereSoapRequests.QueryLockdownExceptions(hostAccessManagerMoRef), cancellationToken)
+                .ConfigureAwait(false);
+
+            return (ParseLockdownExceptions(reply), null, reply);
+        }
+        catch (VsphereApiException ex)
+        {
+            return ([], $"{ex.Kind}: {ex.Message}", string.Empty);
+        }
+    }
+
     /// <summary>The root folder's reference: where vCenter-scoped alarms are raised.</summary>
     public async Task<string> GetRootFolderAsync(CancellationToken cancellationToken) =>
         (await _channel.EnsureSessionAsync(cancellationToken).ConfigureAwait(false)).RootFolder;

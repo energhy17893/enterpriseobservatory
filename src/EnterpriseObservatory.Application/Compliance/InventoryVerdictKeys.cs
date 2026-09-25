@@ -87,6 +87,23 @@ public static class InventoryVerdictKeys
     /// <summary>VM: which clock the value was read in (it carries no offset of its own).</summary>
     public const string BackupTimeBasis = "backup.timeBasis";
 
+    // S2b, eo-simplivity.
+
+    /// <summary>VM: its memory reservation in MB.</summary>
+    public const string MemoryReservationMb = "memory.reservationMb";
+
+    /// <summary>VM: the resource pool it sits in; cluster: its root resource pool. A moRef.</summary>
+    public const string ResourcePool = "resourcePool";
+
+    /// <summary>Host: each vmkernel adapter on a standard port group as <c>portgroup=mtu</c>, one per line.</summary>
+    public const string VmkernelMtu = "vmk.mtu";
+
+    /// <summary>Host: each standard port group as <c>portgroup=mtu</c> of the switch that carries it, one per line.</summary>
+    public const string PortGroupSwitchMtu = "vswitch.portgroupMtu";
+
+    /// <summary>Host in lockdown mode: its lockdown exception users, one per line; absent when not read.</summary>
+    public const string LockdownExceptions = "lockdown.exceptions";
+
     /// <summary>
     /// VM: the newest PROTECTED SimpliVity backup's <c>created_at</c>, ISO-8601
     /// UTC — an annotation from the SimpliVity source (ADR-0027), absent when
