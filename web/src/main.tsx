@@ -25,6 +25,7 @@ import { ComplianceReport } from '@/routes/reports/ComplianceReport'
 import { CapacityReport } from '@/routes/reports/CapacityReport'
 import { ContinuityReport } from '@/routes/reports/ContinuityReport'
 import { Appearance } from '@/routes/Appearance'
+import { Wallboard } from '@/routes/Wallboard'
 import { applyThemeSet, getThemeSet } from '@/lib/theme'
 import './styles/index.css'
 
@@ -85,6 +86,8 @@ function Application() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Outside the Shell: no nav, header or footer (ADR-0007 §6). Still behind the sign-in gate above. */}
+        <Route path="wallboard" element={<Wallboard />} />
         <Route element={<Shell identity={data} />}>
           <Route index element={<Overview />} />
           <Route path="events" element={<Events />} />
