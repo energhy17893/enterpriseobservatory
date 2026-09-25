@@ -457,6 +457,23 @@ public sealed class CompositionRootSmokeTests : IDisposable
         Converters = { new JsonStringEnumConverter() },
     };
 
+    /// <summary>A failing esxi-8.logs-remote finding on vc-1:host-1: its log target is empty.</summary>
+    private void EvaluateHostWithoutLogTarget() =>
+        _host.Services.GetRequiredService<ComplianceService>().Evaluate(
+        [
+            new Domain.Entity
+            {
+                Id = new Domain.EntityId("vc-1:host-1"),
+                Kind = Domain.EntityKind.EsxiHost,
+                DisplayName = "esx-01",
+                LastSeenUtc = DateTimeOffset.UtcNow,
+                Settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Syslog.global.logHost"] = "",
+                },
+            },
+        ]);
+
     private static Task<HttpResponseMessage> AcceptFinding(HttpClient client) =>
         client.PostAsJsonAsync(
             "/api/compliance/accept",
@@ -639,23 +656,9 @@ public sealed class CompositionRootSmokeTests : IDisposable
     [Fact]
     public async Task An_operator_can_accept_a_failing_finding_and_it_is_attributed()
     {
-        // Evaluated through the real service the host registered, over a
-        // host whose log target is empty -- then accepted over HTTP.
-        var compliance = _host.Services.GetRequiredService<ComplianceService>();
-        compliance.Evaluate(
-        [
-            new Domain.Entity
-            {
-                Id = new Domain.EntityId("vc-1:host-1"),
-                Kind = Domain.EntityKind.EsxiHost,
-                DisplayName = "esx-01",
-                LastSeenUtc = DateTimeOffset.UtcNow,
-                Settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["Syslog.global.logHost"] = "",
-                },
-            },
-        ]);
+        // Evaluated through the real service the host registered, then
+        // accepted over HTTP.
+        EvaluateHostWithoutLogTarget();
 
         Account("operator", Role.Operator);
         var client = await SignedIn(Client(), "operator");
@@ -672,6 +675,27 @@ public sealed class CompositionRootSmokeTests : IDisposable
 
         // A second acceptance is a conflict, not an overwrite.
         Assert.Equal(HttpStatusCode.Conflict, (await AcceptFinding(client)).StatusCode);
+    }
+
+    [Fact]
+    public async Task An_acceptance_without_a_reason_is_refused_with_a_reason()
+    {
+        // K3: the finding is acceptable in every other way, so only the blank
+        // reason can be what refuses it.
+        EvaluateHostWithoutLogTarget();
+
+        Account("operator", Role.Operator);
+        var client = await SignedIn(Client(), "operator");
+
+        var response = await client.PostAsJsonAsync(
+            "/api/compliance/accept",
+            new { controlId = "esxi-8.logs-remote", entityId = "vc-1:host-1", reason = "   " });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<Microsoft.AspNetCore.Mvc.ProblemDetails>(Json);
+
+        Assert.Equal("an acceptance needs a reason", problem!.Detail);
     }
 
     [Fact]

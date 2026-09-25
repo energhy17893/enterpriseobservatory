@@ -134,6 +134,9 @@ public enum ComplianceFailure
 
     /// <summary>Somebody already owns the finding; an acceptance is not overwritten.</summary>
     AlreadyAccepted,
+
+    /// <summary>An acceptance without a why is not an acceptance (K3).</summary>
+    MissingReason,
 }
 
 /// <summary>What a compliance command did.</summary>
@@ -466,7 +469,10 @@ public sealed class ComplianceService
     /// The finding's subject; empty only for a finding about the entity itself.
     /// Always named: there is deliberately no overload that assumes it.
     /// </param>
-    /// <param name="reason">Why; may be empty.</param>
+    /// <param name="reason">
+    /// Why; required. Trimmed, and refused when nothing is left: an acceptance
+    /// without a why is not an acceptance (K3). The web form only mirrors this.
+    /// </param>
     /// <param name="actor">Who.</param>
     public ComplianceResult Accept(
         string controlId, EntityId entity, string subject, string reason, OperatorIdentity actor)
@@ -476,6 +482,11 @@ public sealed class ComplianceService
         subject ??= string.Empty;
 
         var trimmed = reason?.Trim() ?? string.Empty;
+
+        if (trimmed.Length == 0)
+        {
+            return ComplianceResult.Refused(ComplianceFailure.MissingReason);
+        }
 
         if (trimmed.Length > MaximumReasonLength)
         {
