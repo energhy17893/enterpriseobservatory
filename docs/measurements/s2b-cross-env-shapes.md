@@ -60,13 +60,24 @@ host'ta çalışan VM (26/26 eşleşiyor; örn. `OmniStackVC-…` → RunsOn o h
 
 NotEvaluated olabilecek durumlar: OVC adı okunmadı ya da o host'ta o adda VM
 yok; rezervasyon/havuz/kök havuz okunmadı; lockdown açık ve liste okunamadı
-ya da boş olmayan bir liste (Digital Vault hesabının adı toplanmıyor);
-depolama vmk'si dağıtık portta (port group adı yok).
+ya da boş olmayan bir liste (aşağıda); depolama vmk'si dağıtık portta (port
+group adı yok).
+
+### Lockdown istisnası — dayanak
+
+HPE OmniStack 5.1.0U1 for vSphere Upgrade Guide (sd00004307): "If you enabled
+VMware ESXi lockdown mode, ensure that the ESXi administrator or root account
+that is stored in the HPE SimpliVity Digital Vault is added to the Lockdown
+Exception user list on the HPE OmniStack host."
+
+Sabit bir hesap adı yok ve ürün Digital Vault'u okuyamıyor. Bu yüzden:
+lockdown açık + boş liste → Failing ("no exception user at all; the Digital
+Vault account cannot log in"); lockdown açık + dolu liste → NotEvaluated
+("this product cannot read which ESXi account the Digital Vault holds; check
+that it is in this list: <adlar>"). Ad tahmin edilmez.
 
 ## Eklenmeyenler
 
-- `svt.ha-on-mva-cluster`: `eo-cont.ha-enabled` her kümede zaten aynı hükmü
-  veriyor; MVA'nın hangi kümede olduğu toplanmıyor (ürün ilkesi 4).
-- `svt.evc-mixed-cpu`: `eo-cont.maint-evc` aynı kuralı `maxEVCModeKey` ile
-  veriyor. `cpuModel` ile yapılsaydı 2 küme (5 kümeden) aynı EVC nesline
-  rağmen "karışık" sayılırdı (2 model, 1 mod).
+- `svt.ha-on-mva-cluster`: covered by eo-cont.ha-enabled (product principle 4).
+- `svt.evc-mixed-cpu`: covered by eo-cont.maint-evc; a cpuModel rule would
+  falsely flag 2 of 5 multi-model clusters.

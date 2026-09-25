@@ -401,10 +401,13 @@ public class SimplivityChecksTests
         Assert.Equal(ComplianceVerdict.Passing, One(HostEstate(LockdownHost("lockdownDisabled")), LockdownException).Verdict);
 
     [Fact]
-    public void Lockdown_on_with_no_exception_users_fails() =>
-        Assert.Equal(
-            ComplianceVerdict.Failing,
-            One(HostEstate(LockdownHost("lockdownNormal", ("lockdown.exceptions", ""))), LockdownException).Verdict);
+    public void Lockdown_on_with_no_exception_users_fails()
+    {
+        var finding = One(HostEstate(LockdownHost("lockdownNormal", ("lockdown.exceptions", ""))), LockdownException);
+
+        Assert.Equal(ComplianceVerdict.Failing, finding.Verdict);
+        Assert.Equal("no exception user at all; the Digital Vault account cannot log in", finding.Observed);
+    }
 
     [Fact]
     public void Lockdown_on_with_the_list_unread_is_not_evaluated() =>
@@ -416,7 +419,9 @@ public class SimplivityChecksTests
         var finding = One(HostEstate(LockdownHost("lockdownStrict", ("lockdown.exceptions", "svc-a\nsvc-b"))), LockdownException);
 
         Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
-        Assert.Contains("svc-a, svc-b", finding.Observed, StringComparison.Ordinal);
+        Assert.Equal(
+            "this product cannot read which ESXi account the Digital Vault holds; check that it is in this list: svc-a, svc-b",
+            finding.Reason);
     }
 
     // svt.vmk-mtu

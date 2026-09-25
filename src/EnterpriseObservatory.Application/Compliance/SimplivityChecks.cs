@@ -516,9 +516,10 @@ public sealed class SimplivityHostCheck(SimplivityHostCheck.Aspect aspect) : ICo
     }
 
     /// <remarks>
-    /// Which ESXi account is the Digital Vault one is not collected, so a
-    /// non-empty exception list is not judged: only an empty one is known to
-    /// lack it. Lockdown off needs no exception and passes.
+    /// The Digital Vault holds an ESXi administrator or root account of the
+    /// customer's choosing (sd00004307), and this product cannot read the
+    /// Vault, so a non-empty exception list is not judged: only an empty one
+    /// is known to lack it. Lockdown off needs no exception and passes.
     /// </remarks>
     private static CheckVerdict LockdownException(Entity host)
     {
@@ -543,9 +544,9 @@ public sealed class SimplivityHostCheck(SimplivityHostCheck.Aspect aspect) : ICo
         var users = Lines(raw);
 
         return users.Length == 0
-            ? Verdict(ComplianceVerdict.Failing, expected, $"{mode}, no exception users: an OmniStack upgrade fails")
+            ? Verdict(ComplianceVerdict.Failing, expected, "no exception user at all; the Digital Vault account cannot log in")
             : Verdict(ComplianceVerdict.NotEvaluated, expected, $"{mode}, exception users: {FirstFew(users)}", reason:
-                "Which ESXi account is SimpliVity's Digital Vault account is not collected, so whether it is among the exception users is not known.");
+                $"this product cannot read which ESXi account the Digital Vault holds; check that it is in this list: {string.Join(", ", users)}");
     }
 
     /// <remarks>

@@ -100,8 +100,10 @@ public static class SimplivityControls
             new SimplivityHostCheck(SimplivityHostCheck.Aspect.OvcNotInPool)),
         Check(LockdownException, "ESX", "Digital Vault account is a lockdown exception — OmniStack host",
             "config.lockdownMode, HostAccessManager.QueryLockdownExceptions",
-            AdminGuide + " GUID-4B8A8E70 (in lockdown mode the Digital Vault ESXi account is in the Exception " +
-            "Users list, or an upgrade fails); HPE SimpliVity Upgrade Guide (sd00005177) GUID-4AA963F4",
+            "HPE OmniStack 5.1.0U1 for vSphere Upgrade Guide (sd00004307): \"If you enabled VMware ESXi lockdown " +
+            "mode, ensure that the ESXi administrator or root account that is stored in the HPE SimpliVity Digital " +
+            "Vault is added to the Lockdown Exception user list on the HPE OmniStack host.\"; " + AdminGuide +
+            " GUID-4B8A8E70; HPE SimpliVity Upgrade Guide (sd00005177) GUID-4AA963F4",
             new SimplivityHostCheck(SimplivityHostCheck.Aspect.LockdownException)),
         Check(VmkMtu, "ESX", "Storage network MTU 9000 — OmniStack host",
             "config.network.vnic[].spec.mtu, config.network.vswitch[].mtu (port groups SVT_StorPG, " +
