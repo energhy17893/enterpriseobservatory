@@ -79,6 +79,118 @@ internal static class Candidates
         Describe(otherIdentifyingInfo);
     }
 
+    /// <summary>
+    /// P3b's gate: the host power policy, NUMA layout and CPU core count, and
+    /// the VM's CPU hot-add flag and hardware version, each read alone; then
+    /// the eo-bestpractice firing estimate from those reads. Values printed
+    /// are only non-identifying enums and counts (policy short name, vmx
+    /// version, NUMA node count), aggregated, never per object.
+    /// </summary>
+    public static async Task RunP3bAsync(VsphereClient client, CancellationToken cancellationToken)
+    {
+        Section("P3b best-practice candidates (each read alone; enums and counts only)");
+
+        var reads = new Dictionary<string, VsphereCandidateRead>(StringComparer.Ordinal);
+        foreach (var (type, path) in new[]
+                 {
+                     ("HostSystem", "config.powerSystemInfo.currentPolicy"),
+                     ("HostSystem", "config.powerSystemInfo.currentPolicy.shortName"),
+                     ("HostSystem", "hardware.numaInfo"),
+                     ("HostSystem", "hardware.numaInfo.numNodes"),
+                     ("HostSystem", "hardware.cpuInfo.numCpuCores"),
+                     ("VirtualMachine", "config.cpuHotAddEnabled"),
+                     ("VirtualMachine", "config.version"),
+                     ("VirtualMachine", "config.hardware.numCPU"),
+                     ("VirtualMachine", "runtime.host"),
+                 })
+        {
+            var read = await client.ReadCandidatePathAsync(type, path, cancellationToken);
+            reads[$"{type}.{path}"] = read;
+            Describe(read);
+            ValueFormat(read);
+        }
+
+        Section("P3b firing estimate");
+
+        string? Value(string target, PropertyObject o) =>
+            o.Values.GetValueOrDefault(target[(target.IndexOf('.', StringComparison.Ordinal) + 1)..]);
+
+        Dictionary<string, string?> ByMoRef(string target) =>
+            reads[target].Fault is not null
+                ? []
+                : reads[target].Objects.ToDictionary(o => o.MoRef, o => Value(target, o), StringComparer.Ordinal);
+
+        var policy = ByMoRef("HostSystem.config.powerSystemInfo.currentPolicy.shortName");
+        Console.WriteLine("  hosts by power policy shortName   " + string.Join(", ", policy.Values
+            .GroupBy(v => v ?? "(unread)").OrderBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => $"{g.Key}({g.Count()})")));
+        Console.WriteLine($"  hosts not on 'static' (High Performance)   {policy.Values.Count(v => v is not null && v != "static")}");
+
+        var nodes = ByMoRef("HostSystem.hardware.numaInfo.numNodes");
+        var cores = ByMoRef("HostSystem.hardware.cpuInfo.numCpuCores");
+        var coresPerNode = nodes.Keys
+            .Where(h => int.TryParse(nodes[h], out var n) && n > 0 && int.TryParse(cores.GetValueOrDefault(h), out _))
+            .ToDictionary(h => h, h => int.Parse(cores[h]!, CultureInfo.InvariantCulture) /
+                                       int.Parse(nodes[h]!, CultureInfo.InvariantCulture), StringComparer.Ordinal);
+        Console.WriteLine("  hosts by NUMA nodes               " + string.Join(", ", nodes.Values
+            .GroupBy(v => v ?? "(unread)").OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => $"{g.Key}({g.Count()})")));
+        Console.WriteLine("  hosts by cores per NUMA node      " + string.Join(", ", coresPerNode.Values
+            .GroupBy(v => v).OrderBy(g => g.Key).Select(g => $"{g.Key}({g.Count()})")));
+
+        // Logical CPUs per node, from the whole numaInfo, beside the cores.
+        if (reads["HostSystem.hardware.numaInfo"].Fault is null)
+        {
+            var logical = reads["HostSystem.hardware.numaInfo"].Objects
+                .Where(o => o.Structures.ContainsKey("hardware.numaInfo"))
+                .SelectMany(o => o.Structures["hardware.numaInfo"].Where(n => n.Name == "numaNode"))
+                .Select(n => n.All("cpuID").Count());
+            Console.WriteLine("  NUMA nodes by logical CPU count   " + string.Join(", ", logical
+                .GroupBy(v => v).OrderBy(g => g.Key).Select(g => $"{g.Key}({g.Count()})")));
+        }
+
+        var hotAdd = ByMoRef("VirtualMachine.config.cpuHotAddEnabled");
+        var version = ByMoRef("VirtualMachine.config.version");
+        var numCpu = ByMoRef("VirtualMachine.config.hardware.numCPU");
+        var host = ByMoRef("VirtualMachine.runtime.host");
+
+        static int? Vmx(string? v) =>
+            v is not null && v.StartsWith("vmx-", StringComparison.Ordinal) &&
+            int.TryParse(v[4..], NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : null;
+
+        Console.WriteLine("  VMs by hardware version           " + string.Join(", ", version.Values
+            .GroupBy(v => v ?? "(unread)").OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => $"{g.Key}({g.Count()})")));
+        Console.WriteLine("  VMs by cpuHotAddEnabled           " + string.Join(", ", hotAdd.Values
+            .GroupBy(v => v ?? "(unset)").OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => $"{g.Key}({g.Count()})")));
+
+        var weak = hotAdd.Keys.Where(v => hotAdd[v] == "true" && Vmx(version.GetValueOrDefault(v)) is < 20).ToList();
+        var strong = weak.Where(v =>
+            int.TryParse(numCpu.GetValueOrDefault(v), out var n) &&
+            host.GetValueOrDefault(v) is { } h && coresPerNode.TryGetValue(h, out var c) && n > c).ToList();
+        var noHost = weak.Count(v => host.GetValueOrDefault(v) is not { } h || !coresPerNode.ContainsKey(h));
+
+        Console.WriteLine($"  VMs hot-add on and below vmx-20   {weak.Count}");
+        Console.WriteLine($"    of those, numCPU > host cores per NUMA node   {strong.Count}");
+        Console.WriteLine($"    of those, host or its NUMA size unknown       {noHost}");
+    }
+
+    /// <summary>For a flat value: how it arrived, and whether it carries the list separator.</summary>
+    private static void ValueFormat(VsphereCandidateRead read)
+    {
+        if (read.Fault is not null)
+        {
+            return;
+        }
+
+        var property = read.Target[(read.Target.IndexOf('.', StringComparison.Ordinal) + 1)..];
+        var values = read.Objects.Where(o => o.Values.ContainsKey(property)).Select(o => o.Values[property]).ToList();
+        if (values.Count > 0)
+        {
+            Console.WriteLine(
+                $"      flat value: {values.Count(v => v.Contains('\u001f', StringComparison.Ordinal))} carry the list " +
+                $"separator; parts per value {string.Join(",", values.Select(v => PropertyCollectorParser.SplitValues(v).Count).Distinct())}");
+        }
+    }
+
     public static async Task RunAsync(
         VsphereClient client,
         Uri baseAddress,

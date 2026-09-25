@@ -713,6 +713,12 @@ public sealed partial class VsphereClient
             // behind the keys come from CustomFieldsManager, in a call of
             // their own.
             BackupAttributeParser.CustomValuePath,
+
+            // P3b (docs/measurements/p3b-bestpractice-shapes.md): CPU hot-add
+            // and hardware version for eo-bp.cpu-hot-add-vnuma, ~0.17 KB a
+            // machine each, read alone live on 1100 of 1100 without a fault.
+            InventoryVerdictParser.VmCpuHotAddPath,
+            InventoryVerdictParser.VmHardwareVersionPath,
         ],
         ["ClusterComputeResource"] =
         [
@@ -797,6 +803,13 @@ public sealed partial class VsphereClient
 
             // The hardware sensors (749 on 10 hosts, 343 KB).
             InventoryVerdictParser.HealthSystemRuntimePath,
+
+            // P3b (docs/measurements/p3b-bestpractice-shapes.md): power policy
+            // and NUMA width for eo-bestpractice, three scalars, ~0.55 KB a
+            // host, read alone live on 59 of 59 hosts without a fault.
+            InventoryVerdictParser.HostPowerPolicyPath,
+            InventoryVerdictParser.HostNumaNodesPath,
+            InventoryVerdictParser.HostCpuCoresPath,
         ],
         ["VirtualMachine"] =
         [

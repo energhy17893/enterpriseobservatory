@@ -30,6 +30,18 @@ public static class InventoryVerdictKeys
     /// <summary>VM: legacy LSI Logic Parallel SCSI controllers, by count.</summary>
     public const string LegacyAdapterLsiLogic = "adapter.legacy.lsiLogic";
 
+    /// <summary>Host: the power policy's short name (<c>static</c> = High Performance) (eo-bestpractice).</summary>
+    public const string PowerPolicy = "power.policy";
+
+    /// <summary>Host: physical cores per NUMA node.</summary>
+    public const string NumaCoresPerNode = "numa.coresPerNode";
+
+    /// <summary>VM: <c>config.cpuHotAddEnabled</c>, <c>true</c>/<c>false</c>.</summary>
+    public const string CpuHotAddEnabled = "cpuHotAdd.enabled";
+
+    /// <summary>VM: <c>config.version</c>, e.g. <c>vmx-19</c>.</summary>
+    public const string HardwareVersion = "hardware.version";
+
     /// <summary>VM: vCenter's <c>runtime.consolidationNeeded</c>, <c>true</c>/<c>false</c>.</summary>
     public const string ConsolidationNeeded = "consolidationNeeded";
 

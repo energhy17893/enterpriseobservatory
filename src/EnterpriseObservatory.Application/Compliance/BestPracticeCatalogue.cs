@@ -22,7 +22,7 @@ public static class BestPracticeCatalogue
 
     public const string Name = "Enterprise Observatory best practice";
 
-    /// <summary>The checks production registers: the two P3a rules, see <see cref="BestPracticeControls"/>.</summary>
+    /// <summary>The checks production registers: the P3a and P3b rules, see <see cref="BestPracticeControls"/>.</summary>
     public static IReadOnlyList<BestPracticeCheck> Production => BestPracticeControls.All;
 
     /// <summary>The catalogue of the given checks' controls, in order.</summary>

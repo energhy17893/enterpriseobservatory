@@ -18,6 +18,15 @@ public static class BestPracticeControls
     /// <summary>vCenter, subject = adapter type: legacy virtual adapters are in use.</summary>
     public const string LegacyVirtualAdapters = "eo-bp.legacy-adapters";
 
+    /// <summary>Host, subject <c>''</c>: the power policy is not High Performance (P3b).</summary>
+    public const string HostPowerPolicy = "eo-bp.host-power-policy";
+
+    /// <summary>
+    /// VM, subject <c>''</c>: CPU hot-add on, hardware version below 20 and more
+    /// vCPUs than its host's cores per NUMA node, so vNUMA is lost (P3b).
+    /// </summary>
+    public const string CpuHotAddVnuma = "eo-bp.cpu-hot-add-vnuma";
+
     private const string PerformanceGuide = "vSphere 8.0 U3 Performance Best Practices guide";
 
     /// <summary>
@@ -30,6 +39,12 @@ public static class BestPracticeControls
         Check(LegacyVirtualAdapters, "Virtual Machine",
             "No legacy E1000/E1000e network adapters or LSI Logic Parallel SCSI controllers",
             PerformanceGuide + "; VMware KB 438023 (rightsizing)", new LegacyVirtualAdapterCheck()),
+        Check(HostPowerPolicy, "ESXi Host", "Host power management policy is High Performance",
+            PerformanceGuide + " (ESXi host power management)", new HostPowerPolicyCheck()),
+        Check(CpuHotAddVnuma, "Virtual Machine",
+            "CPU hot-add is off on a virtual machine wider than a NUMA node below hardware version 20",
+            PerformanceGuide + " (vNUMA: CPU hot-add disables vNUMA below hardware version 20); " +
+            "VMware KB 438023 (rightsizing)", new CpuHotAddVnumaCheck()),
     ];
 
     private static BestPracticeCheck Check(

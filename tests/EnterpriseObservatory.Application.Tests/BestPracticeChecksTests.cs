@@ -21,9 +21,14 @@ public class BestPracticeChecksTests
 
     private static IReadOnlyList<ComplianceFinding> Evaluate(
         IReadOnlyList<Entity> estate,
-        IReadOnlyList<ComplianceFinding>? previous = null)
+        IReadOnlyList<ComplianceFinding>? previous = null,
+        IReadOnlyList<Relationship>? relationships = null)
     {
-        var graph = EntityGraph.Empty with { Entities = estate.ToDictionary(e => e.Id, e => e) };
+        var graph = EntityGraph.Empty with
+        {
+            Entities = estate.ToDictionary(e => e.Id, e => e),
+            Relationships = relationships ?? [],
+        };
 
         return ComplianceEvaluation.Evaluate(Catalogue, estate, previous ?? [], T0, checksById: ById, graph: graph);
     }
@@ -54,9 +59,11 @@ public class BestPracticeChecksTests
     // --- catalogue --------------------------------------------------------------
 
     [Fact]
-    public void Production_registers_the_two_p3a_controls_each_with_a_source()
+    public void Production_registers_the_p3a_and_p3b_controls_each_with_a_source()
     {
-        Assert.Equal([MemoryLimitBelowConfigured, LegacyVirtualAdapters], Catalogue.Controls.Select(c => c.ControlId));
+        Assert.Equal(
+            [MemoryLimitBelowConfigured, LegacyVirtualAdapters, HostPowerPolicy, CpuHotAddVnuma],
+            Catalogue.Controls.Select(c => c.ControlId));
         Assert.All(Catalogue.Controls, c => Assert.False(string.IsNullOrWhiteSpace(c.Source)));
         Assert.Equal("eo-bestpractice-1", Catalogue.Release);
     }
@@ -196,5 +203,121 @@ public class BestPracticeChecksTests
         var finding = One(Evaluate(estate), LegacyVirtualAdapters, "E1000");
 
         Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
+    }
+
+    // --- host power policy (P3b) --------------------------------------------------
+
+    private static Entity Host(string id, params (string Key, string Value)[] settings) => new()
+    {
+        Id = new EntityId(id),
+        Kind = EntityKind.EsxiHost,
+        DisplayName = id["vc-1:".Length..],
+        LastSeenUtc = T0,
+        SourceInstanceId = "vc-1",
+        Settings = settings.ToDictionary(s => s.Key, s => s.Value, StringComparer.OrdinalIgnoreCase),
+    };
+
+    [Fact]
+    public void High_performance_power_policy_passes()
+    {
+        var host = Host("vc-1:host-1", (InventoryVerdictKeys.PowerPolicy, "static"));
+
+        var finding = One(Evaluate([host]), HostPowerPolicy);
+
+        Assert.Equal(ComplianceVerdict.Passing, finding.Verdict);
+        Assert.Equal("High Performance", finding.Observed);
+    }
+
+    [Fact]
+    public void Balanced_power_policy_fails_naming_the_policy()
+    {
+        var host = Host("vc-1:host-1", (InventoryVerdictKeys.PowerPolicy, "dynamic"));
+
+        var finding = One(Evaluate([host]), HostPowerPolicy);
+
+        Assert.Equal(ComplianceVerdict.Failing, finding.Verdict);
+        Assert.Equal("Balanced", finding.Observed);
+    }
+
+    [Fact]
+    public void Unread_power_policy_is_not_evaluated()
+    {
+        var finding = One(Evaluate([Host("vc-1:host-1")]), HostPowerPolicy);
+
+        Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
+        Assert.Contains("currentPolicy", finding.Reason, StringComparison.Ordinal);
+    }
+
+    // --- CPU hot-add and vNUMA (P3b) ------------------------------------------------
+
+    private static Relationship RunsOn(Entity vm, Entity host) =>
+        new() { From = vm.Id, To = host.Id, Kind = RelationshipKind.RunsOn, ObservedAtUtc = T0 };
+
+    private static Entity HotAddVm(int? vcpus, string? hotAdd = "true", string? version = "vmx-17")
+    {
+        var settings = new List<(string, string)>();
+        if (hotAdd is not null)
+        {
+            settings.Add((InventoryVerdictKeys.CpuHotAddEnabled, hotAdd));
+        }
+
+        if (version is not null)
+        {
+            settings.Add((InventoryVerdictKeys.HardwareVersion, version));
+        }
+
+        return Vm("vc-1:vm-1", new EntitySizing { VirtualCpuCount = vcpus }, [.. settings]);
+    }
+
+    private static ComplianceFinding HotAdd(Entity vm, string? coresPerNode = "12")
+    {
+        var host = coresPerNode is null
+            ? Host("vc-1:host-1")
+            : Host("vc-1:host-1", (InventoryVerdictKeys.NumaCoresPerNode, coresPerNode));
+
+        return One(Evaluate([vm, host], relationships: [RunsOn(vm, host)])
+            .Where(f => f.Entity == vm.Id).ToList(), CpuHotAddVnuma);
+    }
+
+    [Fact]
+    public void Hot_add_below_vmx20_wider_than_a_numa_node_fails()
+    {
+        var finding = HotAdd(HotAddVm(vcpus: 16));
+
+        Assert.Equal(ComplianceVerdict.Failing, finding.Verdict);
+        Assert.Contains("16 vCPUs", finding.Observed, StringComparison.Ordinal);
+        Assert.Contains("12 cores", finding.Observed, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Hot_add_below_vmx20_within_a_numa_node_passes() =>
+        Assert.Equal(ComplianceVerdict.Passing, HotAdd(HotAddVm(vcpus: 12)).Verdict);
+
+    [Fact]
+    public void Hot_add_on_vmx20_or_later_passes() =>
+        Assert.Equal(ComplianceVerdict.Passing, HotAdd(HotAddVm(vcpus: 16, version: "vmx-20")).Verdict);
+
+    [Fact]
+    public void Hot_add_off_passes() =>
+        Assert.Equal(ComplianceVerdict.Passing, HotAdd(HotAddVm(vcpus: 16, hotAdd: "false")).Verdict);
+
+    [Fact]
+    public void Unread_hot_add_version_or_host_numa_width_is_not_evaluated()
+    {
+        Assert.Equal(ComplianceVerdict.NotEvaluated, HotAdd(HotAddVm(vcpus: 16, hotAdd: null)).Verdict);
+        Assert.Equal(ComplianceVerdict.NotEvaluated, HotAdd(HotAddVm(vcpus: 16, version: null)).Verdict);
+        Assert.Equal(ComplianceVerdict.NotEvaluated, HotAdd(HotAddVm(vcpus: null)).Verdict);
+        Assert.Equal(ComplianceVerdict.NotEvaluated, HotAdd(HotAddVm(vcpus: 16), coresPerNode: null).Verdict);
+    }
+
+    [Fact]
+    public void A_vm_with_no_host_edge_is_not_evaluated()
+    {
+        var vm = HotAddVm(vcpus: 16);
+
+        var finding = One(Evaluate([vm]), CpuHotAddVnuma);
+
+        Assert.Equal(ComplianceVerdict.NotEvaluated, finding.Verdict);
+        Assert.Contains("NUMA", finding.Reason, StringComparison.Ordinal);
     }
 }
