@@ -1241,6 +1241,62 @@ boyu sunucu işini değil, yükü ve okumayı belirliyor. Karar: varlık gezgini
 sayfa boyu **100** (sayfa ≈ 30 KB, Kibar'ın VM'leri 11 sayfa), sayfa içindeki
 satırlar sanallaştırılmış kalır (`web/src/routes/Entities.tsx` `PAGE_SIZE`).
 
+### 11.10 Wallboard — NOC büyük ekran görünümü (25 Eylül 2026, U4 referansı)
+
+Bizim ilke: ADR-0007 §6 — wallboard ayrı görünüm, etkileşim yok, seyrek
+tipografi, okuma mesafesi; bayat değer asla güncel görünmez ("last updated
+14 min ago"); Unknown/gri kendi durumu (ADR-0026). Kod: `web/src/lib/ui.ts`
+`STALE_AFTER_MS = 120_000`, `isStale`.
+
+**Benimsenen kurallar (kaynak + tam iddia):**
+
+1. **Büyük ekran ayrı iş görür; 5 saniyede anlaşılmalı; etkileşim yok.** vROps NOC dashboard seti: "A dashboard projected on the large screen serves a different business purpose than a dashboard on your laptop or desktop"; "Keeping the interaction, such as clicking, zooming, and sorting to a minimal. Avoid having buttons, use of mouse or keyboard to view data"; "Ensure that the dashboards are understood within five seconds"; "Dashboards are designed to display minimal and critical information only." — [Aria Ops 8.16 Network Operation Center](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-16/vmware-aria-operations-configuration-guide-8-16/predefined-dashboards-in-vrealize-operations-manager/dashboard-library/network-operation-center.html)
+2. **Kutu boyutları sabit; değişken boyut dikkat dağıtır.** "The sizes of each cluster and ESXi hosts are constant. Variable sizing creates a distraction and can result in small boxes, making it difficult to read"; odak "population and not on a single VM." — [Live! Cluster Performance](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-16/vmware-aria-operations-configuration-guide-8-16/predefined-dashboards-in-vrealize-operations-manager/dashboard-library/network-operation-center/live!-cluster-performance-dashboard.html)
+3. **"Veri yok" ısı haritasında ayrı gri kutu.** "A light gray box indicates that the host is a part of the cluster but there is no utilization"; israf koyu gri. — [Live! Cluster Utilization](https://techdocs.broadcom.com/us/en/vmware-cis/aria/aria-operations/8-16/vmware-aria-operations-configuration-guide-8-16/predefined-dashboards-in-vrealize-operations-manager/dashboard-library/network-operation-center/live!-cluster-utilization-dashboard.html)
+4. **Kiosk = menü ve gezinti gizlenir; URL parametresiyle girilir.** Grafana: "In kiosk mode, the main menu and top navigation bar of a dashboard are hidden" ([use-dashboards](https://grafana.com/docs/grafana/latest/dashboards/use-dashboards/)); Zabbix: `/zabbix.php?action=dashboard.view&kiosk=1` ([dashboards](https://www.zabbix.com/documentation/current/en/manual/web_interface/frontend_sections/dashboards)); PRTG public rotation `public/mapshow.htm?ids=mapid:secretkey,…` ([map_rotation](https://www.paessler.com/manuals/prtg/map_rotation)).
+5. **Kaydırma yok, her şey tek ekranda; en-boy oranı ekrana göre tasarlanır.** Datadog TV mode: "ensuring that all widgets are visible without requiring scrolling"; "an enforced aspect ratio"; "Design your dashboard with an aspect ratio that closely matches your TV's display." — [tv_mode](https://docs.datadoghq.com/dashboards/guide/tv_mode/). Grafana: "automatically scales dashboards to any resolution, which makes them perfect for big screens" — [playlists](https://grafana.com/docs/grafana/latest/dashboards/create-manage-playlists/).
+6. **Boş/null değer tire.** Grafana No value: "The default value is a hyphen (-)" — [standard-options](https://grafana.com/docs/grafana/latest/panels-visualizations/configure-standard-options/). Bizim §11.7 ile aynı.
+7. **Bayat seri sessizce son değeri döndürmez.** Prometheus: "If a target scrape or rule evaluation no longer returns a sample … this time series will be marked as stale"; lookback "5 minutes by default"; "no value is returned for that time series." — [querying/basics](https://prometheus.io/docs/prometheus/latest/querying/basics/). Bizde eşik 2 dk (`STALE_AFTER_MS`); Prometheus'un 5 dk'sı bizim 20 s toplama aralığında gevşek kalır.
+8. **Yenileme tabanı 5–30 s; tek ekran yenilemesi ürünün işi.** Grafana `min_refresh_interval` "default interval value is 5 seconds" ([configure-grafana](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/)); Datadog "Publicly shared dashboards refresh every thirty seconds, regardless of the selected time frame" ([dashboards](https://docs.datadoghq.com/dashboards/)); Zabbix widget varsayılanı "range from No refresh to 15 minutes depending on the type of the widget" ([widgets](https://www.zabbix.com/documentation/current/en/manual/web_interface/frontend_sections/dashboards/widgets)).
+9. **Uzunluk ve konum ön-dikkatli; alan/açı (gauge, donut) değil; renk büyüklük taşımaz.** NN/g: "color should not be used to communicate information about quantitative values or magnitude"; "area is a variable that people don't interpret quickly or with accuracy." — [dashboards-preattentive](https://www.nngroup.com/articles/dashboards-preattentive/). Kritik öğe "visually salient" — [complex-application-design](https://www.nngroup.com/articles/complex-application-design/).
+10. **Durum değişimi gizlenmez, açıkça yazılır.** NN/g görünürlük: "explicitly communicate the current system's status" (stokta yok örneği: öğe kalır, mesaj eklenir). — [visibility-system-status](https://www.nngroup.com/articles/visibility-system-status/). "last updated 14 min ago" bunun uygulaması.
+11. **Kontrast: büyük metin ≥18 pt (24 px) ya da 14 pt kalın; wallboard için AAA 7:1 / büyük 4.5:1.** WCAG 1.4.3: "18 point text or 14 point bold text is judged to be large enough to require a lower contrast ratio"; "4.499:1 would not meet the 4.5:1 threshold" ([contrast-minimum](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)). 1.4.6: 7:1, "compensated for the loss in contrast sensitivity … approximately 20/80 vision" ([contrast-enhanced](https://www.w3.org/WAI/WCAG22/Understanding/contrast-enhanced.html)). Uzaktan okuma görme keskinliğini etkin biçimde düşürür; AAA'yı wallboard için hedef alıyoruz.
+12. **Mesafe başına harf yüksekliği: 1 m'de ≥3 mm x-yüksekliği, mesafeyle çarp.** Cambridge EDC: "if the viewing distance is 1m, the x-height should usually be at least 3mm … For larger viewing distances, multiply these values by the distance in metres" ([cedc.tools/size](https://www.cedc.tools/size.html), arama alıntısı; doğrudan çekim 403). Yasal kaynak ADA 703.5.5: 40–70" yükseklikte "5/8″ + 1/8″ per foot of viewing distance above 6'" ([access-board ch.7](https://www.access-board.gov/ada/guides/chapter-7-signs/)). 4 m NOC mesafesi → x-yüksekliği ≥12 mm ≈ 55 px cap-height (96 dpi, 1080p'de ölç) — birincil değer boyutu bundan aşağı olamaz.
+
+**Reddedilen:**
+
+- **Dönen dashboard / playlist / slideshow** (Grafana playlist, vROps Auto-rotate, PRTG rotation 10s–10m, Zabbix slideshow). Gerekçe: rotasyon sırasında bir tile ekranda değilken değişen durum görülmez; ADR-0007 §6 "sessizce donan değer" ile aynı hata sınıfı; NN/g "5 saniye" hedefine dönen içerik ters. Tek sabit ekran.
+- **Bayat değer için "Keep last state" / `Last *` (non-null)** (Grafana calculation "Last, not null value"; Grafana No Data "Keep last state"). Bayat veriyi güncel gösterir.
+- **Renk arka planla değer aralığı** (Datadog Query Value "green/yellow/red background"). Renk tek başına (ADR-0008 §3); büyük ekranda ikon+metin şart.
+- **Gauge/donut/pie** (NN/g alan-açı).
+- **Tarayıcı sekme döndürücü eklentiler** (Dynatrace topluluk önerisi). Ürün özelliği değil.
+- **Ölçeklenen (küçülen) düzen** (Datadog TV mode "scales down … enforced aspect ratio"). Metin küçülür, 12. kural bozulur; sabit 16:9 tile ızgarası.
+
+**Bulunamadı / açık:**
+
+- Dynatrace yeni Dashboards için kiosk/presentation belgesi yok; yalnız anonim paylaşım ("Anonymous access grants view permission only").
+- Datadog Query Value için "no data"/N/A gösterim kuralı belgelenmemiş.
+- vROps NOC dashboard'larının yenileme aralığı belgelenmemiş.
+- Hiçbir üründe "son güncelleme … önce" damgası belgeli değil — bizim kural birincil kaynaksız, ADR-0007 §6'ya dayanır.
+- Font/mesafe kuralı üretici belgelerinde yok; Cambridge/ADA dış kaynak.
+- WCAG'de mesafe kavramı yok.
+
+**Bizim wallboard için içerik modeli (öneri):**
+
+- **Tek ekran, dönmez, 16:9, kaydırma yok, tıklanacak hiçbir şey yok** (kural 1, 5; rotasyon reddi). Route `/wallboard`, Shell gizli, çerçeve yok.
+- **Başlık şeridi:** site adı + saat + **"Updated 12 s ago"** metni her zaman görünür; `isStale` olduğunda tüm ekran çerçevesi grey/unknown ramp'a döner ve "**Stale since 14:02 · 14 min**" büyük yazılır (kural 7, 10; ADR-0007 §6). Sunucu bağlantısı kopunca değerler kalır ama tamamı grey, üzeri "stale" — asla boş ekran, asla renkli kalan eski değer.
+- **Tile'lar, sıra sabit, boyut sabit** (kural 2), soldan sağa, üstten alta:
+  1. **Critical open alerts** — sayı, `<what> — <where>` ilk 5 başlık, yaş. Açık olanlar üstte (§11.5).
+  2. **Warning open alerts** — sayı + ilk 3.
+  3. **Health by kind** — host / datastore / VM / SimpliVity node / iLO: healthy · warning · critical · **unknown** dört sayı, yatay çubuk (uzunluk, kural 9); unknown asla yüzdeye katılmaz (ADR-0026).
+  4. **Collector state** — her toplayıcı: up/down/unknown + son başarılı toplama yaşı (§11.2 ayrı eksen).
+  5. **Capacity** — datastore doluluk en kötü 5, yatay çubuk.
+  6. **Compliance** — açık bulgu sayısı + tekrar sayısı (README §4).
+- **Tile Unknown'da:** grey ramp surface, `StatusBadge` deseni (nokta + "Unknown" metni + ikon), sayı yerine "-" (kural 6, ADR-0008 §3). **Tile bayatken:** kendi "stale · 3 min" etiketi; değer soluk, renk çekilir, grey border. Ekran-geneli staleness tile-geneli staleness'ı kapsar.
+- **Tipografi:** birincil değer ≥ 55 px cap-height (kural 12, 4 m); etiket ≥ 24 px (WCAG büyük metin); Fira Sans etiket, Fira Code sayı; 7:1 hedef, `validate-contrast.mjs`'ye wallboard rolü eklenir (ADR-0008 §5).
+- **Yenileme:** mevcut poll (20 s toplama) ile aynı; 10 s'de bir sayaç yazısı güncellenir; `STALE_AFTER_MS` (120 s) aşılınca stale. Animasyon, yanıp sönme yok (§11 red).
+- **Ölçülecek:** 1080p/4K'da px başına mm ve gerçek NOC mesafesi — 55 px değeri ölçüm dosyası olmadan yayımlanmaz (`memory/measurement-query-assumptions.md`).
+
 ## Sıradaki araştırma konuları
 
 Bir sonraki adıma geçmeden önce bakılacaklar:
