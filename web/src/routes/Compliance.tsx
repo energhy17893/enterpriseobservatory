@@ -262,9 +262,9 @@ export function Compliance({ identity }: { identity: AuthStateView }) {
 
       {data.totals.stale > 0 && (
         <Card className="p-4 text-sm text-muted-foreground">
-          {data.totals.stale} findings are stale: their vCenter did not answer in the last inventory
-          cycle, so they show the last verdict that could be reached and when the host was last
-          read — not the host as it is now.
+          {data.totals.stale} findings are stale: their source did not answer in the last inventory
+          cycle, so they show the last verdict that could be reached and when the entity was last
+          read — not the entity as it is now.
         </Card>
       )}
 
@@ -486,14 +486,14 @@ function Findings({ control, canAct }: { control: ComplianceControlView; canAct:
       )}
 
       {canAct && (
-        <ExceptionForm controlId={control.controlId} entityId={null} label="Except every host" />
+        <ExceptionForm controlId={control.controlId} entityId={null} label="Except every entity" />
       )}
 
       {findings.isError && <LoadFailure what="Findings" error={findings.error} />}
       {findings.isPending && <Loading what="findings" />}
       {findings.data !== undefined &&
         (findings.data.length === 0 ? (
-          <Empty>No hosts have been evaluated against this control yet.</Empty>
+          <Empty>No entities have been evaluated against this control yet.</Empty>
         ) : (
           <>
             {rest.length === 0 ? (
@@ -580,10 +580,13 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
               {finding.entityName || finding.entityId}
             </Link>
             <StatusBadge status={STATE_STATUS[finding.state]}>{STATE_LABEL[finding.state]}</StatusBadge>
-            {finding.stale && (
-              <StatusBadge status="Unknown">Stale — vCenter did not answer</StatusBadge>
-            )}
+            {finding.stale && <StaleBadge sinceUtc={finding.lastEvaluatedUtc} />}
           </div>
+          {finding.stale && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              its source did not answer since {ago(finding.lastEvaluatedUtc)}
+            </div>
+          )}
           <div className="mt-1 text-xs text-muted-foreground">
             {finding.observed === null ? (
               finding.reason
@@ -619,9 +622,10 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
           />
           <button
             type="button"
-            disabled={accept.isPending}
+            // ComplianceService.Accept takes an empty reason; an acceptance without a why is not one (K3).
+            disabled={accept.isPending || reason.trim() === ''}
             onClick={() => accept.mutate()}
-            className="rounded-md border border-border px-2 py-1 text-xs hover:bg-card"
+            className="rounded-md border border-border px-2 py-1 text-xs hover:bg-card disabled:opacity-50"
           >
             {accept.isPending ? 'Working…' : 'Accept'}
           </button>
@@ -641,7 +645,7 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
           entityId={finding.entityId}
           subject={finding.subject}
           subjectLabel={finding.subjectLabel}
-          label="Except this host"
+          label="Except this entity"
         />
       )}
 
@@ -654,7 +658,7 @@ function FindingRow({ finding, canAct }: { finding: ComplianceFindingView; canAc
  * K3 §5: an exception's scope must be explicit, and default to the narrow
  * one. A finding with a non-empty `subject` (an `eo-continuity` per-subject
  * control -- an HBA, a DRS rule, a device) defaults to excepting **that
- * subject only**; widening it to every subject of the control on this host
+ * subject only**; widening it to every subject of the control on this entity
  * is an affirmative, separately-labelled checkbox, never the unlabelled
  * default. SCG findings (`subject` always `""`) show none of this and behave
  * exactly as before -- there is only one subject, the entity itself.
@@ -760,7 +764,7 @@ function ExceptionForm({
             checked={widenSubject}
             onChange={(event) => setWidenSubject(event.target.checked)}
           />
-          Widen: except every subject of this control on this host, not just{' '}
+          Widen: except every subject of this control on this entity, not just{' '}
           <span className="font-mono">{subjectLabel || subject}</span>
         </label>
       )}
@@ -807,7 +811,7 @@ function Exceptions({
                 <div className="flex flex-wrap items-center gap-2">
                   <Identifier>{exception.controlId}</Identifier>
                   <span className="text-xs text-muted-foreground">
-                    {exception.entityId === null ? 'every host' : exception.entityId}
+                    {exception.entityId === null ? 'every entity' : exception.entityId}
                     {' · '}
                     {exception.subject === null || exception.subject === ''
                       ? 'every subject'
@@ -827,7 +831,15 @@ function Exceptions({
                 {canAct && (
                   <button
                     type="button"
-                    onClick={() => remove.mutate(exception.id)}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          'Remove this exception? Its findings count as non-compliant again from the next evaluation.',
+                        )
+                      ) {
+                        remove.mutate(exception.id)
+                      }
+                    }}
                     className="rounded-md border border-border px-2 py-1 text-xs hover:bg-page"
                   >
                     Remove
