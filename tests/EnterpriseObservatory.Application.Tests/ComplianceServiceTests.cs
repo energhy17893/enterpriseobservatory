@@ -150,7 +150,7 @@ public class ComplianceServiceTests
     public void An_acceptance_survives_the_next_evaluation()
     {
         Evaluate("");
-        _service.Accept("esx-9.log-forwarding", Host1, "", "", Operator);
+        _service.Accept("esx-9.log-forwarding", Host1, "", "CHG-1", Operator);
 
         _clock.UtcNow = T0.AddMinutes(5);
         Evaluate("");
@@ -163,7 +163,7 @@ public class ComplianceServiceTests
     {
         Evaluate("udp://10.0.0.5:514");
 
-        var result = _service.Accept("esx-9.log-forwarding", Host1, "", "", Operator);
+        var result = _service.Accept("esx-9.log-forwarding", Host1, "", "CHG-1", Operator);
 
         Assert.False(result.Applied);
         Assert.Equal(ComplianceFailure.NotFailing, result.Failure);
@@ -172,7 +172,7 @@ public class ComplianceServiceTests
     [Fact]
     public void A_finding_that_does_not_exist_cannot_be_accepted()
     {
-        var result = _service.Accept("esx-9.log-forwarding", Host1, "", "", Operator);
+        var result = _service.Accept("esx-9.log-forwarding", Host1, "", "CHG-1", Operator);
 
         Assert.Equal(ComplianceFailure.NotFound, result.Failure);
     }
@@ -285,6 +285,32 @@ public class ComplianceServiceTests
 
         Assert.True(_service.Accept(
             "esx-9.log-forwarding", Host1, "", new string('x', ComplianceService.MaximumReasonLength), Operator).Applied);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(" \t\n ")]
+    public void An_acceptance_without_a_reason_is_refused(string reason)
+    {
+        Evaluate("");
+
+        var result = _service.Accept("esx-9.log-forwarding", Host1, "", reason, Operator);
+
+        Assert.False(result.Applied);
+        Assert.Equal(ComplianceFailure.MissingReason, result.Failure);
+        Assert.Null(_service.Findings()[0].Acceptance);
+    }
+
+    [Fact]
+    public void An_acceptance_reason_is_kept_trimmed()
+    {
+        Evaluate("");
+
+        var result = _service.Accept("esx-9.log-forwarding", Host1, "", "  CHG-7  ", Operator);
+
+        Assert.True(result.Applied);
+        Assert.Equal("CHG-7", _service.Findings()[0].Acceptance!.Reason);
     }
 
     [Theory]

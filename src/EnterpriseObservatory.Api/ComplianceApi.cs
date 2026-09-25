@@ -964,6 +964,7 @@ public static class ComplianceApi
         ComplianceFailure.AlreadyAccepted =>
             "Somebody has already accepted this finding. Their acceptance stays on the record until " +
             "the finding passes; it is not overwritten.",
+        ComplianceFailure.MissingReason => "an acceptance needs a reason",
         _ => "The change was not applied.",
     };
 }
