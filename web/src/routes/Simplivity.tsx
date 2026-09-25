@@ -16,8 +16,10 @@ import type {
   SimplivityVmView,
 } from '@/api/types'
 
-// eo-ux §7: "to be measured"; 50 matches the alert inbox until a measurement exists.
-const PAGE_SIZE = 50
+// eo-ux §7, measured 24 Sep (reference-approaches §11): entity-like tables page
+// at 100; alert sections page at 50 like the alert inbox (A1).
+const TABLE_PAGE_SIZE = 100
+const ALERT_PAGE_SIZE = 50
 
 /**
  * HPE's own words as a status (reference-approaches §10.8): FAULTY/DEFUNCT
@@ -335,36 +337,18 @@ function HostRow({ host, indent }: { host: SimplivityHostView; indent?: boolean 
 }
 
 /** Client-side pages over a list the server sent whole (at most the estate's VMs). */
-function usePage<T>(rows: T[]) {
+function usePage<T>(rows: T[], unit: string) {
   const [offset, setOffset] = useState(0)
   const start = offset < rows.length ? offset : 0
 
   const pager =
-    rows.length > PAGE_SIZE ? (
-      <div className="flex items-center justify-end gap-2 text-sm text-muted-foreground">
-        <span className="tabular" role="status" aria-live="polite">
-          {start + 1}–{Math.min(start + PAGE_SIZE, rows.length)} of {rows.length}
-        </span>
-        <button
-          type="button"
-          disabled={start === 0}
-          onClick={() => setOffset(Math.max(0, start - PAGE_SIZE))}
-          className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
-        >
-          Previous
-        </button>
-        <button
-          type="button"
-          disabled={start + PAGE_SIZE >= rows.length}
-          onClick={() => setOffset(start + PAGE_SIZE)}
-          className="rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
-        >
-          Next
-        </button>
+    rows.length > TABLE_PAGE_SIZE ? (
+      <div className="flex justify-end">
+        <Pager offset={start} pageSize={TABLE_PAGE_SIZE} total={rows.length} onOffset={setOffset} unit={unit} />
       </div>
     ) : null
 
-  return { rows: rows.slice(start, start + PAGE_SIZE), pager }
+  return { rows: rows.slice(start, start + TABLE_PAGE_SIZE), pager }
 }
 
 /**
@@ -373,7 +357,7 @@ function usePage<T>(rows: T[]) {
  * transient; a VM whose status was not given is Unknown, listed last.
  */
 function StorageHa({ rows }: { rows: SimplivityVmView[] }) {
-  const { rows: page, pager } = usePage(rows)
+  const { rows: page, pager } = usePage(rows, 'VMs')
 
   return (
     <div className="space-y-2">
@@ -415,7 +399,7 @@ function StorageHa({ rows }: { rows: SimplivityVmView[] }) {
 }
 
 function Backups({ rows, rpoHours }: { rows: SimplivityBackupView[]; rpoHours: number | null }) {
-  const { rows: page, pager } = usePage(rows)
+  const { rows: page, pager } = usePage(rows, 'backups')
 
   return (
     <div className="space-y-2">
@@ -572,7 +556,7 @@ function InboxAlerts({
 
   const { data, isPending, isError, error } = useQuery({
     queryKey: ['alerts', filter, offset],
-    queryFn: () => api.alerts({ ...filter, offset, limit: PAGE_SIZE }),
+    queryFn: () => api.alerts({ ...filter, offset, limit: ALERT_PAGE_SIZE }),
     refetchInterval: 15_000,
     placeholderData: keepPreviousData,
   })
@@ -589,10 +573,10 @@ function InboxAlerts({
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Heading className={Heading === 'h2' ? 'text-lg font-semibold' : 'text-sm font-medium'}>{heading}</Heading>
-        {data !== undefined && data.total > PAGE_SIZE && (
+        {data !== undefined && data.total > ALERT_PAGE_SIZE && (
           <Pager
             offset={offset}
-            pageSize={PAGE_SIZE}
+            pageSize={ALERT_PAGE_SIZE}
             total={data.total}
             unit="alerts"
             onOffset={(next) => {

@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { Card, Empty, Identifier, LoadFailure, Loading, StaleBadge, StatusBadge } from '@/components/Primitives'
+import { Pager } from '@/components/Pager'
 import { ago, cn, type StatusName } from '@/lib/ui'
 import { basisLabel } from '@/lib/basis'
 import { orderCatalogues } from '@/lib/catalogues'
@@ -498,11 +499,7 @@ function Findings({ control, canAct }: { control: ComplianceControlView; canAct:
             {rest.length === 0 ? (
               <Empty>Nothing failing or unevaluated for this control.</Empty>
             ) : (
-              <Card className="divide-y divide-border">
-                {rest.map((finding) => (
-                  <FindingRow key={`${finding.entityId}-${finding.controlId}`} finding={finding} canAct={canAct} />
-                ))}
-              </Card>
+              <FindingList findings={rest} canAct={canAct} />
             )}
             {passing.length > 0 && (
               <div className="text-xs text-muted-foreground">
@@ -510,20 +507,48 @@ function Findings({ control, canAct }: { control: ComplianceControlView; canAct:
                   {showPassing ? '▾' : '▸'} {passing.length} passed
                 </button>
                 {showPassing && (
-                  <Card className="mt-2 divide-y divide-border">
-                    {passing.map((finding) => (
-                      <FindingRow
-                        key={`${finding.entityId}-${finding.controlId}`}
-                        finding={finding}
-                        canAct={canAct}
-                      />
-                    ))}
-                  </Card>
+                  <div className="mt-2">
+                    <FindingList findings={passing} canAct={canAct} />
+                  </div>
                 )}
               </div>
             )}
           </>
         ))}
+    </div>
+  )
+}
+
+// eo-ux §7: entity-like lists page at 100 (measured 24 Sep, reference-approaches
+// §11). Paged on the client: /api/compliance/findings sends a control's findings
+// whole, ~400 B each; the largest control (1,100 VMs) is ~440 KB, acceptable.
+// Server-side offset/limit is a separate decision.
+const FINDING_PAGE_SIZE = 100
+
+/** One finding list, paged on its own (the failing list and the passed disclosure page independently). */
+function FindingList({ findings, canAct }: { findings: ComplianceFindingView[]; canAct: boolean }) {
+  const [offset, setOffset] = useState(0)
+  // An accepted or fixed finding can shrink the list under the current page.
+  const start = offset < findings.length ? offset : 0
+
+  return (
+    <div className="space-y-2">
+      <Card className="divide-y divide-border">
+        {findings.slice(start, start + FINDING_PAGE_SIZE).map((finding) => (
+          <FindingRow key={`${finding.entityId}-${finding.controlId}`} finding={finding} canAct={canAct} />
+        ))}
+      </Card>
+      {findings.length > FINDING_PAGE_SIZE && (
+        <div className="flex justify-end">
+          <Pager
+            offset={start}
+            pageSize={FINDING_PAGE_SIZE}
+            total={findings.length}
+            onOffset={setOffset}
+            unit="findings"
+          />
+        </div>
+      )}
     </div>
   )
 }
